@@ -1,0 +1,4 @@
+{
+  "name": "core",
+  "description": "Minimal, product-neutral root image: shell + filesystem essentials (coreutils, curl, jq, file, less, unzip) on the Agent Orange sandbox harness. Nothing project-specific. The root every other installation extends."
+}

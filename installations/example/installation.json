@@ -1,0 +1,5 @@
+{
+  "name": "example",
+  "parent": "core",
+  "description": "Example installation extending core. The template for a per-project base image: add the project's runtime/tools here and seed its workspace via overlay/. Real per-project installations live in their own project repos — this one ships with the engine to show the pattern."
+}
