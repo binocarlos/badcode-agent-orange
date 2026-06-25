@@ -156,9 +156,9 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
    `<region>-docker.pkg.dev/<project>/<repo>`.
 3. ✅ **End-to-end (2026-06-25):** the live stack (`registry=ociregistry`, `auth=gcp`) snapshotted a
    session → image pushed to `europe-west1-docker.pkg.dev/webkit-servers/agent-orange/<sid>:latest`
-   (confirmed via `gcloud artifacts docker images list`). Note: AR *pull* (Materialize) short-circuits
-   to the local image when present, so it wasn't force-exercised; it uses the same proven `auth.GCP`
-   credential as the push.
+   (confirmed via `gcloud artifacts docker images list`). **Pull also verified**: deleted the image
+   from the local daemon, then `restore` → `Materialize` pulled it back from AR (identical digest) via
+   `auth.GCP`. Push + pull both proven.
 
 ---
 
