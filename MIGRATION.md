@@ -136,8 +136,9 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
    + `GCS_BUCKET`/`GCS_PREFIX` selects `gcsblob`; the artifact store is now the generic
    `extension/blobartifacts` (works over any `extension.BlobStore`; `filesblob.NewArtifactStore`
    delegates to it). Defaults preserve the local fs stack. Compose + `.env.example` + `docs/15`
-   updated; agentd Dockerfile bumped to go1.25. ⬜ Still to do: end-to-end verify against the bucket
-   (produce an artifact / snapshot a session → bytes appear → reload works).
+   updated; agentd Dockerfile bumped to go1.25. ✅ Verified end-to-end (2026-06-25): the live stack
+   (`blobs=gcs`) uploaded an artifact → object present in `gs://webkit-servers-agent-orange` and read
+   back byte-identical.
 
 ### 4b. Images → Artifact Registry ✅ (auth seam done; end-to-end pending)
 
@@ -153,8 +154,11 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
    + `AGENTKIT_REGISTRY_AUTH=gcp` + `GCP_REGION`/`GCP_PROJECT`/`GCP_AR_REPO` (or an explicit
    `OCI_REGISTRY`) builds `ociregistry.Config{Registry, Auth: auth.GCP}`. URL shape
    `<region>-docker.pkg.dev/<project>/<repo>`.
-3. ⬜ **End-to-end:** build `core`/`example` → push to Artifact Registry → launch a session that
-   resolves+pulls it from GCP → verify a turn runs.
+3. ✅ **End-to-end (2026-06-25):** the live stack (`registry=ociregistry`, `auth=gcp`) snapshotted a
+   session → image pushed to `europe-west1-docker.pkg.dev/webkit-servers/agent-orange/<sid>:latest`
+   (confirmed via `gcloud artifacts docker images list`). Note: AR *pull* (Materialize) short-circuits
+   to the local image when present, so it wasn't force-exercised; it uses the same proven `auth.GCP`
+   credential as the push.
 
 ---
 
@@ -184,5 +188,6 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
 - [ ] Phase 1 — standalone-ify
 - [ ] Phase 2 — genericize installations
 - [ ] Phase 3 — registry-agnostic build + push
-- [ ] Phase 4 — GCP Artifact Registry
+- [x] Phase 4 — GCP (GCS blobs + Artifact Registry): engine seams + agentd wiring + provisioning,
+      verified end-to-end against the live project (artifact→bucket, snapshot→AR)
 - [ ] Phase 5 — automation & hardening

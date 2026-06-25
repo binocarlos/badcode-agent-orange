@@ -3,3 +3,5 @@
 secrets/
 *.key.json
 gcp-key.json
+
+docker-compose.override.yml
