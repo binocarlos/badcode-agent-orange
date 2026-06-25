@@ -109,24 +109,38 @@ Goal: build an installation image and push it to **any** OCI registry, selected 
 
 ---
 
-## Phase 4 — Google Cloud Artifact Registry (priority) 🎯
+## Phase 4 — Google Cloud (priority) 🎯
 
-Goal: build an installation image in this repo and push/launch it from **GCP Artifact Registry**.
+Two independent pieces. Note the runtime already has everything they plug into: `go/artifacts/`
+(full `ArtifactStore` — Save/Load/List/MarkLost/CaptureFolder, dir artifacts, mock, tests) and the
+`extension.BlobStore`/`BlobStoreFactory` seam (`go/extension/extension.go`). Only a filesystem impl
+(`go/extension/filesblob`) ships; there is **no cloud backend in the module** (Azure lived in the
+Platinum host and was not copied). go.mod has no cloud deps yet.
 
-1. **GCP auth provider.** Implement `BearerToken` for Artifact Registry:
-   - Primary: service-account access token (username `oauth2accesstoken`, password = access token),
-     refreshed before expiry. Source the token from a service-account JSON key
-     (`GOOGLE_APPLICATION_CREDENTIALS`) or the metadata server (workload identity on GCE/GKE/Cloud Run).
-   - Fallback: `gcloud auth configure-docker <region>-docker.pkg.dev` credential helper via the
-     `DockerConfigHelper` path.
-   File: `go/imageregistry/auth/gcp.go`.
-2. **Registry URL shape.** Target `\<region>-docker.pkg.dev/<project>/<repo>/<name>:<tag>`. Add config
-   for `GCP_PROJECT`, `GCP_REGION`, `GCP_AR_REPO`.
-3. **End-to-end on GCP:** `ao installations build agent-orange-base --registry <region>-docker.pkg.dev/<project>/<repo> --push`
-   → confirm the image lands in Artifact Registry → launch a session that resolves+pulls it from GCP →
-   verify a turn runs.
-4. **(Optional) GCS blob store** for snapshots, mirroring the Azure blob client, so
-   `blobarchive`/snapshot persistence works on GCP. File: new `storage/gcs.go` analog.
+### 4a. Artifacts + snapshots → Google Cloud Storage
+
+**One GCS-backed `BlobStore` serves BOTH** the `ArtifactStore` (artifact bytes) and `blobarchive`
+(snapshot tarballs) — they both write through `extension.BlobStore`. Implement it once.
+
+1. Add `go/extension/gcsblob/` — implement `extension.BlobStore` + `BlobStoreFactory` over Google
+   Cloud Storage (`cloud.google.com/go/storage`), mirroring `extension/filesblob`. Bucket +
+   key-prefix per scope (session / global namespace).
+2. Auth via Application Default Credentials (service-account key `GOOGLE_APPLICATION_CREDENTIALS`,
+   or workload identity / metadata server). Config: `GCS_BUCKET`, `GCP_PROJECT`.
+3. Wire it in the standalone host (`go/examples/standalone` / `cmd/agentd` deps) selectable by config,
+   so artifacts and snapshots land in GCS. Verify: produce an artifact + snapshot a session → bytes
+   appear in the bucket → reload works.
+
+### 4b. Images → Artifact Registry
+
+1. **Auth provider.** Implement the `BearerToken` auth (from Phase 3) for Artifact Registry:
+   service-account access token (username `oauth2accesstoken`, password = access token), refreshed
+   before expiry, from ADC / SA key / metadata server. Fallback: `gcloud auth configure-docker
+   <region>-docker.pkg.dev` via the `DockerConfigHelper` path. File: `go/imageregistry/auth/gcp.go`.
+2. **Registry URL shape.** `<region>-docker.pkg.dev/<project>/<repo>/<name>:<tag>`. Config:
+   `GCP_PROJECT`, `GCP_REGION`, `GCP_AR_REPO`.
+3. **End-to-end:** build `core`/`example` → push to Artifact Registry → launch a session that
+   resolves+pulls it from GCP → verify a turn runs.
 
 ---
 
@@ -139,13 +153,13 @@ Goal: build an installation image in this repo and push/launch it from **GCP Art
 
 ---
 
-## Decisions needed before Phase 1/4
+## Decisions
 
-1. **Module path** for the re-module (`github.com/badcode/agent-orange` vs keep `agentkit`).
-2. **GCP specifics:** project id, region, Artifact Registry repo name, and auth method
-   (service-account key file vs workload identity).
-3. **Installations:** genericize now (Phase 2) or keep the Platinum baseline images working first,
-   genericize later.
+- ✅ **Module path** = `github.com/binocarlos/badcode-agent-orange` (done).
+- ✅ **Installations** = engine-owned examples (`installations/core`, `installations/example`);
+  per-project images live in each project's own repo.
+- ⬜ **GCP specifics (needed for Phase 4):** project id, region, **Artifact Registry repo name**,
+  **GCS bucket name**, and **auth method** (service-account JSON key vs workload identity / ADC).
 
 ## Status
 
