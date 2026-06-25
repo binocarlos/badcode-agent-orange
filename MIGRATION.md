@@ -117,29 +117,38 @@ Two independent pieces. Note the runtime already has everything they plug into: 
 (`go/extension/filesblob`) ships; there is **no cloud backend in the module** (Azure lived in the
 Platinum host and was not copied). go.mod has no cloud deps yet.
 
-### 4a. Artifacts + snapshots → Google Cloud Storage
+### 4a. Artifacts + snapshots → Google Cloud Storage ✅ (impl done; wiring pending)
 
 **One GCS-backed `BlobStore` serves BOTH** the `ArtifactStore` (artifact bytes) and `blobarchive`
-(snapshot tarballs) — they both write through `extension.BlobStore`. Implement it once.
+(snapshot tarballs) — they both write through `extension.BlobStore`. Implemented once.
 
-1. Add `go/extension/gcsblob/` — implement `extension.BlobStore` + `BlobStoreFactory` over Google
-   Cloud Storage (`cloud.google.com/go/storage`), mirroring `extension/filesblob`. Bucket +
-   key-prefix per scope (session / global namespace).
-2. Auth via Application Default Credentials (service-account key `GOOGLE_APPLICATION_CREDENTIALS`,
-   or workload identity / metadata server). Config: `GCS_BUCKET`, `GCP_PROJECT`.
-3. Wire it in the standalone host (`go/examples/standalone` / `cmd/agentd` deps) selectable by config,
-   so artifacts and snapshots land in GCS. Verify: produce an artifact + snapshot a session → bytes
-   appear in the bucket → reload works.
+1. ✅ `go/extension/gcsblob/` — `extension.BlobStore` + `BlobStoreFactory` over Google Cloud Storage
+   (`cloud.google.com/go/storage`), mirroring `extension/filesblob`. `Config{Bucket, Prefix}`;
+   `ForSession` → `session/<id>` prefix, `Global(ns)` → `<ns>` prefix. `List` returns store-relative
+   keys (round-trips through Read). Pure key-logic unit tests + an env-gated integration test
+   (`//go:build gcs`, skips unless `GCS_TEST_BUCKET` set; works against a real bucket or
+   `fake-gcs-server` via `STORAGE_EMULATOR_HOST`).
+2. ✅ Auth via Application Default Credentials only — workload identity / gcloud / SA key via
+   `GOOGLE_APPLICATION_CREDENTIALS`. No credentials configured in-package; tests inject
+   `option.ClientOption`. (Adding the SDK raised the module's Go floor to **1.25**, via
+   `google.golang.org/api`; CI `go-version` bumped 1.22 → 1.25.)
+3. ⬜ Wire it in the standalone host (`go/examples/standalone` / `cmd/agentd` deps) selectable by
+   config, so artifacts and snapshots land in GCS. Verify: produce an artifact + snapshot a session →
+   bytes appear in the bucket → reload works.
 
-### 4b. Images → Artifact Registry
+### 4b. Images → Artifact Registry ✅ (auth seam done; end-to-end pending)
 
-1. **Auth provider.** Implement the `BearerToken` auth (from Phase 3) for Artifact Registry:
-   service-account access token (username `oauth2accesstoken`, password = access token), refreshed
-   before expiry, from ADC / SA key / metadata server. Fallback: `gcloud auth configure-docker
-   <region>-docker.pkg.dev` via the `DockerConfigHelper` path. File: `go/imageregistry/auth/gcp.go`.
-2. **Registry URL shape.** `<region>-docker.pkg.dev/<project>/<repo>/<name>:<tag>`. Config:
-   `GCP_PROJECT`, `GCP_REGION`, `GCP_AR_REPO`.
-3. **End-to-end:** build `core`/`example` → push to Artifact Registry → launch a session that
+1. ✅ **Auth provider seam.** New `go/imageregistry/auth` package: `auth.Provider` returns
+   `Credentials{Username, Password}` per push/pull (no longer captured once), with `auth.Static` for
+   basic auth and `auth.GCP(ctx)` for Artifact Registry. `auth.GCP` uses ADC
+   (`google.FindDefaultCredentials`, cloud-platform scope): username `oauth2accesstoken`, password a
+   short-lived access token that the oauth2 TokenSource caches and refreshes before expiry.
+   `ociregistry.Config` gained an `Auth auth.Provider` field; when nil it falls back to
+   Username/Password static (backward-compatible — the local registry:2 path is unchanged).
+   `EnsurePresent`/`Persist`/`Materialize` now resolve auth dynamically per call.
+2. ⬜ **Registry URL shape.** `<region>-docker.pkg.dev/<project>/<repo>/<name>:<tag>`. Wire host
+   config: `GCP_PROJECT`, `GCP_REGION`, `GCP_AR_REPO` → `ociregistry.Config{Registry, Auth: auth.GCP}`.
+3. ⬜ **End-to-end:** build `core`/`example` → push to Artifact Registry → launch a session that
    resolves+pulls it from GCP → verify a turn runs.
 
 ---
@@ -158,8 +167,11 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
 - ✅ **Module path** = `github.com/binocarlos/badcode-agent-orange` (done).
 - ✅ **Installations** = engine-owned examples (`installations/core`, `installations/example`);
   per-project images live in each project's own repo.
-- ⬜ **GCP specifics (needed for Phase 4):** project id, region, **Artifact Registry repo name**,
-  **GCS bucket name**, and **auth method** (service-account JSON key vs workload identity / ADC).
+- ✅ **GCP auth method** = Application Default Credentials (ADC / workload identity). gcsblob configures
+  no credentials; the host's runtime environment supplies them.
+- ✅ **Go floor bumped to 1.25** (GCP SDK requires it via `google.golang.org/api`); CI updated.
+- ⬜ **GCP deployment specifics (still needed to wire/verify):** project id, region, **Artifact
+  Registry repo name**, **GCS bucket name**.
 
 ## Status
 

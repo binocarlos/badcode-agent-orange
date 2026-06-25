@@ -23,6 +23,7 @@ import (
 
 	"github.com/binocarlos/badcode-agent-orange/execenv"
 	"github.com/binocarlos/badcode-agent-orange/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry/auth"
 )
 
 const (
@@ -35,6 +36,10 @@ const (
 type Config struct {
 	DockerHost string
 	Registry   string
+	// Auth supplies registry credentials per push/pull (use auth.GCP for
+	// Artifact Registry). When nil, Username/Password are used as static basic
+	// auth — empty/empty meaning anonymous.
+	Auth       auth.Provider
 	Username   string
 	Password   string
 	AlwaysPull bool // force a pull on EnsurePresent (local dev :dev-tag drift)
@@ -44,7 +49,7 @@ type Config struct {
 type Registry struct {
 	docker     dockerAPI
 	registry   string
-	authStr    string
+	auth       auth.Provider
 	alwaysPull bool
 }
 
@@ -63,13 +68,35 @@ func New(cfg Config) (*Registry, error) {
 	return &Registry{
 		docker:     &realDockerClient{c: c},
 		registry:   cfg.Registry,
-		authStr:    encodeRegistryAuth(cfg.Username, cfg.Password),
+		auth:       authOrStatic(cfg.Auth, cfg.Username, cfg.Password),
 		alwaysPull: cfg.AlwaysPull,
 	}, nil
 }
 
-func newWithAPI(d dockerAPI, registry, authStr string) *Registry {
-	return &Registry{docker: d, registry: registry, authStr: authStr}
+func newWithAPI(d dockerAPI, registry string, prov auth.Provider) *Registry {
+	return &Registry{docker: d, registry: registry, auth: authOrStatic(prov, "", "")}
+}
+
+// authOrStatic returns prov if non-nil, else a static basic-auth provider.
+func authOrStatic(prov auth.Provider, username, password string) auth.Provider {
+	if prov != nil {
+		return prov
+	}
+	return auth.Static(username, password)
+}
+
+// registryAuth resolves current credentials and encodes them as the
+// X-Registry-Auth header value the Docker daemon expects.
+func (r *Registry) registryAuth(ctx context.Context) (string, error) {
+	prov := r.auth
+	if prov == nil { // defensive: a Registry built as a struct literal
+		prov = auth.Static("", "")
+	}
+	creds, err := prov.Credentials(ctx)
+	if err != nil {
+		return "", fmt.Errorf("ociregistry: resolve registry auth: %w", err)
+	}
+	return encodeRegistryAuth(creds.Username, creds.Password), nil
 }
 
 // Capabilities reports ociregistry's abilities.
@@ -93,8 +120,12 @@ func (r *Registry) EnsurePresent(ctx context.Context, ref execenv.ImageRef) erro
 			return nil
 		}
 	}
+	authStr, err := r.registryAuth(ctx)
+	if err != nil {
+		return err
+	}
 	rc, err := r.docker.ImagePull(ctx, string(ref), dockertypes.ImagePullOptions{
-		RegistryAuth: r.authStr,
+		RegistryAuth: authStr,
 	})
 	if err != nil {
 		return fmt.Errorf("ociregistry: pull image %s: %w", ref, err)
@@ -107,6 +138,7 @@ func (r *Registry) EnsurePresent(ctx context.Context, ref execenv.ImageRef) erro
 func (r *Registry) Build(ctx context.Context, spec imageregistry.BuildSpec) (execenv.ImageRef, error) {
 	return "", fmt.Errorf("ociregistry: Build not supported — use a pre-built image pushed to the registry")
 }
+
 // Resolve checks whether the tagged ref (spec.Tag) is already present locally.
 // Returns (ref, true, nil) on hit; ("", false, nil) on miss. No remote call.
 func (r *Registry) Resolve(ctx context.Context, spec imageregistry.BuildSpec) (execenv.ImageRef, bool, error) {
@@ -128,9 +160,13 @@ func (r *Registry) Persist(ctx context.Context, ref execenv.ImageRef, opts image
 		return imageregistry.Handle{}, fmt.Errorf("ociregistry: tag image: %w", err)
 	}
 
+	authStr, err := r.registryAuth(ctx)
+	if err != nil {
+		return imageregistry.Handle{}, err
+	}
 	// Push — parse the progress stream into the context sink (if any), then drain.
 	rc, err := r.docker.ImagePush(ctx, remoteRef, dockertypes.ImagePushOptions{
-		RegistryAuth: r.authStr,
+		RegistryAuth: authStr,
 	})
 	if err != nil {
 		return imageregistry.Handle{}, fmt.Errorf("ociregistry: push image: %w", err)
@@ -160,8 +196,12 @@ func (r *Registry) Materialize(ctx context.Context, h imageregistry.Handle) (exe
 	if _, _, err := r.docker.ImageInspectWithRaw(ctx, h.Ref); err == nil {
 		return execenv.ImageRef(h.Ref), nil
 	}
+	authStr, err := r.registryAuth(ctx)
+	if err != nil {
+		return "", err
+	}
 	rc, err := r.docker.ImagePull(ctx, h.Ref, dockertypes.ImagePullOptions{
-		RegistryAuth: r.authStr,
+		RegistryAuth: authStr,
 	})
 	if err != nil {
 		return "", fmt.Errorf("ociregistry: pull for materialize %s: %w", h.Ref, err)
@@ -171,6 +211,7 @@ func (r *Registry) Materialize(ctx context.Context, h imageregistry.Handle) (exe
 	}
 	return execenv.ImageRef(h.Ref), nil
 }
+
 // Remove is a no-op for wrong-kind handles and returns nil for correct-kind handles.
 // Actual deletion from the remote registry is out of band (registry GC or management API).
 func (r *Registry) Remove(_ context.Context, h imageregistry.Handle) error {
@@ -208,4 +249,3 @@ func sanitizeName(s string) string {
 	}
 	return trimmed
 }
-

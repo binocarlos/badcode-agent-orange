@@ -23,9 +23,12 @@ Agent Orange. Three pieces:
 
 > **Status / provenance.** Private use for now (the source is bayesprice-owned — a public release
 > would need licensing resolved first). Migration to standalone is in progress: **`go build ./...`
-> passes**; the `sandbox`/`web` packages have not been `npm`-built in this fork yet; registry auth is
-> basic-only (no GCP yet). The plan and current state live in **`MIGRATION.md`** — read it before
-> doing migration work.
+> passes** (Go floor is now **1.25**, raised by the GCP SDK); the `sandbox`/`web` packages have not
+> been `npm`-built in this fork yet. GCP support exists in the engine — a GCS `BlobStore`
+> (`extension/gcsblob`) and a pluggable registry-auth seam with an ADC provider
+> (`imageregistry/auth`, `auth.GCP`) — but is **not yet wired into the standalone host** (needs
+> bucket/project/region config). The plan and current state live in **`MIGRATION.md`** — read it
+> before doing migration work.
 
 ## Repo map
 
@@ -79,7 +82,7 @@ cd web && npm install && npm test
 
 - **Runner** (`go/agentkit.go`, `go/runner.go`) — create/message/stream/snapshot a session. The API surface a host calls.
 - **ExecutionEnvironment** (`go/execenv/`) — the container seam; Docker + Docker-in-Docker adapters. `docs/02-execution-environment.md`.
-- **ImageRegistry** (`go/imageregistry/`) — `EnsurePresent`/`Build`/`Persist`/`Materialize` (pull/build/push/restore). Adapters: `ociregistry` (registry push/pull — **basic auth only today**), `blobarchive` (snapshot to blob). `Build()` is stubbed (host builds). `docs/03-image-registry.md`, `docs/16-derived-images.md`.
+- **ImageRegistry** (`go/imageregistry/`) — `EnsurePresent`/`Build`/`Persist`/`Materialize` (pull/build/push/restore). Adapters: `ociregistry` (registry push/pull — pluggable auth via `imageregistry/auth`: `auth.Static` basic or `auth.GCP` ADC tokens), `blobarchive` (snapshot to blob). `Build()` is stubbed (host builds). `docs/03-image-registry.md`, `docs/16-derived-images.md`.
 - **Installations** — layered base images sessions launch from: sandbox harness → `core` → `example` → per-project. `installations/README.md`.
 - **Harness** (`sandbox/`) — wraps `@anthropic-ai/claude-agent-sdk`; pluggable per session. `docs/12-harness.md`.
 - **Events / streaming** (`go/events/`) — one canonical SSE event vocabulary; `web/` reduces it. `docs/05-event-streaming.md`.
@@ -99,8 +102,10 @@ cd web && npm install && npm test
 5. **Keep `go build ./...` green** and add tests with changes — the codebase is heavily tested
    (follow the existing table-test patterns).
 6. **Migration work is phased** (`MIGRATION.md`): standalone-ify → genericize installations →
-   registry-agnostic build+push → **GCP Artifact Registry (priority)** → automation. The one thing
-   gating GCP is a pluggable registry-auth seam; today auth is hardcoded basic user/pass.
+   registry-agnostic build+push → **GCP (priority)** → automation. Phase 4 engine seams are done
+   (GCS `BlobStore` in `extension/gcsblob`; ADC registry auth in `imageregistry/auth`). What remains
+   is wiring them into the standalone host and an end-to-end run — both need real GCP config
+   (project/region/Artifact Registry repo/GCS bucket).
 
 ## Deeper context
 

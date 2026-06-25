@@ -12,6 +12,7 @@ import (
 
 	"github.com/binocarlos/badcode-agent-orange/execenv"
 	"github.com/binocarlos/badcode-agent-orange/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry/auth"
 )
 
 type call struct {
@@ -30,10 +31,10 @@ type fakeDockerAPI struct {
 	inspectErr error
 
 	// Fields for asserting Persist's new contract (tag+push, no re-commit).
-	commitCalls    int
-	lastTagSource  string
-	lastTagTarget  string
-	lastPushRef    string
+	commitCalls   int
+	lastTagSource string
+	lastTagTarget string
+	lastPushRef   string
 }
 
 func newFake() *fakeDockerAPI {
@@ -122,7 +123,7 @@ func (f *fakeDockerAPI) callsWith(method, arg string) bool {
 
 func newTestRegistry() (*Registry, *fakeDockerAPI) {
 	d := newFake()
-	return newWithAPI(d, "reg.example.io/agentkit", ""), d
+	return newWithAPI(d, "reg.example.io/agentkit", nil), d
 }
 
 // TestPersist_TagsAndPushes asserts Persist's new contract: the input is an
@@ -316,7 +317,7 @@ func TestReportProgress_AggregatesBytesAndSkipsDedupedLayers(t *testing.T) {
 `
 	var last struct{ done, total int64 }
 	sink := sinkFunc(func(done, total int64, _ []imageregistry.LayerProgress) { last.done, last.total = done, total })
-	r := newWithAPI(newFake(), "reg.example", "")
+	r := newWithAPI(newFake(), "reg.example", nil)
 	ctx := imageregistry.WithProgressSink(context.Background(), sink)
 	if err := r.reportProgress(ctx, io.NopCloser(strings.NewReader(stream))); err != nil {
 		t.Fatalf("reportProgress: %v", err)
@@ -328,7 +329,7 @@ func TestReportProgress_AggregatesBytesAndSkipsDedupedLayers(t *testing.T) {
 }
 
 func TestReportProgress_NilSinkJustDrains(t *testing.T) {
-	r := newWithAPI(newFake(), "reg.example", "")
+	r := newWithAPI(newFake(), "reg.example", nil)
 	if err := r.reportProgress(context.Background(),
 		io.NopCloser(strings.NewReader(`{"status":"Pushing"}`))); err != nil {
 		t.Fatalf("nil-sink reportProgress should not error: %v", err)
@@ -336,7 +337,7 @@ func TestReportProgress_NilSinkJustDrains(t *testing.T) {
 }
 
 func TestReportProgress_StreamErrorPropagates(t *testing.T) {
-	r := newWithAPI(newFake(), "reg.example", "")
+	r := newWithAPI(newFake(), "reg.example", nil)
 	err := r.reportProgress(context.Background(),
 		io.NopCloser(strings.NewReader(`{"error":"denied: requested access to the resource is denied"}`)))
 	if err == nil {
@@ -345,7 +346,7 @@ func TestReportProgress_StreamErrorPropagates(t *testing.T) {
 }
 
 func TestReportProgress_TruncatedStreamReturnsError(t *testing.T) {
-	r := newWithAPI(newFake(), "reg.example", "")
+	r := newWithAPI(newFake(), "reg.example", nil)
 	// Valid first line then malformed/truncated JSON — must not silently succeed.
 	body := `{"id":"a","status":"Pushing","progressDetail":{"current":50,"total":100}}` + "\n" + `{not json`
 	ctx := imageregistry.WithProgressSink(context.Background(), sinkFunc(func(done, total int64, layers []imageregistry.LayerProgress) {}))
@@ -358,11 +359,13 @@ func TestReportProgress_TruncatedStreamReturnsError(t *testing.T) {
 // sinkFunc adapts a func to imageregistry.ProgressSink.
 type sinkFunc func(done, total int64, layers []imageregistry.LayerProgress)
 
-func (f sinkFunc) Bytes(done, total int64, layers []imageregistry.LayerProgress) { f(done, total, layers) }
+func (f sinkFunc) Bytes(done, total int64, layers []imageregistry.LayerProgress) {
+	f(done, total, layers)
+}
 
 func TestEnsurePresentAlwaysPull(t *testing.T) {
 	d := newFake() // inspectErr = nil → image present locally by default
-	r := &Registry{docker: d, registry: "registry:5000", alwaysPull: true}
+	r := &Registry{docker: d, registry: "registry:5000", auth: auth.Static("", ""), alwaysPull: true}
 	if err := r.EnsurePresent(context.Background(), "registry:5000/x:dev"); err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +376,7 @@ func TestEnsurePresentAlwaysPull(t *testing.T) {
 
 func TestPersistTagsAndPushesImageRefWithoutCommitting(t *testing.T) {
 	fake := newFakeDockerAPI()
-	reg := newWithAPI(fake, "registry:5000/agentkit", "")
+	reg := newWithAPI(fake, "registry:5000/agentkit", nil)
 
 	// Persist receives an ALREADY-COMMITTED image ref (env.Snapshot produced it).
 	const imageRef = "sha256:deadbeefcafe"
