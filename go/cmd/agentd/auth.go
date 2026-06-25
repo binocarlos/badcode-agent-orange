@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/bayes-price/agentkit/extension"
-	"github.com/bayes-price/agentkit/httpapi"
+	"github.com/binocarlos/badcode-agent-orange/extension"
+	"github.com/binocarlos/badcode-agent-orange/httpapi"
 	"github.com/golang-jwt/jwt/v5"
 )
 

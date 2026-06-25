@@ -7,8 +7,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/internal/recorder"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/internal/recorder"
 )
 
 // MockImageRegistry is an in-memory ImageRegistry. It round-trips Snapshot refs

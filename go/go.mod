@@ -4,7 +4,7 @@
 // Platinum repository (no goapi/...). That is what makes it liftable into its
 // own repo. Wire types it needs (events, artifacts, snapshot handles) are
 // redefined here rather than imported. See docs/90-provenance-map.md.
-module github.com/bayes-price/agentkit
+module github.com/binocarlos/badcode-agent-orange
 
 go 1.22
 

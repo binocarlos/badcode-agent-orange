@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/events"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/events"
 )
 
 func TestOnSkillInstalled_RecordsSessionMetadata(t *testing.T) {

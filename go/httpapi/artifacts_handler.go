@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/bayes-price/agentkit/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
 )
 
 // artifactsConfigured reports whether an ArtifactStore is wired. When it is nil

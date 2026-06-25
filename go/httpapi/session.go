@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
 type createSessionBody struct {

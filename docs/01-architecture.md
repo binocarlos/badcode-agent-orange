@@ -174,7 +174,7 @@ table.
 ```
 agent-library/
   go/
-    go.mod                         # module github.com/bayes-price/agentkit  (own module)
+    go.mod                         # module github.com/binocarlos/badcode-agent-orange  (own module)
     agentkit.go                    # package doc + version
     session.go                     # Session, SessionState, SessionSpec, SessionStore iface
     runner.go                      # Runner facade interface + the orchestration impl

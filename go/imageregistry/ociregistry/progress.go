@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // dockerProgressMsg is the subset of the Docker push/pull JSON stream we consume.

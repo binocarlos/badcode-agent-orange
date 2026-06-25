@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/events"
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/extension"
-	"github.com/bayes-price/agentkit/fleet"
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/events"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/extension"
+	"github.com/binocarlos/badcode-agent-orange/fleet"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // ErrHarnessUnavailable is returned by CreateSession when the sandbox rejects

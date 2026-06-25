@@ -23,15 +23,15 @@ import (
 	"github.com/Bayes-Price/Platinum/goapi/pkg/storage"
 	"github.com/Bayes-Price/Platinum/goapi/pkg/store"
 	"github.com/Bayes-Price/Platinum/goapi/pkg/types"
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/execenv"
-	dockerdind "github.com/bayes-price/agentkit/execenv/docker"
-	"github.com/bayes-price/agentkit/extension"
-	"github.com/bayes-price/agentkit/fleet"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
+	"github.com/binocarlos/badcode-agent-orange/extension"
+	"github.com/binocarlos/badcode-agent-orange/fleet"
 	"github.com/Bayes-Price/Platinum/goapi/pkg/installations"
-	"github.com/bayes-price/agentkit/imageregistry"
-	"github.com/bayes-price/agentkit/imageregistry/ociregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry/ociregistry"
 )
 
 // IssueFunc signs a scoped JWT for a session (mirrors buildIssueFunc in serve_v2.go).

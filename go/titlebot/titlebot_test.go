@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
 // mockChatClient implements agentkit.ChatClient for testing.

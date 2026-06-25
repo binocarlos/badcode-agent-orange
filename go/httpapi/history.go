@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/events"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/events"
 )
 
 // Messages returns the message history for a session.

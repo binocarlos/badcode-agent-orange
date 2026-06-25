@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/events"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/events"
 )
 
 // okIdentity is a convenience identity function that always succeeds.

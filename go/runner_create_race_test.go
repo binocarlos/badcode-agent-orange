@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bayes-price/agentkit/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
 // TestSendMessage_DuringAsyncCreate reproduces the "Restore failed: session has

@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentkittest"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/fleet"
-	"github.com/bayes-price/agentkit/imageregistry"
-	"github.com/bayes-price/agentkit/imageregistry/ociregistry"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentkittest"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/fleet"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry/ociregistry"
 )
 
 const sandboxImage = "agentkit-sandbox:systemtest"

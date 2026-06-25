@@ -31,8 +31,8 @@ import (
 	dockercontainer "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 func TestIntegrationPersistMaterialize(t *testing.T) {

@@ -20,7 +20,7 @@ flip, verbatim-wrapper real impls, and the existing suite + E2E browser tests as
   Docker daemon (porting `orchestrator/src/sandbox-manager.ts`). There is **no** interim wrapper over
   the existing TS orchestrator; the orchestrator process is retired once the flip lands.
 - **In-repo consumption, lift-out last.** goapi consumes the Go module via a root `go.mod`
-  `replace github.com/bayes-price/agentkit => ./agent-library/go`; the TS packages are consumed via
+  `replace github.com/binocarlos/badcode-agent-orange => ./agent-library/go`; the TS packages are consumed via
   **yarn workspaces** at the repo root. The final phase flips these local links to published versions.
 
 > **Redesign update (current).** The library-build scope (Phase 1 below) was expanded by the
@@ -83,7 +83,7 @@ Make Platinum depend on agentkit and implement the host side, **without flipping
 nil-fallback `Deps` keeps today's orchestrator path live).
 
 1. **Wire the Go module (A1).** Add to the root `go.mod`:
-   `replace github.com/bayes-price/agentkit => ./agent-library/go` + a `require`. Verified: the root
+   `replace github.com/binocarlos/badcode-agent-orange => ./agent-library/go` + a `require`. Verified: the root
    module governs `goapi/`, so this is picked up by `go build ./goapi/...`, `./stack test_pre_pr`, and
    the Dockerfile. Add the agent fields to `server.Deps` (nil-fallback → old path). Note: the Docker
    client agentkit now pulls in adds entries to the **root** `go.sum`.

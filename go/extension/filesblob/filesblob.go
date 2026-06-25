@@ -14,8 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/extension"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/extension"
 )
 
 // ---- BlobStore ---------------------------------------------------------------

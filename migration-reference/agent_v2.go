@@ -11,10 +11,10 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog/log"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/httpapi"
-	"github.com/bayes-price/agentkit/titlebot"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/httpapi"
+	"github.com/binocarlos/badcode-agent-orange/titlebot"
 
 	"github.com/Bayes-Price/Platinum/goapi/pkg/installations"
 )

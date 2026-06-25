@@ -11,7 +11,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/bayes-price/agentkit/imagetree"
+	"github.com/binocarlos/badcode-agent-orange/imagetree"
 )
 
 // Run is the testable entry point.

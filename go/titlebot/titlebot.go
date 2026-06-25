@@ -5,8 +5,8 @@ import (
 	"log"
 	"strings"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
 const prompt = "You are a title generator. Given the start of a conversation, produce a short title (max 8 words, max 60 characters). Return ONLY the title text, no quotes or punctuation wrapping."

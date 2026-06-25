@@ -2,7 +2,7 @@
 
 **What this is.** Agent Orange is founded on **agentkit**, the in-house Go agent runtime previously
 living in the Platinum monorepo (`/home/kai/projects/bayesprice/Platinum/agent-library`,
-module `github.com/bayes-price/agentkit`). This document tracks turning that import into a
+module `github.com/binocarlos/badcode-agent-orange`). This document tracks turning that import into a
 standalone Agent Orange that can **build installation images and push them to a variety of image
 registries — Google Cloud Artifact Registry first.**
 
@@ -54,7 +54,7 @@ Key code (in this repo):
 
 Goal: this repo builds and runs end-to-end with no Platinum coupling.
 
-1. **Re-module.** Rename Go module `github.com/bayes-price/agentkit` → the Agent Orange path
+1. **Re-module.** Rename Go module `github.com/binocarlos/badcode-agent-orange` → the Agent Orange path
    (decide: e.g. `github.com/badcode/agent-orange` or keep `agentkit`). Update `go/go.mod` + all
    import prefixes. Re-run `go build ./... && go vet ./...`.
 2. **Build the in-image agent + UI.** `npm install` + build in `sandbox/` (TS in-image agent) and

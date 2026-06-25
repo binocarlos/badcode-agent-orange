@@ -7,7 +7,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/bayes-price/agentkit/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
 )
 
 func tarOf(t *testing.T, files map[string]string) io.Reader {

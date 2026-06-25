@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/titlebot"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/titlebot"
 )
 
 type sendMessageBody struct {

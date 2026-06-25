@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/execenv"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
 )
 
 func TestMain(m *testing.M) {

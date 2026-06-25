@@ -42,13 +42,13 @@ import (
 	"os"
 	"time"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/agentkittest"
-	"github.com/bayes-price/agentkit/artifacts"
-	dockerdind "github.com/bayes-price/agentkit/execenv/docker"
-	"github.com/bayes-price/agentkit/fleet"
-	"github.com/bayes-price/agentkit/imageregistry"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/agentkittest"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
+	"github.com/binocarlos/badcode-agent-orange/fleet"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // envOrDefault returns the value of the environment variable key, or def if unset.

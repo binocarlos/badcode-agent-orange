@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bayes-price/agentkit/events"
+	"github.com/binocarlos/badcode-agent-orange/events"
 	"github.com/google/uuid"
 )
 

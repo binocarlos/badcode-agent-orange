@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/bayes-price/agentkit/internal/recorder"
+	"github.com/binocarlos/badcode-agent-orange/internal/recorder"
 )
 
 // MockArtifactStore is an in-memory ArtifactStore that enforces the SAME status

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 func TestProgressStore_PhaseBytesFinish(t *testing.T) {

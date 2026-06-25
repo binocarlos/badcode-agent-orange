@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/gofiber/fiber/v3"
 )
 

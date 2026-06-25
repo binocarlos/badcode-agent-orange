@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/bayes-price/agentkit/extension/devclaims"
+	"github.com/binocarlos/badcode-agent-orange/extension/devclaims"
 )
 
 func TestJWTAuthMiddleware_ValidTokenSetsPrincipal(t *testing.T) {

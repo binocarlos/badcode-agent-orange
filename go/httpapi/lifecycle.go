@@ -3,7 +3,7 @@ package httpapi
 import (
 	"net/http"
 
-	"github.com/bayes-price/agentkit"
+	"github.com/binocarlos/badcode-agent-orange"
 )
 
 // statusResp is the JSON shape the frontend useAgentSession hook expects.

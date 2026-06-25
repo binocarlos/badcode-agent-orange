@@ -3,11 +3,11 @@ package agentkit
 import (
 	"testing"
 
-	"github.com/bayes-price/agentkit/agentkittest"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/events"
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/agentkittest"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/events"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // minimalDeps returns a Deps with the given environment and policy, using

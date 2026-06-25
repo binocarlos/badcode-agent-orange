@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bayes-price/agentkit/execenv"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
 )
 
 // testImage is the container image used for integration tests. It MUST have a

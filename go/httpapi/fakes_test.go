@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/events"
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/events"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // awaitCreate blocks until the backgrounded CreateSession goroutine signals on

@@ -29,15 +29,15 @@ import (
 	"os"
 	"path/filepath"
 
-	agentkit "github.com/bayes-price/agentkit"
-	dockerdind "github.com/bayes-price/agentkit/execenv/docker"
-	"github.com/bayes-price/agentkit/extension"
-	"github.com/bayes-price/agentkit/extension/devclaims"
-	"github.com/bayes-price/agentkit/extension/filesblob"
-	"github.com/bayes-price/agentkit/extension/sqlitestore"
-	"github.com/bayes-price/agentkit/fleet"
-	"github.com/bayes-price/agentkit/httpapi"
-	"github.com/bayes-price/agentkit/imageregistry/blobarchive"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
+	"github.com/binocarlos/badcode-agent-orange/extension"
+	"github.com/binocarlos/badcode-agent-orange/extension/devclaims"
+	"github.com/binocarlos/badcode-agent-orange/extension/filesblob"
+	"github.com/binocarlos/badcode-agent-orange/extension/sqlitestore"
+	"github.com/binocarlos/badcode-agent-orange/fleet"
+	"github.com/binocarlos/badcode-agent-orange/httpapi"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry/blobarchive"
 )
 
 func main() {

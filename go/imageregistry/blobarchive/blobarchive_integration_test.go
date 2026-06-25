@@ -16,8 +16,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // dockerHostForTest returns the Docker host from the environment, or the

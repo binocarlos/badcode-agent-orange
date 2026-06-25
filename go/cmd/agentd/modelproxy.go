@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/bayes-price/agentkit/modelproxy"
+	"github.com/binocarlos/badcode-agent-orange/modelproxy"
 )
 
 // dummyPassthroughKey satisfies Claude Code's startup check; it is NEVER sent

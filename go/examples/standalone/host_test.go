@@ -25,14 +25,14 @@ import (
 	"strings"
 	"testing"
 
-	agentkit "github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
-	"github.com/bayes-price/agentkit/agentkittest"
-	"github.com/bayes-price/agentkit/artifacts"
-	"github.com/bayes-price/agentkit/events"
-	"github.com/bayes-price/agentkit/execenv"
-	"github.com/bayes-price/agentkit/fleet"
-	"github.com/bayes-price/agentkit/imageregistry"
+	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/agentkittest"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/events"
+	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/fleet"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────

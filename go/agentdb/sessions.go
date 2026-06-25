@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bayes-price/agentkit/imageregistry"
+	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/bayes-price/agentkit/internal/recorder"
+	"github.com/binocarlos/badcode-agent-orange/internal/recorder"
 )
 
 // MockSink is an in-memory Sink that records persisted events and tracks the

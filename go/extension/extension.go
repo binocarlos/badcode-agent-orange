@@ -9,7 +9,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/bayes-price/agentkit/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
 )
 
 // ContextScope identifies who/what a turn is for.

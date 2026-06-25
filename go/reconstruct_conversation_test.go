@@ -3,7 +3,7 @@ package agentkit
 import (
 	"testing"
 
-	"github.com/bayes-price/agentkit/events"
+	"github.com/binocarlos/badcode-agent-orange/events"
 )
 
 // TestReconstructConversation verifies that the rehydration helper rebuilds the

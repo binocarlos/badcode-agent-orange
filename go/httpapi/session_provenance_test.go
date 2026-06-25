@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bayes-price/agentkit"
-	"github.com/bayes-price/agentkit/agentdb"
+	"github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
 // captureStore records the session row persisted at create time (Status=="creating")

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bayes-price/agentkit/extension"
+	"github.com/binocarlos/badcode-agent-orange/extension"
 	"github.com/golang-jwt/jwt/v5"
 )
 

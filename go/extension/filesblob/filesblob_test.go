@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/bayes-price/agentkit/artifacts"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
 )
 
 // ---- BlobStore tests ----

@@ -375,7 +375,7 @@ the genuinely valuable, hard-won logic — is written once. Platinum adopts the 
 
 | Piece | Path | Language | Package | Role |
 |---|---|---|---|---|
-| **Orchestration core** | [`go/`](go/) | Go | `github.com/bayes-price/agentkit` | Session lifecycle, the two engine interfaces, the `Runner`, `EventPipeline`, `ArtifactStore`, `Fleet`, host-extension seams, in-memory mocks. |
+| **Orchestration core** | [`go/`](go/) | Go | `github.com/binocarlos/badcode-agent-orange` | Session lifecycle, the two engine interfaces, the `Runner`, `EventPipeline`, `ArtifactStore`, `Fleet`, host-extension seams, in-memory mocks. |
 | **In-image agent** | [`sandbox/`](sandbox/) | TypeScript | `@agentkit/sandbox` | The multi-session control server + harness adapters that run *inside* each image. |
 | **Chat UI** | [`web/`](web/) | React/TS | `@agentkit/chat-ui` | The single event reducer + components that render a conversation from its event stream, live or replayed. |
 
@@ -427,7 +427,7 @@ blobarchive **diff fast-path** (the full-archive path ships) and `localbuild.Bui
 Add the module:
 
 ```bash
-go get github.com/bayes-price/agentkit
+go get github.com/binocarlos/badcode-agent-orange
 ```
 
 Construct a `Runner` from one implementation of each dependency. This is the **exact** wiring the
@@ -436,12 +436,12 @@ adapters in production.
 
 ```go
 import (
-    "github.com/bayes-price/agentkit"
-    "github.com/bayes-price/agentkit/agentkittest"      // dev: in-memory host adapters
-    "github.com/bayes-price/agentkit/artifacts"
-    dockerdind "github.com/bayes-price/agentkit/execenv/docker"
-    "github.com/bayes-price/agentkit/fleet"
-    "github.com/bayes-price/agentkit/imageregistry"
+    "github.com/binocarlos/badcode-agent-orange"
+    "github.com/binocarlos/badcode-agent-orange/agentkittest"      // dev: in-memory host adapters
+    "github.com/binocarlos/badcode-agent-orange/artifacts"
+    dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
+    "github.com/binocarlos/badcode-agent-orange/fleet"
+    "github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
 // 1. An ExecutionEnvironment — how a session container runs (here: Docker-in-Docker).
@@ -497,11 +497,11 @@ shape of [`go/examples/server`](go/examples/server) (backend) and [`examples/web
 
 ```go
 import (
-    "github.com/bayes-price/agentkit/httpapi"
-    "github.com/bayes-price/agentkit/extension/sqlitestore"
-    "github.com/bayes-price/agentkit/extension/filesblob"
-    "github.com/bayes-price/agentkit/extension/devclaims"
-    "github.com/bayes-price/agentkit/imageregistry/blobarchive"
+    "github.com/binocarlos/badcode-agent-orange/httpapi"
+    "github.com/binocarlos/badcode-agent-orange/extension/sqlitestore"
+    "github.com/binocarlos/badcode-agent-orange/extension/filesblob"
+    "github.com/binocarlos/badcode-agent-orange/extension/devclaims"
+    "github.com/binocarlos/badcode-agent-orange/imageregistry/blobarchive"
 )
 
 store, _    := sqlitestore.Open(filepath.Join(dataDir, "sessions.db")) // SessionStore (pure-Go SQLite)
@@ -558,7 +558,7 @@ All endpoint paths are overridable via `config.endpoints`.
 The Go module already imports **nothing** from Platinum (CI enforces this), so the lift is mechanical:
 1. Move `agent-library/` to a new repo root.
 2. Drop the consumer's root `go.mod` `replace` and the yarn workspace links; depend on published
-   versions (`go get github.com/bayes-price/agentkit@vX.Y.Z`; `@agentkit/sandbox` + `@agentkit/chat-ui`
+   versions (`go get github.com/binocarlos/badcode-agent-orange@vX.Y.Z`; `@agentkit/sandbox` + `@agentkit/chat-ui`
    from the registry).
 3. The CI workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) moves with it unchanged.
 
