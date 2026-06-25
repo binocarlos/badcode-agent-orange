@@ -43,6 +43,21 @@ done
 
 log() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 
+# retry runs a command up to 10 times with a short backoff, to ride out GCP
+# eventual consistency (e.g. a just-created service account not yet visible to
+# IAM). Idempotent commands only.
+retry() {
+  local n=0
+  until "$@"; do
+    n=$((n + 1))
+    if [ "$n" -ge 10 ]; then
+      echo "    giving up after $n attempts: $*" >&2
+      return 1
+    fi
+    sleep 3
+  done
+}
+
 log "Project=$PROJECT region=$REGION bucket=$BUCKET repo=$AR_REPO sa=$SA_EMAIL"
 
 log "Enabling APIs (idempotent)"
@@ -73,16 +88,19 @@ if gcloud iam service-accounts describe "$SA_EMAIL" --project="$PROJECT" >/dev/n
 else
   gcloud iam service-accounts create "$SA_NAME" \
     --display-name="Agent Orange runtime" --project="$PROJECT"
+  # A new SA is not immediately visible to IAM — wait for it to propagate.
+  retry gcloud iam service-accounts describe "$SA_EMAIL" --project="$PROJECT" >/dev/null 2>&1
 fi
 
 # add-iam-policy-binding is idempotent: re-adding an existing binding is a no-op.
+# Wrapped in retry to ride out SA propagation lag on a fresh project.
 log "IAM: storage.objectAdmin on gs://$BUCKET"
-gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
+retry gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" \
   --member="serviceAccount:$SA_EMAIL" --role="roles/storage.objectAdmin" \
   --project="$PROJECT" >/dev/null
 
 log "IAM: artifactregistry.writer on $AR_REPO"
-gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" \
+retry gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" \
   --location="$REGION" --member="serviceAccount:$SA_EMAIL" \
   --role="roles/artifactregistry.writer" --project="$PROJECT" >/dev/null
 

@@ -1,0 +1,5 @@
+# Local env + secrets — never commit
+.env
+secrets/
+*.key.json
+gcp-key.json
