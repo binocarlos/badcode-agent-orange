@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard</title>
+  <link rel="stylesheet" href="./style.css" />
+  <!--
+    No-build webapp. Libraries load straight from a CDN via this import map, so
+    `import * as d3 from 'd3'` works in the browser with NO bundler / npm / vite.
+    Versions are pinned for reproducibility. Add a mapping here if you need another
+    library, then `import` it by its bare name in app.js (or any module it pulls in).
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "d3": "https://esm.sh/d3@7",
+      "three": "https://esm.sh/three@0.169.0",
+      "chart.js": "https://esm.sh/chart.js@4",
+      "chart.js/auto": "https://esm.sh/chart.js@4/auto",
+      "@observablehq/plot": "https://esm.sh/@observablehq/plot@0.6"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

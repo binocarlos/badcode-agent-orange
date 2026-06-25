@@ -1,0 +1,5 @@
+{
+  "name": "core-v2",
+  "parent": "platinum-base",
+  "description": "No-build webapp variant of core-v1 (plain HTML + CDN import map). Inherits core-v1's environment; overrides webapp skills, CLAUDE.md, and the app template."
+}

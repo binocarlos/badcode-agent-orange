@@ -1,0 +1,20 @@
+/* Platinum Default Theme
+ *
+ * Clean, professional palette used when no client brand is specified.
+ * Accent series chosen for strong contrast and accessibility in charts.
+ */
+:root {
+  --primary: #0072CE;
+  --bg: #ffffff;
+  --text: #222222;
+  --text-light: #666666;
+  --font-heading: Arial, sans-serif;
+  --font-body: Arial, sans-serif;
+  --accent1: #0072CE;
+  --accent2: #E63946;
+  --accent3: #2A9D8F;
+  --accent4: #F4A261;
+  --accent5: #7B2D8E;
+  --accent6: #457B9D;
+  --sidebar-color: #0072CE;
+}

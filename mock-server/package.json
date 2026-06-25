@@ -1,0 +1,21 @@
+{
+  "name": "@agentkit/mock-server",
+  "version": "0.0.0-staged",
+  "private": true,
+  "description": "Mock Anthropic Messages API server for agentkit E2E and integration tests. Serves canned multi-turn SSE responses with per-session state and a control API.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.3",
+    "vitest": "^2.1.0"
+  }
+}

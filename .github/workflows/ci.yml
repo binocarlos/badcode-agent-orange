@@ -1,0 +1,64 @@
+# CI for the agentkit library. Runs the library's own gates — the same ones the
+# AG-1…AG-9 sub-issues gate on — so the folder is verifiable standalone and this
+# workflow moves with it unchanged when the library is lifted to its own repo.
+#
+# Paths are relative to the agentkit root (this file's repo root after lift-out;
+# `agent-library/` while staged inside Platinum). The `defaults.run.working-directory`
+# keeps the steps identical in both layouts.
+name: agentkit-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  go:
+    name: Go (build · test · vet)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: No Platinum imports (liftability invariant)
+        run: |
+          if grep -rn "bayesprice/Platinum\|Bayes-Price/Platinum" .; then
+            echo "::error::agentkit Go module must not import from Platinum"; exit 1
+          fi
+      - run: go build ./...
+      - run: go test ./... -count=1
+      - run: go vet ./...
+
+  sandbox:
+    name: Sandbox (typecheck · test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sandbox
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: yarn install --frozen-lockfile
+      - run: yarn typecheck
+      - run: yarn test
+
+  web:
+    name: Web (typecheck · test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: yarn install --frozen-lockfile
+      - run: yarn typecheck
+      - run: yarn test

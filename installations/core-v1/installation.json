@@ -1,0 +1,5 @@
+{
+  "name": "core-v1",
+  "parent": "platinum-base",
+  "description": "Vite webapp flavor (build step). Baseline default installation."
+}

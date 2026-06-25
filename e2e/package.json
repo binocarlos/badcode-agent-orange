@@ -1,0 +1,17 @@
+{
+  "name": "@agentkit/e2e",
+  "version": "0.0.0-staged",
+  "private": true,
+  "description": "End-to-end tests for the agentkit library. Tests the example server + web app against a mock Anthropic API.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "PWDEBUG=1 playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "typescript": "^5.5.3"
+  }
+}

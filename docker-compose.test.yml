@@ -1,0 +1,68 @@
+# E2E / integration test environment for agentkit.
+#
+# Starts the infrastructure dependencies only (DinD + a local registry + mock
+# Anthropic server). The Go example server and web app run on the host for
+# Playwright access; the Go integration/system tests run on the host too.
+#
+# The registry shares DinD's network namespace (network_mode: service:dind) so
+# that a SINGLE address — localhost:5001 — resolves to the same registry from
+# (a) the host process running the Go tests, (b) the DinD docker daemon doing
+# the push/pull, and (c) the registry itself. Port 5001 (not 5000) avoids
+# colliding with the Platinum dev stack's registry, so these tests can run
+# alongside `./stack start`.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   # integration: DOCKER_HOST=tcp://localhost:2375 OCIREGISTRY_URL=localhost:5001/agentkit \
+#   #   go test -tags docker ./imageregistry/ociregistry/...
+#   # e2e: cd e2e && yarn test
+#
+# Prerequisites:
+#   docker build -t agentkit-sandbox:dev sandbox/
+#   docker save agentkit-sandbox:dev | docker -H tcp://localhost:2375 load
+
+services:
+  dind:
+    image: docker:27-dind
+    privileged: true
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--insecure-registry=localhost:5001", "--tls=false"]
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    ports:
+      - "2375:2375"
+      - "5001:5001" # the registry shares this netns (service:dind) and is published here
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  registry:
+    image: registry:2
+    network_mode: "service:dind" # share DinD's netns → localhost:5001 is the same registry everywhere
+    environment:
+      REGISTRY_HTTP_ADDR: ":5001"
+    depends_on:
+      dind:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5001/v2/ >/dev/null 2>&1 || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  mock-server:
+    image: node:20-slim
+    working_dir: /app
+    command: ["npx", "tsx", "src/index.ts"]
+    volumes:
+      - ./mock-server:/app
+    ports:
+      - "4010:4010"
+    environment:
+      MOCK_SERVER_PORT: "4010"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:4010/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\""]
+      interval: 2s
+      timeout: 5s
+      retries: 10

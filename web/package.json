@@ -1,0 +1,43 @@
+{
+  "name": "@agentkit/chat-ui",
+  "version": "0.0.0-staged",
+  "private": true,
+  "description": "React components that render an agent chat from its event stream — the single agentEventReducer plus chat UI, generalised from Platinum's frontend agent components. See ../docs/09-frontend-components.md.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@emotion/react": "*",
+    "@emotion/styled": "*",
+    "@mui/material": ">=6",
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@mui/icons-material": "^6.1.7",
+    "@mui/material": "^6.1.7",
+    "@untitledui/file-icons": "^0.0.9",
+    "prism-react-renderer": "^2.4.1",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "jsdom": "^29.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  },
+  "comment": "No dependency on Platinum app state, routing, or contexts. Carbon table/chart/dashboard widgets stay in Platinum and register as RenderPlugins. Source of the copy is the Platinum repo's frontend/src/ per ../docs/90-provenance-map.md."
+}

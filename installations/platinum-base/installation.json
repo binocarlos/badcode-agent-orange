@@ -1,0 +1,4 @@
+{
+  "name": "platinum-base",
+  "description": "Shared Platinum foundation: data-science env (no vite), pt CLI, plugins, common skills. Internal base for flavor variants (core-v1 vite, core-v2 static); not intended to be launched directly."
+}

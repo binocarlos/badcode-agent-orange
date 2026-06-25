@@ -1,0 +1,26 @@
+# Exclude development artifacts that must not be copied into the image.
+# The Dockerfile handles node_modules installation via yarn install.
+
+# Build outputs (not used — we run via tsx, not compiled JS)
+dist/
+
+# Test files
+**/*.test.ts
+**/*.spec.ts
+vitest.config.*
+
+# Node modules on the host — the Dockerfile installs fresh inside the image.
+node_modules/
+
+# Git and IDE metadata
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Docker build context itself
+Dockerfile
+.dockerignore
+
+# Docs and READMEs (not needed at runtime)
+README.md

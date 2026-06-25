@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+:root {
+  --primary: #0072CE;
+  --bg: #FFFFFF;
+  --font-heading: Arial, Helvetica, sans-serif;
+  --font-body: Arial, Helvetica, sans-serif;
+  --accent1: #0072CE;
+  --accent2: #6400AA;
+  --accent3: #C8102E;
+  --accent4: #22C55E;
+  --accent5: #F59E0B;
+  --accent6: #64748B;
+  --sidebar-color: #0072CE;
+  --sidebar-width: 96pt;
+}
+html { background: var(--bg); }
+body {
+  width: 720pt;
+  height: 405pt;
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  font-family: var(--font-body);
+  display: flex;
+}
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  height: 405pt;
+  background: var(--sidebar-color);
+}
+.content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 32pt 36pt;
+}
+h1 {
+  font-family: var(--font-heading);
+  font-size: 28pt;
+  color: var(--primary);
+  margin: 0 0 20pt 0;
+}
+.body-text {
+  flex: 1;
+}
+.body-text p {
+  font-size: 14pt;
+  color: #333333;
+  margin: 0 0 10pt 0;
+  line-height: 1.5;
+}
+.body-text ul {
+  font-size: 14pt;
+  color: #333333;
+  margin: 0 0 10pt 0;
+  padding-left: 20pt;
+  line-height: 1.5;
+}
+.body-text ul li {
+  margin-bottom: 6pt;
+}
+</style>
+</head>
+<body>
+<div class="sidebar"></div>
+<div class="content">
+  <h1>{{title}}</h1>
+  <div class="body-text">
+    <p>{{body}}</p>
+  </div>
+</div>
+</body>
+</html>

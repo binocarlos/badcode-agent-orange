@@ -1,0 +1,67 @@
+# Standalone agentd stack. One command:
+#   cp .env.example .env && docker compose up --build
+# Then open http://localhost:8080
+services:
+  dind:
+    image: docker:27-dind
+    privileged: true
+    command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Builds the sandbox image and loads it into the DinD daemon, then exits.
+  init-sandbox:
+    image: docker:27-cli
+    depends_on:
+      dind:
+        condition: service_healthy
+    environment:
+      DOCKER_HOST: tcp://dind:2375
+    volumes:
+      - ./sandbox:/sandbox:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        docker build -t ${BASE_IMAGE:-agentkit-sandbox:dev} /sandbox
+        echo "sandbox image built + present in DinD"
+
+  agentd:
+    build:
+      context: ./go
+      dockerfile: ../deploy/agentd.Dockerfile
+    # Share DinD's network namespace: agentd reaches the daemon at localhost:2375,
+    # and nested session containers reach agentd at the bridge gateway 172.17.0.1.
+    network_mode: "service:dind"
+    depends_on:
+      dind:
+        condition: service_healthy
+      init-sandbox:
+        condition: service_completed_successfully
+    environment:
+      ADDR: ":8099"
+      DOCKER_HOST: tcp://localhost:2375
+      AGENTKIT_IMAGE: ${BASE_IMAGE:-agentkit-sandbox:dev}
+      AGENTKIT_SELF_URL: http://172.17.0.1:8099
+      AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENTKIT_DATA: /data
+    volumes:
+      - agentd-data:/data
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web.Dockerfile
+    depends_on:
+      - agentd
+    ports:
+      - "${WEB_PORT:-8080}:8080"
+
+volumes:
+  agentd-data:

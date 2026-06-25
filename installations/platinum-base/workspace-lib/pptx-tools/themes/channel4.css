@@ -1,0 +1,21 @@
+/* Channel 4 Brand Theme
+ *
+ * Colours taken from C4's on-screen identity guidelines.
+ * Font families use C4's proprietary typefaces with Arial fallback
+ * for environments where they are not installed.
+ */
+:root {
+  --primary: #8CF57E;
+  --bg: #ffffff;
+  --text: #1a1a1a;
+  --text-light: #555555;
+  --font-heading: '4 Headline', Arial, sans-serif;
+  --font-body: '4 Text', Arial, sans-serif;
+  --accent1: #8CF57E;
+  --accent2: #99FFED;
+  --accent3: #89CDFF;
+  --accent4: #CA88FF;
+  --accent5: #FF99DD;
+  --accent6: #FFB288;
+  --sidebar-color: #8CF57E;
+}
