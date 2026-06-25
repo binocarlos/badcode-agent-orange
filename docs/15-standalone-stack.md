@@ -55,3 +55,33 @@ register against `@agentkit/chat-ui`'s render-plugin seam in the app's frontend.
 > start) are a separate upcoming feature (Spec 2). Today, select the image via
 > `BASE_IMAGE` (stack-wide) or the `Image`/`CustomImageID` fields on the create-session
 > request.
+
+## Storage backends (local default, or Google Cloud)
+
+`agentd` selects its blob and image-registry backends from env (see
+`cmd/agentd/backends.go`). Defaults reproduce the offline local stack:
+
+| Concern | Default | Google Cloud |
+| --- | --- | --- |
+| Artifact bytes + snapshots | filesystem (`filesblob`) under `AGENTKIT_DATA` | `AGENTKIT_BLOB_BACKEND=gcs` + `GCS_BUCKET` → `gcsblob` |
+| Session-snapshot images | blob-archive tarballs in the BlobStore | `AGENTKIT_REGISTRY_BACKEND=ociregistry` → Artifact Registry |
+
+GCP example (matches `.env.example`):
+
+```sh
+AGENTKIT_BLOB_BACKEND=gcs
+GCS_BUCKET=webkit-servers-agent-orange
+
+AGENTKIT_REGISTRY_BACKEND=ociregistry
+AGENTKIT_REGISTRY_AUTH=gcp            # ADC OAuth2 token (default); or 'basic'
+GCP_REGION=europe-west1
+GCP_PROJECT=webkit-servers
+GCP_AR_REPO=agent-orange             # → europe-west1-docker.pkg.dev/webkit-servers/agent-orange
+```
+
+Auth is **Application Default Credentials** — workload identity, `gcloud auth
+application-default login`, or a service-account key via
+`GOOGLE_APPLICATION_CREDENTIALS`. In the containerised stack, mount the key into
+the `agentd` container (see the commented volume in `docker-compose.yml`). The two
+choices are independent: you can put blobs in GCS while keeping blob-archive
+images, or vice versa.

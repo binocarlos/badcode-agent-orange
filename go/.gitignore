@@ -1,2 +1,6 @@
 # Local agentd data directory (created at runtime by agentd)
 .agentkit-data/
+
+# Stray binaries from `go build ./cmd/...` (output lands in cwd)
+/agentd
+/imagetree

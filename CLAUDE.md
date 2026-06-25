@@ -24,11 +24,12 @@ Agent Orange. Three pieces:
 > **Status / provenance.** Private use for now (the source is bayesprice-owned — a public release
 > would need licensing resolved first). Migration to standalone is in progress: **`go build ./...`
 > passes** (Go floor is now **1.25**, raised by the GCP SDK); the `sandbox`/`web` packages have not
-> been `npm`-built in this fork yet. GCP support exists in the engine — a GCS `BlobStore`
-> (`extension/gcsblob`) and a pluggable registry-auth seam with an ADC provider
-> (`imageregistry/auth`, `auth.GCP`) — but is **not yet wired into the standalone host** (needs
-> bucket/project/region config). The plan and current state live in **`MIGRATION.md`** — read it
-> before doing migration work.
+> been `npm`-built in this fork yet. GCP support is implemented and **wired into `agentd`**: a GCS
+> `BlobStore` (`extension/gcsblob`), a pluggable registry-auth seam with an ADC provider
+> (`imageregistry/auth`, `auth.GCP`), and config-driven backend selection (`cmd/agentd/backends.go`,
+> env: `AGENTKIT_BLOB_BACKEND`, `AGENTKIT_REGISTRY_BACKEND`, …). Defaults preserve the local fs
+> stack; an end-to-end run against a live GCP project is still pending. The plan and current state
+> live in **`MIGRATION.md`** — read it before doing migration work.
 
 ## Repo map
 
@@ -102,10 +103,10 @@ cd web && npm install && npm test
 5. **Keep `go build ./...` green** and add tests with changes — the codebase is heavily tested
    (follow the existing table-test patterns).
 6. **Migration work is phased** (`MIGRATION.md`): standalone-ify → genericize installations →
-   registry-agnostic build+push → **GCP (priority)** → automation. Phase 4 engine seams are done
-   (GCS `BlobStore` in `extension/gcsblob`; ADC registry auth in `imageregistry/auth`). What remains
-   is wiring them into the standalone host and an end-to-end run — both need real GCP config
-   (project/region/Artifact Registry repo/GCS bucket).
+   registry-agnostic build+push → **GCP (priority)** → automation. Phase 4 engine seams + `agentd`
+   wiring are done (GCS `BlobStore` in `extension/gcsblob`; ADC registry auth in `imageregistry/auth`;
+   selection in `cmd/agentd/backends.go`). What remains is an end-to-end run against the live GCP
+   project (`webkit-servers` / `europe-west1`, repo `agent-orange`, bucket `webkit-servers-agent-orange`).
 
 ## Deeper context
 

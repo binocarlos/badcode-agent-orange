@@ -2,21 +2,22 @@
 //
 // agentd is the pre-built host for the standalone stack (docker-compose). Use it
 // when you want a running agent API without writing a host. It uses the reference
-// adapters (sqlitestore, filesblob, blobarchive, devclaims) and a real DinD
-// execution environment.
+// adapters (sqlitestore, devclaims) and a real DinD execution environment; the
+// blob and image-registry backends are selected from env (filesystem +
+// blob-archive by default, or GCS + Artifact Registry — see backends.go).
 //
 // # Quick start
 //
 //  1. Build the sandbox image and load it into DinD:
 //
-//	   docker build -t agentkit-sandbox:dev agent-library/sandbox
-//	   docker save agentkit-sandbox:dev | docker -H tcp://localhost:2375 load
+//     docker build -t agentkit-sandbox:dev agent-library/sandbox
+//     docker save agentkit-sandbox:dev | docker -H tcp://localhost:2375 load
 //
 //  2. Run agentd (mock model proxy built-in when ANTHROPIC_API_KEY is unset):
 //
-//	   DOCKER_HOST=tcp://localhost:2375 \
-//	   AGENTKIT_IMAGE=agentkit-sandbox:dev \
-//	   go run ./cmd/agentd
+//     DOCKER_HOST=tcp://localhost:2375 \
+//     AGENTKIT_IMAGE=agentkit-sandbox:dev \
+//     go run ./cmd/agentd
 //
 // The server listens on :8099 by default (ADDR env to override).
 package main
@@ -32,15 +33,16 @@ import (
 	agentkit "github.com/binocarlos/badcode-agent-orange"
 	dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
 	"github.com/binocarlos/badcode-agent-orange/extension"
+	"github.com/binocarlos/badcode-agent-orange/extension/blobartifacts"
 	"github.com/binocarlos/badcode-agent-orange/extension/devclaims"
-	"github.com/binocarlos/badcode-agent-orange/extension/filesblob"
 	"github.com/binocarlos/badcode-agent-orange/extension/sqlitestore"
 	"github.com/binocarlos/badcode-agent-orange/fleet"
 	"github.com/binocarlos/badcode-agent-orange/httpapi"
-	"github.com/binocarlos/badcode-agent-orange/imageregistry/blobarchive"
 )
 
 func main() {
+	ctx := context.Background()
+
 	// ── Data directory ───────────────────────────────────────────────────────────
 	dataDir := envOr("AGENTKIT_DATA", "./.agentkit-data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -48,16 +50,19 @@ func main() {
 	}
 
 	// ── Session store (SQLite) ───────────────────────────────────────────────────
-	// sqlitestore.Open also creates <dataDir>/blobs internally, but we construct
-	// an explicit filesblob.BlobStore at the same path so the blobarchive registry
-	// and artifact store share one on-disk blob root with the store's own blobs.
 	dbPath := filepath.Join(dataDir, "sessions.db")
 	store, err := sqlitestore.Open(dbPath)
 	must(err)
 
-	// ── Blob root (shared by registry + artifact store) ──────────────────────────
-	blobs := filesblob.NewBlobStore(filepath.Join(dataDir, "blobs"))
-	artStore := filesblob.NewArtifactStore(blobs)
+	// ── Blob backend (shared by registry + artifact store) ───────────────────────
+	// fs (default) or gcs — see backends.go. One BlobStore serves the artifact
+	// bytes and (for the blob-archive registry) snapshot tarballs.
+	blobCfg, err := resolveBlobConfig(os.Getenv, dataDir)
+	must(err)
+	blobs, closeBlobs, err := newBlobs(ctx, blobCfg)
+	must(err)
+	defer closeBlobs() //nolint:errcheck
+	artStore := blobartifacts.New(blobs)
 
 	// ── Claims issuer ────────────────────────────────────────────────────────────
 	jwtSecret := []byte(os.Getenv("AGENTKIT_JWT_SECRET")) // empty → dev-open
@@ -66,9 +71,12 @@ func main() {
 	// ── Docker host (shared by DinD + blobarchive) ───────────────────────────────
 	dockerHost := envOr("DOCKER_HOST", "tcp://localhost:2375")
 
-	// ── Image registry (blob-archive backed) ─────────────────────────────────────
-	registry, err := blobarchive.New(dockerHost, blobs)
+	// ── Image registry (blob-archive default, or ociregistry → Artifact Registry) ─
+	regCfg, err := resolveRegistryConfig(os.Getenv)
 	must(err)
+	registry, err := newRegistry(ctx, dockerHost, blobs, regCfg)
+	must(err)
+	log.Printf("[agentd] blobs=%s registry=%s", blobCfg.backend, regCfg.backend)
 
 	// ── DinD execution environment ───────────────────────────────────────────────
 	dindEnv, err := dockerdind.NewDinD(dockerdind.DinDConfig{

@@ -51,8 +51,25 @@ services:
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AGENTKIT_DATA: /data
+      # Storage backends — unset = local (fs blobs + blob-archive). See .env.example.
+      AGENTKIT_BLOB_BACKEND: ${AGENTKIT_BLOB_BACKEND:-}
+      GCS_BUCKET: ${GCS_BUCKET:-}
+      GCS_PREFIX: ${GCS_PREFIX:-}
+      AGENTKIT_REGISTRY_BACKEND: ${AGENTKIT_REGISTRY_BACKEND:-}
+      AGENTKIT_REGISTRY_AUTH: ${AGENTKIT_REGISTRY_AUTH:-}
+      GCP_REGION: ${GCP_REGION:-}
+      GCP_PROJECT: ${GCP_PROJECT:-}
+      GCP_AR_REPO: ${GCP_AR_REPO:-}
+      OCI_REGISTRY: ${OCI_REGISTRY:-}
+      OCI_USERNAME: ${OCI_USERNAME:-}
+      OCI_PASSWORD: ${OCI_PASSWORD:-}
+      # GCP auth (ADC). To use GCS/Artifact Registry, mount a service-account key
+      # (volume below) and point this at it.
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
     volumes:
       - agentd-data:/data
+      # Mount a GCP service-account key for ADC when using gcs/ociregistry, e.g.:
+      # - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp/key.json:ro
 
   web:
     build:

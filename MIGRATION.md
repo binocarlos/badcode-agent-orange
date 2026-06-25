@@ -132,9 +132,12 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
    `GOOGLE_APPLICATION_CREDENTIALS`. No credentials configured in-package; tests inject
    `option.ClientOption`. (Adding the SDK raised the module's Go floor to **1.25**, via
    `google.golang.org/api`; CI `go-version` bumped 1.22 → 1.25.)
-3. ⬜ Wire it in the standalone host (`go/examples/standalone` / `cmd/agentd` deps) selectable by
-   config, so artifacts and snapshots land in GCS. Verify: produce an artifact + snapshot a session →
-   bytes appear in the bucket → reload works.
+3. ✅ Wired in `cmd/agentd` (config-driven, `cmd/agentd/backends.go`): `AGENTKIT_BLOB_BACKEND=gcs`
+   + `GCS_BUCKET`/`GCS_PREFIX` selects `gcsblob`; the artifact store is now the generic
+   `extension/blobartifacts` (works over any `extension.BlobStore`; `filesblob.NewArtifactStore`
+   delegates to it). Defaults preserve the local fs stack. Compose + `.env.example` + `docs/15`
+   updated; agentd Dockerfile bumped to go1.25. ⬜ Still to do: end-to-end verify against the bucket
+   (produce an artifact / snapshot a session → bytes appear → reload works).
 
 ### 4b. Images → Artifact Registry ✅ (auth seam done; end-to-end pending)
 
@@ -146,8 +149,10 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
    `ociregistry.Config` gained an `Auth auth.Provider` field; when nil it falls back to
    Username/Password static (backward-compatible — the local registry:2 path is unchanged).
    `EnsurePresent`/`Persist`/`Materialize` now resolve auth dynamically per call.
-2. ⬜ **Registry URL shape.** `<region>-docker.pkg.dev/<project>/<repo>/<name>:<tag>`. Wire host
-   config: `GCP_PROJECT`, `GCP_REGION`, `GCP_AR_REPO` → `ociregistry.Config{Registry, Auth: auth.GCP}`.
+2. ✅ **Registry URL shape + host wiring.** `cmd/agentd/backends.go`: `AGENTKIT_REGISTRY_BACKEND=ociregistry`
+   + `AGENTKIT_REGISTRY_AUTH=gcp` + `GCP_REGION`/`GCP_PROJECT`/`GCP_AR_REPO` (or an explicit
+   `OCI_REGISTRY`) builds `ociregistry.Config{Registry, Auth: auth.GCP}`. URL shape
+   `<region>-docker.pkg.dev/<project>/<repo>`.
 3. ⬜ **End-to-end:** build `core`/`example` → push to Artifact Registry → launch a session that
    resolves+pulls it from GCP → verify a turn runs.
 
