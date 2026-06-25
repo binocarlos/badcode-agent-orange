@@ -68,8 +68,11 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
     volumes:
       - agentd-data:/data
-      # Mount a GCP service-account key for ADC when using gcs/ociregistry, e.g.:
-      # - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp/key.json:ro
+      # GCP credentials (ADC) for gcs/ociregistry — pick ONE (see docs/15):
+      #  • local dev: mount your gcloud ADC (after `gcloud auth application-default login`)
+      #    - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      #  • CI / no metadata server: mount a service-account key + set GOOGLE_APPLICATION_CREDENTIALS
+      #    - ${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp/key.json:ro
 
   web:
     build:

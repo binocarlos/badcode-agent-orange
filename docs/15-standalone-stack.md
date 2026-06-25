@@ -79,9 +79,39 @@ GCP_PROJECT=webkit-servers
 GCP_AR_REPO=agent-orange             # → europe-west1-docker.pkg.dev/webkit-servers/agent-orange
 ```
 
-Auth is **Application Default Credentials** — workload identity, `gcloud auth
-application-default login`, or a service-account key via
-`GOOGLE_APPLICATION_CREDENTIALS`. In the containerised stack, mount the key into
-the `agentd` container (see the commented volume in `docker-compose.yml`). The two
-choices are independent: you can put blobs in GCS while keeping blob-archive
-images, or vice versa.
+The two choices are independent: you can put blobs in GCS while keeping
+blob-archive images, or vice versa.
+
+### Provisioning (idempotent)
+
+`deploy/gcp/setup.sh` provisions everything a fresh project needs — enables the
+APIs, creates the Artifact Registry repo + GCS bucket if missing, creates a
+runtime **service account**, and grants it least-privilege IAM
+(`storage.objectAdmin` on the bucket, `artifactregistry.writer` on the repo). It
+is safe to re-run; every step checks first.
+
+```sh
+deploy/gcp/setup.sh                      # SA + IAM + resources (no secret emitted)
+deploy/gcp/setup.sh --emit-key ./key.json   # also write a SA key for local/CI
+```
+
+### Giving `agentd` credentials (ADC)
+
+`agentd` authenticates with **Application Default Credentials**: it uses one
+credential both to reach the GCS bucket *and* to mint the short-lived OAuth2
+token it forwards to the Docker daemon for Artifact Registry push/pull (registry
+auth is client-side — the daemon does the transfer, agentd supplies the token).
+Three ways to deliver ADC, in order of preference:
+
+1. **Workload identity** (GKE / Cloud Run / GCE) — nothing to mount; the metadata
+   server supplies tokens automatically.
+2. **Your own gcloud login** (local dev) — run `gcloud auth application-default
+   login` once, then mount `~/.config/gcloud` into the container (commented in
+   `docker-compose.yml`). No service-account key needed.
+3. **Service-account key** (CI / no metadata server) — `setup.sh --emit-key`, then
+   set `GOOGLE_APPLICATION_CREDENTIALS` and mount the key (commented in
+   `docker-compose.yml`).
+
+There is no `gcloud auth configure-docker` step: agentd talks to the daemon via
+the Docker API and supplies the token itself, so the CLI credential helper would
+not be consulted.
