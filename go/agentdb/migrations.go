@@ -245,6 +245,26 @@ var agentMigrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_aci_embedding ON agent_conversation_index USING hnsw(summary_embedding vector_cosine_ops);
 		`,
 	},
+	{
+		Name: "020_board_revisions",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS board_revisions (
+				id          VARCHAR(36) PRIMARY KEY,
+				parent_id   VARCHAR(36) DEFAULT '',
+				seq         BIGSERIAL UNIQUE,
+				status      VARCHAR(20) NOT NULL DEFAULT 'applied',
+				author      VARCHAR(255) NOT NULL DEFAULT '',
+				message     TEXT NOT NULL DEFAULT '',
+				ops         JSONB NOT NULL DEFAULT '[]',
+				created_at  BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_board_revisions_status ON board_revisions(status);
+			CREATE TABLE IF NOT EXISTS board_head (
+				singleton   BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+				revision_id VARCHAR(36) NOT NULL REFERENCES board_revisions(id)
+			);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
