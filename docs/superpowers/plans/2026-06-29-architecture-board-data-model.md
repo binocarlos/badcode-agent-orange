@@ -359,12 +359,12 @@ Append to `go/agentdb/board.go`:
 // strategy. Subscriptions are NOT here — they are standalone (BoardSubscription).
 type BoardStaff struct {
 	ID              string    `json:"id" gorm:"primaryKey;type:varchar(64)"`
-	RoleFragments   JSONArray `json:"role_fragments" gorm:"type:jsonb;default:'[]'"`
-	Skills          JSONArray `json:"skills" gorm:"type:jsonb;default:'[]'"`
+	RoleFragments   JSONArray `json:"role_fragments" gorm:"type:jsonb;not null;default:'[]'"`
+	Skills          JSONArray `json:"skills" gorm:"type:jsonb;not null;default:'[]'"`
 	ModelTier       string    `json:"model_tier" gorm:"type:varchar(20);not null;default:'mid'"`
 	MemoryNamespace string    `json:"memory_namespace" gorm:"type:varchar(255);not null;default:''"`
-	SelfArchiving   JSONMap   `json:"self_archiving" gorm:"type:jsonb;default:'{}'"`
-	Budget          JSONMap   `json:"budget" gorm:"type:jsonb;default:'{}'"`
+	SelfArchiving   JSONMap   `json:"self_archiving" gorm:"type:jsonb;not null;default:'{}'"`
+	Budget          JSONMap   `json:"budget" gorm:"type:jsonb;not null;default:'{}'"`
 	LastChangedIn   string    `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
 }
 
@@ -377,7 +377,7 @@ type BoardEventType struct {
 	ID            string  `json:"id" gorm:"primaryKey;type:varchar(64)"`
 	Kind          string  `json:"kind" gorm:"type:varchar(20);not null;default:'lifecycle'"`
 	Description   string  `json:"description" gorm:"type:text;not null;default:''"`
-	PayloadSchema JSONMap `json:"payload_schema" gorm:"type:jsonb;default:'{}'"`
+	PayloadSchema JSONMap `json:"payload_schema" gorm:"type:jsonb;not null;default:'{}'"`
 	LastChangedIn string  `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
 }
 
@@ -408,7 +408,7 @@ func (BoardSubscription) TableName() string { return "board_subscriptions" }
 type BoardPipeline struct {
 	ID            string    `json:"id" gorm:"primaryKey;type:varchar(64)"`
 	Description   string    `json:"description" gorm:"type:text;not null;default:''"`
-	Stages        JSONArray `json:"stages" gorm:"type:jsonb;default:'[]'"`
+	Stages        JSONArray `json:"stages" gorm:"type:jsonb;not null;default:'[]'"`
 	LastChangedIn string    `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
 }
 
