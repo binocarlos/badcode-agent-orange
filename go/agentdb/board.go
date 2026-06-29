@@ -38,7 +38,7 @@ type BoardRevision struct {
 	Status    string    `json:"status" gorm:"type:varchar(20);not null;default:'applied';index:idx_board_revisions_status"`
 	Author    string    `json:"author" gorm:"type:varchar(255);not null;default:''"`
 	Message   string    `json:"message" gorm:"type:text;not null;default:''"`
-	Ops       JSONArray `json:"ops" gorm:"type:jsonb;default:'[]'"`
+	Ops       JSONArray `json:"ops" gorm:"type:jsonb;not null;default:'[]'"`
 	CreatedAt int64     `json:"created_at" gorm:"autoCreateTime"`
 }
 
