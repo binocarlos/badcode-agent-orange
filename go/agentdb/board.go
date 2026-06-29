@@ -51,3 +51,75 @@ type BoardHead struct {
 }
 
 func (BoardHead) TableName() string { return "board_head" }
+
+// BoardStaff is a reusable scope template (a "staff member"): role prompt
+// fragment refs, assigned skills, model tier, memory view, and self-archiving
+// strategy. Subscriptions are NOT here — they are standalone (BoardSubscription).
+type BoardStaff struct {
+	ID              string    `json:"id" gorm:"primaryKey;type:varchar(64)"`
+	RoleFragments   JSONArray `json:"role_fragments" gorm:"type:jsonb;not null;default:'[]'"`
+	Skills          JSONArray `json:"skills" gorm:"type:jsonb;not null;default:'[]'"`
+	ModelTier       string    `json:"model_tier" gorm:"type:varchar(20);not null;default:'mid'"`
+	MemoryNamespace string    `json:"memory_namespace" gorm:"type:varchar(255);not null;default:''"`
+	SelfArchiving   JSONMap   `json:"self_archiving" gorm:"type:jsonb;not null;default:'{}'"`
+	Budget          JSONMap   `json:"budget" gorm:"type:jsonb;not null;default:'{}'"`
+	LastChangedIn   string    `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
+}
+
+func (BoardStaff) TableName() string { return "board_staff" }
+
+// BoardEventType is one entry in the org event-bus taxonomy (distinct from the
+// intra-session SSE vocabulary in go/events). An empty PayloadSchema means the
+// event declares no payload shape.
+type BoardEventType struct {
+	ID            string  `json:"id" gorm:"primaryKey;type:varchar(64)"`
+	Kind          string  `json:"kind" gorm:"type:varchar(20);not null;default:'lifecycle'"`
+	Description   string  `json:"description" gorm:"type:text;not null;default:''"`
+	PayloadSchema JSONMap `json:"payload_schema" gorm:"type:jsonb;not null;default:'{}'"`
+	LastChangedIn string  `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
+}
+
+func (BoardEventType) TableName() string { return "board_event_types" }
+
+// BoardSubscription is a standalone candidate binding: event -> reaction, where
+// a reaction is a staff member or a pipeline. ApplicabilityCondition is the
+// ReasoningBank "when X" match key. Cross-references are logical (validated
+// before apply), not FK-enforced.
+type BoardSubscription struct {
+	ID                     string `json:"id" gorm:"primaryKey;type:varchar(64)"`
+	EventType              string `json:"event_type" gorm:"type:varchar(64);not null;index:idx_board_subs_event,priority:1"`
+	ReactionKind           string `json:"reaction_kind" gorm:"type:varchar(20);not null"`
+	ReactionRef            string `json:"reaction_ref" gorm:"type:varchar(64);not null"`
+	ApplicabilityCondition string `json:"applicability_condition" gorm:"type:text;not null;default:''"`
+	// NB: no `default:true` in the gorm tag on purpose — gorm omits zero-valued
+	// fields that carry a default tag, which would silently turn an explicit
+	// Enabled:false into true. The production SQL keeps DEFAULT TRUE for raw
+	// inserts; gorm callers set Enabled explicitly.
+	Enabled       bool   `json:"enabled" gorm:"not null;index:idx_board_subs_event,priority:2"`
+	LastChangedIn string `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
+}
+
+func (BoardSubscription) TableName() string { return "board_subscriptions" }
+
+// BoardPipeline is a named ordered sequence of stages run by run_pipeline. The
+// stage inner schema is left as opaque JSON until run_pipeline is specified.
+type BoardPipeline struct {
+	ID            string    `json:"id" gorm:"primaryKey;type:varchar(64)"`
+	Description   string    `json:"description" gorm:"type:text;not null;default:''"`
+	Stages        JSONArray `json:"stages" gorm:"type:jsonb;not null;default:'[]'"`
+	LastChangedIn string    `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
+}
+
+func (BoardPipeline) TableName() string { return "board_pipelines" }
+
+// BoardPromptFragment is a versioned prompt fragment composed into worker
+// prompts at dispatch. Its version is the board revision it lives in (no
+// separate version field).
+type BoardPromptFragment struct {
+	ID            string `json:"id" gorm:"primaryKey;type:varchar(64)"`
+	Kind          string `json:"kind" gorm:"type:varchar(20);not null;default:'role'"`
+	Body          string `json:"body" gorm:"type:text;not null;default:''"`
+	LastChangedIn string `json:"last_changed_in" gorm:"type:varchar(36);not null;default:''"`
+}
+
+func (BoardPromptFragment) TableName() string { return "board_prompt_fragments" }

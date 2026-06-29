@@ -265,6 +265,50 @@ var agentMigrations = []migration{
 			);
 		`,
 	},
+	{
+		Name: "021_board_current",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS board_staff (
+				id               VARCHAR(64) PRIMARY KEY,
+				role_fragments   JSONB NOT NULL DEFAULT '[]',
+				skills           JSONB NOT NULL DEFAULT '[]',
+				model_tier       VARCHAR(20) NOT NULL DEFAULT 'mid',
+				memory_namespace VARCHAR(255) NOT NULL DEFAULT '',
+				self_archiving   JSONB NOT NULL DEFAULT '{}',
+				budget           JSONB NOT NULL DEFAULT '{}',
+				last_changed_in  VARCHAR(36) NOT NULL DEFAULT ''
+			);
+			CREATE TABLE IF NOT EXISTS board_event_types (
+				id              VARCHAR(64) PRIMARY KEY,
+				kind            VARCHAR(20) NOT NULL DEFAULT 'lifecycle',
+				description     TEXT NOT NULL DEFAULT '',
+				payload_schema  JSONB NOT NULL DEFAULT '{}',
+				last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
+			);
+			CREATE TABLE IF NOT EXISTS board_subscriptions (
+				id                      VARCHAR(64) PRIMARY KEY,
+				event_type              VARCHAR(64) NOT NULL,
+				reaction_kind           VARCHAR(20) NOT NULL,
+				reaction_ref            VARCHAR(64) NOT NULL,
+				applicability_condition TEXT NOT NULL DEFAULT '',
+				enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
+				last_changed_in         VARCHAR(36) NOT NULL DEFAULT ''
+			);
+			CREATE INDEX IF NOT EXISTS idx_board_subs_event ON board_subscriptions(event_type, enabled);
+			CREATE TABLE IF NOT EXISTS board_pipelines (
+				id              VARCHAR(64) PRIMARY KEY,
+				description     TEXT NOT NULL DEFAULT '',
+				stages          JSONB NOT NULL DEFAULT '[]',
+				last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
+			);
+			CREATE TABLE IF NOT EXISTS board_prompt_fragments (
+				id              VARCHAR(64) PRIMARY KEY,
+				kind            VARCHAR(20) NOT NULL DEFAULT 'role',
+				body            TEXT NOT NULL DEFAULT '',
+				last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
+			);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

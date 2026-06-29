@@ -19,8 +19,12 @@ func newBoardTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&BoardRevision{}, &BoardHead{}); err != nil {
-		t.Fatalf("automigrate board log: %v", err)
+	if err := db.AutoMigrate(
+		&BoardRevision{}, &BoardHead{},
+		&BoardStaff{}, &BoardEventType{}, &BoardSubscription{},
+		&BoardPipeline{}, &BoardPromptFragment{},
+	); err != nil {
+		t.Fatalf("automigrate board: %v", err)
 	}
 	return &Store{gdb: db}
 }
@@ -65,5 +69,74 @@ func TestBoardHead_SingleRowPointer(t *testing.T) {
 	}
 	if got.RevisionID != "rev1" {
 		t.Fatalf("expected head -> rev1, got %q", got.RevisionID)
+	}
+}
+
+func TestBoardStaff_RoundTrip(t *testing.T) {
+	s := newBoardTestStore(t)
+	ctx := context.Background()
+	in := &BoardStaff{
+		ID:              "legal-expert",
+		RoleFragments:   JSONArray(`["role-legal"]`),
+		Skills:          JSONArray(`["search","summarize"]`),
+		ModelTier:       "mid",
+		MemoryNamespace: "legal",
+		SelfArchiving:   JSONMap{"fragment_id": "archive-legal"},
+		LastChangedIn:   "rev1",
+	}
+	if err := s.gdb.WithContext(ctx).Create(in).Error; err != nil {
+		t.Fatalf("create staff: %v", err)
+	}
+	var got BoardStaff
+	if err := s.gdb.WithContext(ctx).First(&got, "id = ?", "legal-expert").Error; err != nil {
+		t.Fatalf("read staff: %v", err)
+	}
+	if got.ModelTier != "mid" || got.MemoryNamespace != "legal" || got.LastChangedIn != "rev1" {
+		t.Fatalf("staff round-trip wrong: %+v", got)
+	}
+	if got.SelfArchiving["fragment_id"] != "archive-legal" {
+		t.Fatalf("self_archiving round-trip wrong: %+v", got.SelfArchiving)
+	}
+}
+
+func TestBoardSubscription_LookupByEventEnabled(t *testing.T) {
+	s := newBoardTestStore(t)
+	ctx := context.Background()
+	rows := []*BoardSubscription{
+		{ID: "archive-on-complete", EventType: "session.completed", ReactionKind: "staff", ReactionRef: "archival-expert", Enabled: true},
+		{ID: "plan-on-goal", EventType: "human-goal", ReactionKind: "pipeline", ReactionRef: "interview-plan", Enabled: true},
+		{ID: "disabled-one", EventType: "session.completed", ReactionKind: "staff", ReactionRef: "old-bot", Enabled: false},
+	}
+	for _, r := range rows {
+		if err := s.gdb.WithContext(ctx).Create(r).Error; err != nil {
+			t.Fatalf("seed %s: %v", r.ID, err)
+		}
+	}
+	// The Routing Manager's hot query: enabled reactions to a given event.
+	var got []BoardSubscription
+	if err := s.gdb.WithContext(ctx).
+		Where("event_type = ? AND enabled = ?", "session.completed", true).
+		Find(&got).Error; err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "archive-on-complete" {
+		t.Fatalf("expected only the enabled session.completed sub, got %+v", got)
+	}
+}
+
+func TestBoardEventType_EmptyPayloadSchemaIsNoSchema(t *testing.T) {
+	s := newBoardTestStore(t)
+	ctx := context.Background()
+	if err := s.gdb.WithContext(ctx).Create(&BoardEventType{
+		ID: "session.completed", Kind: "lifecycle", Description: "a worker session finished",
+	}).Error; err != nil {
+		t.Fatalf("create event type: %v", err)
+	}
+	var got BoardEventType
+	if err := s.gdb.WithContext(ctx).First(&got, "id = ?", "session.completed").Error; err != nil {
+		t.Fatalf("read event type: %v", err)
+	}
+	if got.Kind != "lifecycle" || len(got.PayloadSchema) != 0 {
+		t.Fatalf("expected lifecycle + empty payload schema, got %+v", got)
 	}
 }
