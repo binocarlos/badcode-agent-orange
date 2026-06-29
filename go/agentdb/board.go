@@ -1,6 +1,9 @@
 package agentdb
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // OpKind is the kind of mutation a changeset op performs on a board entity.
 type OpKind string
@@ -123,3 +126,25 @@ type BoardPromptFragment struct {
 }
 
 func (BoardPromptFragment) TableName() string { return "board_prompt_fragments" }
+
+// Board is the fully-folded state of the board at one revision — the read-side
+// aggregate returned by BoardStore.Current / AsOf.
+type Board struct {
+	Revision      string
+	Staff         []BoardStaff
+	EventTypes    []BoardEventType
+	Subscriptions []BoardSubscription
+	Pipelines     []BoardPipeline
+	Fragments     []BoardPromptFragment
+}
+
+// BoardStore is the seam over the architecture board. The implementation is
+// Postgres-backed (a later spec); a git-backed implementation is a future swap.
+// Current/AsOf read folded state; Head returns the live applied revision id;
+// Append writes a changeset and returns the new revision id.
+type BoardStore interface {
+	Current(ctx context.Context) (Board, error)
+	AsOf(ctx context.Context, revisionID string) (Board, error)
+	Head(ctx context.Context) (revisionID string, err error)
+	Append(ctx context.Context, cs Changeset) (revisionID string, err error)
+}

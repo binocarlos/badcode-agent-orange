@@ -140,3 +140,38 @@ func TestBoardEventType_EmptyPayloadSchemaIsNoSchema(t *testing.T) {
 		t.Fatalf("expected lifecycle + empty payload schema, got %+v", got)
 	}
 }
+
+// nopBoardStore is a test-only stub proving BoardStore is implementable. It is
+// NOT a production implementation (that lands in a later spec).
+type nopBoardStore struct{}
+
+func (nopBoardStore) Current(ctx context.Context) (Board, error)                     { return Board{}, nil }
+func (nopBoardStore) AsOf(ctx context.Context, revisionID string) (Board, error)     { return Board{Revision: revisionID}, nil }
+func (nopBoardStore) Head(ctx context.Context) (string, error)                       { return "", nil }
+func (nopBoardStore) Append(ctx context.Context, cs Changeset) (string, error)       { return "", nil }
+
+// Compile-time check: nopBoardStore satisfies BoardStore.
+var _ BoardStore = nopBoardStore{}
+
+func TestBoard_AggregateComposesEntities(t *testing.T) {
+	b := Board{
+		Revision:      "rev1",
+		Staff:         []BoardStaff{{ID: "legal-expert"}},
+		EventTypes:    []BoardEventType{{ID: "session.completed"}},
+		Subscriptions: []BoardSubscription{{ID: "archive-on-complete", EventType: "session.completed"}},
+		Pipelines:     []BoardPipeline{{ID: "interview-plan"}},
+		Fragments:     []BoardPromptFragment{{ID: "role-legal"}},
+	}
+	if b.Revision != "rev1" || len(b.Staff) != 1 || len(b.Subscriptions) != 1 {
+		t.Fatalf("aggregate did not compose entities: %+v", b)
+	}
+
+	var store BoardStore = nopBoardStore{}
+	got, err := store.AsOf(context.Background(), "rev9")
+	if err != nil {
+		t.Fatalf("AsOf: %v", err)
+	}
+	if got.Revision != "rev9" {
+		t.Fatalf("expected AsOf to echo revision, got %q", got.Revision)
+	}
+}
