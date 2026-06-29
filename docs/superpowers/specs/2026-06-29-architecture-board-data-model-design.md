@@ -87,7 +87,7 @@ The org **event taxonomy** here is the bus vocabulary (`human-goal`, `session.co
 | **staff** | `id`, `role_fragments[]` (fragment ids), `skills[]`, `model_tier` (full\|mid\|cheap), `memory_namespace`, `self_archiving` (fragment ref or inline), `budget?`. **No subscriptions field** — subscriptions are standalone. |
 | **subscription** | `id`, `event_type`, `reaction{kind: staff\|pipeline, ref}`, `applicability_condition` (the ReasoningBank "when X" match key, §6A), `enabled`. The Consultant's primary edit surface. |
 | **pipeline** | `id`, `description`, `stages[]` (each: staff ref or inline scope + input mapping + optional emit-on-done). |
-| **event_type** | `id`, `kind` (external\|lifecycle), `description`, `payload_schema?` (nullable JSON Schema). |
+| **event_type** | `id`, `kind` (external\|lifecycle), `description`, `payload_schema` (JSON Schema; empty `{}` = no schema). |
 | **prompt_fragment** | `id`, `kind` (role\|label_docs\|procedure\|self_archiving), `body` (markdown). |
 
 **Why subscriptions are standalone** (decided): a subscription is a *candidate binding* `event →
@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS board_event_types (
     id              VARCHAR(64) PRIMARY KEY,
     kind            VARCHAR(20) NOT NULL DEFAULT 'lifecycle', -- external | lifecycle
     description     TEXT NOT NULL DEFAULT '',
-    payload_schema  JSONB,                            -- nullable JSON Schema
+    payload_schema  JSONB NOT NULL DEFAULT '{}',       -- empty {} = no schema
     last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
 );
 

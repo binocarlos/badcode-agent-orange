@@ -10,8 +10,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// newBoardTestStore returns a Store over a temp sqlite DB with the board log
-// tables auto-migrated. (Grows to include the current-state tables in Task 2.)
+// newBoardTestStore returns a Store over a temp sqlite DB with all seven board
+// tables (the changeset log + the five current-state tables) auto-migrated.
 func newBoardTestStore(t *testing.T) *Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "board_test.sqlite")
