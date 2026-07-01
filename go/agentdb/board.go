@@ -147,10 +147,13 @@ type Board struct {
 // BoardStore is the seam over the architecture board. The implementation is
 // Postgres-backed (a later spec); a git-backed implementation is a future swap.
 // Current/AsOf read folded state; Head returns the live applied revision id;
-// Append writes a changeset and returns the new revision id.
+// Append writes a changeset and returns the new revision id; Revisions returns the
+// append-only log in seq order (the "show your work" story timeline — v1 contracts
+// §10b E-2, surfaced by the §8 /api/board/revisions endpoint).
 type BoardStore interface {
 	Current(ctx context.Context) (Board, error)
 	AsOf(ctx context.Context, revisionID string) (Board, error)
 	Head(ctx context.Context) (revisionID string, err error)
 	Append(ctx context.Context, cs Changeset) (revisionID string, err error)
+	Revisions(ctx context.Context) ([]BoardRevision, error)
 }

@@ -97,6 +97,16 @@ func (m *MemBoard) AsOf(_ context.Context, revisionID string) (agentdb.Board, er
 	return out, nil
 }
 
+// Revisions returns a copy of the append-only log in ascending seq order — the
+// story timeline the "show your work" surface renders (contracts §10b E-2).
+func (m *MemBoard) Revisions(_ context.Context) ([]agentdb.BoardRevision, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := append([]agentdb.BoardRevision(nil), m.revs...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
 // Head returns the most recently appended revision id.
 func (m *MemBoard) Head(_ context.Context) (string, error) {
 	m.mu.Lock()

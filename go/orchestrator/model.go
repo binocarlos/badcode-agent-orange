@@ -5,11 +5,9 @@ import (
 	"strings"
 )
 
-// Model turns a composed prompt into text. The real impl (later slice) wraps the
-// Claude Agent SDK harness; Slice 0 uses ScriptedModel for deterministic tests.
-type Model interface {
-	Run(ctx context.Context, prompt string) (string, error)
-}
+// The Model seam is declared in contracts.go. Slice 0 uses ScriptedModel, a
+// deterministic offline impl, so a test can prove behaviour changed because the
+// composed prompt (a fragment) changed — not because of any nondeterminism.
 
 // Rule fires Reply when Contains is a substring of the prompt.
 type Rule struct {

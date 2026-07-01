@@ -32,7 +32,11 @@ func TestRunnerRunsScopePinnedToHead(t *testing.T) {
 	if run.BoardRevision != rev {
 		t.Fatalf("pinned to %q, want %q", run.BoardRevision, rev)
 	}
-	if len(r.Telemetry.Runs()) != 1 {
+	runs, err := r.Telemetry.Runs(ctx)
+	if err != nil {
+		t.Fatalf("runs: %v", err)
+	}
+	if len(runs) != 1 {
 		t.Fatalf("expected 1 recorded run")
 	}
 }
