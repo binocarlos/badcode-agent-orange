@@ -101,10 +101,28 @@ Foundation ✅ and the Slice-A proof ✅ are done and clean. Remaining:
   (dropping the in-proc runtime's `Board`/`Compose`). The seam signature `Spawn(ctx, Scope)` is
   unchanged; this is a bounded, known refactor at the F boundary.
 
-### Progress log
-- ✅ Foundation `fe10103` · ✅ Slice A `167fb3a` · ✅ Slice B `48044ea` · ⏳ Slice C (in progress).
-- Each slice: main agent writes a `2026-07-01-slice-{X}-reconciliation.md` brief, dispatches one
-  engineering agent, then the main agent reviews the full diff + runs the suite + commits.
+### Progress log — AUTONOMOUS FAN-OUT COMPLETE (A–E all done, whole module green)
+- ✅ Foundation `fe10103` · ✅ A `167fb3a` · ✅ B `48044ea` · ✅ C `8e2ab05` · ✅ D `a3ff3a7` ·
+  ✅ E `e965a04`. 73 test functions across `orchestrator` / `orchestrator/pgstore` /
+  `orchestrator/watchapi`; `go build/vet ./...` + `go test ./orchestrator/...` green (uncached).
+- Method that worked: per slice the main agent wrote a `2026-07-01-slice-{X}-reconciliation.md` brief
+  (the plans predated the Foundation), dispatched ONE engineering agent, then reviewed the full diff +
+  ran the suite + committed. `watchapi/bind_test.go` is the integration proof — compile-time assertions
+  that the real C/D impls satisfy the E ports, so the slices genuinely wire together.
+
+### Remaining work
+- **Slice F — supervised deploy (with the human).** Real GCP/DinD, secrets, one social channel, live
+  run behind the approval gate. Pay the two tracked debts below as part of F.
+
+### Tracked follow-ups to resolve during/after F
+1. **E-3 composition** (see above) — manager composes → `Scope.Prompt`; the DinD runtime consumes it
+   (the in-proc double's internal `Compose` goes away). Bounded refactor at the F boundary.
+2. **Ticket JSON casing** — `orchestrator.Ticket` has no JSON tags, so `GET /api/tickets` serializes
+   PascalCase while every other DTO is snake_case. Resolve with a `TicketDTO` snake_case projection in
+   `watchapi` (consistent with `RevisionDTO`/`RunDTO`/`BoardDTO`); do NOT add tags to the frozen type
+   without deciding. Flagged by the Slice-E agent, not self-applied.
+3. **SpendMeter not yet wired into the manager loop** — Slice B built it; the manager/worker spawn path
+   does not yet call `Charge`. Wire the monthly ceiling into dispatch before any live run (mandatory).
 
 **Guardrails for autonomous build:** branch (not main); no push/PR/deploy; no real credentials or
 publishing; build against mock/scripted model offline; TDD; `go build ./...` stays green;
