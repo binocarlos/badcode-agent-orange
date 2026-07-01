@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
@@ -53,13 +52,7 @@ func ApplyFeedback(ctx context.Context, board agentdb.BoardStore, reviser Model,
 		return "", fmt.Errorf("feedback: revised body %d > MaxFragmentLen %d", len(revised), MaxFragmentLen)
 	}
 
-	body, err := json.Marshal(agentdb.BoardPromptFragment{ID: fragmentID, Kind: "role", Body: revised})
-	if err != nil {
-		return "", err
-	}
-	return board.Append(ctx, agentdb.Changeset{
-		Author:  "human-feedback",
-		Message: note,
-		Ops:     []agentdb.Op{{Op: agentdb.OpUpdate, EntityType: "prompt_fragment", EntityID: fragmentID, Body: body}},
-	})
+	// DRY the policy syscall: the board append goes through WriteFragment (which
+	// preserves the fragment's existing Kind). Behaviour is unchanged.
+	return WriteFragment(ctx, board, fragmentID, revised, "human-feedback", note)
 }
