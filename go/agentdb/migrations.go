@@ -309,6 +309,54 @@ var agentMigrations = []migration{
 			);
 		`,
 	},
+	{
+		Name: "022_board_collapse",
+		SQL: `
+			DROP TABLE IF EXISTS board_staff;
+			DROP TABLE IF EXISTS board_pipelines;
+			DROP TABLE IF EXISTS board_event_types;
+		`,
+	},
+	{
+		Name: "023_tickets",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS tickets (
+				id            VARCHAR(36) PRIMARY KEY,
+				project_id    VARCHAR(64) NOT NULL DEFAULT '',
+				title         TEXT NOT NULL DEFAULT '',
+				objective     TEXT NOT NULL DEFAULT '',
+				acceptance    TEXT NOT NULL DEFAULT '',
+				status        VARCHAR(20) NOT NULL DEFAULT 'backlog',
+				scope         JSONB NOT NULL DEFAULT '{}',
+				result        JSONB NOT NULL DEFAULT '{}',
+				pending_post  JSONB NOT NULL DEFAULT '{}',
+				published_ref VARCHAR(255) NOT NULL DEFAULT '',
+				depends_on    JSONB NOT NULL DEFAULT '[]',
+				parent        VARCHAR(36) NOT NULL DEFAULT '',
+				attempts      INT NOT NULL DEFAULT 0,
+				board_rev     VARCHAR(36) NOT NULL DEFAULT '',
+				created_at    BIGINT NOT NULL DEFAULT 0,
+				updated_at    BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
+			CREATE INDEX IF NOT EXISTS idx_tickets_project ON tickets(project_id);
+		`,
+	},
+	{
+		Name: "024_runs",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS runs (
+				id             VARCHAR(36) PRIMARY KEY,
+				seq            BIGINT NOT NULL,
+				scope          VARCHAR(255) NOT NULL DEFAULT '',
+				board_revision VARCHAR(36) NOT NULL DEFAULT '',
+				prompt         TEXT NOT NULL DEFAULT '',
+				output         TEXT NOT NULL DEFAULT '',
+				created_at     BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_seq ON runs(seq);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
