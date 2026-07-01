@@ -5,13 +5,34 @@ session) with nothing lost. All load-bearing state is in files + git — this do
 
 ---
 
-## Where we are: PLANNING PHASE COMPLETE. Next = ENGINEERING PHASE.
+## Where we are: FOUNDATION + PROOF SLICE (A) DONE. Next = FAN OUT B–E, then F (supervised).
 
 A red-team → intent-interview → design → planning session produced a complete, reconciled plan for
-**Agent Orange v1** and a working **Slice 0**. The next step is the engineering build, starting with
-the **foundation** and **one proof slice**, then a fan-out for the rest.
+**Agent Orange v1** and a working **Slice 0**. The engineering build has now begun:
 
-**Branch:** `slice0-learning-loop`. **Slice 0 is built, committed, and green** (`go/orchestrator/`).
+- **✅ Foundation** (commit `fe10103`): `go/orchestrator/contracts.go` (all §3/§4/§5 shared types +
+  seams, once) + the §10b evolutions (E-1 Telemetry ctx+error, E-2 `BoardStore.Revisions`, E-3
+  `Scope.Prompt/Depth`, E-4 `Ticket.PublishedRef`, E-5 `Post.DedupeKey`) + frozen shapes (`Verdict`,
+  `Triggerer`, `FeedbackApplier`, S-4 `ClassifyWorkerOutput`). Slice 0 evolved to match. Green.
+- **✅ Slice A — the proof slice** (commit `167fb3a`): `go/orchestrator/pgstore` (`PgBoard`,
+  `PgTicketStore`, `PgTelemetry`) + `agentdb` row models + migrations 022–024. Built by ONE
+  engineering subagent from the plan + a reconciliation brief; reviewed, whole-module green.
+- **Reconciliation brief** (`docs/superpowers/2026-07-01-slice-A-reconciliation.md`, commit `14daef9`)
+  — the template for the remaining slices (see the two findings below).
+
+**Branch:** `slice0-learning-loop`. Whole module: `go build ./...` + `go vet ./...` green;
+`go test ./orchestrator/... ./agentdb/...` green.
+
+### Two findings from the proof (they change the fan-out)
+
+1. **Every slice plan needs a reconciliation brief FIRST.** The plans predate the Foundation, so each
+   has tasks that redo Foundation work (Slice A's Tasks 1–3 were already done in `contracts.go` and
+   would have duplicate-declared) and stale signatures (pre-E-1 Telemetry). The main agent (holding
+   the Foundation context) must write a short brief per slice before dispatching — do NOT hand a raw
+   plan to an engineering agent. This is cheap and it is what made Slice A land clean.
+2. **Slice F is NOT an autonomous build step.** It is the supervised deploy (real GCP/DinD, real
+   credentials, real publishing) — forbidden by the build guardrails. Autonomous work covers B, C, D,
+   E (the code); F is a human-in-the-loop step for later.
 
 ## What the system is (one paragraph)
 
@@ -59,23 +80,21 @@ DinD on GKE, one social channel behind an **un-bypassable publish-approval gate*
 
 ## NEXT ACTION (the resume instruction)
 
-**Do NOT fan out all six slices at once.** Proceed in this order:
+Foundation ✅ and the Slice-A proof ✅ are done and clean. Remaining:
 
-1. **Foundation (do this first, by the main agent, not parallelized):**
-   - Create `go/orchestrator/contracts.go` declaring ALL shared types + interfaces from
-     `v1-contracts.md` §3/§4/§5 **once** (per §10b F-1).
-   - Apply the Slice-0 interface evolutions (§10b E-1..E-5): `Telemetry` gains `ctx`+`error`;
-     `Scope` gains `Prompt`+`Depth`; `BoardStore` gains `Revisions(ctx)`; `Ticket.PublishedRef`;
-     `Post` dedup key. Update Slice-0 `telemetry.go`/`runner.go`/tests to match.
-   - Add frozen shapes: `Verdict`, `Triggerer`, `FeedbackApplier`, the worker-completion convention.
-   - Verify `go build ./...` + `go vet ./...` + `go test ./orchestrator/...` all green. Commit.
-2. **Proof slice — Slice A (Postgres board)** end-to-end, following its plan + §10b, to shake out the
-   agent+plan+contracts→clean-code process. Review it. If clean → high confidence.
-3. **Fan out the remaining five (B, C, D, E, F)** — worktree-isolated engineering agents, each
-   against the foundation + its plan + §10b. Then integrate, run the full suite, report.
+1. **Fan out B, C, D, E** — for EACH: the main agent writes a reconciliation brief (finding #1) like
+   `2026-07-01-slice-A-reconciliation.md`, then dispatches an engineering agent against
+   (foundation + plan + brief). Because parallel agents share the working tree, a parallel fan-out
+   needs **worktree isolation** (`isolation: 'worktree'`); a sequential brief→dispatch→review→commit
+   rhythm (as Slice A proved) needs none. Slices are near-independent at the contract seam (each builds
+   against interfaces + test doubles): B=model/router/spend, C=manager loop, D=connector+gate,
+   E=watch surface (C leans on `Triggerer`/`FeedbackApplier`). Review each; keep the module green.
+2. **Slice F — supervised deploy (NOT autonomous).** Real GCP/DinD, secrets, live publishing. Do this
+   with the human in the loop after B–E are integrated.
 
 **Guardrails for autonomous build:** branch (not main); no push/PR/deploy; no real credentials or
-publishing; TDD; `go build ./...` stays green; stop-and-surface at genuine forks.
+publishing; build against mock/scripted model offline; TDD; `go build ./...` stays green;
+stop-and-surface at genuine forks (the parallel-vs-sequential fan-out mode is one such fork).
 
 ## Suggested resume prompt (paste after compaction)
 
