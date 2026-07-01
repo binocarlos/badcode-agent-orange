@@ -92,6 +92,20 @@ Foundation ✅ and the Slice-A proof ✅ are done and clean. Remaining:
 2. **Slice F — supervised deploy (NOT autonomous).** Real GCP/DinD, secrets, live publishing. Do this
    with the human in the loop after B–E are integrated.
 
+### Tracked debt for Slice F (from the Slice-C reconciliation)
+
+- **E-3 composition is deferred to Slice F.** Slice C's in-proc `WorkerRuntime` composes internally
+  (it holds `Board`) and the manager sets `Template`/`Input` on the worker `Scope` — the pragmatic
+  choice for a throwaway dev double. Slice F's DinD runtime genuinely can't read the board, so when it
+  lands the manager must compose → set `Scope.Prompt`, and BOTH runtimes must consume `Scope.Prompt`
+  (dropping the in-proc runtime's `Board`/`Compose`). The seam signature `Spawn(ctx, Scope)` is
+  unchanged; this is a bounded, known refactor at the F boundary.
+
+### Progress log
+- ✅ Foundation `fe10103` · ✅ Slice A `167fb3a` · ✅ Slice B `48044ea` · ⏳ Slice C (in progress).
+- Each slice: main agent writes a `2026-07-01-slice-{X}-reconciliation.md` brief, dispatches one
+  engineering agent, then the main agent reviews the full diff + runs the suite + commits.
+
 **Guardrails for autonomous build:** branch (not main); no push/PR/deploy; no real credentials or
 publishing; build against mock/scripted model offline; TDD; `go build ./...` stays green;
 stop-and-surface at genuine forks (the parallel-vs-sequential fan-out mode is one such fork).
