@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Orange — watch</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 60rem; color: #222; }
+    h1 { font-size: 1.4rem; }
+    section { margin: 1.25rem 0; padding: 0.75rem 1rem; border: 1px solid #ddd; border-radius: 6px; }
+    h2 { font-size: 1rem; margin: 0 0 0.5rem; color: #b5530a; }
+    button { cursor: pointer; }
+    input { padding: 4px; margin-right: 4px; }
+    .row { padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
+    .muted { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>Agent Orange — watch / approve / note</h1>
+  <p><button onclick="trigger()">Trigger a tick</button> <span id="status" class="muted"></span></p>
+
+  <section><h2>Pending approvals (needs_human)</h2><div id="tickets"></div></section>
+
+  <section><h2>Leave a note (teacher's desk)</h2>
+    <input id="fb-ref" placeholder="fragment:routing-guidance" size="30">
+    <input id="fb-note" placeholder="be more clever" size="30">
+    <button onclick="feedback()">Send</button>
+  </section>
+
+  <section><h2>The story (board revisions)</h2><div id="revisions"></div></section>
+  <section><h2>Current guidance</h2><div id="fragments"></div></section>
+  <section><h2>Runs (show your work)</h2><div id="runs"></div></section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
