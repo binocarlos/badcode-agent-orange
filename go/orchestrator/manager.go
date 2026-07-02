@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
@@ -17,6 +18,13 @@ import (
 // It holds nothing between ticks (statelessness principle) beyond its
 // configuration + the ledger.
 type ManagerExchange struct {
+	// mu serializes Tick within this process: a tick is re-derive → plan →
+	// reconcile → choose+spawn, a check-then-act sequence over the ticket store,
+	// so two concurrent ticks double-plan and double-spawn the same work. This
+	// process-local mutex is the single-box v1 answer (§10c §K); the
+	// cross-process lease for multi-instance deployments stays deferred.
+	mu sync.Mutex
+
 	Board     agentdb.BoardStore
 	Tickets   TicketStore
 	Router    ModelRouter
@@ -340,8 +348,12 @@ func (m *ManagerExchange) recordRun(ctx context.Context, r Run) error {
 
 // Tick runs one manager exchange (the §2 tick): re-derive → plan incrementally
 // (§10c §G: every tick) → reconcile In-Review → choose+spawn next work. It holds
-// nothing between ticks.
+// nothing between ticks. Ticks are serialized process-locally (m.mu): concurrent
+// triggers (cron + POST /api/trigger) queue up rather than racing the
+// list-then-create planning and list-then-spawn dispatch.
 func (m *ManagerExchange) Tick(ctx context.Context) (TickReport, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.Ledger.RegisterRoot(m.ManagerSession, m.WorkerBudget)
 	board, err := m.Board.Current(ctx)
 	if err != nil {

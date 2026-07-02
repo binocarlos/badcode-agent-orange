@@ -133,9 +133,11 @@ func (s *Store) MarkArtifactsLost(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
-	s.gdb.WithContext(ctx).Model(&Artifact{}).
+	if err := s.gdb.WithContext(ctx).Model(&Artifact{}).
 		Where("session_id = ? AND status = ? AND azure_blob_path != ''", sessionID, "live").
-		Update("status", "extracted")
+		Update("status", "extracted").Error; err != nil {
+		return err
+	}
 	return s.gdb.WithContext(ctx).Model(&Artifact{}).
 		Where("session_id = ? AND status = ? AND (azure_blob_path = '' OR azure_blob_path IS NULL)", sessionID, "live").
 		Update("status", "lost").Error

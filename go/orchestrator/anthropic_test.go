@@ -165,3 +165,78 @@ func TestAnthropicModelMeteredDispatch(t *testing.T) {
 		t.Fatalf("calls = %d, want still 1 (dispatch halted before HTTP)", calls)
 	}
 }
+
+// TestAnthropicModelConfigFallbacks pins the zero-value config defaults against
+// the explicitly-configured values, both via the pure accessors and — for the
+// on-the-wire fields — via a capturing httptest server (Mission A: the config
+// fallback branches).
+func TestAnthropicModelConfigFallbacks(t *testing.T) {
+	custom := &http.Client{}
+	cases := []struct {
+		name        string
+		m           *AnthropicModel
+		wantBase    string
+		wantVersion string
+		wantMaxTok  int
+		wantClient  *http.Client
+	}{
+		{
+			name:        "all unset falls back to documented defaults",
+			m:           &AnthropicModel{ModelID: "m"},
+			wantBase:    "https://api.anthropic.com",
+			wantVersion: "2023-06-01",
+			wantMaxTok:  1024,
+			wantClient:  http.DefaultClient,
+		},
+		{
+			name: "all set wins over defaults",
+			m: &AnthropicModel{ModelID: "m", BaseURL: "http://example.test",
+				APIVersion: "2030-01-01", MaxTokens: 42, HTTPClient: custom},
+			wantBase:    "http://example.test",
+			wantVersion: "2030-01-01",
+			wantMaxTok:  42,
+			wantClient:  custom,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.m.baseURL(); got != tc.wantBase {
+				t.Fatalf("baseURL = %q, want %q", got, tc.wantBase)
+			}
+			if got := tc.m.apiVersion(); got != tc.wantVersion {
+				t.Fatalf("apiVersion = %q, want %q", got, tc.wantVersion)
+			}
+			if got := tc.m.maxTokens(); got != tc.wantMaxTok {
+				t.Fatalf("maxTokens = %d, want %d", got, tc.wantMaxTok)
+			}
+			if got := tc.m.httpClient(); got != tc.wantClient {
+				t.Fatalf("httpClient = %p, want %p", got, tc.wantClient)
+			}
+		})
+	}
+
+	// On the wire: with APIVersion/MaxTokens/HTTPClient unset the request must
+	// carry the defaults (BaseURL points at the capture server).
+	var gotVersion string
+	var gotMaxTokens int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotVersion = r.Header.Get("anthropic-version")
+		var req struct {
+			MaxTokens int `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotMaxTokens = req.MaxTokens
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",` +
+			`"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	m := &AnthropicModel{APIKey: "sk-test", ModelID: "m", BaseURL: srv.URL}
+	if _, _, err := m.Run(context.Background(), "hi"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if gotVersion != "2023-06-01" || gotMaxTokens != 1024 {
+		t.Fatalf("wire defaults wrong: version=%q max_tokens=%d", gotVersion, gotMaxTokens)
+	}
+}

@@ -2,7 +2,6 @@ package agentdb
 
 import (
 	"fmt"
-	"log"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -33,7 +32,7 @@ func Open(postgresURL string) (*Store, error) {
 func MustOpen(postgresURL string) *Store {
 	s, err := Open(postgresURL)
 	if err != nil {
-		log.Fatalf("agentdb.MustOpen: %v", err)
+		panic(fmt.Sprintf("agentdb.MustOpen: %v", err))
 	}
 	return s
 }

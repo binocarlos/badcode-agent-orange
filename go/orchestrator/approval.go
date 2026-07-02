@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -33,6 +34,15 @@ func FilePendingPost(ctx context.Context, ts TicketStore, ticketID string, p Pos
 // un-bypassable publish gate (contracts §7 floor #3): Connector.Publish is
 // reachable only through Approve, which runs only on an explicit human action.
 type ApprovalService struct {
+	// mu serializes Approve/Reject/Answer within this process. Each is a
+	// get-check-act sequence over the ticket, so two concurrent Approves for the
+	// same ticket would BOTH see the PendingPost and BOTH publish — the
+	// exactly-once gate must not depend on caller timing. Process-local
+	// serialization is the single-box v1 answer; cross-process idempotency rides
+	// on Post.DedupeKey (= the ticket id, §10b E-5) at the Connector, which must
+	// treat a repeated key as already-published.
+	mu sync.Mutex
+
 	tickets   TicketStore
 	connector Connector // unexported: nothing outside this type can reach Publish
 	tel       Telemetry // §10b E-1: ctx+error interface (not *Telemetry)
@@ -53,6 +63,8 @@ func NewApprovalService(ts TicketStore, c Connector, tel Telemetry) *ApprovalSer
 // has no pending post (guards double-publish). If the Connector fails, the ticket
 // is left Needs-Human with its pending post intact so the operator can retry.
 func (a *ApprovalService) Approve(ctx context.Context, ticketID string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	t, err := a.tickets.Get(ctx, ticketID)
 	if err != nil {
 		return "", fmt.Errorf("approve %s: %w", ticketID, err)
@@ -96,6 +108,8 @@ func (a *ApprovalService) Approve(ctx context.Context, ticketID string) (string,
 // the cap keeps the ticket needs_human instead of re-queuing — the same uniform
 // accounting as a verify failure. Reject never touches a.connector.
 func (a *ApprovalService) Reject(ctx context.Context, ticketID, note string) (HumanFeedback, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	t, err := a.tickets.Get(ctx, ticketID)
 	if err != nil {
 		return HumanFeedback{}, fmt.Errorf("reject %s: %w", ticketID, err)
@@ -122,6 +136,8 @@ func (a *ApprovalService) Answer(ctx context.Context, ticketID, text string) err
 	if strings.TrimSpace(text) == "" {
 		return fmt.Errorf("answer %s: empty text", ticketID)
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	t, err := a.tickets.Get(ctx, ticketID)
 	if err != nil {
 		return fmt.Errorf("answer %s: %w", ticketID, err)

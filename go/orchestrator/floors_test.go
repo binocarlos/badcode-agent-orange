@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -98,4 +99,39 @@ func TestSpawnLedgerReleaseFreesTheParentSlot(t *testing.T) {
 	// Releasing an unknown session or the root is a safe no-op.
 	l.Release("ghost")
 	l.Release("mgr")
+}
+
+// Charge error paths + the exhaustion boundary (Mission A).
+
+func TestChargeUnknownSession(t *testing.T) {
+	l := NewSpawnLedger()
+	err := l.Charge("ghost", 10)
+	if err == nil || !strings.Contains(err.Error(), `charge unknown session "ghost"`) {
+		t.Fatalf("charge unknown session: err = %v", err)
+	}
+}
+
+func TestChargeExhaustionBoundaryAndClamp(t *testing.T) {
+	l := NewSpawnLedger()
+	budget := Budget{MaxDepth: 3, MaxSpawns: 5, TreeTokens: 100}
+	l.RegisterRoot("root", budget)
+
+	// Drain to EXACTLY zero: the next Admit must refuse (tree[troot] <= 0).
+	if err := l.Charge("root", 100); err != nil {
+		t.Fatalf("charge to zero: %v", err)
+	}
+	if _, err := l.Admit(Scope{Parent: "root", Budget: budget}); !errors.Is(err, ErrTreeExhausted) {
+		t.Fatalf("admit at zero remaining: err = %v, want ErrTreeExhausted", err)
+	}
+
+	// Over-charging clamps at 0 (never negative) and stays exhausted.
+	if err := l.Charge("root", 50); err != nil {
+		t.Fatalf("over-charge: %v", err)
+	}
+	if got := l.tree["root"]; got != 0 {
+		t.Fatalf("tree tokens clamped wrong: %d, want 0", got)
+	}
+	if _, err := l.Admit(Scope{Parent: "root", Budget: budget}); !errors.Is(err, ErrTreeExhausted) {
+		t.Fatalf("admit after clamp: err = %v, want ErrTreeExhausted", err)
+	}
 }
