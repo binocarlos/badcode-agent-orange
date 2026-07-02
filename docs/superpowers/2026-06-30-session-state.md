@@ -110,19 +110,36 @@ Foundation ✅ and the Slice-A proof ✅ are done and clean. Remaining:
   ran the suite + committed. `watchapi/bind_test.go` is the integration proof — compile-time assertions
   that the real C/D impls satisfy the E ports, so the slices genuinely wire together.
 
+### Remediation (2026-07-02) — COMPLETE
+
+An adversarial review (8 finder angles → 18 verified findings, 15 CONFIRMED) drove a three-pass
+remediation, specified in **`docs/superpowers/specs/2026-07-02-v1-contracts-10c-remediation.md`**
+(the §10c amendment — read it alongside the original contracts):
+
+- **Foundation′** `5be0bea` — `Model.Run` returns `Usage` (one token currency for ledger + meter);
+  `Ticket.Disposition`/`AttemptNotes`; `Run.TicketID`/`SessionID`; dead `RevisionDTO` deleted.
+- **Wave 1** `6be9908` — the 7 §I storage/gate fixes: the `{}`-round-trip gate bypass, guarded
+  Update (no phantom upserts), seq retry-on-conflict, ONE shared fold (`agentdb.FoldFragments`) +
+  fail-loud non-fragment Append, spend always counted, migration 025, reject-note-before-state.
+- **Wave 2** `7939080` — the primitives: `transitions.go` state machine (single lane/attempts
+  mutator), the **disposition hop** (verify-pass + publish → PendingPost at the gate — the chain
+  goal→draft→verify→pending→approve→published now works and is pinned by
+  `TestGoalToPublishedPost`), feedback-carrying retries (`TestVerifyFailFeedbackDrivesRetryToPublished`),
+  `Answer` endpoint (escalations resume), `SpawnLedger.Release` (in-flight cap), incremental
+  fence-stripped planning (standing goals), structured PASS:/FAIL: verify.
+
 ### Remaining work
 - **Slice F — supervised deploy (with the human).** Real GCP/DinD, secrets, one social channel, live
-  run behind the approval gate. Pay the two tracked debts below as part of F.
-
-### Tracked follow-ups to resolve during/after F
-1. **E-3 composition** (see above) — manager composes → `Scope.Prompt`; the DinD runtime consumes it
-   (the in-proc double's internal `Compose` goes away). Bounded refactor at the F boundary.
-2. **Ticket JSON casing** — `orchestrator.Ticket` has no JSON tags, so `GET /api/tickets` serializes
-   PascalCase while every other DTO is snake_case. Resolve with a `TicketDTO` snake_case projection in
-   `watchapi` (consistent with `RevisionDTO`/`RunDTO`/`BoardDTO`); do NOT add tags to the frozen type
-   without deciding. Flagged by the Slice-E agent, not self-applied.
-3. **SpendMeter not yet wired into the manager loop** — Slice B built it; the manager/worker spawn path
-   does not yet call `Charge`. Wire the monthly ceiling into dispatch before any live run (mandatory).
+  run behind the approval gate. Tracked debts to pay at F:
+  1. **E-3 composition** — manager composes → `Scope.Prompt`; the DinD runtime consumes it (the
+     in-proc double's internal `Compose` goes away). Bounded refactor at the F boundary.
+  2. **SpendMeter production wiring** — the mechanism is complete and tested (probe halts, spend
+     always counted, `ErrSpendCeiling` spawn-halt handled in chooseAndSpawn), but the deploy must
+     actually construct `NewMemSpendMeter(ceiling)` and pass it via `RouterConfig.Meter`. Mandatory
+     before any live run.
+- **§10c §K deferred list** (post-F/v1.5): outcome ingestion (channel signals → feedback; needs a
+  prompt-injection design pass) · fold caching/pagination perf · Tick mutual-exclusion lease ·
+  `TicketDTO` snake_case projection · dead-field cleanup (`Scope.Tools`, `TickReport`).
 
 **Guardrails for autonomous build:** branch (not main); no push/PR/deploy; no real credentials or
 publishing; build against mock/scripted model offline; TDD; `go build ./...` stays green;
