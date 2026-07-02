@@ -50,7 +50,8 @@ func main() {
 		PendingPost: mustJSON(orchestrator.Post{Channel: "bluesky", Text: "hello world (draft)"}),
 	})
 
-	// the real Slice-D approval service is BOTH the Approver and the Rejecter port.
+	// the real Slice-D approval service is the Approver, Rejecter AND (§10c §E)
+	// Answerer port.
 	approval := orchestrator.NewApprovalService(tickets, demoConnector{}, tel)
 
 	// the real Slice-C learning applier: a scripted reviser makes the change visible.
@@ -69,6 +70,7 @@ func main() {
 		Telemetry: tel,
 		Approver:  approval,
 		Rejecter:  approval,
+		Answerer:  approval,
 		Feedback:  feedback,
 		Trigger:   demoTrigger{},
 	})

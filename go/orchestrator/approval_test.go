@@ -106,6 +106,100 @@ func TestRejectEmitsFeedbackAndDoesNotPublish(t *testing.T) {
 	}
 }
 
+// §10c §D: Reject routes through Transition — it increments Attempts, appends the
+// note to AttemptNotes, and at the cap goes needs_human instead of todo (the
+// Reject attempts-bypass is fixed).
+func TestRejectIncrementsAttemptsAndCapsAtNeedsHuman(t *testing.T) {
+	ctx := context.Background()
+	ts := NewMemTickets()
+	svc := NewApprovalService(ts, &FakeConnector{}, NewTelemetry())
+
+	id := seedDraftTicket(t, ts)
+	_ = FilePendingPost(ctx, ts, id, Post{Channel: "demo", Text: "draft v1"})
+	if _, err := svc.Reject(ctx, id, "too flat"); err != nil {
+		t.Fatalf("reject 1: %v", err)
+	}
+	after1, _ := ts.Get(ctx, id)
+	if after1.Status != StatusTodo || after1.Attempts != 1 ||
+		len(after1.AttemptNotes) != 1 || after1.AttemptNotes[0] != "too flat" {
+		t.Fatalf("reject must count the attempt and keep the note: %+v", after1)
+	}
+
+	// Second reject reaches DefaultMaxAttempts(2) → needs_human (fail-loud, no loop).
+	_ = FilePendingPost(ctx, ts, id, Post{Channel: "demo", Text: "draft v2"})
+	if _, err := svc.Reject(ctx, id, "still flat"); err != nil {
+		t.Fatalf("reject 2: %v", err)
+	}
+	after2, _ := ts.Get(ctx, id)
+	if after2.Status != StatusNeedsHuman || after2.Attempts != 2 || len(after2.AttemptNotes) != 2 {
+		t.Fatalf("reject at cap must go needs_human: %+v", after2)
+	}
+	if len(after2.PendingPost) != 0 {
+		t.Fatalf("reject must still clear the pending post at the cap: %+v", after2)
+	}
+}
+
+// §10c §E: Answer resumes an escalated (needs_human, no PendingPost) ticket —
+// the text lands in AttemptNotes, the stale Result clears, the ticket re-enters
+// the queue WITHOUT burning an attempt.
+func TestAnswerResumesEscalatedTicket(t *testing.T) {
+	ctx := context.Background()
+	ts := NewMemTickets()
+	svc := NewApprovalService(ts, &FakeConnector{}, NewTelemetry())
+
+	res, _ := json.Marshal(Result{Output: "what tone should I use?", Status: ResultEscalated})
+	id, _ := ts.Create(ctx, Ticket{Title: "draft", Status: StatusNeedsHuman, Result: res, Attempts: 1})
+
+	if err := svc.Answer(ctx, id, "use a playful tone"); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	got, _ := ts.Get(ctx, id)
+	if got.Status != StatusTodo {
+		t.Fatalf("answered ticket = %s, want todo", got.Status)
+	}
+	if got.Attempts != 1 {
+		t.Fatalf("answer must NOT increment attempts: %d", got.Attempts)
+	}
+	if len(got.AttemptNotes) != 1 || got.AttemptNotes[0] != "use a playful tone" {
+		t.Fatalf("answer text must land in AttemptNotes: %v", got.AttemptNotes)
+	}
+	if len(got.Result) != 0 {
+		t.Fatalf("answer must clear the stale escalation Result: %s", got.Result)
+	}
+}
+
+func TestAnswerRejectsInvalidStates(t *testing.T) {
+	ctx := context.Background()
+	ts := NewMemTickets()
+	svc := NewApprovalService(ts, &FakeConnector{}, NewTelemetry())
+
+	// A needs_human ticket WITH a pending post: answer must refuse and direct the
+	// operator to approve/reject (answering a pending post is NOT reject-with-guidance).
+	id := seedDraftTicket(t, ts)
+	_ = FilePendingPost(ctx, ts, id, Post{Channel: "demo", Text: "draft"})
+	if err := svc.Answer(ctx, id, "some guidance"); err == nil {
+		t.Fatalf("answer on a pending post must error")
+	}
+	if tk, _ := ts.Get(ctx, id); tk.Status != StatusNeedsHuman || len(tk.PendingPost) == 0 {
+		t.Fatalf("failed answer must leave the pending post intact: %+v", tk)
+	}
+
+	// Not needs_human → error.
+	todoID, _ := ts.Create(ctx, Ticket{Status: StatusTodo})
+	if err := svc.Answer(ctx, todoID, "hi"); err == nil {
+		t.Fatalf("answer on a todo ticket must error")
+	}
+	// Unknown ticket → error.
+	if err := svc.Answer(ctx, "nope", "hi"); err == nil {
+		t.Fatalf("answer on unknown ticket must error")
+	}
+	// Empty text → error (an answer IS the text).
+	escID, _ := ts.Create(ctx, Ticket{Status: StatusNeedsHuman})
+	if err := svc.Answer(ctx, escID, "  "); err == nil {
+		t.Fatalf("empty answer must error")
+	}
+}
+
 func TestApproveKeepsTicketPendingOnConnectorFailure(t *testing.T) {
 	ctx := context.Background()
 	ts := NewMemTickets()

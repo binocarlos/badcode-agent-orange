@@ -41,6 +41,18 @@ func (f *fakeRejecter) Reject(_ context.Context, id, note string) (orchestrator.
 	return orchestrator.HumanFeedback{TargetRef: "ticket:" + id, Note: note}, nil
 }
 
+type answerCall struct{ ID, Text string }
+
+type fakeAnswerer struct {
+	calls []answerCall
+	err   error
+}
+
+func (f *fakeAnswerer) Answer(_ context.Context, id, text string) error {
+	f.calls = append(f.calls, answerCall{id, text})
+	return f.err
+}
+
 type fakeFeedback struct {
 	got []orchestrator.HumanFeedback
 	rev string
@@ -69,6 +81,7 @@ func newTestConfig() Config {
 		Telemetry: orchestrator.NewTelemetry(),
 		Approver:  &fakeApprover{ref: "at://did/post/1"},
 		Rejecter:  &fakeRejecter{},
+		Answerer:  &fakeAnswerer{},
 		Feedback:  &fakeFeedback{rev: "r2"},
 		Trigger:   &fakeTrigger{},
 	}
@@ -82,6 +95,7 @@ type testDeps struct {
 	tel      *orchestrator.MemTelemetry
 	approver *fakeApprover
 	rejecter *fakeRejecter
+	answerer *fakeAnswerer
 	feedback *fakeFeedback
 	trigger  *fakeTrigger
 }
@@ -93,15 +107,16 @@ func newTestHandlers(t *testing.T) (*Handlers, testDeps) {
 	tel := orchestrator.NewTelemetry()
 	ap := &fakeApprover{ref: "at://did/post/1"}
 	rj := &fakeRejecter{}
+	an := &fakeAnswerer{}
 	fb := &fakeFeedback{rev: "r2"}
 	tr := &fakeTrigger{}
 	cfg := Config{Board: board, Revisions: board, Tickets: tickets, Telemetry: tel,
-		Approver: ap, Rejecter: rj, Feedback: fb, Trigger: tr}
+		Approver: ap, Rejecter: rj, Answerer: an, Feedback: fb, Trigger: tr}
 	h, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	return h, testDeps{cfg, board, tickets, tel, ap, rj, fb, tr}
+	return h, testDeps{cfg, board, tickets, tel, ap, rj, an, fb, tr}
 }
 
 // --- HTTP test helpers (Task 12) ---

@@ -3,8 +3,23 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 )
+
+// failRouter/failModel: a deterministic always-erroring Model double for the
+// spawn-error / spend-halt paths (every tier resolves to the same failure).
+type failRouter struct{ err error }
+
+func (f failRouter) For(ModelTier) Model { return failModel{err: f.err} }
+
+type failModel struct{ err error }
+
+func (m failModel) Run(context.Context, string) (string, Usage, error) {
+	return "", Usage{}, m.err
+}
+
+var errBoom = errors.New("model boom")
 
 func TestInProcRuntimeDraftsAndSinksToInReview(t *testing.T) {
 	ctx := context.Background()
@@ -96,6 +111,46 @@ func TestInProcRuntimeEscalationSinksToNeedsHuman(t *testing.T) {
 	_ = json.Unmarshal(got.Result, &r)
 	if r.Status != ResultEscalated || r.Output != "what tone should I use?" {
 		t.Fatalf("escalation result wrong: %+v", r)
+	}
+}
+
+// §10c §F: a completed worker frees its parent's in-flight slot — with
+// MaxSpawns=1 two SEQUENTIAL spawns both succeed (capacity is in-flight, not
+// lifetime), and a model failure also releases (any terminal outcome frees).
+func TestInProcRuntimeReleasesSlotOnCompletion(t *testing.T) {
+	ctx := context.Background()
+	board := NewMemBoard()
+	_, _ = board.Append(ctx, SeedFragment("role-writer", "writer"))
+	tickets := NewMemTickets()
+	budget := Budget{MaxDepth: 3, MaxSpawns: 1, TreeTokens: 10000}
+	ledger := NewSpawnLedger()
+	ledger.RegisterRoot("mgr", budget)
+
+	rt := &InProcRuntime{Board: board,
+		Router: ScriptedRouter{TierMid: &ScriptedModel{Default: "a draft"}},
+		Sink:   &TicketResultSink{Tickets: tickets}, Ledger: ledger, Telemetry: NewTelemetry()}
+
+	for i := 0; i < 2; i++ { // two sequential workers under MaxSpawns=1
+		id, _ := tickets.Create(ctx, Ticket{Status: StatusInProgress})
+		if _, err := rt.Spawn(ctx, Scope{Template: "{{fragment:role-writer}}", Input: "x",
+			Tier: TierMid, Budget: budget, Parent: "mgr", TicketID: id}); err != nil {
+			t.Fatalf("sequential spawn %d must succeed after release: %v", i+1, err)
+		}
+	}
+
+	// A failing model call is also terminal → the slot still frees.
+	failing := &InProcRuntime{Board: board,
+		Router: failRouter{err: errBoom},
+		Sink:   &TicketResultSink{Tickets: tickets}, Ledger: ledger, Telemetry: NewTelemetry()}
+	id, _ := tickets.Create(ctx, Ticket{Status: StatusInProgress})
+	if _, err := failing.Spawn(ctx, Scope{Template: "{{fragment:role-writer}}", Input: "x",
+		Tier: TierMid, Budget: budget, Parent: "mgr", TicketID: id}); err == nil {
+		t.Fatalf("expected model failure")
+	}
+	id2, _ := tickets.Create(ctx, Ticket{Status: StatusInProgress})
+	if _, err := rt.Spawn(ctx, Scope{Template: "{{fragment:role-writer}}", Input: "x",
+		Tier: TierMid, Budget: budget, Parent: "mgr", TicketID: id2}); err != nil {
+		t.Fatalf("spawn after failed worker must succeed (slot released): %v", err)
 	}
 }
 

@@ -50,6 +50,14 @@ type Rejecter interface {
 	Reject(ctx context.Context, ticketID, note string) (orchestrator.HumanFeedback, error)
 }
 
+// Answerer resumes an escalated needs_human ticket with the human's answer
+// (§10c §E): the text lands in AttemptNotes and the ticket re-enters the queue.
+// Valid only WITHOUT a PendingPost — a drafted post is approved or rejected,
+// never answered. *orchestrator.ApprovalService satisfies it.
+type Answerer interface {
+	Answer(ctx context.Context, ticketID, text string) error
+}
+
 // Config wires the ports. AuthToken "" disables the guard (local dev only).
 // Feedback and Trigger are the frozen orchestrator seams so the real Slice-C
 // impls (HumanFeedbackApplier, ExchangeTrigger) bind directly.
@@ -60,6 +68,7 @@ type Config struct {
 	Telemetry TelemetryReader
 	Approver  Approver
 	Rejecter  Rejecter
+	Answerer  Answerer
 	Feedback  orchestrator.FeedbackApplier
 	Trigger   orchestrator.Triggerer
 	AuthToken string
@@ -85,6 +94,8 @@ func New(cfg Config) (*Handlers, error) {
 		return nil, errors.New("watchapi: Approver is required")
 	case cfg.Rejecter == nil:
 		return nil, errors.New("watchapi: Rejecter is required")
+	case cfg.Answerer == nil:
+		return nil, errors.New("watchapi: Answerer is required")
 	case cfg.Feedback == nil:
 		return nil, errors.New("watchapi: Feedback is required")
 	case cfg.Trigger == nil:
@@ -93,14 +104,15 @@ func New(cfg Config) (*Handlers, error) {
 	return &Handlers{cfg: cfg}, nil
 }
 
-// Mux registers the eight §8 routes (go1.22 method+path patterns) plus the thin
-// embedded web client, all behind the shared-token guard.
+// Mux registers the §8 routes (go1.22 method+path patterns; §10c §E adds
+// /answer) plus the thin embedded web client, all behind the shared-token guard.
 func (h *Handlers) Mux() *http.ServeMux {
 	m := http.NewServeMux()
 	// §8 API
 	m.HandleFunc("GET /api/tickets", h.ListTickets)
 	m.HandleFunc("POST /api/tickets/{id}/approve", h.Approve)
 	m.HandleFunc("POST /api/tickets/{id}/reject", h.Reject)
+	m.HandleFunc("POST /api/tickets/{id}/answer", h.Answer)
 	m.HandleFunc("POST /api/feedback", h.Feedback)
 	m.HandleFunc("GET /api/board/revisions", h.Revisions)
 	m.HandleFunc("GET /api/board/current", h.Current)

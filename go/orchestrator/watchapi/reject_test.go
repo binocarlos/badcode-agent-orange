@@ -90,7 +90,7 @@ func TestRejectOrderingWithRealApprovalService(t *testing.T) {
 		}
 		svc := orchestrator.NewApprovalService(tickets, nopConnector{}, tel)
 		cfg := Config{Board: board, Revisions: board, Tickets: tickets, Telemetry: tel,
-			Approver: svc, Rejecter: svc, Feedback: fb, Trigger: &fakeTrigger{}}
+			Approver: svc, Rejecter: svc, Answerer: svc, Feedback: fb, Trigger: &fakeTrigger{}}
 		return cfg, tickets, board, id
 	}
 

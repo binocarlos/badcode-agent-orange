@@ -7,6 +7,7 @@ import "github.com/binocarlos/badcode-agent-orange/orchestrator"
 var (
 	_ Approver        = (*orchestrator.ApprovalService)(nil)
 	_ Rejecter        = (*orchestrator.ApprovalService)(nil)
+	_ Answerer        = (*orchestrator.ApprovalService)(nil)
 	_ RevisionLister  = (*orchestrator.MemBoard)(nil)
 	_ TelemetryReader = (*orchestrator.MemTelemetry)(nil)
 

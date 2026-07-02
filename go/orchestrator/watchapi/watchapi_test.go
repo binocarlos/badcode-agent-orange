@@ -26,6 +26,11 @@ func TestNewRequiresPorts(t *testing.T) {
 	if _, err := New(missingRejecter); err == nil {
 		t.Fatalf("expected error when Rejecter nil")
 	}
+	missingAnswerer := newTestConfig()
+	missingAnswerer.Answerer = nil
+	if _, err := New(missingAnswerer); err == nil {
+		t.Fatalf("expected error when Answerer nil")
+	}
 }
 
 func TestAuthGuard(t *testing.T) {

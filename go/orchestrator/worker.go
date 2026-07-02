@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
@@ -33,6 +32,11 @@ func (rt *InProcRuntime) Spawn(ctx context.Context, s Scope) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// §10c §F: the admitted slot is IN-FLIGHT capacity — any terminal outcome
+	// (delivered result, model failure, compose failure) frees it, so a parent's
+	// MaxSpawns caps concurrent fan-out, not lifetime children. NOT released on
+	// Admit refusal above (nothing was admitted).
+	defer rt.Ledger.Release(sid)
 	board, err := rt.Board.Current(ctx)
 	if err != nil {
 		return "", fmt.Errorf("worker %s: current board: %w", s.Name, err)
@@ -87,13 +91,13 @@ func (s *TicketResultSink) Deliver(ctx context.Context, r Result) error {
 		return err
 	}
 	t.Result = body
+	// §10c §D: lane moves route through the ONE transition function.
 	switch r.Status {
 	case ResultEscalated, ResultFailed:
-		t.Status = StatusNeedsHuman
+		Transition(&t, EvEscalated, "", 0)
 	default:
-		t.Status = StatusInReview
+		Transition(&t, EvDelivered, "", 0)
 	}
-	t.UpdatedAt = time.Now().Unix()
 	return s.Tickets.Update(ctx, t)
 }
 

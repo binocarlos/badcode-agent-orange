@@ -24,16 +24,19 @@ type SpawnLedger struct {
 	seq       int
 	depth     map[string]int    // sessionID -> depth
 	maxSpawns map[string]int    // sessionID -> its own fan-out cap
-	spawns    map[string]int    // sessionID -> children spawned so far
+	spawns    map[string]int    // sessionID -> children currently in flight (§10c §F)
+	parent    map[string]string // sessionID -> parent sessionID (for Release)
 	root      map[string]string // sessionID -> tree-root sessionID
 	tree      map[string]int64  // tree-root sessionID -> shared tokens remaining
+	released  map[string]bool   // sessionIDs already released (idempotency)
 }
 
 // NewSpawnLedger returns an empty ledger.
 func NewSpawnLedger() *SpawnLedger {
 	return &SpawnLedger{
 		depth: map[string]int{}, maxSpawns: map[string]int{},
-		spawns: map[string]int{}, root: map[string]string{}, tree: map[string]int64{},
+		spawns: map[string]int{}, parent: map[string]string{},
+		root: map[string]string{}, tree: map[string]int64{}, released: map[string]bool{},
 	}
 }
 
@@ -73,9 +76,31 @@ func (l *SpawnLedger) Admit(s Scope) (string, error) {
 	sid := fmt.Sprintf("s%d", l.seq)
 	l.depth[sid] = depth
 	l.maxSpawns[sid] = s.Budget.MaxSpawns
+	l.parent[sid] = s.Parent
 	l.root[sid] = troot
 	l.spawns[s.Parent]++
 	return sid, nil
+}
+
+// Release frees the session's slot in its PARENT's in-flight spawn count (floored
+// at 0) once the session reaches a terminal outcome — §10c §F: Budget.MaxSpawns is
+// an in-flight fan-out cap, not a lifetime one. Idempotent per session; releasing
+// an unknown session or a root is a no-op. Depth records and the tree-token ledger
+// are untouched (tokens genuinely accumulate).
+func (l *SpawnLedger) Release(sessionID string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.released[sessionID] {
+		return
+	}
+	p, ok := l.parent[sessionID]
+	if !ok {
+		return // never admitted here (or a registered root) — nothing to free
+	}
+	l.released[sessionID] = true
+	if l.spawns[p] > 0 {
+		l.spawns[p]--
+	}
 }
 
 // Charge decrements the session's tree-root shared budget (clamped at 0). This is

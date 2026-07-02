@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // FilePendingPost turns a worker's draft into a PendingPost on a Needs-Human
@@ -20,7 +22,10 @@ func FilePendingPost(ctx context.Context, ts TicketStore, ticketID string, p Pos
 		return fmt.Errorf("file pending post %s: marshal: %w", ticketID, err)
 	}
 	t.PendingPost = body
+	// PendingPost bookkeeping owns this lane set (the §10c §D exception): a filed
+	// post IS the needs_human state, whatever lane the draft came from.
 	t.Status = StatusNeedsHuman
+	t.UpdatedAt = time.Now().Unix()
 	return ts.Update(ctx, t)
 }
 
@@ -31,6 +36,11 @@ type ApprovalService struct {
 	tickets   TicketStore
 	connector Connector // unexported: nothing outside this type can reach Publish
 	tel       Telemetry // §10b E-1: ctx+error interface (not *Telemetry)
+
+	// MaxAttempts is the retry cap Reject counts against (§10c §D uniform
+	// attempts accounting). 0 means DefaultMaxAttempts; set it to match
+	// ManagerExchange.MaxAttempts when that is configured.
+	MaxAttempts int
 }
 
 // NewApprovalService is the ONLY constructor that accepts a Connector.
@@ -66,7 +76,7 @@ func (a *ApprovalService) Approve(ctx context.Context, ticketID string) (string,
 	// §10b E-4: persist the channel's returned ref as attribution before → Done.
 	t.PublishedRef = ref
 	t.PendingPost = nil
-	t.Status = StatusDone
+	Transition(&t, EvApproved, "", a.MaxAttempts) // §10c §D: needs_human → done
 	if err := a.tickets.Update(ctx, t); err != nil {
 		return "", fmt.Errorf("approve %s: persist done: %w", ticketID, err)
 	}
@@ -80,9 +90,11 @@ func (a *ApprovalService) Approve(ctx context.Context, ticketID string) (string,
 
 // Reject clears the PendingPost WITHOUT publishing and returns the human's note
 // as HumanFeedback targeting the ticket (fed to write_fragment by Slice E's
-// /api/feedback — Reject itself does not edit guidance; Contract gap G4). The
-// ticket returns to Todo for a re-draft on the next tick. Reject never touches
-// a.connector.
+// /api/feedback — Reject itself does not edit guidance; Contract gap G4). §10c
+// §D: the lane move routes through Transition (EvRejected), which increments
+// Attempts, appends the note to AttemptNotes (so the next draft sees it), and at
+// the cap keeps the ticket needs_human instead of re-queuing — the same uniform
+// accounting as a verify failure. Reject never touches a.connector.
 func (a *ApprovalService) Reject(ctx context.Context, ticketID, note string) (HumanFeedback, error) {
 	t, err := a.tickets.Get(ctx, ticketID)
 	if err != nil {
@@ -92,9 +104,38 @@ func (a *ApprovalService) Reject(ctx context.Context, ticketID, note string) (Hu
 		return HumanFeedback{}, fmt.Errorf("reject %s: no pending post", ticketID)
 	}
 	t.PendingPost = nil
-	t.Status = StatusTodo
+	Transition(&t, EvRejected, note, a.MaxAttempts)
 	if err := a.tickets.Update(ctx, t); err != nil {
 		return HumanFeedback{}, fmt.Errorf("reject %s: persist: %w", ticketID, err)
 	}
 	return HumanFeedback{TargetRef: "ticket:" + ticketID, Note: note}, nil
+}
+
+// Answer resumes an ESCALATED ticket (§10c §E — the escalation is answerable,
+// not a roach motel): valid only on a needs_human ticket WITHOUT a PendingPost.
+// If a PendingPost exists the operator must approve or reject instead — answering
+// a drafted post is not reject-with-guidance. Applies EvAnswered: the text lands
+// in AttemptNotes (the retry prompt feed), the stale escalation Result clears,
+// and the ticket returns to todo with NO attempt increment (an answer is new
+// information, not a failure).
+func (a *ApprovalService) Answer(ctx context.Context, ticketID, text string) error {
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("answer %s: empty text", ticketID)
+	}
+	t, err := a.tickets.Get(ctx, ticketID)
+	if err != nil {
+		return fmt.Errorf("answer %s: %w", ticketID, err)
+	}
+	if t.Status != StatusNeedsHuman {
+		return fmt.Errorf("answer %s: ticket is %q, not needs_human", ticketID, t.Status)
+	}
+	if len(t.PendingPost) > 0 {
+		return fmt.Errorf("answer %s: ticket has a pending post — approve or reject it instead", ticketID)
+	}
+	Transition(&t, EvAnswered, text, a.MaxAttempts)
+	t.Result = nil // the escalation question is consumed; the next run starts clean
+	if err := a.tickets.Update(ctx, t); err != nil {
+		return fmt.Errorf("answer %s: persist: %w", ticketID, err)
+	}
+	return nil
 }
