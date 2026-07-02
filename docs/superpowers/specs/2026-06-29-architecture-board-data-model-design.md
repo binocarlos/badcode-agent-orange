@@ -1,9 +1,59 @@
 # Architecture-Board Data Model — Design
 
 **Date:** 2026-06-29
-**Status:** Approved design (brainstorm complete). Build against this for the board data model.
-**Context:** `docs/ARCHITECTURE.md` §6B (operating model), §6C (board as GitOps), §10 (prompt
-composition), §11 (verification), §12 (roadmap). Reading order: `docs/AGENTS_DESIGN.md`.
+**Status:** First pass IMPLEMENTED and merged (`go/agentdb/board*.go`, migrations `020`/`021`).
+**Partly superseded** by the second-pass revision below — see **§0. Second-pass revision** before
+building further.
+**Context:** `docs/ARCHITECTURE.md` **§6D (authoritative primitive set)**, §6B (operating model),
+§6C (board as GitOps), §10 (prompt composition), §12 (roadmap). Reading order: `docs/AGENTS_DESIGN.md`.
+
+---
+
+## 0. Second-pass revision (2026-06-29) — the agentic-OS collapse
+
+After the first pass shipped, the design converged on the **agentic-OS model (`ARCHITECTURE.md` §6D)**.
+The governing rule is **dispatch vs. compose**: structure only what the runtime queries or dispatches
+on; leave everything the model merely *reads into a prompt* as fluid text the Consultants curate. That
+**collapses** most of the first-pass schema. This section is the authoritative delta; §3–§6 below are
+the first-pass design, kept for rationale/history.
+
+**What survives unchanged:**
+- **`board_revisions` + `board_head`** — the immutable, versioned changeset log (now versions the
+  `fragments` KV + subscriptions). Rollback + version-pinning are retained and are **independent of
+  gating**.
+- **`board_subscriptions`** — real dispatch (the bus matches `event_type`). Keep as built.
+
+**What collapses into one `fragments` KV** (named text values, versioned, Consultant-curated — only
+ever composed into prompts, never dispatched on):
+- `board_staff` → **removed**. A "staff member" is *role guidance text* (a fragment) + **enforced caps
+  as structured `spawn` args** (tool allowlist, model tier, budget — these are dispatch/enforcement,
+  not prose; they live on the Scope/`spawn` call of §7, not in a table).
+- `board_pipelines` (definitions) → **removed**. Pipeline *definition* = guidance text; *running* one
+  is the `run_pipeline` syscall; an *in-flight run* is the new `pipeline_runs` work-state table.
+- `board_event_types` → **removed** as a table. Event types are strings on `board_subscriptions`; the
+  *vocabulary* is a documentation fragment (symmetric with the label vocabulary).
+- `board_prompt_fragments` → **generalised** into the `fragments` KV holding *all* guidance: routing
+  guidance, role prompts, useful-pipelines guidance, label vocab, event vocab.
+- `payload_schema` (on the removed `board_event_types`) → **gone**; payloads are opaque text (§6D).
+
+**What is added (work state — read-write, ungated; gating tracks policy, not persistence):**
+- **`tickets`** — the kanban work items (the manager files/updates them as a free act). See
+  `ARCHITECTURE.md` §5 for the ticket shape. **Not** part of the versioned board log.
+- **`pipeline_runs`** — fire-and-forget in-flight pipeline state (current stage + status), emits
+  `pipeline.completed`. **Not** part of the versioned board log.
+
+**Memory labels:** the *applied* labels are a structured field on memory items (a memory-store concern,
+not the board); the label *vocabulary* is a `fragments` entry.
+
+**Gating (no schema needed):** `status: proposed → applied` on `board_revisions` is retained but
+**optional** — a policy write is versioned and applies immediately unless a *review subscription*
+routes its change event to a reviewer scope (which may `escalate_to_human`). The only non-editable
+floor is **resource safety** (loop-depth / budget / concurrency caps), enforced in mechanism.
+
+> **Implementation status:** the first-pass tables are merged but **not deployed/depended-on**, so this
+> collapse is a cheap revise. A follow-up implementation spec will: generalise `board_prompt_fragments`
+> → `fragments`, drop `board_staff` / `board_pipelines` / `board_event_types`, and add `tickets` /
+> `pipeline_runs`. Until then, treat §6D + this §0 as the target.
 
 ---
 

@@ -145,10 +145,13 @@ func TestBoardEventType_EmptyPayloadSchemaIsNoSchema(t *testing.T) {
 // NOT a production implementation (that lands in a later spec).
 type nopBoardStore struct{}
 
-func (nopBoardStore) Current(ctx context.Context) (Board, error)                     { return Board{}, nil }
-func (nopBoardStore) AsOf(ctx context.Context, revisionID string) (Board, error)     { return Board{Revision: revisionID}, nil }
-func (nopBoardStore) Head(ctx context.Context) (string, error)                       { return "", nil }
-func (nopBoardStore) Append(ctx context.Context, cs Changeset) (string, error)       { return "", nil }
+func (nopBoardStore) Current(ctx context.Context) (Board, error) { return Board{}, nil }
+func (nopBoardStore) AsOf(ctx context.Context, revisionID string) (Board, error) {
+	return Board{Revision: revisionID}, nil
+}
+func (nopBoardStore) Head(ctx context.Context) (string, error)                 { return "", nil }
+func (nopBoardStore) Append(ctx context.Context, cs Changeset) (string, error) { return "", nil }
+func (nopBoardStore) Revisions(ctx context.Context) ([]BoardRevision, error)   { return nil, nil }
 
 // Compile-time check: nopBoardStore satisfies BoardStore.
 var _ BoardStore = nopBoardStore{}

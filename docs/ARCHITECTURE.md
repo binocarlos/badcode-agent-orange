@@ -286,6 +286,12 @@ Consultant-driven self-improvement for a *general (non-code)* org — is empty.*
 §6 (the loop) and §6A (the event substrate) describe the machinery; this is the concrete operating
 model that runs on them, in the primitives we'll actually build.
 
+> **Superseded in part by §6D (2026-06-29).** The *staff-template* and *pipeline-definition* nouns
+> below were a useful first pass, but **§6D collapses them** (and the prompt-fragment / label-vocab /
+> event-taxonomy structures) into a single versioned text **`fragments` KV**, keeping only what the
+> runtime dispatches on (subscriptions, memory labels, enforced spawn caps) as structured. Read §6D
+> for the authoritative primitive set; the framing here remains valid, the rigid schemas do not.
+
 ### The low-level primitive (recap)
 Everything the org does is **an agentic session** = a prompt + a **tool config** (which *is* its
 memory access, skills, model, budget — the Scope of §7). Two coordination tools, exposed via MCP:
@@ -441,6 +447,111 @@ is empty space.** Verdicts:
 - **Build (novel):** the **board schema** (staff/scope/subscriptions/pipelines/taxonomy for a non-code
   org), the **Consultant→PR→gate→canary loop**, and the **small-n, delayed, gameable, human-bootstrapped
   evaluation gate** — which every adoptable canary/policy tool quietly assumes away.
+
+---
+
+## 6D. The agentic-OS model: primitives, dispatch-vs-compose, gate-as-subscription
+
+**Status: this is the consolidated operating model and it sharpens §6B.** §6B framed the org as
+**staff templates + pipeline definitions + a taxonomy** — useful first-pass nouns, but on reflection
+several of them bake in opinion the system doesn't need. This section replaces those rigid structures
+with a smaller, composable primitive set under an explicit **operating-system lens**, and demotes the
+**Consultant (§6A)** and the **gate (§6C)** from *primitives* to *patterns built from the primitives.*
+
+### The OS lens
+| OS concept | Agent Orange |
+|---|---|
+| process / thread | a **session** (a prompt + tools + model + budget = a Scope, §7) |
+| kernel / scheduler | the **Routing Manager** (one scope, triggered per event) |
+| kernel state (protected) | **policy config** — subscriptions + the fragment KV |
+| message bus | the **event bus** |
+| syscalls | the **system tools** every thread gets |
+| `init` / cron | **event sources** (triggers, timers) — core mechanism |
+| an enabled daemon | a **standing subscription** (event → reaction) |
+
+### The load-bearing rule: dispatch vs. compose
+The question that decides whether something is a structured table or just text is **does the runtime
+ever query or dispatch on it?**
+- **Dispatch → structured.** Code routes on it, so it needs real fields: `subscription.event_type`
+  (the bus matches on it), `memory.labels` (you filter on them), `ticket` fields, `pipeline_run`
+  status, and the **enforced execution caps** on a spawn (tool allowlist, model tier, budget).
+- **Compose → text.** It is only ever pasted into a prompt, so it is just a named text value: role
+  prompts, "kinds of specialists" guidance (was: staff templates), "useful pipelines" guidance (was:
+  pipeline definitions), the **label vocabulary**, and the **event-type vocabulary**. The runtime
+  never `WHERE model_tier='cheap'`s a staff template — it reads it and composes it into a prompt.
+
+This is the balance between *generically useful* and *over-opinionated*: structure only what executes;
+leave everything the model merely *reads* as fluid text the Consultants curate.
+
+### The collapse
+By that rule, **staff-templates + pipeline-definitions + prompt-fragments + label-vocab +
+event-taxonomy-docs all become one versioned key-value store of named text — the `fragments` KV** —
+curated in the background. Two elegant symmetries: *event vocabulary* and *label vocabulary* are both
+just documentation fragments, while their **dispatch** counterparts are the structured
+`subscription.event_type` and `memory.labels` fields. Same pattern, twice.
+
+**The one boundary where "just text" breaks — enforced execution scoping.** You cannot tell a leaf
+worker "don't use the destructive tool" in *prose* and trust it. Tool allowlist, model tier, and
+budget are **structured arguments to `spawn`**, enforced by the container/mechanism — not hoped-for in
+the prompt. So a "staff member" splits: its *role/guidance* → a fragment (collapse); its *enforced
+caps* → structured spawn args (§7). No staff *table*; `spawn` keeps structured caps. This preserves
+blast-radius safety (spend/irreversible tools never reach leaves) without a rigid template schema.
+
+### The revised primitive set (the syscalls)
+- **Thread syscalls** (every scope): `emit_event(type, text)`, `search_memory(query, labels)` /
+  `add_memory(text, labels)`, `job_finished(result)`, `escalate_to_human(text)`.
+- **Orchestration syscalls** (manager/privileged — *acting*, ungated): `spawn(prompt, tools, model,
+  budget)` (run one stage, fire-and-forget), `run_pipeline(name|stages)` (ordered spawns — sugar over
+  `spawn`), `query_subscriptions(event)`, `query_tickets` / `create_ticket` / `update_ticket`.
+- **Policy syscalls** (*rewiring* — versioned write, review optional): `write_fragment(id, text)` and
+  `write_subscription(...)`.
+
+Two non-primitives, explicitly dropped: **`draft_prompt`** (the manager just writes the stage prompt
+as text inline when it spawns) and **`query_history`** (past decisions are memories the archival bot
+labeled — it's just `search_memory`). Payloads are **opaque text**; the emitter writes them, the
+consumer interprets them, and "input" (human goal / event payload / prior-stage output) is one concept:
+text templated into the next prompt.
+
+### Three kinds of state — gating tracks *policy*, not *persistence*
+| Category | Examples | Mutability | Gated? |
+|---|---|---|---|
+| **Policy / config** | subscriptions, the `fragments` KV | read-write, **versioned** | optional (below) |
+| **Work state** | `tickets`, `pipeline_runs` | read-write | no |
+| **Telemetry** | events, routing decisions, outcomes, memories | append-only | n/a |
+
+Persistence was never the axis. Creating/updating a **ticket** is *acting* (ungated) even though it is
+durable — "customer emails a bug → manager files or updates a ticket" is a free act, like running a
+pipeline. Only **policy** (the org's standing wiring) is subject to review.
+
+### The gate is itself a subscription (opt-in), with a resource-only floor
+There is **no hardcoded human checkpoint.** A policy write is **versioned** (so any decision can pin
+the fragment/subscription version it ran against, and a bad edit is one `revert` away — rollback and
+attribution are independent of gating). *Whether* a write is reviewed is itself a **subscription**: a
+policy write emits a change event; if a review subscription exists, a **reviewer scope** runs and may
+auto-approve or call `escalate_to_human`. So the gate, the Consultant, archival, and "staff templates"
+are all **patterns over the primitives**, and *how strict the org governs itself is tunable org policy.*
+
+The **one assumption baked in as non-editable mechanism is resource safety** — loop-depth, budget, and
+concurrency caps on event chains — so the system cannot runaway-edit its own cost limits. Human review
+is *not* baked in; it is an opt-in reviewer subscription.
+
+### Pipelines: definition vs. run vs. execute
+A pipeline stage is a container that may run for minutes, so **the manager must never block on it**
+(consistent with the fire-and-forget handoff of §6). Pipelines split three ways: the *definition* is
+guidance **text** (a fragment); **executing** one is the `run_pipeline` syscall; and an *in-flight run*
+is a persisted **`pipeline_runs`** record (current stage + status) — **work state**, like a ticket —
+that emits `pipeline.completed` for the manager to react to on a later tick.
+
+### Worked examples — everything is built from primitives
+- **Archival (dogfooded, not core code).** A core event source emits `conversation.ended` after N
+  minutes of inactivity (mechanism). A **subscription** routes it to an **archival-bot scope** whose
+  *prompt* says "summarise this conversation, then label it (`conversation-summary`; add `manager` if
+  it is a manager thread)." The labeling scheme lives in the bot's prompt — a fragment — not in code.
+- **Self-improving manager (the Consultant, as a pattern).** A scope on a cron runs
+  `search_memory(labels=[conversation-summary, manager], limit=5)`, studies the recent manager
+  decisions, and `write_fragment("routing-guidance", …)` (≤ a length cap). Every manager scope
+  templates `{{fragment:routing-guidance}}` into its prompt — so the org continuously tunes its own
+  routing policy, built entirely from `scope + cron + search_memory + write_fragment`.
 
 ---
 

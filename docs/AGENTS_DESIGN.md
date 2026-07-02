@@ -48,6 +48,18 @@ Each is an exhaustive discovery pass (search → fetch → completeness-critic �
 blobarchive). See `ARCHITECTURE.md` §16 and the repo's `CLAUDE.md` / `MIGRATION.md`. Treat these as
 runtime reference, not agent-org design.
 
+## Session design records (2026-06-30 — read alongside ARCHITECTURE.md)
+A red-team / intent-interview session produced two records that **refine prioritisation and execution**
+on top of the architecture:
+- [`specs/2026-06-30-objectives-and-build-path.md`](superpowers/specs/2026-06-30-objectives-and-build-path.md)
+  — the confirmed objectives (credibility-through-novelty; narrative not metrics; the oracle
+  **demoted**), the severity-tiered Phase-3 findings, the one thing to validate, and the recommended
+  build path (**Option B, thin slice first**).
+- [`specs/2026-06-30-execution-coordination-model.md`](superpowers/specs/2026-06-30-execution-coordination-model.md)
+  — the execution mechanics: one `thread.finished` dispatch driver, fire-and-forget + continuations,
+  `ephemeral | snapshot` ↔ `shared | per-session` resume, fail-loud-on-rehydrate, recursion floors,
+  and the **learning loop** (human feedback and the Consultant are one primitive).
+
 ## What's next
 The architecture is complete end-to-end. The next build-shaping step is the **architecture-board data
 model** — the versioned git schema for staff templates, event subscriptions, pipelines, and the event
