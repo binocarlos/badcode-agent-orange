@@ -10,7 +10,6 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -29,15 +28,19 @@ type MemBoard struct {
 // NewMemBoard returns an empty in-memory board.
 func NewMemBoard() *MemBoard { return &MemBoard{} }
 
-// Append records a changeset as the next revision and moves head to it.
+// Append records a changeset as the next revision and moves head to it. §10c
+// I-4: a changeset carrying any non-prompt_fragment op is rejected fail-loud.
 func (m *MemBoard) Append(_ context.Context, cs agentdb.Changeset) (string, error) {
+	if err := agentdb.RequireFragmentOps(cs.Ops); err != nil {
+		return "", err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	seq := int64(len(m.revs) + 1)
 	id := fmt.Sprintf("r%d", seq)
 	m.revs = append(m.revs, agentdb.BoardRevision{
 		ID: id, ParentID: cs.ParentID, Seq: seq, Status: "applied",
-		Author: cs.Author, Message: cs.Message, Ops: toJSONArray(cs.Ops),
+		Author: cs.Author, Message: cs.Message, Ops: agentdb.OpsToJSON(cs.Ops),
 	})
 	return id, nil
 }
@@ -51,50 +54,13 @@ func (m *MemBoard) Current(ctx context.Context) (agentdb.Board, error) {
 	return m.AsOf(ctx, head)
 }
 
-// AsOf folds the log in seq order up to and including revisionID.
+// AsOf folds the log in seq order up to and including revisionID, via the one
+// shared fold (agentdb.FoldFragments — §10c I-4).
 func (m *MemBoard) AsOf(_ context.Context, revisionID string) (agentdb.Board, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	ordered := append([]agentdb.BoardRevision(nil), m.revs...)
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Seq < ordered[j].Seq })
-
-	frags := map[string]agentdb.BoardPromptFragment{}
-	var foundTarget bool
-	for _, rev := range ordered {
-		var ops []agentdb.Op
-		if err := json.Unmarshal(jsonArrayBytes(rev.Ops), &ops); err != nil {
-			return agentdb.Board{}, fmt.Errorf("fold %s: ops: %w", rev.ID, err)
-		}
-		for _, op := range ops {
-			if op.EntityType != "prompt_fragment" {
-				continue
-			}
-			switch op.Op {
-			case agentdb.OpAdd, agentdb.OpUpdate:
-				var f agentdb.BoardPromptFragment
-				if err := json.Unmarshal(op.Body, &f); err != nil {
-					return agentdb.Board{}, fmt.Errorf("fold %s: fragment: %w", rev.ID, err)
-				}
-				f.LastChangedIn = rev.ID
-				frags[op.EntityID] = f
-			case agentdb.OpRemove:
-				delete(frags, op.EntityID)
-			}
-		}
-		if rev.ID == revisionID {
-			foundTarget = true
-			break
-		}
-	}
-	if !foundTarget {
-		return agentdb.Board{}, fmt.Errorf("revision %q not found", revisionID)
-	}
-	out := agentdb.Board{Revision: revisionID}
-	for _, f := range frags {
-		out.Fragments = append(out.Fragments, f)
-	}
-	sort.Slice(out.Fragments, func(i, j int) bool { return out.Fragments[i].ID < out.Fragments[j].ID })
-	return out, nil
+	revs := append([]agentdb.BoardRevision(nil), m.revs...)
+	m.mu.Unlock()
+	return agentdb.FoldFragments(revs, revisionID)
 }
 
 // Revisions returns a copy of the append-only log in ascending seq order — the
@@ -115,18 +81,6 @@ func (m *MemBoard) Head(_ context.Context) (string, error) {
 		return "", fmt.Errorf("board empty")
 	}
 	return m.revs[len(m.revs)-1].ID, nil
-}
-
-func toJSONArray(ops []agentdb.Op) agentdb.JSONArray {
-	b, _ := json.Marshal(ops)
-	return agentdb.JSONArray(b)
-}
-
-func jsonArrayBytes(j agentdb.JSONArray) []byte {
-	if len(j) == 0 {
-		return []byte("[]")
-	}
-	return []byte(j)
 }
 
 // compile-time assertion that MemBoard satisfies the seam.

@@ -357,6 +357,17 @@ var agentMigrations = []migration{
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_seq ON runs(seq);
 		`,
 	},
+	{
+		// §10c I-6: remediation columns — ticket disposition + attempt notes
+		// (the retry learning loop) and run attribution (joinable telemetry).
+		Name: "025_remediation",
+		SQL: `
+			ALTER TABLE tickets ADD COLUMN IF NOT EXISTS disposition VARCHAR(20) NOT NULL DEFAULT '';
+			ALTER TABLE tickets ADD COLUMN IF NOT EXISTS attempt_notes JSONB NOT NULL DEFAULT '[]';
+			ALTER TABLE runs ADD COLUMN IF NOT EXISTS ticket_id VARCHAR(36) NOT NULL DEFAULT '';
+			ALTER TABLE runs ADD COLUMN IF NOT EXISTS session_id VARCHAR(36) NOT NULL DEFAULT '';
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

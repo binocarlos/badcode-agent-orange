@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -94,6 +95,23 @@ func TestPgBoardRemoveFolds(t *testing.T) {
 	}
 	if len(cur.Fragments) != 0 {
 		t.Fatalf("expected fragment removed, got %+v", cur.Fragments)
+	}
+}
+
+// §10c I-4: Append fails loud on a changeset carrying a non-prompt_fragment op
+// instead of silently discarding the write at fold time (mirrors MemBoard).
+func TestPgBoardAppendRejectsNonFragmentOps(t *testing.T) {
+	ctx := context.Background()
+	b := NewPgBoard(newTestDB(t))
+	_, err := b.Append(ctx, agentdb.Changeset{Author: "h", Message: "bad", Ops: []agentdb.Op{
+		fragOp(agentdb.OpAdd, "g", "x"),
+		{Op: agentdb.OpAdd, EntityType: "staff", EntityID: "s1", Body: json.RawMessage(`{"id":"s1"}`)},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "staff") {
+		t.Fatalf("expected fail-loud rejection naming the entity type, got %v", err)
+	}
+	if revs, _ := b.Revisions(ctx); len(revs) != 0 {
+		t.Fatalf("rejected changeset must not append: %+v", revs)
 	}
 }
 

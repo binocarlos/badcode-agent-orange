@@ -49,7 +49,10 @@ func WriteFragment(ctx context.Context, board agentdb.BoardStore, id, body, auth
 // ApplyHumanFeedback routes a (target_ref, note) to a fragment edit — the learning
 // loop entry point. §10b S-3 resolution rule: "fragment:<id>" edits that fragment
 // directly; "ticket:<id>" / "run:<id>" resolve to the RoutingFragmentID (the
-// manager routing-guidance note). It never errors on a ticket/run target.
+// manager routing-guidance note). It never errors on a ticket/run target: when the
+// routing-guidance fragment does not exist yet, the note SEEDS it (note text as
+// the initial body, author "human-feedback") — a fresh board must not reject its
+// first lesson (§10c I-7).
 func ApplyHumanFeedback(ctx context.Context, board agentdb.BoardStore, reviser Model, fb HumanFeedback) (string, error) {
 	kind, ref, ok := strings.Cut(fb.TargetRef, ":")
 	if !ok {
@@ -59,10 +62,29 @@ func ApplyHumanFeedback(ctx context.Context, board agentdb.BoardStore, reviser M
 	case "fragment":
 		return ApplyFeedback(ctx, board, reviser, ref, fb.Note)
 	case "ticket", "run":
+		if !fragmentExists(ctx, board, RoutingFragmentID) {
+			return WriteFragment(ctx, board, RoutingFragmentID, fb.Note, "human-feedback", fb.Note)
+		}
 		return ApplyFeedback(ctx, board, reviser, RoutingFragmentID, fb.Note)
 	default:
 		return "", fmt.Errorf("feedback: unknown target kind %q", kind)
 	}
+}
+
+// fragmentExists reports whether the folded head board contains id. A board with
+// zero revisions has no head (Current errors) — nothing exists to edit yet, which
+// is exactly the seed case (the same lenient read WriteFragment uses for Kind).
+func fragmentExists(ctx context.Context, board agentdb.BoardStore, id string) bool {
+	cur, err := board.Current(ctx)
+	if err != nil {
+		return false
+	}
+	for _, f := range cur.Fragments {
+		if f.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // HumanFeedbackApplier satisfies the frozen FeedbackApplier seam (§10b S-3) by

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,28 +23,34 @@ func NewPgTicketStore(db *gorm.DB) *PgTicketStore { return &PgTicketStore{db: db
 
 func toRow(t orchestrator.Ticket) agentdb.Ticket {
 	dep, _ := json.Marshal(t.DependsOn)
+	notes, _ := json.Marshal(t.AttemptNotes)
 	row := agentdb.Ticket{
 		ID: t.ID, ProjectID: t.ProjectID, Title: t.Title, Objective: t.Objective,
 		Acceptance: t.Acceptance, Status: string(t.Status),
 		Scope: rawToJSON(t.Scope, "{}"), Result: rawToJSON(t.Result, "{}"),
 		PendingPost: rawToJSON(t.PendingPost, "{}"), PublishedRef: t.PublishedRef,
-		DependsOn: agentdb.JSONArray(dep),
-		Parent:    t.Parent, Attempts: t.Attempts, BoardRev: t.BoardRev,
+		Disposition:  string(t.Disposition),
+		AttemptNotes: agentdb.JSONArray(notes),
+		DependsOn:    agentdb.JSONArray(dep),
+		Parent:       t.Parent, Attempts: t.Attempts, BoardRev: t.BoardRev,
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}
 	return row
 }
 
 func fromRow(r agentdb.Ticket) orchestrator.Ticket {
-	var dep []string
-	_ = json.Unmarshal(jsonArrayBytes(r.DependsOn), &dep)
+	var dep, notes []string
+	_ = json.Unmarshal(agentdb.JSONBytes(r.DependsOn), &dep)
+	_ = json.Unmarshal(agentdb.JSONBytes(r.AttemptNotes), &notes)
 	return orchestrator.Ticket{
 		ID: r.ID, ProjectID: r.ProjectID, Title: r.Title, Objective: r.Objective,
 		Acceptance: r.Acceptance, Status: orchestrator.TicketStatus(r.Status),
-		Scope: json.RawMessage(jsonArrayBytes(r.Scope)), Result: json.RawMessage(jsonArrayBytes(r.Result)),
-		PendingPost: json.RawMessage(jsonArrayBytes(r.PendingPost)), PublishedRef: r.PublishedRef,
-		DependsOn: dep,
-		Parent:    r.Parent, Attempts: r.Attempts, BoardRev: r.BoardRev,
+		Scope: rawOrNil(r.Scope), Result: rawOrNil(r.Result),
+		PendingPost: rawOrNil(r.PendingPost), PublishedRef: r.PublishedRef,
+		Disposition:  orchestrator.Disposition(r.Disposition),
+		AttemptNotes: notes,
+		DependsOn:    dep,
+		Parent:       r.Parent, Attempts: r.Attempts, BoardRev: r.BoardRev,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 }
@@ -53,6 +60,18 @@ func rawToJSON(raw json.RawMessage, empty string) agentdb.JSONArray {
 		return agentdb.JSONArray(empty)
 	}
 	return agentdb.JSONArray(raw)
+}
+
+// rawOrNil maps a stored empty JSON value ("{}", "[]", "", "null") back to nil
+// so every len(...)==0 emptiness guard behaves identically on the Mem and Pg
+// stores (§10c I-1 — the gate-bypass fix). A real Post/Scope/Result never
+// marshals to a bare {}.
+func rawOrNil(j agentdb.JSONArray) json.RawMessage {
+	switch strings.TrimSpace(string(j)) {
+	case "", "{}", "[]", "null":
+		return nil
+	}
+	return json.RawMessage(j)
 }
 
 // Create inserts a ticket, allocating an id and timestamps if unset.
@@ -75,15 +94,22 @@ func (s *PgTicketStore) Create(ctx context.Context, t orchestrator.Ticket) (stri
 	return t.ID, nil
 }
 
-// Update overwrites a ticket's mutable fields.
+// Update overwrites a ticket's mutable fields. §10c I-2: a guarded, explicit
+// UPDATE — gorm Save is banned here because it upserts a phantom row when the
+// id is unknown; instead RowsAffected==0 fails loud, matching MemTickets.
 func (s *PgTicketStore) Update(ctx context.Context, t orchestrator.Ticket) error {
 	if t.ID == "" {
 		return fmt.Errorf("pgticket: update requires an id")
 	}
 	t.UpdatedAt = time.Now().Unix()
 	row := toRow(t)
-	if err := s.db.WithContext(ctx).Save(&row).Error; err != nil {
-		return fmt.Errorf("pgticket: update %q: %w", t.ID, err)
+	res := s.db.WithContext(ctx).Model(&agentdb.Ticket{}).
+		Where("id = ?", t.ID).Select("*").Omit("id").Updates(&row)
+	if res.Error != nil {
+		return fmt.Errorf("pgticket: update %q: %w", t.ID, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("pgticket: update unknown id %q", t.ID)
 	}
 	return nil
 }

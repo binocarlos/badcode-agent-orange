@@ -10,6 +10,8 @@ type TelemetryRun struct {
 	BoardRevision string `json:"board_revision" gorm:"type:varchar(36);not null;default:''"`
 	Prompt        string `json:"prompt" gorm:"type:text;not null;default:''"`
 	Output        string `json:"output" gorm:"type:text;not null;default:''"`
+	TicketID      string `json:"ticket_id" gorm:"type:varchar(36);not null;default:''"`
+	SessionID     string `json:"session_id" gorm:"type:varchar(36);not null;default:''"`
 	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
 }
 

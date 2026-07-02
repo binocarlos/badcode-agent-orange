@@ -33,13 +33,14 @@ type Changeset struct {
 
 // BoardRevision is one immutable entry in the append-only board log (the source
 // of truth). Ops folded in ascending Seq order reconstruct the board state.
-// Postgres backs Seq with BIGSERIAL (see migration 020). CONTRACT for the
-// future Append impl: let Postgres assign seq (omit it from the INSERT, then
-// read it back) — never write a zero Seq. gorm only omits a zero-valued field
-// when it carries a `default` tag, and seq deliberately has none (sqlite can't
-// honor autoIncrement on a non-PK column), so a naive Create(&BoardRevision{})
-// would write seq=0 explicitly, override the sequence, and collide on the
-// UNIQUE constraint — breaking the monotonic fold ordering seq exists to give.
+// CONTRACT for Append impls (§10c I-3, implemented convention): allocate Seq
+// explicitly as MAX(seq)+1 read inside the insert's own transaction, and wrap
+// the whole transaction in a bounded retry loop that, on a unique-violation of
+// the seq index (a concurrent writer claimed the same seq), re-reads MAX and
+// retries — driver-portable (the sqlite fast-test story needs an explicit seq)
+// AND cross-process safe. The Postgres BIGSERIAL default on seq (migration 020)
+// is intentionally unused: every insert writes seq explicitly and the UNIQUE
+// index is the collision arbiter the retry leans on. Never write a zero Seq.
 type BoardRevision struct {
 	ID        string    `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	ParentID  string    `json:"parent_id" gorm:"type:varchar(36);default:''"`

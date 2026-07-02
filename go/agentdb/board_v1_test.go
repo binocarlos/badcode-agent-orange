@@ -31,6 +31,7 @@ func TestTicketRow_RoundTrip(t *testing.T) {
 		Acceptance: "on-brand", Status: "todo", Scope: JSONArray(`{"name":"post-writer"}`),
 		DependsOn: JSONArray(`["t0"]`), Attempts: 2, BoardRev: "r3",
 		PublishedRef: "https://x.example/123", CreatedAt: 10, UpdatedAt: 20,
+		Disposition: "publish", AttemptNotes: JSONArray(`["too dull"]`),
 	}
 	if err := s.gdb.WithContext(ctx).Create(in).Error; err != nil {
 		t.Fatalf("create ticket: %v", err)
@@ -45,12 +46,19 @@ func TestTicketRow_RoundTrip(t *testing.T) {
 	if got.PublishedRef != "https://x.example/123" {
 		t.Fatalf("published_ref not persisted: %+v", got)
 	}
+	// §10c I-6: the remediation columns round-trip.
+	if got.Disposition != "publish" || string(got.AttemptNotes) != `["too dull"]` {
+		t.Fatalf("disposition/attempt_notes round-trip wrong: %+v", got)
+	}
 }
 
 func TestTelemetryRunRow_RoundTrip(t *testing.T) {
 	s := newV1TestStore(t)
 	ctx := context.Background()
-	in := &TelemetryRun{ID: "run1", Seq: 1, Scope: "manager", BoardRevision: "r1", Prompt: "p", Output: "o"}
+	in := &TelemetryRun{
+		ID: "run1", Seq: 1, Scope: "manager", BoardRevision: "r1", Prompt: "p", Output: "o",
+		TicketID: "t7", SessionID: "sess-1",
+	}
 	if err := s.gdb.WithContext(ctx).Create(in).Error; err != nil {
 		t.Fatalf("create run: %v", err)
 	}
@@ -61,10 +69,14 @@ func TestTelemetryRunRow_RoundTrip(t *testing.T) {
 	if got.Seq != 1 || got.Scope != "manager" || got.Output != "o" {
 		t.Fatalf("run round-trip wrong: %+v", got)
 	}
+	// §10c I-6 / §C: attribution columns round-trip so runs stay joinable.
+	if got.TicketID != "t7" || got.SessionID != "sess-1" {
+		t.Fatalf("ticket_id/session_id round-trip wrong: %+v", got)
+	}
 }
 
 func TestV1MigrationsRegistered(t *testing.T) {
-	want := []string{"022_board_collapse", "023_tickets", "024_runs"}
+	want := []string{"022_board_collapse", "023_tickets", "024_runs", "025_remediation"}
 	have := map[string]string{}
 	for _, m := range agentMigrations {
 		have[m.Name] = m.SQL
@@ -94,6 +106,18 @@ func TestV1MigrationsRegistered(t *testing.T) {
 	}
 	if !contains(have["024_runs"], "CREATE TABLE IF NOT EXISTS runs") {
 		t.Fatalf("024_runs missing idempotent create")
+	}
+	// §10c I-6: 025 adds the remediation columns idempotently.
+	remediation := have["025_remediation"]
+	for _, frag := range []string{
+		"ALTER TABLE tickets ADD COLUMN IF NOT EXISTS disposition VARCHAR(20) NOT NULL DEFAULT ''",
+		"ALTER TABLE tickets ADD COLUMN IF NOT EXISTS attempt_notes JSONB NOT NULL DEFAULT '[]'",
+		"ALTER TABLE runs ADD COLUMN IF NOT EXISTS ticket_id VARCHAR(36) NOT NULL DEFAULT ''",
+		"ALTER TABLE runs ADD COLUMN IF NOT EXISTS session_id VARCHAR(36) NOT NULL DEFAULT ''",
+	} {
+		if !contains(remediation, frag) {
+			t.Fatalf("025_remediation missing %q:\n%s", frag, remediation)
+		}
 	}
 }
 

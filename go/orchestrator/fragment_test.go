@@ -63,6 +63,54 @@ func TestApplyHumanFeedbackRoutesTargets(t *testing.T) {
 	}
 }
 
+// §10c I-7: a fresh board must not reject its first lesson. A ticket:/run:
+// target with no routing-guidance fragment SEEDS it (note text as initial body,
+// author "human-feedback") instead of erroring.
+func TestApplyHumanFeedbackSeedsRoutingGuidanceOnFreshBoard(t *testing.T) {
+	ctx := context.Background()
+
+	// Entirely fresh board: zero revisions.
+	board := NewMemBoard()
+	reviser := &ScriptedModel{Default: "should not be called"}
+	rev, err := ApplyHumanFeedback(ctx, board, reviser, HumanFeedback{
+		TargetRef: "ticket:t1", Note: "always mention the demo",
+	})
+	if err != nil {
+		t.Fatalf("first lesson rejected: %v", err)
+	}
+	if rev != "r1" {
+		t.Fatalf("seed revision = %q, want r1", rev)
+	}
+	cur, _ := board.Current(ctx)
+	if len(cur.Fragments) != 1 || cur.Fragments[0].ID != RoutingFragmentID ||
+		cur.Fragments[0].Body != "always mention the demo" {
+		t.Fatalf("routing-guidance not seeded with note body: %+v", cur.Fragments)
+	}
+	revs, _ := board.Revisions(ctx)
+	if revs[0].Author != "human-feedback" {
+		t.Fatalf("seed author = %q, want human-feedback", revs[0].Author)
+	}
+
+	// Non-empty board that lacks routing-guidance: run: target seeds it too.
+	board2 := NewMemBoard()
+	_, _ = board2.Append(ctx, SeedFragment("post-writer-role", "Write posts."))
+	if _, err := ApplyHumanFeedback(ctx, board2, reviser, HumanFeedback{
+		TargetRef: "run:run1", Note: "be dry",
+	}); err != nil {
+		t.Fatalf("seed on partial board: %v", err)
+	}
+	cur2, _ := board2.Current(ctx)
+	var found bool
+	for _, f := range cur2.Fragments {
+		if f.ID == RoutingFragmentID && f.Body == "be dry" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("routing-guidance not seeded on partial board: %+v", cur2.Fragments)
+	}
+}
+
 // HumanFeedbackApplier satisfies the frozen FeedbackApplier seam via the S-3 rule.
 func TestHumanFeedbackApplierSatisfiesSeam(t *testing.T) {
 	ctx := context.Background()

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
@@ -53,6 +54,24 @@ func TestMemBoardAppendFoldAndPin(t *testing.T) {
 	}
 	if head, _ := b.Head(ctx); head != r2 {
 		t.Fatalf("head = %q, want r2", head)
+	}
+}
+
+// §10c I-4: Append fails loud on a changeset carrying a non-prompt_fragment op
+// instead of silently discarding the write at fold time.
+func TestMemBoardAppendRejectsNonFragmentOps(t *testing.T) {
+	ctx := context.Background()
+	b := NewMemBoard()
+	_, err := b.Append(ctx, agentdb.Changeset{Author: "h", Message: "bad", Ops: []agentdb.Op{
+		fragOp(agentdb.OpAdd, "g", "x"),
+		{Op: agentdb.OpAdd, EntityType: "staff", EntityID: "s1", Body: json.RawMessage(`{"id":"s1"}`)},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "staff") {
+		t.Fatalf("expected fail-loud rejection naming the entity type, got %v", err)
+	}
+	// Nothing was appended: the board is still empty.
+	if _, err := b.Head(ctx); err == nil {
+		t.Fatalf("rejected changeset must not append a revision")
 	}
 }
 

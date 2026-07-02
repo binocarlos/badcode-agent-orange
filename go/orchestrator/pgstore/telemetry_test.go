@@ -34,4 +34,28 @@ func TestPgTelemetryRecordsInOrder(t *testing.T) {
 	}
 }
 
+// §10c I-6 / §C: TicketID/SessionID persist and come back — runs are joinable
+// to the ticket and worker session they served.
+func TestPgTelemetryAttributionRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	tel := NewPgTelemetry(newTestDB(t))
+	rec, err := tel.Record(ctx, orchestrator.Run{
+		Scope: "worker", BoardRevision: "r1", Prompt: "p", Output: "draft",
+		TicketID: "t42", SessionID: "sess-9",
+	})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if rec.TicketID != "t42" || rec.SessionID != "sess-9" {
+		t.Fatalf("returned run lost attribution: %+v", rec)
+	}
+	runs, err := tel.Runs(ctx)
+	if err != nil {
+		t.Fatalf("runs: %v", err)
+	}
+	if len(runs) != 1 || runs[0].TicketID != "t42" || runs[0].SessionID != "sess-9" {
+		t.Fatalf("attribution not persisted: %+v", runs)
+	}
+}
+
 var _ orchestrator.Telemetry = (*PgTelemetry)(nil)

@@ -14,6 +14,8 @@ type Ticket struct {
 	Result       JSONArray `json:"result" gorm:"type:jsonb;not null;default:'{}'"`
 	PendingPost  JSONArray `json:"pending_post" gorm:"type:jsonb;not null;default:'{}'"`
 	PublishedRef string    `json:"published_ref" gorm:"type:varchar(255);not null;default:''"`
+	Disposition  string    `json:"disposition" gorm:"type:varchar(20);not null;default:''"`
+	AttemptNotes JSONArray `json:"attempt_notes" gorm:"type:jsonb;not null;default:'[]'"`
 	DependsOn    JSONArray `json:"depends_on" gorm:"type:jsonb;not null;default:'[]'"`
 	Parent       string    `json:"parent" gorm:"type:varchar(36);not null;default:''"`
 	Attempts     int       `json:"attempts" gorm:"not null;default:0"`

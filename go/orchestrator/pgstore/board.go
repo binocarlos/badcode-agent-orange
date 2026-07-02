@@ -2,9 +2,7 @@ package pgstore
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"sync"
 	"time"
 
@@ -19,42 +17,50 @@ import (
 // Revision ids are a deterministic "r{seq}" counter for parity with MemBoard.
 type PgBoard struct {
 	db *gorm.DB
-	mu sync.Mutex // serialize Append for the single-writer v1 (monotonic seq)
+	mu sync.Mutex // serialize Append within this process (monotonic seq, fewer retries)
 }
 
 // NewPgBoard returns a BoardStore over db. db must have the board tables migrated
 // (agentdb migration 020/021 in prod; AutoMigrate in tests).
 func NewPgBoard(db *gorm.DB) *PgBoard { return &PgBoard{db: db} }
 
-// Append records a changeset as the next revision and moves head to it.
+// Append records a changeset as the next revision and moves head to it. §10c
+// I-4: a changeset carrying any non-prompt_fragment op is rejected fail-loud.
+// §10c I-3: seq is MAX(seq)+1 read inside the transaction; a unique-violation
+// (concurrent writer) re-reads MAX and retries, bounded — cross-process safe.
 func (b *PgBoard) Append(ctx context.Context, cs agentdb.Changeset) (string, error) {
+	if err := agentdb.RequireFragmentOps(cs.Ops); err != nil {
+		return "", err
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var id string
-	err := b.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var maxSeq int64
-		if err := tx.Model(&agentdb.BoardRevision{}).
-			Select("COALESCE(MAX(seq),0)").Scan(&maxSeq).Error; err != nil {
-			return fmt.Errorf("pgboard: max seq: %w", err)
-		}
-		seq := maxSeq + 1
-		id = fmt.Sprintf("r%d", seq)
-		rev := agentdb.BoardRevision{
-			ID: id, ParentID: cs.ParentID, Seq: seq, Status: "applied",
-			Author: cs.Author, Message: cs.Message, Ops: opsToJSONArray(cs.Ops),
-			CreatedAt: time.Now().Unix(),
-		}
-		if err := tx.Create(&rev).Error; err != nil {
-			return fmt.Errorf("pgboard: insert revision: %w", err)
-		}
-		head := agentdb.BoardHead{Singleton: true, RevisionID: id}
-		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "singleton"}},
-			DoUpdates: clause.AssignmentColumns([]string{"revision_id"}),
-		}).Create(&head).Error; err != nil {
-			return fmt.Errorf("pgboard: upsert head: %w", err)
-		}
-		return nil
+	err := withSeqRetry(seqInsertAttempts, func() error {
+		return b.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var maxSeq int64
+			if err := tx.Model(&agentdb.BoardRevision{}).
+				Select("COALESCE(MAX(seq),0)").Scan(&maxSeq).Error; err != nil {
+				return fmt.Errorf("pgboard: max seq: %w", err)
+			}
+			seq := maxSeq + 1
+			id = fmt.Sprintf("r%d", seq)
+			rev := agentdb.BoardRevision{
+				ID: id, ParentID: cs.ParentID, Seq: seq, Status: "applied",
+				Author: cs.Author, Message: cs.Message, Ops: agentdb.OpsToJSON(cs.Ops),
+				CreatedAt: time.Now().Unix(),
+			}
+			if err := tx.Create(&rev).Error; err != nil {
+				return fmt.Errorf("pgboard: insert revision: %w", err)
+			}
+			head := agentdb.BoardHead{Singleton: true, RevisionID: id}
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "singleton"}},
+				DoUpdates: clause.AssignmentColumns([]string{"revision_id"}),
+			}).Create(&head).Error; err != nil {
+				return fmt.Errorf("pgboard: upsert head: %w", err)
+			}
+			return nil
+		})
 	})
 	if err != nil {
 		return "", err
@@ -71,49 +77,14 @@ func (b *PgBoard) Current(ctx context.Context) (agentdb.Board, error) {
 	return b.AsOf(ctx, head)
 }
 
-// AsOf folds the log in seq order up to and including revisionID.
+// AsOf folds the log in seq order up to and including revisionID, via the one
+// shared fold (agentdb.FoldFragments — §10c I-4).
 func (b *PgBoard) AsOf(ctx context.Context, revisionID string) (agentdb.Board, error) {
 	var revs []agentdb.BoardRevision
 	if err := b.db.WithContext(ctx).Order("seq asc").Find(&revs).Error; err != nil {
 		return agentdb.Board{}, fmt.Errorf("pgboard: load revisions: %w", err)
 	}
-	frags := map[string]agentdb.BoardPromptFragment{}
-	var found bool
-	for _, rev := range revs {
-		var ops []agentdb.Op
-		if err := json.Unmarshal(jsonArrayBytes(rev.Ops), &ops); err != nil {
-			return agentdb.Board{}, fmt.Errorf("fold %s: ops: %w", rev.ID, err)
-		}
-		for _, op := range ops {
-			if op.EntityType != "prompt_fragment" {
-				continue
-			}
-			switch op.Op {
-			case agentdb.OpAdd, agentdb.OpUpdate:
-				var f agentdb.BoardPromptFragment
-				if err := json.Unmarshal(op.Body, &f); err != nil {
-					return agentdb.Board{}, fmt.Errorf("fold %s: fragment: %w", rev.ID, err)
-				}
-				f.LastChangedIn = rev.ID
-				frags[op.EntityID] = f
-			case agentdb.OpRemove:
-				delete(frags, op.EntityID)
-			}
-		}
-		if rev.ID == revisionID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return agentdb.Board{}, fmt.Errorf("revision %q not found", revisionID)
-	}
-	out := agentdb.Board{Revision: revisionID}
-	for _, f := range frags {
-		out.Fragments = append(out.Fragments, f)
-	}
-	sort.Slice(out.Fragments, func(i, j int) bool { return out.Fragments[i].ID < out.Fragments[j].ID })
-	return out, nil
+	return agentdb.FoldFragments(revs, revisionID)
 }
 
 // Head returns the currently-live applied revision id.

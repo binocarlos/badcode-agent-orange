@@ -10,7 +10,7 @@ import (
 	"github.com/binocarlos/badcode-agent-orange/orchestrator"
 )
 
-// TestPostgresMigrationsRoundTrip exercises the real SQL migrations (020-024)
+// TestPostgresMigrationsRoundTrip exercises the real SQL migrations (020-025)
 // against a live Postgres. Set AGENTKIT_TEST_POSTGRES_URL to run it, e.g.
 //
 //	AGENTKIT_TEST_POSTGRES_URL=postgres://user:pass@localhost:5432/agentorange?sslmode=disable
@@ -43,16 +43,28 @@ func TestPostgresMigrationsRoundTrip(t *testing.T) {
 	tickets := NewPgTicketStore(db)
 	id, err := tickets.Create(ctx, orchestrator.Ticket{
 		Title: "it", Status: orchestrator.StatusTodo, Scope: json.RawMessage(`{"name":"w"}`),
+		Disposition: orchestrator.DispositionPublish, AttemptNotes: []string{"n1"},
 	})
 	if err != nil {
 		t.Fatalf("ticket create: %v", err)
 	}
-	if _, err := tickets.Get(ctx, id); err != nil {
+	tk, err := tickets.Get(ctx, id)
+	if err != nil {
 		t.Fatalf("ticket get: %v", err)
+	}
+	// §10c I-6 (migration 025): the remediation columns round-trip on real Postgres.
+	if tk.Disposition != orchestrator.DispositionPublish || len(tk.AttemptNotes) != 1 {
+		t.Fatalf("025 ticket columns wrong: %+v", tk)
+	}
+	// §10c I-1: PendingPost was never set — it must come back empty on Postgres too.
+	if len(tk.PendingPost) != 0 {
+		t.Fatalf("pending post not empty on round-trip: %q", tk.PendingPost)
 	}
 
 	tel := NewPgTelemetry(db)
-	got, err := tel.Record(ctx, orchestrator.Run{Scope: "manager", BoardRevision: rev, Output: "o"})
+	got, err := tel.Record(ctx, orchestrator.Run{
+		Scope: "manager", BoardRevision: rev, Output: "o", TicketID: id, SessionID: "sess-it",
+	})
 	if err != nil {
 		t.Fatalf("telemetry record: %v", err)
 	}
@@ -65,5 +77,9 @@ func TestPostgresMigrationsRoundTrip(t *testing.T) {
 	}
 	if len(runs) == 0 {
 		t.Fatalf("telemetry runs empty after record")
+	}
+	last := runs[len(runs)-1]
+	if last.TicketID != id || last.SessionID != "sess-it" {
+		t.Fatalf("025 run attribution wrong: %+v", last)
 	}
 }

@@ -67,6 +67,65 @@ func TestAnthropicModelRunErrors(t *testing.T) {
 	}
 }
 
+// recordingMeter is a SpendMeter double for the §10c I-5 post-call path: it
+// ALWAYS records, and returns errOnCharge for real (non-probe) charges — the
+// "another model spent us past the ceiling between probe and charge" scenario.
+type recordingMeter struct {
+	tokens      int64
+	usd         float64
+	errOnCharge error
+}
+
+func (m *recordingMeter) Charge(_ context.Context, tokens int64, usd float64) error {
+	m.tokens += tokens
+	m.usd += usd
+	if tokens == 0 && usd == 0 {
+		return nil // probe passes
+	}
+	return m.errOnCharge
+}
+
+func (m *recordingMeter) Spent(context.Context) (float64, error) { return m.usd, nil }
+
+// §10c I-5: the post-call charge is never discarded. When the charge that
+// records the spend crosses/lands past the ceiling (ErrSpendCeiling), the run
+// still succeeds and the spend IS recorded; any other charge failure fails loud.
+func TestAnthropicModelPostCallChargeAlwaysRecorded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],` +
+			`"stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50}}`))
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	// Ceiling crossed at post-call charge: EXPECTED — response stays valid.
+	over := &recordingMeter{errOnCharge: ErrSpendCeiling}
+	m := &AnthropicModel{
+		APIKey: "k", ModelID: "claude-opus-4-8", BaseURL: srv.URL,
+		Meter: over, Pricing: Pricing{InputPerMTok: 5, OutputPerMTok: 25},
+	}
+	out, usage, err := m.Run(ctx, "x")
+	if err != nil || out != "ok" {
+		t.Fatalf("run past ceiling must succeed: out=%q err=%v", out, err)
+	}
+	if usage.Total() != 150 {
+		t.Fatalf("usage = %+v, want total 150", usage)
+	}
+	if over.tokens != 150 || over.usd == 0 {
+		t.Fatalf("spend not recorded: tokens=%d usd=%v", over.tokens, over.usd)
+	}
+
+	// Any OTHER charge failure means spend went uncounted → fail loud.
+	broken := &recordingMeter{errOnCharge: context.DeadlineExceeded}
+	m2 := &AnthropicModel{
+		APIKey: "k", ModelID: "claude-opus-4-8", BaseURL: srv.URL,
+		Meter: broken, Pricing: Pricing{InputPerMTok: 5, OutputPerMTok: 25},
+	}
+	if _, _, err := m2.Run(ctx, "x"); err == nil || !strings.Contains(err.Error(), "record spend") {
+		t.Fatalf("non-ceiling charge failure must fail loud, got %v", err)
+	}
+}
+
 func TestAnthropicModelMeteredDispatch(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
