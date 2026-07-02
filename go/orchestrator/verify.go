@@ -22,7 +22,7 @@ WORK PRODUCED:
 // (upper-cased) output contains PASS and not FAIL; the raw text is the Reason.
 func Verify(ctx context.Context, router ModelRouter, tier ModelTier, t Ticket, r Result) (Verdict, error) {
 	prompt := fmt.Sprintf(verifyTemplate, t.Acceptance, r.Output)
-	out, err := router.For(tier).Run(ctx, prompt)
+	out, _, err := router.For(tier).Run(ctx, prompt)
 	if err != nil {
 		return Verdict{}, fmt.Errorf("verify %s: %w", t.ID, err)
 	}

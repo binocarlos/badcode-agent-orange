@@ -23,14 +23,36 @@ type ScriptedModel struct {
 	Default string
 }
 
-// Run returns the first matching rule's reply, or Default.
-func (s *ScriptedModel) Run(_ context.Context, prompt string) (string, error) {
+// Run returns the first matching rule's reply, or Default, plus a deterministic
+// pseudo-usage (§10c §A) so ledger/budget mechanics stay testable offline.
+func (s *ScriptedModel) Run(_ context.Context, prompt string) (string, Usage, error) {
+	reply := s.Default
 	for _, r := range s.Rules {
 		if strings.Contains(prompt, r.Contains) {
-			return r.Reply, nil
+			reply = r.Reply
+			break
 		}
 	}
-	return s.Default, nil
+	return reply, pseudoUsage(prompt, reply), nil
+}
+
+// pseudoUsage is the §10c §A deterministic offline usage: len/4 per side, floored
+// to 1 when the respective text is non-empty (so no real call ever counts as free).
+func pseudoUsage(prompt, reply string) Usage {
+	return Usage{
+		InputTokens:  pseudoTokens(prompt),
+		OutputTokens: pseudoTokens(reply),
+	}
+}
+
+func pseudoTokens(text string) int64 {
+	if text == "" {
+		return 0
+	}
+	if n := int64(len(text) / 4); n > 0 {
+		return n
+	}
+	return 1
 }
 
 var _ Model = (*ScriptedModel)(nil)

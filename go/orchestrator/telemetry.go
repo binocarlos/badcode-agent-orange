@@ -7,13 +7,16 @@ import (
 )
 
 // Run is one scope execution, pinned to the board revision it ran against — the
-// "show your work" record the learning narrative is told from.
+// "show your work" record the learning narrative is told from. §10c §C: TicketID/
+// SessionID make a run joinable to the work it served.
 type Run struct {
 	ID            string
 	Scope         string
 	BoardRevision string
 	Prompt        string
 	Output        string
+	TicketID      string // the ticket this run served ("" for manager-exchange-level runs)
+	SessionID     string // the worker session id ("" for non-worker runs)
 	Seq           int
 }
 

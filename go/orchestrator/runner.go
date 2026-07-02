@@ -30,7 +30,7 @@ func (r *Runner) RunScope(ctx context.Context, s Scope) (Run, error) {
 	if err != nil {
 		return Run{}, fmt.Errorf("runscope %s: %w", s.Name, err)
 	}
-	out, err := r.Model.Run(ctx, prompt)
+	out, _, err := r.Model.Run(ctx, prompt)
 	if err != nil {
 		return Run{}, fmt.Errorf("runscope %s: model: %w", s.Name, err)
 	}

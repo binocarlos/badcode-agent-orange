@@ -32,8 +32,8 @@ func (r *TierRouter) For(tier ModelTier) Model {
 // errModel is the fail-loud placeholder for an unmapped tier.
 type errModel struct{ tier ModelTier }
 
-func (e errModel) Run(context.Context, string) (string, error) {
-	return "", fmt.Errorf("no model configured for tier %q", e.tier)
+func (e errModel) Run(context.Context, string) (string, Usage, error) {
+	return "", Usage{}, fmt.Errorf("no model configured for tier %q", e.tier)
 }
 
 var (

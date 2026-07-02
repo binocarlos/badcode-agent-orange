@@ -47,12 +47,24 @@ func TestInProcRuntimeDraftsAndSinksToInReview(t *testing.T) {
 	if r.Output != "a witty draft post" || r.Status != ResultDone || r.TicketID != id {
 		t.Fatalf("result wrong: %+v", r)
 	}
+	// §10c §A: TokensUsed is the model's reported usage total (ScriptedModel's
+	// deterministic pseudo-usage: len(prompt)/4 + len(reply)/4), not a char count.
+	prompt := "You are a witty writer.\nTask: launch post"
+	wantTokens := int64(len(prompt)/4) + int64(len("a witty draft post")/4)
+	if r.TokensUsed != wantTokens {
+		t.Fatalf("TokensUsed = %d, want %d (usage.Total())", r.TokensUsed, wantTokens)
+	}
 	runs, err := tel.Runs(ctx)
 	if err != nil {
 		t.Fatalf("runs: %v", err)
 	}
 	if len(runs) != 1 {
 		t.Fatalf("expected 1 recorded run, got %d", len(runs))
+	}
+	// §10c §C: the worker run is attributed to its ticket + session.
+	if runs[0].TicketID != id || runs[0].SessionID != sid {
+		t.Fatalf("run attribution = ticket %q session %q, want %q / %q",
+			runs[0].TicketID, runs[0].SessionID, id, sid)
 	}
 }
 

@@ -19,7 +19,7 @@ func TestAnthropicSmoke(t *testing.T) {
 		t.Skip("set ANTHROPIC_API_KEY to run the live smoke test")
 	}
 	m := &AnthropicModel{APIKey: key, ModelID: DefaultModelIDs()[TierCheap], MaxTokens: 64}
-	out, err := m.Run(context.Background(), "Reply with the single word: pong")
+	out, _, err := m.Run(context.Background(), "Reply with the single word: pong")
 	if err != nil {
 		t.Fatalf("live run: %v", err)
 	}

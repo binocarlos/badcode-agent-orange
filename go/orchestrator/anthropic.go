@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,8 +28,7 @@ func (p Pricing) usd(inTok, outTok int64) float64 {
 // the Anthropic Messages API over HTTP with API-key auth (subscription OAuth is
 // disallowed for automation). A thin stdlib client — no SDK dependency. When Meter
 // is set, Run halts before dispatch if the spend ceiling is hit and records actual
-// token spend after each call (metering lives here because Model.Run surfaces only
-// a string, so a generic decorator cannot see usage).
+// token spend after each call.
 type AnthropicModel struct {
 	APIKey     string
 	ModelID    string
@@ -93,12 +93,13 @@ func (m *AnthropicModel) httpClient() *http.Client {
 	return http.DefaultClient
 }
 
-// Run sends the prompt as a single user turn and returns the concatenated text.
-func (m *AnthropicModel) Run(ctx context.Context, prompt string) (string, error) {
+// Run sends the prompt as a single user turn and returns the concatenated text
+// plus the real token Usage from the response frame (§10c §A).
+func (m *AnthropicModel) Run(ctx context.Context, prompt string) (string, Usage, error) {
 	// Cost floor: halt before dispatch if the ceiling is already hit (§7.2).
 	if m.Meter != nil {
 		if err := m.Meter.Charge(ctx, 0, 0); err != nil {
-			return "", fmt.Errorf("anthropic %s: %w", m.ModelID, err)
+			return "", Usage{}, fmt.Errorf("anthropic %s: %w", m.ModelID, err)
 		}
 	}
 
@@ -108,12 +109,12 @@ func (m *AnthropicModel) Run(ctx context.Context, prompt string) (string, error)
 		Messages:  []anthropicMessage{{Role: "user", Content: prompt}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("anthropic %s: marshal: %w", m.ModelID, err)
+		return "", Usage{}, fmt.Errorf("anthropic %s: marshal: %w", m.ModelID, err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL()+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
-		return "", fmt.Errorf("anthropic %s: request: %w", m.ModelID, err)
+		return "", Usage{}, fmt.Errorf("anthropic %s: request: %w", m.ModelID, err)
 	}
 	req.Header.Set("content-type", "application/json")
 	req.Header.Set("x-api-key", m.APIKey)
@@ -121,24 +122,25 @@ func (m *AnthropicModel) Run(ctx context.Context, prompt string) (string, error)
 
 	resp, err := m.httpClient().Do(req)
 	if err != nil {
-		return "", fmt.Errorf("anthropic %s: do: %w", m.ModelID, err)
+		return "", Usage{}, fmt.Errorf("anthropic %s: do: %w", m.ModelID, err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("anthropic %s: read: %w", m.ModelID, err)
+		return "", Usage{}, fmt.Errorf("anthropic %s: read: %w", m.ModelID, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("anthropic %s: status %d: %s", m.ModelID, resp.StatusCode, strings.TrimSpace(string(raw)))
+		return "", Usage{}, fmt.Errorf("anthropic %s: status %d: %s", m.ModelID, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 
 	var parsed anthropicResp
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", fmt.Errorf("anthropic %s: decode: %w", m.ModelID, err)
+		return "", Usage{}, fmt.Errorf("anthropic %s: decode: %w", m.ModelID, err)
 	}
 	if parsed.StopReason == "refusal" {
-		return "", fmt.Errorf("anthropic %s: request refused", m.ModelID)
+		return "", Usage{}, fmt.Errorf("anthropic %s: request refused", m.ModelID)
 	}
+	usage := Usage{InputTokens: parsed.Usage.InputTokens, OutputTokens: parsed.Usage.OutputTokens}
 
 	var sb strings.Builder
 	for _, b := range parsed.Content {
@@ -147,13 +149,19 @@ func (m *AnthropicModel) Run(ctx context.Context, prompt string) (string, error)
 		}
 	}
 
+	text := sb.String()
 	if m.Meter != nil {
-		// Record actual spend. An ErrSpendCeiling here means this call pushed us
-		// over — the response is still valid; the next dispatch's probe halts.
-		_ = m.Meter.Charge(ctx, parsed.Usage.InputTokens+parsed.Usage.OutputTokens,
-			m.Pricing.usd(parsed.Usage.InputTokens, parsed.Usage.OutputTokens))
+		// Record actual spend. An ErrSpendCeiling here is EXPECTED — this call
+		// pushed us over; the response is still valid and the next dispatch's
+		// probe halts. Any OTHER charge failure means spend went uncounted, which
+		// must fail loud (§10c §A / §I-5) rather than be discarded.
+		cerr := m.Meter.Charge(ctx, usage.Total(),
+			m.Pricing.usd(usage.InputTokens, usage.OutputTokens))
+		if cerr != nil && !errors.Is(cerr, ErrSpendCeiling) {
+			return text, usage, fmt.Errorf("anthropic %s: record spend: %w", m.ModelID, cerr)
+		}
 	}
-	return sb.String(), nil
+	return text, usage, nil
 }
 
 var _ Model = (*AnthropicModel)(nil)

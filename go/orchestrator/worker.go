@@ -41,7 +41,7 @@ func (rt *InProcRuntime) Spawn(ctx context.Context, s Scope) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("worker %s: %w", s.Name, err)
 	}
-	out, err := rt.Router.For(s.Tier).Run(ctx, prompt)
+	out, usage, err := rt.Router.For(s.Tier).Run(ctx, prompt)
 	if err != nil {
 		return "", fmt.Errorf("worker %s: model: %w", s.Name, err)
 	}
@@ -50,12 +50,15 @@ func (rt *InProcRuntime) Spawn(ctx context.Context, s Scope) (string, error) {
 	// to a status + cleaned text, identical for the in-proc and DinD runtimes.
 	status, text := ClassifyWorkerOutput(out)
 	r := Result{SessionID: sid, TicketID: s.TicketID, Output: text, Status: status}
-	r.TokensUsed = int64(len(prompt) + len(out)) // deterministic estimate (no real tokenizer offline)
+	// §10c §A: one currency — the model's reported usage feeds both the Result
+	// and the tree-token ledger (no more char-count estimate).
+	r.TokensUsed = usage.Total()
 	_ = rt.Ledger.Charge(sid, r.TokensUsed)
 
 	if rt.Telemetry != nil {
 		if _, err := rt.Telemetry.Record(ctx, Run{
 			Scope: s.Name, BoardRevision: board.Revision, Prompt: prompt, Output: out,
+			TicketID: s.TicketID, SessionID: sid, // §10c §C: run attribution
 		}); err != nil {
 			return "", fmt.Errorf("worker %s: telemetry: %w", s.Name, err)
 		}

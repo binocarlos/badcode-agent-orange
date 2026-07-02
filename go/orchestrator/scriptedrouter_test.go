@@ -26,10 +26,10 @@ func TestScriptedRouterResolvesTiers(t *testing.T) {
 	mid := &ScriptedModel{Default: "sonnet"}
 	r := ScriptedRouter{TierFull: full, TierMid: mid}
 
-	if got, _ := r.For(TierFull).Run(context.Background(), "x"); got != "opus" {
+	if got, _, _ := r.For(TierFull).Run(context.Background(), "x"); got != "opus" {
 		t.Fatalf("full tier = %q", got)
 	}
-	if got, _ := r.For(TierMid).Run(context.Background(), "x"); got != "sonnet" {
+	if got, _, _ := r.For(TierMid).Run(context.Background(), "x"); got != "sonnet" {
 		t.Fatalf("mid tier = %q", got)
 	}
 	// An unmapped tier must not panic — it returns a usable Model.

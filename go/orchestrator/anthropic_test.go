@@ -29,12 +29,16 @@ func TestAnthropicModelRunHappyPath(t *testing.T) {
 	defer srv.Close()
 
 	m := &AnthropicModel{APIKey: "sk-test", ModelID: "claude-opus-4-8", BaseURL: srv.URL}
-	out, err := m.Run(context.Background(), "Goal: grow the brand")
+	out, usage, err := m.Run(context.Background(), "Goal: grow the brand")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if out != "clever plan" {
 		t.Fatalf("output = %q, want clever plan", out)
+	}
+	// §10c §A: real usage is surfaced from the response frame.
+	if usage.InputTokens != 10 || usage.OutputTokens != 5 || usage.Total() != 15 {
+		t.Fatalf("usage = %+v (total %d), want {10 5} total 15", usage, usage.Total())
 	}
 	if gotKey != "sk-test" || gotVersion != "2023-06-01" || gotModel != "claude-opus-4-8" {
 		t.Fatalf("headers/body wrong: key=%q version=%q model=%q", gotKey, gotVersion, gotModel)
@@ -48,7 +52,7 @@ func TestAnthropicModelRunErrors(t *testing.T) {
 	}))
 	defer bad.Close()
 	m := &AnthropicModel{APIKey: "k", ModelID: "claude-opus-4-8", BaseURL: bad.URL}
-	if _, err := m.Run(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "500") {
+	if _, _, err := m.Run(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("expected 500 error, got %v", err)
 	}
 
@@ -58,7 +62,7 @@ func TestAnthropicModelRunErrors(t *testing.T) {
 	}))
 	defer refuse.Close()
 	m2 := &AnthropicModel{APIKey: "k", ModelID: "claude-opus-4-8", BaseURL: refuse.URL}
-	if _, err := m2.Run(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "refus") {
+	if _, _, err := m2.Run(context.Background(), "x"); err == nil || !strings.Contains(err.Error(), "refus") {
 		t.Fatalf("expected refusal error, got %v", err)
 	}
 }
@@ -80,7 +84,7 @@ func TestAnthropicModelMeteredDispatch(t *testing.T) {
 		APIKey: "k", ModelID: "claude-opus-4-8", BaseURL: srv.URL,
 		Meter: meter, Pricing: Pricing{InputPerMTok: 5, OutputPerMTok: 25},
 	}
-	if _, err := m.Run(ctx, "x"); err != nil {
+	if _, _, err := m.Run(ctx, "x"); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if spent, _ := meter.Spent(ctx); spent < 0.00174 || spent > 0.00176 {
@@ -95,7 +99,7 @@ func TestAnthropicModelMeteredDispatch(t *testing.T) {
 		APIKey: "k", ModelID: "claude-opus-4-8", BaseURL: srv.URL,
 		Meter: NewMemSpendMeter(0.0), Pricing: Pricing{InputPerMTok: 5, OutputPerMTok: 25},
 	}
-	if _, err := exhausted.Run(ctx, "x"); err == nil {
+	if _, _, err := exhausted.Run(ctx, "x"); err == nil {
 		t.Fatalf("expected spend-ceiling halt, got nil")
 	}
 	if calls != 1 {

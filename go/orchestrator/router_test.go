@@ -15,10 +15,10 @@ func TestTierRouterResolves(t *testing.T) {
 		TierCheap: &ScriptedModel{Default: "haiku"},
 	})
 
-	if got, _ := r.For(TierFull).Run(ctx, "x"); got != "opus" {
+	if got, _, _ := r.For(TierFull).Run(ctx, "x"); got != "opus" {
 		t.Fatalf("TierFull -> %q, want opus", got)
 	}
-	if got, _ := r.For(TierCheap).Run(ctx, "x"); got != "haiku" {
+	if got, _, _ := r.For(TierCheap).Run(ctx, "x"); got != "haiku" {
 		t.Fatalf("TierCheap -> %q, want haiku", got)
 	}
 
@@ -27,7 +27,7 @@ func TestTierRouterResolves(t *testing.T) {
 	if m == nil {
 		t.Fatalf("For(TierMid) returned nil Model")
 	}
-	if _, err := m.Run(ctx, "x"); err == nil {
+	if _, _, err := m.Run(ctx, "x"); err == nil {
 		t.Fatalf("expected error for unmapped tier")
 	}
 }
@@ -62,7 +62,7 @@ func TestNewAnthropicRouterWiresModelIDs(t *testing.T) {
 		BaseURL:  srv.URL,
 		ModelIDs: map[ModelTier]string{TierMid: "claude-sonnet-5"},
 	})
-	out, err := r.For(TierMid).Run(context.Background(), "hi")
+	out, _, err := r.For(TierMid).Run(context.Background(), "hi")
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}

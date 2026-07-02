@@ -41,7 +41,7 @@ func ApplyFeedback(ctx context.Context, board agentdb.BoardStore, reviser Model,
 		return "", fmt.Errorf("feedback: unknown fragment %q", fragmentID)
 	}
 
-	revised, err := reviser.Run(ctx, fmt.Sprintf(reviserTemplate, current, note))
+	revised, _, err := reviser.Run(ctx, fmt.Sprintf(reviserTemplate, current, note))
 	if err != nil {
 		return "", fmt.Errorf("feedback: reviser: %w", err)
 	}

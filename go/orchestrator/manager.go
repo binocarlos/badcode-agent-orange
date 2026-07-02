@@ -30,6 +30,10 @@ type ManagerExchange struct {
 	WorkerBudget                     Budget
 	PlanTemplate, WorkerTemplate     string
 	MaxAttempts                      int
+
+	// §10c §B (types-only here; behavior lands in Wave 2):
+	Channel            string      // the single v1 channel name for publish-disposition posts
+	DefaultDisposition Disposition // disposition a planned ticket takes when the plan omits one
 }
 
 // TickReport is a summary of what one tick did (telemetry / test assertion).
@@ -51,7 +55,7 @@ func (m *ManagerExchange) plan(ctx context.Context, board agentdb.Board) (int, e
 	if err != nil {
 		return 0, fmt.Errorf("plan: %w", err)
 	}
-	out, err := m.Router.For(m.PlanTier).Run(ctx, prompt)
+	out, _, err := m.Router.For(m.PlanTier).Run(ctx, prompt)
 	if err != nil {
 		return 0, fmt.Errorf("plan: model: %w", err)
 	}
@@ -192,6 +196,7 @@ func (m *ManagerExchange) chooseAndSpawn(ctx context.Context) (spawned, refused 
 				if m.Telemetry != nil {
 					if _, terr := m.Telemetry.Record(ctx, Run{
 						Scope: "manager-refuse", BoardRevision: board.Revision, Output: serr.Error(),
+						TicketID: t.ID, // §10c §C: refuse runs are attributable to their ticket
 					}); terr != nil {
 						return spawned, refused, fmt.Errorf("choose: telemetry: %w", terr)
 					}

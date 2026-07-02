@@ -95,6 +95,14 @@ type Result struct {
 	TokensUsed int64
 }
 
+// Disposition — what a verified artifact is FOR (consulted by reconcile; §10c §B).
+type Disposition string
+
+const (
+	DispositionInternal Disposition = "internal" // verify-pass → Done (default, "" ≡ internal)
+	DispositionPublish  Disposition = "publish"  // verify-pass → FilePendingPost → needs_human
+)
+
 // Ticket is a board work item (work state; ungated; NOT in the versioned log).
 type Ticket struct {
 	ID           string
@@ -107,6 +115,8 @@ type Ticket struct {
 	Result       json.RawMessage // the Result once In-Review
 	PendingPost  json.RawMessage // a Post awaiting publish approval (Needs-Human), if any
 	PublishedRef string          // §10b E-4: the connector's returned ref once published
+	Disposition  Disposition     // §10c §B: what passing work becomes (see §D lane rules)
+	AttemptNotes []string        // §10c §B: accumulated failure context: verify Reasons, reject notes, human answers
 	DependsOn    []string
 	Parent       string
 	Attempts     int
@@ -138,21 +148,24 @@ type Verdict struct {
 	Reason string
 }
 
-// RevisionDTO is the §8 wire shape for the board-revision timeline (the "show your
-// work" story). Derived from an agentdb.BoardRevision by the HTTP layer (Slice E).
-type RevisionDTO struct {
-	ID      string `json:"id"`
-	Author  string `json:"author"`
-	Message string `json:"message"`
-	Ts      int64  `json:"ts"`
-}
-
 // ── §5 The seams (frozen interfaces) ─────────────────────────────────────────
 
-// Model turns a composed prompt into text. Slice 0 uses ScriptedModel; the real
+// Usage is the token cost of one model call (§10c §A). Offline doubles report a
+// deterministic pseudo-usage so budget mechanics stay testable.
+type Usage struct {
+	InputTokens  int64
+	OutputTokens int64
+}
+
+// Total is the combined token cost — the one currency shared by the SpawnLedger
+// tree budget and Result.TokensUsed.
+func (u Usage) Total() int64 { return u.InputTokens + u.OutputTokens }
+
+// Model turns a composed prompt into text plus its token Usage (§10c §A — EVOLVED
+// from Run(ctx, prompt) (string, error)). Slice 0 uses ScriptedModel; the real
 // impl (Slice B) wraps the Anthropic API.
 type Model interface {
-	Run(ctx context.Context, prompt string) (string, error)
+	Run(ctx context.Context, prompt string) (string, Usage, error)
 }
 
 // ModelRouter resolves a tier to a Model (Slice B), letting a Scope pick cost/capability.
