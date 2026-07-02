@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -106,7 +107,13 @@ func (s *Store) UpsertConversationIndex(ctx context.Context, ci *ConversationInd
 	embStr := float32SliceToConvString(embedding)
 	const maxTsvBytes = 900_000
 	if len(transcriptText) > maxTsvBytes {
-		transcriptText = transcriptText[:maxTsvBytes]
+		// Cut on a rune boundary: a mid-rune cut produces invalid UTF-8, which
+		// Postgres rejects outright (SQLSTATE 22021), failing the whole upsert.
+		cut := maxTsvBytes
+		for cut > 0 && !utf8.RuneStart(transcriptText[cut]) {
+			cut--
+		}
+		transcriptText = transcriptText[:cut]
 	}
 	sql := `
 		INSERT INTO agent_conversation_index
@@ -158,12 +165,13 @@ func buildConversationSearchSQL(q *ConversationSearchQuery) (string, []any) {
 		limit = 50
 	}
 	exclude := lowerAll(q.ExcludeUserEmails)
-	// Optional user-exclusion predicate. Omitted when empty: passing an empty slice
-	// to `ALL(?)` renders as `ALL(NULL)`, which is NULL (not true) and silently
-	// filters out every row.
+	// Optional user-exclusion predicate. Omitted when empty (an empty NOT IN
+	// list is invalid SQL). NOT IN (?) — GORM expands a []string arg into a
+	// value list; `<> ALL(?)` would need a real Postgres array binding, which
+	// GORM's placeholder expansion does not produce ("malformed array literal").
 	excl := ""
 	if len(exclude) > 0 {
-		excl = " AND LOWER(user_email) <> ALL(?)"
+		excl = " AND LOWER(user_email) NOT IN (?)"
 	}
 
 	if len(q.QueryEmbedding) == 0 {

@@ -124,8 +124,9 @@ func (s *Store) SearchMessages(ctx context.Context, query *MessageSearchQuery) (
 		args = append(args, query.Role)
 	}
 	if len(query.ExcludeUserEmails) > 0 {
+		// Lowercase the argument side to match LOWER(s.user_email).
 		sqlQuery += " AND LOWER(s.user_email) NOT IN (?)"
-		args = append(args, query.ExcludeUserEmails)
+		args = append(args, lowerAll(query.ExcludeUserEmails))
 	}
 
 	sqlQuery += " ORDER BY rank DESC LIMIT ?"

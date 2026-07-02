@@ -70,3 +70,32 @@ func TestNewAnthropicRouterWiresModelIDs(t *testing.T) {
 		t.Fatalf("router used model %q, want claude-sonnet-5", out)
 	}
 }
+
+// TestModelIDsFromEnvAllThreeOverrides exercises every env-override branch
+// (t.Setenv scopes the mutation to this test).
+func TestModelIDsFromEnvAllThreeOverrides(t *testing.T) {
+	t.Setenv("AGENTKIT_MODEL_FULL", "env-full")
+	t.Setenv("AGENTKIT_MODEL_MID", "env-mid")
+	t.Setenv("AGENTKIT_MODEL_CHEAP", "env-cheap")
+	ids := ModelIDsFromEnv()
+	want := map[ModelTier]string{TierFull: "env-full", TierMid: "env-mid", TierCheap: "env-cheap"}
+	for tier, id := range want {
+		if ids[tier] != id {
+			t.Fatalf("%s = %q, want %q", tier, ids[tier], id)
+		}
+	}
+}
+
+// TestModelIDsFromEnvNoOverrides pins the all-default path.
+func TestModelIDsFromEnvNoOverrides(t *testing.T) {
+	t.Setenv("AGENTKIT_MODEL_FULL", "")
+	t.Setenv("AGENTKIT_MODEL_MID", "")
+	t.Setenv("AGENTKIT_MODEL_CHEAP", "")
+	ids := ModelIDsFromEnv()
+	def := DefaultModelIDs()
+	for tier, id := range def {
+		if ids[tier] != id {
+			t.Fatalf("%s = %q, want default %q", tier, ids[tier], id)
+		}
+	}
+}

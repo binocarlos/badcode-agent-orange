@@ -5,13 +5,16 @@ import (
 	"testing"
 )
 
-// Guards the bug where an empty exclude list produced `... <> ALL(?)` bound to an
-// empty array, which Postgres/GORM renders as `ALL(NULL)` — NULL, not true — so
-// every conversation search returned zero rows.
-func TestBuildConversationSearchSQL_OmitsExcludeWhenEmpty(t *testing.T) {
+// Guards two exclusion-predicate bugs: (1) an empty exclude list must omit the
+// predicate entirely (an empty exclusion list is invalid SQL / used to render as
+// ALL(NULL) and filter every row); (2) a non-empty list must use NOT IN (?) —
+// GORM expands []string args into value lists, never Postgres arrays, so the
+// former `<> ALL(?)` failed on live Postgres with "malformed array literal"
+// (see TestLivePG_ConversationIndexUpsertAndSearch).
+func TestBuildConversationSearchSQL_ExcludePredicateForm(t *testing.T) {
 	sql, args := buildConversationSearchSQL(&ConversationSearchQuery{Customer: "c", Query: "mango"})
-	if strings.Contains(sql, "ALL(") {
-		t.Fatalf("empty exclude must not emit ALL(?) (renders as ALL(NULL) and filters everything):\n%s", sql)
+	if strings.Contains(sql, "NOT IN") || strings.Contains(sql, "ALL(") {
+		t.Fatalf("empty exclude must not emit an exclusion predicate:\n%s", sql)
 	}
 	for _, a := range args {
 		if _, isSlice := a.([]string); isSlice {
@@ -20,8 +23,11 @@ func TestBuildConversationSearchSQL_OmitsExcludeWhenEmpty(t *testing.T) {
 	}
 
 	sqlEx, _ := buildConversationSearchSQL(&ConversationSearchQuery{Customer: "c", Query: "mango", ExcludeUserEmails: []string{"bot@x.com"}})
-	if !strings.Contains(sqlEx, "ALL(") {
-		t.Fatalf("non-empty exclude must emit the ALL(?) predicate")
+	if !strings.Contains(sqlEx, "LOWER(user_email) NOT IN (?)") {
+		t.Fatalf("non-empty exclude must emit the NOT IN (?) predicate:\n%s", sqlEx)
+	}
+	if strings.Contains(sqlEx, "ALL(") {
+		t.Fatalf("ALL(?) cannot be bound by GORM placeholder expansion:\n%s", sqlEx)
 	}
 }
 

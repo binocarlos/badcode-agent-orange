@@ -98,7 +98,9 @@ func (s *Store) ListSessions(ctx context.Context, query *SessionQuery) ([]*Sessi
 			db = db.Where("agent_sessions.workflow_id NOT LIKE ?", query.ExcludeWorkflowIDPrefix+"%")
 		}
 		if len(query.ExcludeUserEmails) > 0 {
-			db = db.Where("LOWER(agent_sessions.user_email) NOT IN ?", query.ExcludeUserEmails)
+			// The column side is lowercased, so the argument side must be too —
+			// otherwise mixed-case exclusion input silently matches nothing.
+			db = db.Where("LOWER(agent_sessions.user_email) NOT IN ?", lowerAll(query.ExcludeUserEmails))
 		}
 	}
 
