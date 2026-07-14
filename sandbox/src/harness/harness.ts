@@ -17,6 +17,12 @@ export type SandboxConfig = Config;
 export interface HarnessCredentialSpec {
   /** Process env vars that must be non-empty for this harness to run. */
   requiredEnv: string[];
+  /**
+   * Alternative credential group: at least ONE of these env vars must be
+   * non-empty (e.g. a model proxy URL, an OAuth token, or a real API key).
+   * Empty/omitted = no group check.
+   */
+  anyOfEnv?: string[];
   /** Human-readable note surfaced in the start-session error if any var is missing. */
   describe(): string;
 }

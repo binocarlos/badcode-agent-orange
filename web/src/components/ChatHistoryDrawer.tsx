@@ -291,6 +291,7 @@ export default function ChatHistoryDrawer({
               return (
                 <ListItemButton
                   key={s.id}
+                  data-testid="session-row"
                   selected={isActive}
                   onClick={() => onSelectSession(s.id)}
                   sx={{

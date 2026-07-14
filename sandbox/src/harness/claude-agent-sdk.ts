@@ -47,12 +47,15 @@ export function startSessionProxy(sessionId: string, upstreamBaseURL: string): P
     const upstreamPort = upstream.port
       ? parseInt(upstream.port, 10)
       : isHttps ? 443 : 80;
+    // The upstream base URL may carry a path prefix (e.g. <agentd>/agent-proxy);
+    // forwarded requests must keep it or they land on the wrong upstream route.
+    const upstreamPathPrefix = upstream.pathname.replace(/\/$/, '');
 
     const server = http.createServer((clientReq, clientRes) => {
       const options: http.RequestOptions = {
         hostname: upstream.hostname,
         port: upstreamPort,
-        path: clientReq.url,
+        path: upstreamPathPrefix + (clientReq.url ?? '/'),
         method: clientReq.method,
         headers: {
           ...clientReq.headers,
@@ -493,6 +496,11 @@ export class ClaudeAgentSdkHarness implements Harness {
         } catch (err) {
           console.warn(`[ClaudeAgentSdkHarness] Failed to start session proxy, continuing without it: ${err}`);
         }
+      } else if (subprocessEnv['CLAUDE_CODE_OAUTH_TOKEN']) {
+        // Direct-to-Anthropic subscription mode: the CLI must authenticate with
+        // the OAuth token, so make sure no leftover ANTHROPIC_API_KEY (dummy or
+        // session JWT) can shadow it.
+        delete subprocessEnv['ANTHROPIC_API_KEY'];
       }
 
       console.log(`[SSE-DEBUG][ClaudeAgentSdkHarness] Entering SDK for-await loop at ${Date.now()}`);
@@ -711,8 +719,11 @@ export class ClaudeAgentSdkHarness implements Harness {
 export const claudeAgentSdkDescriptor: HarnessDescriptor = {
   name: 'claude-agent-sdk',
   credentials: {
-    requiredEnv: ['ANTHROPIC_BASE_URL'],
-    describe: () => 'Claude Agent SDK needs ANTHROPIC_BASE_URL (the host model proxy)',
+    requiredEnv: [],
+    anyOfEnv: ['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY'],
+    describe: () =>
+      'Claude Agent SDK needs a model credential: ANTHROPIC_BASE_URL (host model proxy), ' +
+      'CLAUDE_CODE_OAUTH_TOKEN (subscription), or ANTHROPIC_API_KEY (direct API)',
   },
   create(_sessionId: string): ClaudeAgentSdkHarness {
     return new ClaudeAgentSdkHarness();

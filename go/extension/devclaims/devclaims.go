@@ -23,6 +23,12 @@ type Issuer struct {
 // Do NOT use in production.
 func New(secret []byte) *Issuer { return &Issuer{secret: secret, ttl: time.Hour} }
 
+// NewWithTTL is New with a caller-chosen TTL — e.g. login tokens that must
+// outlive the 1-hour session-claims default. Same DEV-ONLY caveats.
+func NewWithTTL(secret []byte, ttl time.Duration) *Issuer {
+	return &Issuer{secret: secret, ttl: ttl}
+}
+
 // compile-time interface check
 var _ extension.ScopedClaimsIssuer = (*Issuer)(nil)
 

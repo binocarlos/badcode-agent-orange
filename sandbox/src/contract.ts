@@ -68,7 +68,8 @@ export interface HealthResponse {
 export interface SandboxEnv {
   SESSION_ID: string;
   SESSION_TOKEN: string;
-  ANTHROPIC_BASE_URL: string; // host model proxy (key injection)
+  ANTHROPIC_BASE_URL?: string; // host model proxy (key injection); unset = direct Anthropic API
+  CLAUDE_CODE_OAUTH_TOKEN?: string; // subscription credential for direct mode (from `claude setup-token`)
   HOST_API_URL?: string; // host API for tool callbacks (was GOAPI_URL)
   DEFAULT_MODEL?: string;
   PORT?: string; // default 3010

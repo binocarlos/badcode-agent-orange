@@ -81,6 +81,76 @@ func TestSessionEnv_ForwardsPolicySessionEnv(t *testing.T) {
 	}
 }
 
+// TestSessionEnv_ModelAPIKeyOverride locks the two model-auth modes: by default
+// the per-session JWT overwrites ANTHROPIC_API_KEY (proxy mode — the SDK sends
+// it as x-api-key), and with DisableModelAPIKeyOverride the host's SessionEnv
+// credentials pass through untouched (direct mode, e.g. an OAuth token).
+func TestSessionEnv_ModelAPIKeyOverride(t *testing.T) {
+	tests := []struct {
+		name       string
+		disable    bool
+		sessionEnv map[string]string
+		wantKey    string // expected ANTHROPIC_API_KEY ("" = must be absent)
+		wantOAuth  string
+	}{
+		{
+			name:       "default overrides host key with session JWT",
+			disable:    false,
+			sessionEnv: map[string]string{"ANTHROPIC_API_KEY": "host-dummy"},
+			wantKey:    "tok",
+		},
+		{
+			name:       "disabled leaves key absent and passes oauth token through",
+			disable:    true,
+			sessionEnv: map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-x"},
+			wantKey:    "",
+			wantOAuth:  "sk-ant-oat01-x",
+		},
+		{
+			name:       "disabled preserves a host-supplied real key",
+			disable:    true,
+			sessionEnv: map[string]string{"ANTHROPIC_API_KEY": "sk-ant-real"},
+			wantKey:    "sk-ant-real",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner, err := NewRunner(Deps{
+				Env:       execenv.NewMock(),
+				Registry:  imageregistry.NewMock(),
+				Store:     agentkittest.NewMemStore(),
+				Artifacts: artifacts.NewMock(),
+				Claims:    agentkittest.StaticClaims{Token: "test-token"},
+				Events:    events.NewPipeline(events.NewMockSink()),
+				Policy: Policy{
+					BaseImage:                  "agentkit-sandbox:test",
+					SessionEnv:                 tt.sessionEnv,
+					DisableModelAPIKeyOverride: tt.disable,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner: %v", err)
+			}
+			got := runner.(*runnerImpl).sessionEnv("s1", "tok", "")
+
+			key, present := got["ANTHROPIC_API_KEY"]
+			if tt.wantKey == "" && present {
+				t.Errorf("ANTHROPIC_API_KEY should be absent, got %q", key)
+			}
+			if tt.wantKey != "" && key != tt.wantKey {
+				t.Errorf("ANTHROPIC_API_KEY = %q, want %q", key, tt.wantKey)
+			}
+			if got["CLAUDE_CODE_OAUTH_TOKEN"] != tt.wantOAuth {
+				t.Errorf("CLAUDE_CODE_OAUTH_TOKEN = %q, want %q", got["CLAUDE_CODE_OAUTH_TOKEN"], tt.wantOAuth)
+			}
+			// Session identity keys are injected in both modes.
+			if got["SESSION_ID"] != "s1" || got["SESSION_TOKEN"] != "tok" {
+				t.Errorf("session keys wrong: %v", got)
+			}
+		})
+	}
+}
+
 // TestSessionEnv_NilPolicySessionEnv: the merge is nil-safe (no Policy.SessionEnv).
 func TestSessionEnv_NilPolicySessionEnv(t *testing.T) {
 	r, _, _, _, _, _ := newTestRunner(t)

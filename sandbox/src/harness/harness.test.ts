@@ -136,6 +136,51 @@ describe('checkCredentials', () => {
     const result = checkCredentials(desc, {});
     expect(result.ok).toBe(true);
   });
+
+  describe('anyOfEnv groups', () => {
+    function makeAnyOfDescriptor(anyOfEnv: string[]): HarnessDescriptor {
+      return {
+        name: 'anyof',
+        credentials: { requiredEnv: [], anyOfEnv, describe: () => 'anyof' },
+        create: () => ({ name: 'anyof' }) as unknown as Harness,
+      };
+    }
+
+    it('any single member of the group satisfies it', () => {
+      const desc = makeAnyOfDescriptor(['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+      expect(checkCredentials(desc, { ANTHROPIC_BASE_URL: 'http://proxy' }).ok).toBe(true);
+      expect(checkCredentials(desc, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-x' }).ok).toBe(true);
+      expect(checkCredentials(desc, { ANTHROPIC_API_KEY: 'sk-ant-real' }).ok).toBe(true);
+    });
+
+    it('none set → missing lists the group as one synthetic entry', () => {
+      const desc = makeAnyOfDescriptor(['A', 'B']);
+      const result = checkCredentials(desc, {});
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.missing).toEqual(['one of: A, B']);
+      }
+    });
+
+    it('empty-string members do not satisfy the group', () => {
+      const desc = makeAnyOfDescriptor(['A', 'B']);
+      expect(checkCredentials(desc, { A: '', B: '' }).ok).toBe(false);
+    });
+
+    it('group check composes with requiredEnv', () => {
+      const desc: HarnessDescriptor = {
+        name: 'both',
+        credentials: { requiredEnv: ['MUST'], anyOfEnv: ['A', 'B'], describe: () => 'both' },
+        create: () => ({ name: 'both' }) as unknown as Harness,
+      };
+      const result = checkCredentials(desc, {});
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.missing).toEqual(['MUST', 'one of: A, B']);
+      }
+      expect(checkCredentials(desc, { MUST: 'x', B: 'y' }).ok).toBe(true);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -284,7 +329,13 @@ describe('ClaudeAgentSdkHarness', () => {
   it('claudeAgentSdkDescriptor has correct name and credentials', async () => {
     const { claudeAgentSdkDescriptor } = await import('./claude-agent-sdk.js');
     expect(claudeAgentSdkDescriptor.name).toBe('claude-agent-sdk');
-    expect(claudeAgentSdkDescriptor.credentials.requiredEnv).toContain('ANTHROPIC_BASE_URL');
+    // Any one model credential suffices: proxy URL, subscription token, or API key.
+    expect(claudeAgentSdkDescriptor.credentials.requiredEnv).toEqual([]);
+    expect(claudeAgentSdkDescriptor.credentials.anyOfEnv).toEqual([
+      'ANTHROPIC_BASE_URL',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'ANTHROPIC_API_KEY',
+    ]);
     expect(typeof claudeAgentSdkDescriptor.credentials.describe()).toBe('string');
   });
 

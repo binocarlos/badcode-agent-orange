@@ -31,25 +31,55 @@ services:
         docker build -t ${BASE_IMAGE:-agentkit-sandbox:dev} /sandbox
         echo "sandbox image built + present in DinD"
 
+  # Session/message store. pgvector image so the future memory system can
+  # CREATE EXTENSION vector without an image swap.
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentorange}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agentorange}
+      POSTGRES_DB: ${POSTGRES_DB:-agentorange}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./deploy/pg-init.sql:/docker-entrypoint-initdb.d/pg-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agentorange} -d ${POSTGRES_DB:-agentorange}"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
   agentd:
     build:
       context: ./go
       dockerfile: ../deploy/agentd.Dockerfile
     # Share DinD's network namespace: agentd reaches the daemon at localhost:2375,
     # and nested session containers reach agentd at the bridge gateway 172.17.0.1.
+    # (postgres still resolves by service name — DNS comes from dind's netns,
+    # which sits on the same compose network.)
     network_mode: "service:dind"
     depends_on:
       dind:
         condition: service_healthy
       init-sandbox:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     environment:
       ADDR: ":8099"
+      DATABASE_URL: postgres://${POSTGRES_USER:-agentorange}:${POSTGRES_PASSWORD:-agentorange}@postgres:5432/${POSTGRES_DB:-agentorange}?sslmode=disable
       DOCKER_HOST: tcp://localhost:2375
       AGENTKIT_IMAGE: ${BASE_IMAGE:-agentkit-sandbox:dev}
       AGENTKIT_SELF_URL: http://172.17.0.1:8099
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
+      # Login modes (see .env.example). Neither set → legacy dev-open demo.
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      AGENTKIT_TEST_LOGIN: ${AGENTKIT_TEST_LOGIN:-}
+      AGENTKIT_PROJECT_MAP: ${AGENTKIT_PROJECT_MAP:-}
+      AGENTKIT_PROJECT_MAP_FILE: ${AGENTKIT_PROJECT_MAP_FILE:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Claude Code subscription token (`claude setup-token`). Only used when
+      # ANTHROPIC_API_KEY is unset → sessions bill the subscription directly.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       AGENTKIT_DATA: /data
       # Storage backends — unset = local (fs blobs + blob-archive). See .env.example.
       AGENTKIT_BLOB_BACKEND: ${AGENTKIT_BLOB_BACKEND:-}
@@ -85,3 +115,4 @@ services:
 
 volumes:
   agentd-data:
+  pg-data:

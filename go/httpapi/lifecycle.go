@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/binocarlos/badcode-agent-orange"
@@ -134,17 +135,30 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// DeleteSession destroys the runtime instance for a session.
+// DeleteSession destroys the runtime instance for a session. Tenancy: the
+// caller's customer must own the session (same check as GetSession).
 func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 	if err := h.cfg.Runner.Destroy(r.Context(), ref); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// Remove the session row too — a deleted session must not linger in
+	// listings. Runner.Destroy only tears down the runtime instance.
+	if h.cfg.AgentDB != nil {
+		_ = h.cfg.AgentDB.DeleteSession(r.Context(), sid)
+	} else if del, ok := h.cfg.Store.(interface {
+		DeleteSession(ctx context.Context, id string) error
+	}); ok {
+		_ = del.DeleteSession(r.Context(), sid)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

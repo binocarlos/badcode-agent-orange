@@ -42,6 +42,22 @@ func TestIssueProducesVerifiableToken(t *testing.T) {
 	}
 }
 
+// TestNewWithTTL verifies the caller-chosen TTL lands in the exp claim.
+func TestNewWithTTL(t *testing.T) {
+	secret := []byte("dev-secret")
+	iss := NewWithTTL(secret, 12*time.Hour)
+	tok, err := iss.Issue(context.Background(), extension.ContextScope{Customer: "acme", UserEmail: "u@x.y"}, "")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	claims := parse(t, tok, secret)
+	exp, _ := claims["exp"].(float64)
+	want := time.Now().Add(12 * time.Hour).Unix()
+	if int64(exp) < want-60 || int64(exp) > want+60 {
+		t.Fatalf("exp=%v, want ~%v (12h TTL)", int64(exp), want)
+	}
+}
+
 // TestIssueClaimContents verifies every claim field is present and correct.
 func TestIssueClaimContents(t *testing.T) {
 	secret := []byte("test-secret-xyz")

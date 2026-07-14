@@ -46,3 +46,36 @@ test('useAgentSessions lists sessions', async () => {
   await userEvent.click(screen.getByRole('button'))
   expect(await screen.findByText('1 sessions')).toBeInTheDocument()
 })
+
+// refresh({userEmail}) drives the ?user_email= filter ('*' = all users).
+test('refresh passes the user_email filter through', async () => {
+  const fetched: string[] = []
+  globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+    fetched.push(String(url))
+    return new Response(JSON.stringify([]), { status: 200 })
+  }) as typeof globalThis.fetch
+
+  function List() {
+    const { refresh } = useAgentSessions()
+    return (
+      <>
+        <button onClick={() => refresh({ userEmail: '*' })}>all</button>
+        <button onClick={() => refresh({ userEmail: 'kai@example.com' })}>one</button>
+        <button onClick={() => refresh()}>mine</button>
+      </>
+    )
+  }
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <List />
+    </AgentChatProvider>
+  )
+  await userEvent.click(screen.getByText('all'))
+  await userEvent.click(screen.getByText('one'))
+  await userEvent.click(screen.getByText('mine'))
+
+  const sessionCalls = fetched.filter((u) => u.includes('/agent/sessions'))
+  expect(sessionCalls.some((u) => u.endsWith('?user_email=*'))).toBe(true)
+  expect(sessionCalls.some((u) => u.endsWith('?user_email=kai%40example.com'))).toBe(true)
+  expect(sessionCalls.some((u) => !u.includes('user_email'))).toBe(true)
+})

@@ -48,3 +48,16 @@ func sandboxSessionEnv(selfURL string) map[string]string {
 		"ANTHROPIC_API_KEY":  dummyPassthroughKey,
 	}
 }
+
+// subscriptionSessionEnv is the session env for subscription mode: the in-image
+// `claude` CLI authenticates to api.anthropic.com directly with the Claude Code
+// OAuth token (from `claude setup-token`). No ANTHROPIC_BASE_URL (the sandbox
+// skips its model proxy plumbing) and no ANTHROPIC_API_KEY (the CLI must fall
+// through to the OAuth token; the Runner's JWT override is disabled too, via
+// Policy.DisableModelAPIKeyOverride).
+func subscriptionSessionEnv(selfURL, oauthToken string) map[string]string {
+	return map[string]string{
+		"HOST_API_URL":            selfURL,
+		"CLAUDE_CODE_OAUTH_TOKEN": oauthToken,
+	}
+}

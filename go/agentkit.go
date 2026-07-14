@@ -118,6 +118,13 @@ type Policy struct {
 	// server (examples/server) populates this from its own environment.
 	SessionEnv map[string]string
 
+	// DisableModelAPIKeyOverride stops the Runner from overwriting ANTHROPIC_API_KEY
+	// with the per-session JWT in sessionEnv. Set it when sessions authenticate to
+	// the model provider directly (credentials supplied via SessionEnv) instead of
+	// through a host model proxy that identifies sessions by x-api-key. The zero
+	// value preserves the proxy behaviour.
+	DisableModelAPIKeyOverride bool
+
 	// Mounts is a static set of bind mounts applied to every session container the
 	// Runner provisions. This is the dev-mode hot-reload mechanism (skills, plugins,
 	// control-server source) — leave empty in production. Sources must be paths

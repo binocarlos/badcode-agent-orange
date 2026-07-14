@@ -40,3 +40,21 @@ func TestSandboxSessionEnv_PointsAtAgentProxyAndDummyKey(t *testing.T) {
 		t.Fatalf("expected dummy passthrough key, got %q", env["ANTHROPIC_API_KEY"])
 	}
 }
+
+// TestSubscriptionSessionEnv locks direct (subscription) mode: sessions get the
+// OAuth token and NO proxy plumbing — no base URL, no API key of any kind.
+func TestSubscriptionSessionEnv_DirectWithOAuthTokenOnly(t *testing.T) {
+	env := subscriptionSessionEnv("http://172.17.0.1:8099", "sk-ant-oat01-test")
+	if env["CLAUDE_CODE_OAUTH_TOKEN"] != "sk-ant-oat01-test" {
+		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN = %q", env["CLAUDE_CODE_OAUTH_TOKEN"])
+	}
+	if env["HOST_API_URL"] != "http://172.17.0.1:8099" {
+		t.Fatalf("HOST_API_URL = %q", env["HOST_API_URL"])
+	}
+	if v, ok := env["ANTHROPIC_BASE_URL"]; ok {
+		t.Fatalf("ANTHROPIC_BASE_URL must be absent in subscription mode, got %q", v)
+	}
+	if v, ok := env["ANTHROPIC_API_KEY"]; ok {
+		t.Fatalf("ANTHROPIC_API_KEY must be absent in subscription mode, got %q", v)
+	}
+}

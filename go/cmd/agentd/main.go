@@ -29,8 +29,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	agentkit "github.com/binocarlos/badcode-agent-orange"
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
 	"github.com/binocarlos/badcode-agent-orange/extension"
 	"github.com/binocarlos/badcode-agent-orange/extension/blobartifacts"
@@ -49,10 +51,25 @@ func main() {
 		log.Fatalf("agentkit-server: mkdir %s: %v", dataDir, err)
 	}
 
-	// ── Session store (SQLite) ───────────────────────────────────────────────────
-	dbPath := filepath.Join(dataDir, "sessions.db")
-	store, err := sqlitestore.Open(dbPath)
-	must(err)
+	// ── Session store ────────────────────────────────────────────────────────────
+	// DATABASE_URL set → Postgres (agentdb.Store, self-migrating): one store for
+	// the Runner AND the rich httpapi read paths (session listing, message
+	// search, replayable query events). Unset → the legacy local SQLite store.
+	var store agentkit.RunnerStore
+	var agentDB *agentdb.Store
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		pg, err := agentdb.Open(dbURL)
+		must(err)
+		agentDB = pg
+		store = pg
+		log.Printf("[agentd] store=postgres")
+	} else {
+		dbPath := filepath.Join(dataDir, "sessions.db")
+		s, err := sqlitestore.Open(dbPath)
+		must(err)
+		store = s
+		log.Printf("[agentd] store=sqlite %s", dbPath)
+	}
 
 	// ── Blob backend (shared by registry + artifact store) ───────────────────────
 	// fs (default) or gcs — see backends.go. One BlobStore serves the artifact
@@ -99,8 +116,20 @@ func main() {
 	// ── Session env (model-provider config the in-image agent requires) ──────────
 	// selfURL is how a session container (nested in DinD) reaches agentd. With
 	// agentd sharing DinD's network namespace, that is the bridge gateway IP.
+	// Model auth by key presence: ANTHROPIC_API_KEY → proxy path (wins when both
+	// are set); only CLAUDE_CODE_OAUTH_TOKEN → subscription mode (sessions talk
+	// to api.anthropic.com directly); neither → proxy path serving the mock.
 	selfURL := envOr("AGENTKIT_SELF_URL", "http://172.17.0.1:8099")
+	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	subscriptionMode := apiKey == "" && oauthToken != ""
 	sessionEnv := sandboxSessionEnv(selfURL)
+	if subscriptionMode {
+		sessionEnv = subscriptionSessionEnv(selfURL, oauthToken)
+		log.Printf("[agentd] subscription mode (CLAUDE_CODE_OAUTH_TOKEN) → sessions call api.anthropic.com directly")
+	} else if apiKey != "" && oauthToken != "" {
+		log.Printf("[agentd] both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN set — API key wins (proxy mode)")
+	}
 
 	// ── Runner ───────────────────────────────────────────────────────────────────
 	runner, err := agentkit.NewRunner(agentkit.Deps{
@@ -110,9 +139,10 @@ func main() {
 		Artifacts: artStore,
 		Claims:    claims,
 		Policy: agentkit.Policy{
-			BaseImage:  envOr("AGENTKIT_IMAGE", "agentkit-example:dev"),
-			AgentPort:  3010,
-			SessionEnv: sessionEnv,
+			BaseImage:                  envOr("AGENTKIT_IMAGE", "agentkit-example:dev"),
+			AgentPort:                  3010,
+			SessionEnv:                 sessionEnv,
+			DisableModelAPIKeyOverride: subscriptionMode,
 		},
 	})
 	must(err)
@@ -125,30 +155,65 @@ func main() {
 		Store:     store,
 		Artifacts: artStore,
 		Identity:  identityFromRequest,
+		AgentDB:   agentDB, // nil on the SQLite fallback → legacy read paths
 	})
 	must(err)
 
 	// API mux (authenticated) + an outer root mux for unauthenticated routes.
 	apiMux := api.Mux()
 
+	// ── Login modes ──────────────────────────────────────────────────────────────
+	// google (GOOGLE_CLIENT_ID) and/or password (AGENTKIT_TEST_LOGIN) mint real
+	// project-scoped JWTs, so both require a verifying secret and a project map.
+	// Neither set = dev-open mode with the legacy /dev/token issuer.
+	googleClientID := os.Getenv("GOOGLE_CLIENT_ID")
+	testLogin := os.Getenv("AGENTKIT_TEST_LOGIN")
+	loginEnabled := googleClientID != "" || testLogin != ""
+
 	root := http.NewServeMux()
 	root.HandleFunc("/health", healthHandler)
-	// /dev/token (DEV ONLY): issues a short-lived JWT for the bundled UI. Gated by
-	// the shared secret only in that it signs with AGENTKIT_JWT_SECRET.
-	root.HandleFunc("/dev/token", func(w http.ResponseWriter, r *http.Request) {
-		scope := extension.ContextScope{
-			UserEmail: "demo@example.com",
-			Customer:  "demo",
-			Job:       "demo-job",
+	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != ""))
+
+	if loginEnabled {
+		if len(jwtSecret) == 0 {
+			log.Fatal("[agentd] login modes require AGENTKIT_JWT_SECRET (dev-open auth would ignore the minted tokens)")
 		}
-		tok, err := claims.Issue(r.Context(), scope, "")
-		if err != nil {
-			http.Error(w, "token generation failed: "+err.Error(), http.StatusInternalServerError)
-			return
+		pm, err := loadProjectMap(os.Getenv)
+		must(err)
+		loginIssuer := devclaims.NewWithTTL(jwtSecret, 12*time.Hour)
+		if googleClientID != "" {
+			root.HandleFunc("POST /auth/google", authGoogleHandler(
+				&googleVerifier{clientID: googleClientID}, pm, loginIssuer))
+			log.Printf("[agentd] google login enabled (%d mapped account(s))", len(pm))
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"token": tok})
-	})
+		if testLogin != "" {
+			email, password, err := parseTestLogin(testLogin)
+			must(err)
+			root.HandleFunc("POST /auth/password", authPasswordHandler(email, password, pm, loginIssuer))
+			log.Printf("[agentd] WARNING: password test login enabled for %s — all projects granted; test/dev only", email)
+		}
+		// Wildcard-login exchange: mints tokens for new project IDs.
+		root.HandleFunc("POST /auth/project-token", authProjectTokenHandler(jwtSecret, loginIssuer))
+	} else {
+		// /dev/token (DEV ONLY): issues a short-lived JWT for the bundled UI. Not
+		// registered when a login mode is on — it would mint valid demo tokens
+		// signed with the real secret.
+		root.HandleFunc("/dev/token", func(w http.ResponseWriter, r *http.Request) {
+			scope := extension.ContextScope{
+				UserEmail: "demo@example.com",
+				Customer:  "demo",
+				Job:       "demo-job",
+			}
+			tok, err := claims.Issue(r.Context(), scope, "")
+			if err != nil {
+				http.Error(w, "token generation failed: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"token": tok})
+		})
+	}
+
 	root.Handle("/agent-proxy/", http.StripPrefix("/agent-proxy", newModelProxyHandler()))
 	// Everything else goes through auth.
 	root.Handle("/", jwtAuthMiddleware(jwtSecret, apiMux))

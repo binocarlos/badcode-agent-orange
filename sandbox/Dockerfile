@@ -30,7 +30,10 @@
 #   ANTHROPIC_BASE_URL    Model proxy URL; the SDK sends calls here.
 #                         Set to the mockproxy address for keyless testing.
 #                         Leave unset to use the Anthropic API directly
-#                         (requires ANTHROPIC_API_KEY in env or image).
+#                         (requires CLAUDE_CODE_OAUTH_TOKEN or
+#                         ANTHROPIC_API_KEY in env or image).
+#   CLAUDE_CODE_OAUTH_TOKEN  Claude Code subscription token (`claude setup-token`)
+#                         for direct mode; ignored when ANTHROPIC_BASE_URL is set.
 #   SESSION_ID            (optional) Legacy single-session mode session ID.
 #                         Omit for multi-session mode (recommended).
 #   SESSION_TOKEN         (optional) Legacy single-session scoped token.

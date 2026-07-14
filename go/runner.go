@@ -1023,7 +1023,11 @@ func (r *runnerImpl) sessionEnv(sessionID, token, model string) map[string]strin
 	env["SESSION_TOKEN"] = token
 	// Override the host's static ANTHROPIC_API_KEY with the per-session JWT so
 	// the Anthropic SDK sends it as x-api-key, authenticating proxy requests.
-	env["ANTHROPIC_API_KEY"] = token
+	// Hosts whose sessions authenticate to the model provider directly (no
+	// proxy) opt out via Policy.DisableModelAPIKeyOverride.
+	if !r.deps.Policy.DisableModelAPIKeyOverride {
+		env["ANTHROPIC_API_KEY"] = token
+	}
 	if model != "" {
 		env["DEFAULT_MODEL"] = model
 	}

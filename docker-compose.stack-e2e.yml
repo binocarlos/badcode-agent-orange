@@ -1,0 +1,34 @@
+# Overlay for the stack e2e test (e2e/run-stack-e2e.sh [mock|api-key|subscription|all]):
+#   docker compose -f docker-compose.yml -f docker-compose.stack-e2e.yml up --build -d
+#
+# Fixed password login + two projects so Playwright can exercise the full
+# login → project → session flow without Google. Model credentials come ONLY
+# from the STACK_E2E_-prefixed variables the runner script sets per mode —
+# a developer's .env/shell credentials can never leak into the wrong mode.
+#
+# (Not named docker-compose.test.yml — that file belongs to the older
+# mock-server/registry e2e harness.)
+services:
+  # Persist DinD's image store across `down` (without --purge) so the sandbox
+  # image build is a cache hit on the next `up` — the dominant cost of a cycle.
+  dind:
+    volumes:
+      - stack-e2e-dind:/var/lib/docker
+
+  agentd:
+    environment:
+      AGENTKIT_JWT_SECRET: stack-e2e-secret
+      AGENTKIT_TEST_LOGIN: "test@example.com:orange-e2e"
+      AGENTKIT_PROJECT_MAP: '{"test@example.com":["apples-oranges","pears-plums"]}'
+      GOOGLE_CLIENT_ID: ""
+      ANTHROPIC_API_KEY: ${STACK_E2E_ANTHROPIC_API_KEY:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${STACK_E2E_CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Hermetic storage: force the local fs/blob-archive backends even when the
+      # developer's .env points at GCS/Artifact Registry.
+      AGENTKIT_BLOB_BACKEND: ""
+      AGENTKIT_REGISTRY_BACKEND: ""
+      AGENTKIT_REGISTRY_AUTH: ""
+      GOOGLE_APPLICATION_CREDENTIALS: ""
+
+volumes:
+  stack-e2e-dind:

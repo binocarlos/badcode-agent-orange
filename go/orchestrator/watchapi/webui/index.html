@@ -17,7 +17,12 @@
 </head>
 <body>
   <h1>Agent Orange — watch / approve / note</h1>
+  <p id="goal-row" hidden>
+    <input id="goal" placeholder="set the top-level goal" size="60">
+    <button onclick="setGoal()">Set goal</button>
+  </p>
   <p><button onclick="trigger()">Trigger a tick</button> <span id="status" class="muted"></span></p>
+  <p id="cockpit" class="muted" hidden></p>
 
   <section><h2>Pending approvals (needs_human)</h2><div id="tickets"></div></section>
 

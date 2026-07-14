@@ -6,8 +6,12 @@ export const ConfigSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
 
-  // Anthropic (via host model proxy -- no real API key in sandbox)
-  ANTHROPIC_BASE_URL: z.string().min(1, 'ANTHROPIC_BASE_URL is required (points to host model proxy)'),
+  // Anthropic model endpoint. Set = host model proxy (no real API key in the
+  // sandbox; the per-session proxy plumbing engages). Unset = talk to the
+  // Anthropic API directly, authenticating with whatever credential is in the
+  // process env (CLAUDE_CODE_OAUTH_TOKEN for subscription mode, or a real
+  // ANTHROPIC_API_KEY).
+  ANTHROPIC_BASE_URL: z.string().optional().default(''),
 
   // Host API for tool callbacks.
   // HOST_API_URL is the canonical library name.

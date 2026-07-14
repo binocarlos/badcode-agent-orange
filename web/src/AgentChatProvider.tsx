@@ -31,7 +31,11 @@ const ChatContext = createContext<ChatContextValue | null>(null)
 interface SessionsContextValue {
   sessions: AgentSessionListItem[]
   search: (query: string) => Promise<AgentMessageSearchResult[]>
-  refresh: () => Promise<void>
+  /**
+   * Reload the session list. userEmail scopes it: omitted = the API default
+   * (the caller's own sessions), '*' = all users, else that user's sessions.
+   */
+  refresh: (opts?: { userEmail?: string }) => Promise<void>
   select: (id: string) => void
   delete: (id: string) => Promise<void>
 }
@@ -94,10 +98,12 @@ export function AgentChatProvider({
     return h
   }, [getAuthToken])
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (opts?: { userEmail?: string }): Promise<void> => {
     try {
       const headers = await resolveAuthHeader()
-      const resp = await fetch(apiBaseUrl + endpoints.listSessions, { headers })
+      let url = apiBaseUrl + endpoints.listSessions
+      if (opts?.userEmail) url += `?user_email=${encodeURIComponent(opts.userEmail)}`
+      const resp = await fetch(url, { headers })
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const data = (await resp.json()) as AgentSessionListItem[]
       setSessions(Array.isArray(data) ? data : [])

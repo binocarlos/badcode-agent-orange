@@ -40,14 +40,20 @@ export const DEFAULT_HARNESS = 'claude-agent-sdk';
 
 /**
  * Validate the credential spec for a descriptor against process.env.
- * Returns { ok: true } if all required env vars are set, or
- * { ok: false, missing: string[] } listing the absent vars.
+ * Returns { ok: true } if all required env vars are set (and, when the spec
+ * declares an anyOfEnv group, at least one of that group is set), or
+ * { ok: false, missing: string[] } listing the absent vars. An unsatisfied
+ * anyOfEnv group appears as one synthetic entry: "one of: A, B, C".
  */
 export function checkCredentials(
   desc: HarnessDescriptor,
   env: NodeJS.ProcessEnv = process.env,
 ): { ok: true } | { ok: false; missing: string[] } {
   const missing = desc.credentials.requiredEnv.filter(k => !env[k]);
+  const anyOf = desc.credentials.anyOfEnv ?? [];
+  if (anyOf.length > 0 && !anyOf.some(k => env[k])) {
+    missing.push(`one of: ${anyOf.join(', ')}`);
+  }
   if (missing.length > 0) {
     return { ok: false, missing };
   }

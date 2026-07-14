@@ -1,12 +1,14 @@
 package modelproxy
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // mockProvider implements ModelProvider for testing.
@@ -138,6 +140,121 @@ func TestHeaderForwarding(t *testing.T) {
 	}
 	if receivedHeaders.Get("anthropic-version") != "2024-01-01" {
 		t.Fatalf("expected anthropic-version forwarded, got %q", receivedHeaders.Get("anthropic-version"))
+	}
+}
+
+// TestGzipTransparency locks the compression contract: the client's
+// Accept-Encoding must NOT be forwarded verbatim (Go's transport negotiates
+// and transparently decompresses), so a gzipping upstream can never leak
+// gzip bytes to a client that has lost the Content-Encoding header.
+func TestGzipTransparency(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			w.Header().Set("Content-Encoding", "gzip")
+			w.Header().Set("Content-Type", "application/json")
+			gz := gzip.NewWriter(w)
+			_, _ = gz.Write([]byte(`{"ok":true,"model":"claude-opus-4-5"}`))
+			_ = gz.Close()
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"model":"claude-opus-4-5"}`))
+	}))
+	defer upstream.Close()
+
+	handler := Handler(&mockProvider{endpoint: upstream.URL, apiKey: "k"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Accept-Encoding", "gzip") // what the claude CLI sends
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != 200 {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if enc := rec.Header().Get("Content-Encoding"); enc != "" {
+		t.Fatalf("Content-Encoding should be absent (body decompressed), got %q", enc)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("client received unparseable body (gzip leak?): %v — %q", err, rec.Body.String()[:min(60, rec.Body.Len())])
+	}
+}
+
+// TestResponseHeaderForwarding: upstream response headers (request-id,
+// rate-limit info) must reach the client, minus hop-by-hop/encoding headers.
+func TestResponseHeaderForwarding(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Request-Id", "req_123")
+		w.Header().Set("Anthropic-Ratelimit-Requests-Remaining", "99")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	handler := Handler(&mockProvider{endpoint: upstream.URL, apiKey: "k"})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`)))
+
+	if rec.Header().Get("Request-Id") != "req_123" {
+		t.Fatalf("Request-Id not forwarded: %v", rec.Header())
+	}
+	if rec.Header().Get("Anthropic-Ratelimit-Requests-Remaining") != "99" {
+		t.Fatalf("ratelimit header not forwarded: %v", rec.Header())
+	}
+}
+
+// TestStreamingFlush: the proxy must deliver upstream chunks as they arrive,
+// not buffer until EOF — the first SSE event has to reach the client while
+// the upstream is still emitting.
+func TestStreamingFlush(t *testing.T) {
+	firstChunkSent := make(chan struct{})
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte("event: message_start\ndata: {}\n\n"))
+		w.(http.Flusher).Flush()
+		close(firstChunkSent)
+		<-release // hold the stream open
+		_, _ = w.Write([]byte("event: message_stop\ndata: {}\n\n"))
+	}))
+	defer upstream.Close()
+
+	handler := Handler(&mockProvider{endpoint: upstream.URL, apiKey: "k"})
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	// Declared after srv.Close so it runs FIRST (LIFO): the upstream must be
+	// released before srv.Close waits on the in-flight proxied request.
+	defer close(release)
+
+	resp, err := http.Post(srv.URL+"/v1/messages", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	<-firstChunkSent
+	// The first chunk must be readable NOW, while the upstream is blocked.
+	buf := make([]byte, 1024)
+	type readResult struct {
+		n   int
+		err error
+	}
+	got := make(chan readResult, 1)
+	go func() {
+		n, err := resp.Body.Read(buf)
+		got <- readResult{n, err}
+	}()
+	select {
+	case r := <-got:
+		if r.n == 0 {
+			t.Fatalf("read returned 0 bytes (err=%v)", r.err)
+		}
+		if !strings.Contains(string(buf[:r.n]), "message_start") {
+			t.Fatalf("first chunk = %q", buf[:r.n])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first SSE chunk not delivered while upstream still open — proxy is buffering until EOF")
 	}
 }
 

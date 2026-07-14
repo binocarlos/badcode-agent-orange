@@ -1,7 +1,6 @@
 package modelproxy
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -58,18 +57,43 @@ func Handler(provider ModelProvider) http.Handler {
 		}
 		defer resp.Body.Close()
 
-		ct := resp.Header.Get("Content-Type")
-		if ct != "" {
-			w.Header().Set("Content-Type", ct)
+		// Forward the upstream response headers (the client needs more than
+		// Content-Type — e.g. request-id, rate-limit info). Hop-by-hop headers
+		// and body-encoding headers are skipped: the transport already
+		// decompressed the body, and we re-chunk it while streaming.
+		for k, vals := range resp.Header {
+			switch k {
+			case "Connection", "Keep-Alive", "Transfer-Encoding", "Content-Length", "Content-Encoding":
+				continue
+			}
+			for _, v := range vals {
+				w.Header().Add(k, v)
+			}
 		}
-		if strings.Contains(ct, "text/event-stream") {
+		if ct := resp.Header.Get("Content-Type"); strings.Contains(ct, "text/event-stream") {
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("X-Accel-Buffering", "no")
 		}
 		w.WriteHeader(resp.StatusCode)
-		bw := bufio.NewWriter(w)
-		_, _ = io.Copy(bw, resp.Body)
-		_ = bw.Flush()
+		// Stream the upstream body through per-chunk. Buffering until EOF would
+		// hold every SSE event back until the turn finished — the client must
+		// see tokens as the model emits them.
+		flusher, canFlush := w.(http.Flusher)
+		buf := make([]byte, 32*1024)
+		for {
+			n, rerr := resp.Body.Read(buf)
+			if n > 0 {
+				if _, werr := w.Write(buf[:n]); werr != nil {
+					break
+				}
+				if canFlush {
+					flusher.Flush()
+				}
+			}
+			if rerr != nil {
+				break
+			}
+		}
 	})
 }
 
@@ -104,8 +128,13 @@ func buildProxyRequest(endpoint, apiKey, inboundPath string, body []byte, header
 	if err != nil {
 		return nil, err
 	}
+	// Accept-Encoding is stripped so Go's transport negotiates (and transparently
+	// decompresses) compression itself — copying the client's header verbatim
+	// disables that, and the upstream's gzip would reach the client with the
+	// Content-Encoding header lost (unparseable "JSON").
 	skip := map[string]bool{"Host": true, "Connection": true, "Keep-Alive": true,
-		"Transfer-Encoding": true, "Content-Length": true, "Authorization": true}
+		"Transfer-Encoding": true, "Content-Length": true, "Authorization": true,
+		"Accept-Encoding": true}
 	for k, vals := range headers {
 		if skip[k] {
 			continue
@@ -127,8 +156,18 @@ const mockSSEStream = "" +
 	`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
 	"event: ping\n" +
 	`data: {"type":"ping"}` + "\n\n" +
+	// The text arrives as several deltas so consumers exercise incremental
+	// rendering (the stack e2e asserts the reply streams, not one final paint).
 	"event: content_block_delta\n" +
-	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello from the agentd mock model proxy. Set ANTHROPIC_API_KEY for a real agent."}}` + "\n\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello from "}}` + "\n\n" +
+	"event: content_block_delta\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the agentd "}}` + "\n\n" +
+	"event: content_block_delta\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"mock model proxy. "}}` + "\n\n" +
+	"event: content_block_delta\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Set ANTHROPIC_API_KEY "}}` + "\n\n" +
+	"event: content_block_delta\n" +
+	`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"for a real agent."}}` + "\n\n" +
 	"event: content_block_stop\n" +
 	`data: {"type":"content_block_stop","index":0}` + "\n\n" +
 	"event: message_delta\n" +
@@ -158,12 +197,16 @@ func MockHandler() http.Handler {
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.WriteHeader(http.StatusOK)
 		flusher, canFlush := w.(http.Flusher)
+		// Pace the chunks so downstream consumers observably stream. The whole
+		// pipeline (claude CLI → agent SDK → sandbox SSE → web reducer) batches
+		// aggressively, so the gap must be big enough that intermediate paints
+		// actually happen — the stack e2e asserts the reply renders incrementally.
 		for _, chunk := range splitSSE(mockSSEStream) {
 			_, _ = fmt.Fprint(w, chunk)
 			if canFlush {
 				flusher.Flush()
 			}
-			time.Sleep(2 * time.Millisecond)
+			time.Sleep(150 * time.Millisecond)
 		}
 	})
 }

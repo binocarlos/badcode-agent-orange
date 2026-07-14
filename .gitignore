@@ -1,7 +1,11 @@
 # Local env + secrets — never commit
 .env
+node_modules
 secrets/
 *.key.json
 gcp-key.json
 
 docker-compose.override.yml
+oranged-data/
+e2e/stack-e2e-logs*.txt
+e2e/.stack-e2e-mode

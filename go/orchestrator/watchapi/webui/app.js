@@ -12,6 +12,8 @@ const post = (p, b) =>
   });
 
 async function refresh() {
+  cockpit(); // optional daemon strip; no-op on plain watchapi hosts
+
   const tickets = await j("/api/tickets?status=needs_human");
   el("tickets").innerHTML =
     tickets
@@ -58,6 +60,29 @@ async function trigger() {
   await post("/api/trigger");
   el("status").textContent = "triggered";
   refresh();
+}
+
+// Optional daemon cockpit (goal + status): a host without these routes (plain
+// watchapi) 404s and the controls stay hidden — the UI remains a pure consumer.
+async function setGoal() {
+  await post("/api/goal", { goal: el("goal").value });
+  el("goal").value = "";
+  refresh();
+}
+async function cockpit() {
+  try {
+    const r = await fetch("/api/status", { headers: H });
+    if (!r.ok) return;
+    const s = await r.json();
+    el("goal-row").hidden = false;
+    el("cockpit").hidden = false;
+    const last = (s.ticks || [])[0];
+    el("cockpit").textContent =
+      `goal: ${s.goal || "(none — set one above)"} · spent $${(s.spent_usd ?? 0).toFixed(2)}` +
+      (last
+        ? ` · last tick ${last.at}: ${last.err ? "error: " + last.err : last.skipped ? "skipped (no goal)" : JSON.stringify(last.report)}`
+        : "");
+  } catch {}
 }
 
 refresh();
