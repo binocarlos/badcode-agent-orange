@@ -15,7 +15,8 @@ require resolving licensing/ownership first — parked until then.
 ## Phase 0 — Foundation imported ✅ (done)
 
 - Copied agentkit (`agent-library/`) into this repo root. **`cd go && go build ./...` passes** (Go 1.24).
-- Installation definitions copied to `installations/` (`platinum-base`, `core-v1`, `core-v2`).
+- Installation definitions copied to `installations/`, since genericized to the engine-owned
+  examples `installations/core` + `installations/example`.
 - Platinum host-side image pipeline copied to `migration-reference/` (to port, not to keep):
   `goapi-installations/` (resolution logic), `build-installations-manifest.py`,
   `build-sandbox-agentkit.sh`, `stack`, `agent_v2.go` (ImageResolver), `agent_save_session_image.go`,
@@ -54,9 +55,9 @@ Key code (in this repo):
 
 Goal: this repo builds and runs end-to-end with no Platinum coupling.
 
-1. **Re-module.** Rename Go module `github.com/binocarlos/badcode-agent-orange` → the Agent Orange path
-   (decide: e.g. `github.com/badcode/agent-orange` or keep `agentkit`). Update `go/go.mod` + all
-   import prefixes. Re-run `go build ./... && go vet ./...`.
+1. ✅ **Re-module.** The Go module path is settled as `github.com/binocarlos/badcode-agent-orange`
+   (see Decisions below); `go/go.mod` and all import prefixes use it and `go build ./... && go vet ./...`
+   pass. No old `bayes-price/agentkit` path remains.
 2. **Build the in-image agent + UI.** `npm install` + build in `sandbox/` (TS in-image agent) and
    `web/` (React UI); run their test suites. Confirm `sandbox/Dockerfile` builds `agent-orange-sandbox`.
 3. **Stand up the example host.** Run `go/examples/standalone/main.go` against real DinD with the

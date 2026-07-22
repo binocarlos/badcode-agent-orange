@@ -8,7 +8,7 @@
 The v0 design assumed one `ExecutionEnvironment` per deployment. That cannot scale horizontally. The
 `Fleet` generalises it without changing the per-worker interface: **each worker IS an
 `ExecutionEnvironment`; the `Fleet` composes above it.** A single-worker deployment is just a one-worker
-fleet, so every existing recipe ([11](11-deployment-recipes.md)) keeps working unchanged and the Runner
+fleet, so every existing deployment shape ([14](14-host-adapters.md#deployment-shapes)) keeps working unchanged and the Runner
 gains exactly one new seam.
 
 ## Worker
@@ -78,12 +78,12 @@ Affinity-aware policies (prefer a worker that already has the user/app image cac
 ## The sticky session→worker binding (where it is persisted)
 
 The binding is durable identity, so — like the snapshot handle — it lives on the host's
-`extension.SessionStore` ([10](10-extension-points.md)), **not** in library memory. This is the single
+`agentkit.RunnerStore` ([14](14-host-adapters.md#agentkitrunnerstore)), **not** in library memory. This is the single
 most important statelessness decision: two host replicas behind a load balancer both resolve the same
-worker for a session because both read `SessionStore`.
+worker for a session because both read `RunnerStore`.
 
 ```go
-// extension.SessionStore gains:
+// agentkit.RunnerStore gains:
 GetWorkerBinding(ctx, sessionID string) (workerID string, ok bool, err error)
 SetWorkerBinding(ctx, sessionID, workerID string) error
 ClearWorkerBinding(ctx, sessionID string) error
@@ -95,15 +95,15 @@ in-memory `Fleet` for tests/single-host (mirroring `agentkittest.NewMemStore`).
 ## How Provision/Resume/Snapshot route through the Fleet
 
 `deps.Env` becomes `deps.Fleet` (a single `ExecutionEnvironment` is wrapped as a one-worker fleet via a
-shim, with nil-fallback per the migration discipline in [91](91-migration-plan.md)). `ensureRunning`
-([04](04-session-orchestration.md)) becomes:
+shim). `ensureRunning`
+([01](01-architecture.md)) becomes:
 
 1. Resolve worker: `WorkerForSession`; if none, `PlaceForSession`.
 2. Operate on `worker.Env` exactly as today (Provision/Resume/Status/Snapshot/Destroy).
 3. The in-memory `instances` map keys by `sessionID` and records the `workerID`, so subsequent calls
    reach the same `Env` without re-resolving.
 
-`Recover` iterates **all** workers' `Env.Recover()` and re-adopts, cross-checking against `SessionStore`
+`Recover` iterates **all** workers' `Env.Recover()` and re-adopts, cross-checking against `RunnerStore`
 bindings.
 
 ## Worker health, drain, and loss
@@ -114,7 +114,7 @@ bindings.
   idle, snapshot-and-rebind (Persist → clear binding → next message re-places elsewhere).
   `DrainImmediate` snapshots in place if possible, else marks bindings stale.
 - **Loss (worker dies) = the restore path *iff a snapshot exists*.** A bound session whose worker is
-  gone falls through `ensureRunning`: read the snapshot handle from `SessionStore`; if present →
+  gone falls through `ensureRunning`: read the snapshot handle from `RunnerStore`; if present →
   `Rebind` to a healthy worker → `Materialize` + `Provision` there (**a lost worker is just an extreme
   drain** — which is *why* restore-portability, below, is mandatory). **If the session was never
   snapshotted** (`GetSnapshotHandle` returns `ok=false` — the common case for an active session that
@@ -140,9 +140,8 @@ Adding Daytona/E2B/Firecracker touches **zero** lines of `Runner`/`Fleet`/core: 
 `execenv.ExecutionEnvironment` registered as a `Worker` (with `Backend`/`Tenancy`/`IsolationTier`
 capabilities — [02](02-execution-environment.md)). Stronger isolation (gVisor/Kata) is a *runtime swap*
 under Docker/K8s — its only upstream effect is that the trust gate ([02](02-execution-environment.md))
-now permits `TenancyShared` on that worker. (Sanity-checked against OpenHands V1 `SandboxService`: same
-per-worker verb set; our additions are the pool + per-session placement, plus the snapshot/persist split
-that enables cross-worker restore.)
+now permits `TenancyShared` on that worker. The additions over a single-worker design are the pool +
+per-session placement, plus the snapshot/persist split that enables cross-worker restore.
 
 ## Risks / open decisions
 

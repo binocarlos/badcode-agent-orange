@@ -1,4 +1,4 @@
-# Run agentkit as a standalone stack
+# Run Agent Orange as a standalone stack
 
 One command brings up the whole thing — API, a chat UI, and the container runtime.
 
@@ -65,7 +65,7 @@ Per-mode logs land in `e2e/stack-e2e-logs-<mode>.txt`.
 Set `BASE_IMAGE` in `.env` to your own image (built on `agentkit-sandbox`). See
 `docs/15-standalone-stack.md` for the app-image contract and per-app plugins.
 
-## This is NOT how you embed agentkit as a library
+## This is NOT how you embed Agent Orange as a library
 
-If you want to integrate agentkit *into your own Go server*, you do NOT run this
+If you want to integrate Agent Orange *into your own Go server*, you do NOT run this
 stack — see `docs/15-standalone-stack.md` → "Library vs standalone".

@@ -4,8 +4,9 @@ This is **the** core interface. Everything else in the library is policy layered
 
 > **Definition.** An `ExecutionEnvironment` is a mechanism that, given a container image and a session
 > spec, makes a running **instance** of the in-image agent reachable over HTTP, and lets you exec into
-> it, suspend/resume it, snapshot it, and destroy it. *How* it does that — a new container, a pod, or
-> an exec into a shared container — is the implementation's concern.
+> it, snapshot it, and destroy it. *How* it does that — a new container, a pod, or an exec into a
+> shared container — is the implementation's concern. The lifecycle is **running → archive
+> (snapshot + destroy) → restore**; there is no in-place suspend/resume.
 
 ## The contract
 
@@ -25,20 +26,11 @@ import (
 type ExecutionEnvironment interface {
 	// Provision makes a running instance of the in-image agent for a session and
 	// returns a handle that includes the address to reach its HTTP server. The image
-	// must already be present (see ImageRegistry.EnsurePresent). Provision is the
-	// generalisation of the orchestrator's createSandbox: for DinD it creates+starts a
-	// container with a leased host port; for single-container dev it ensures the shared
+	// must already be present (see ImageRegistry.EnsurePresent). For DinD it creates+starts
+	// a container with a leased host port; for single-container dev it ensures the shared
 	// container is up and returns its in-network address; for K8s it creates a pod and
 	// returns its service address.
 	Provision(ctx context.Context, spec ProvisionSpec) (*Instance, error)
-
-	// Suspend stops the instance while preserving its filesystem so Resume can bring it
-	// back cheaply (docker stop; scale pod to zero). Idempotent if already suspended.
-	Suspend(ctx context.Context, id InstanceID) error
-
-	// Resume restarts a suspended instance and blocks until its agent reports healthy
-	// (or ctx/timeout fires). Returns the (possibly changed) address.
-	Resume(ctx context.Context, id InstanceID) (*Instance, error)
 
 	// Exec runs a one-off command inside the instance and returns its result. Used for
 	// workspace listing, secret scanning, and snapshot preparation — not for the agent
@@ -67,11 +59,11 @@ type ExecutionEnvironment interface {
 
 	// OnDestroy registers a callback fired whenever an instance is destroyed (by Destroy
 	// or by the engine itself). The orchestration core uses it to fire artifact
-	// mark-lost and clear in-memory maps. Mirrors SandboxManager.onDestroy.
+	// mark-lost and clear in-memory maps.
 	OnDestroy(func(id InstanceID))
 
 	// Capabilities describes what this environment supports, so the orchestration core
-	// can adapt policy (e.g. skip the idle reaper if Suspend is unsupported).
+	// can adapt policy (e.g. reject snapshot requests when SupportsSnapshot is false).
 	Capabilities() Capabilities
 }
 
@@ -115,7 +107,6 @@ type InstanceState string
 const (
 	StateStarting  InstanceState = "starting"
 	StateRunning   InstanceState = "running"
-	StateSuspended InstanceState = "suspended"
 	StateDestroyed InstanceState = "destroyed"
 	StateError     InstanceState = "error"
 )
@@ -155,9 +146,12 @@ type DestroyOptions struct {
 }
 
 type Capabilities struct {
-	SupportsSuspend  bool // shared-tenancy environments may not (the container is shared)
 	SupportsSnapshot bool // MUST be false for Tenancy==TenancyShared (see "Capability axis" below)
 	SupportsExec     bool
+
+	// IsolatedPerSession is deprecated: derived as Tenancy == TenancyPerSession. Retained
+	// for one release for back-compat; use Tenancy instead.
+	IsolatedPerSession bool
 
 	// Backend identifies the placement mechanism (descriptive; for metrics/logging/policy).
 	Backend Backend
@@ -215,28 +209,21 @@ type Mount struct {
 ## How each verb maps onto each engine
 
 The whole point of the interface is that the orchestration core never branches on engine type. Here
-is the mapping the three shipped adapters implement (derived from the current
-`orchestrator/src/sandbox-manager.ts` behaviour):
+is the mapping the three shipped adapters implement:
 
 | Verb | Single container (dev) | Docker-in-Docker | Kubernetes |
 |------|------------------------|------------------|------------|
 | **Provision** | Ensure the one shared container is up; create a session workspace dir; return `http://<shared>:3010` (sessions multiplex by `SESSION_ID`) | `docker.createContainer` from image with a leased host port (`PortAllocator`) + bridge-gateway env; `start`; return `http://localhost:<hostPort>` | Create a Pod (+ ephemeral Service) from image; return the service/pod address `http://<ip>:3010` |
-| **Suspend** | no-op or unsupported (`Capabilities.SupportsSuspend=false`) | `container.stop({t:5})`, retain the leased port | scale the pod's owning resource to 0 (or annotate for the controller) |
-| **Resume** | no-op (already running) | `container.start`; `waitForHealthy` poll of `/health` | scale back to 1; wait for readiness probe |
 | **Exec** | `docker exec` in the shared container, scoped to the session workspace | `docker exec` in the session container | `pods/exec` subresource |
 | **Snapshot** | **unsupported** — `Tenancy=shared` reports `SupportsSnapshot=false`; a file diff is not session-attributable when sessions are multiplexed (see "trust gate" + [03](03-image-registry.md)) | `docker commit` → `docker diff`+`getArchive` (fast diff) or `docker save` (full) | build an image from the pod (e.g. `kubectl debug`/buildkit) or rely on a PVC snapshot |
 | **Destroy** | remove the session workspace dir; container stays | `container.stop`+`remove`; release the port | delete the Pod/Service |
 | **Status** | report shared-container health + per-session active query | `container.inspect` + agent `/status` | pod phase + agent `/status` |
-| **Recover** | list session dirs | `docker.listContainers` filtered by label `agentkit.managed=true` (today `platinum.orchestrator=true`), re-adopt + re-lease ports | list pods by label selector |
-
-The DinD column is the closest to today's behaviour — most of `sandbox-manager.ts` *is* the DinD
-adapter, and porting it is the bulk of [90-provenance-map.md](90-provenance-map.md)'s `execenv/docker`
-entry.
+| **Recover** | list session dirs | `docker.listContainers` filtered by label `agentkit.managed=true`, re-adopt + re-lease ports | list pods by label selector |
 
 ## DinD vs single-container: the differences that the adapter (not the core) absorbs
 
-The current orchestrator branches on `config.dindEnabled` in ~a dozen places. In the library those
-branches collapse into two adapter implementations sharing a common Docker client helper:
+The DinD and single-container adapters share a common Docker client helper and differ only in the
+following, which each absorbs so the orchestration core sees a uniform interface:
 
 - **Networking.** DinD leases a host port from a pool and the host reaches the agent on
   `localhost:<port>`; the gateway IP is injected so the agent can call back to the host. Single
@@ -257,7 +244,7 @@ boolean, because they vary independently:
 
 - **`Backend`** — descriptive (docker-socket / dind / k8s / managed). The core never branches on it.
 - **`Tenancy`** — `per-session` vs `shared`. This is the *only* axis the Runner branches on for
-  reuse-vs-provision ([04](04-session-orchestration.md)).
+  reuse-vs-provision ([01](01-architecture.md)).
 - **`IsolationTier`** — `process` / `container` / `vm`. The trust boundary.
 
 The user's "four execution environments" are these axes crossed, **not** four implementations:
@@ -288,8 +275,8 @@ Only true per-container isolation makes the diff session-attributable. See
   not the environment's. `Snapshot` returns an in-engine `ImageRef`; durability is composed on top.
 - **Event streaming.** The environment exposes an `Address`; the orchestration core speaks the sandbox
   HTTP/SSE contract over it. The environment doesn't model events.
-- **Lifecycle policy.** *When* to suspend/archive is the orchestration core's decision
-  ([04](04-session-orchestration.md)); the environment only provides the mechanisms.
+- **Lifecycle policy.** *When* to archive (snapshot + destroy) a cold session is the orchestration
+  core's decision ([01](01-architecture.md)); the environment only provides the mechanisms.
 - **Auth / org context.** Injected as `Env` by the core from host extensions; the environment just
   passes env through.
 
@@ -302,17 +289,17 @@ instances, no Docker) and what lets the same orchestration core run on a laptop 
 `mock://instance/<id>` addresses, records every call on an embedded `Recorder`, and lets tests script
 `Status` results and force errors. It makes `Snapshot` return a deterministic `mock-image:<session>`
 ref so the `ImageRegistry` mock can round-trip it. With it, the entire orchestration core and `Runner`
-are testable with zero containers. See [04](04-session-orchestration.md#testing) and
-[10](10-extension-points.md) for the hermetic-test recipe.
+are testable with zero containers. See [01](01-architecture.md) and
+[14](14-host-adapters.md#deployment-shapes) for the hermetic-test recipe.
 
 ## Open design questions (flagged for implementation)
 
 - **Streaming exec.** Some snapshot-prep flows stream large output. `Exec` returns buffered
   `[]byte`; if a use case needs streaming we'll add an `ExecStream` variant rather than complicate
   `Exec`.
-- **Address stability across resume.** DinD may reuse the leased port on resume (the orchestrator
-  retains it); K8s pod IPs change. `Resume` returns a fresh `Instance` precisely so the core never
-  caches a stale address.
+- **Address stability across restore.** DinD may reuse a leased port when a session is restored; K8s
+  pod IPs change. `Provision` returns a fresh `Instance` on restore precisely so the core never caches
+  a stale address.
 - **K8s snapshotting** is the least settled — committing a running pod into an image has no
   first-class primitive. Options: a sidecar buildkit, a CSI volume snapshot for the workspace only,
   or requiring stateless sessions on K8s. The adapter declares `SupportsSnapshot` accordingly and the

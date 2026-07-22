@@ -10,13 +10,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// openLivePG opens a Store against a real Postgres (with pgvector) when
-// AGENTKIT_TEST_POSTGRES_URL is set, skipping otherwise — the same env-gated
-// pattern as orchestrator/pgstore/migration_pg_test.go. These tests cover the
+// openLivePG opens a Store against a real Postgres when
+// AGENTKIT_TEST_POSTGRES_URL is set, skipping otherwise. These tests cover the
 // Postgres-only SQL that cannot honestly run on sqlite: the numbered
-// migrations, jsonb '->>' + '::bigint' casts (GetSessionTokenSummary),
-// tsvector search (SearchMessages), and the pgvector/tsvector conversation
-// index (UpsertConversationIndex / SearchConversations).
+// migrations, jsonb '->>' + '::bigint' casts (GetSessionTokenSummary), and
+// tsvector search (SearchMessages).
 func openLivePG(t *testing.T) *Store {
 	t.Helper()
 	url := os.Getenv("AGENTKIT_TEST_POSTGRES_URL")
@@ -172,90 +170,5 @@ func TestLivePG_SearchMessages(t *testing.T) {
 	res, err = s.SearchMessages(ctx, &MessageSearchQuery{Customer: customer, Query: "xylophonectomy"})
 	if err != nil || res == nil || len(res) != 0 {
 		t.Fatalf("no-hit search: %#v err=%v", res, err)
-	}
-}
-
-func TestLivePG_ConversationIndexUpsertAndSearch(t *testing.T) {
-	s := openLivePG(t)
-	ctx := context.Background()
-	customer := "cust-" + uuid.New().String()
-
-	sess := newLiveSession(t, s, customer, "alice@x.com")
-	emb := make([]float32, 1536)
-	emb[0], emb[1] = 0.5, 0.25
-
-	ci := &ConversationIndex{
-		SessionID: sess.ID, Customer: customer, Job: "job1", UserEmail: "alice@x.com",
-		WorkflowID: "chat", Title: "zebra chat", Summary: "a talk about zebras",
-		MessageCount: 2, LastActivityAt: 1000, IndexedAt: 1001, SourceHash: "h1",
-	}
-	if err := s.UpsertConversationIndex(ctx, ci, emb, "zebras migrate across the plains"); err != nil {
-		t.Fatalf("upsert with embedding: %v", err)
-	}
-	// Conflict path: same session, no embedding this time (NULL), new summary.
-	ci.Summary = "updated zebra summary"
-	if err := s.UpsertConversationIndex(ctx, ci, nil, "zebras migrate far"); err != nil {
-		t.Fatalf("upsert conflict/no-embedding: %v", err)
-	}
-	meta, err := s.GetConversationIndexMeta(ctx, sess.ID)
-	if err != nil || meta == nil || meta.SourceHash != "h1" {
-		t.Fatalf("meta after upsert: %+v err=%v", meta, err)
-	}
-
-	// Keyword-only search (no query embedding).
-	res, err := s.SearchConversations(ctx, &ConversationSearchQuery{
-		Customer: customer, Query: "zebras",
-	})
-	if err != nil {
-		t.Fatalf("keyword search: %v", err)
-	}
-	if len(res) != 1 || res[0].SessionID != sess.ID || res[0].MatchType != "keyword_only" {
-		t.Fatalf("keyword search wrong: %+v", res)
-	}
-	if res[0].Summary != "updated zebra summary" {
-		t.Fatalf("conflict upsert did not replace summary: %+v", res[0])
-	}
-
-	// Hybrid RRF search with an embedding (embedding was NULLed by the second
-	// upsert, so restore it first).
-	if err := s.UpsertConversationIndex(ctx, ci, emb, "zebras migrate far"); err != nil {
-		t.Fatalf("restore embedding: %v", err)
-	}
-	res, err = s.SearchConversations(ctx, &ConversationSearchQuery{
-		Customer: customer, Query: "zebras", QueryEmbedding: emb,
-		ExcludeUserEmails: []string{"Nobody@Else.com"},
-	})
-	if err != nil {
-		t.Fatalf("hybrid search: %v", err)
-	}
-	if len(res) != 1 || res[0].SessionID != sess.ID || res[0].MatchType != "keyword+semantic" {
-		t.Fatalf("hybrid search wrong: %+v", res)	}
-
-	// Exclusions are case-insensitive here too (lowerAll on the arg side).
-	res, err = s.SearchConversations(ctx, &ConversationSearchQuery{
-		Customer: customer, Query: "zebras", ExcludeUserEmails: []string{"ALICE@X.COM"},
-	})
-	if err != nil || len(res) != 0 {
-		t.Fatalf("exclusion should remove the only row: %+v err=%v", res, err)
-	}
-}
-
-// TestLivePG_UpsertConversationIndex_TruncationKeepsValidUTF8 drives the
-// transcript through the 900KB tsvector guard with a multibyte character
-// straddling the cut point. Postgres rejects invalid UTF-8 outright, so the
-// truncation must land on a rune boundary.
-func TestLivePG_UpsertConversationIndex_TruncationKeepsValidUTF8(t *testing.T) {
-	s := openLivePG(t)
-	ctx := context.Background()
-	customer := "cust-" + uuid.New().String()
-	sess := newLiveSession(t, s, customer, "alice@x.com")
-
-	// 1 ASCII byte + 2-byte runes: byte index 900_000 falls mid-rune.
-	transcript := "a" + strings.Repeat("é", 460_000)
-	ci := &ConversationIndex{
-		SessionID: sess.ID, Customer: customer, Title: "big", Summary: "big transcript",
-	}
-	if err := s.UpsertConversationIndex(ctx, ci, nil, transcript); err != nil {
-		t.Fatalf("upsert with mid-rune truncation boundary: %v", err)
 	}
 }

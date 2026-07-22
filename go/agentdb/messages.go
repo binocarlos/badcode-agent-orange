@@ -4,11 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/events"
 	"github.com/google/uuid"
 )
+
+// lowerAll lowercases every element, matching LOWER(...) column predicates in
+// the exclusion filters (SearchMessages, ListSessions).
+func lowerAll(in []string) []string {
+	out := make([]string, len(in))
+	for i, v := range in {
+		out[i] = strings.ToLower(v)
+	}
+	return out
+}
 
 func (s *Store) CreateMessages(ctx context.Context, messages []*Message) error {
 	if len(messages) == 0 {

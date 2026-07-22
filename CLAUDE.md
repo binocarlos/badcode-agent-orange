@@ -3,6 +3,12 @@
 Read this first. It tells an agent what Agent Orange is, how the repo is laid out, how to build and
 run it, and the rules to keep it healthy.
 
+## Who
+
+BadCode is two people: **Kai Davenport** (main developer) and **Jack** (lead creative
+designer). Either may be the user in a session. BadCode's marketing manager is the first real
+Agent Orange use case (`docs/17-product-spec.md` §8.8).
+
 ## What Agent Orange is
 
 Agent Orange is a **reusable runtime for container-backed AI agent sessions**. You create a
@@ -39,7 +45,7 @@ Agent Orange. Three pieces:
 | `sandbox/` | In-image agent (TS). The HTTP/SSE control server + harness adapter that runs inside a session container. `sandbox/Dockerfile` builds the harness image. |
 | `web/` | React chat UI. The single event reducer drives live + replay identically. |
 | `installations/` | **Example** base images (`core`, `example`) — see `installations/README.md`. Real per-project images live in their own project repos. |
-| `docs/` | Numbered architecture docs (`00-vision` … `16-derived-images`, `90-provenance-map`, `91-migration-plan`). Start at `01-architecture.md`. |
+| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`. Start at `01`. The authoritative forward spec (workers/memory/events) is `17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/spec/01`–`06` (component designs; original § numbers preserved). Dated research notes live in `docs/research/`. |
 | `migration-reference/` | **Reference only — do NOT build or import.** Platinum host-side image pipeline + the original Platinum installations, kept to port from. May contain host-app coupling. |
 | `deploy/`, `docker-compose*.yml`, `README-stack.md` | The standalone stack (run it with one command — below). |
 | `mock-server/`, `e2e/`, `examples/` | Mock model server, end-to-end tests, example host + web bits. |
@@ -83,12 +89,12 @@ cd web && npm install && npm test
 
 - **Runner** (`go/agentkit.go`, `go/runner.go`) — create/message/stream/snapshot a session. The API surface a host calls.
 - **ExecutionEnvironment** (`go/execenv/`) — the container seam; Docker + Docker-in-Docker adapters. `docs/02-execution-environment.md`.
-- **ImageRegistry** (`go/imageregistry/`) — `EnsurePresent`/`Build`/`Persist`/`Materialize` (pull/build/push/restore). Adapters: `ociregistry` (registry push/pull — pluggable auth via `imageregistry/auth`: `auth.Static` basic or `auth.GCP` ADC tokens), `blobarchive` (snapshot to blob). `Build()` is stubbed (host builds). `docs/03-image-registry.md`, `docs/16-derived-images.md`.
+- **ImageRegistry** (`go/imageregistry/`) — `EnsurePresent`/`Build`/`Persist`/`Materialize` (pull/build/push/restore). Adapters: `ociregistry` (registry push/pull — pluggable auth via `imageregistry/auth`: `auth.Static` basic or `auth.GCP` ADC tokens), `blobarchive` (snapshot to blob). `Build()` is stubbed (host builds). `docs/03-image-registry.md`, `installations/README.md`.
 - **Installations** — layered base images sessions launch from: sandbox harness → `core` → `example` → per-project. `installations/README.md`.
-- **Harness** (`sandbox/`) — wraps `@anthropic-ai/claude-agent-sdk`; pluggable per session. `docs/12-harness.md`.
+- **Harness** (`sandbox/`) — wraps `@anthropic-ai/claude-agent-sdk`; pluggable per session. `docs/07-in-image-agent.md`.
 - **Events / streaming** (`go/events/`) — one canonical SSE event vocabulary; `web/` reduces it. `docs/05-event-streaming.md`.
 - **Persistence** (`go/agentdb/`, `go/extension/`) — sessions/events/artifacts; host-implemented store seams (Postgres in prod). `docs/14-host-adapters.md`.
-- **Multi-tenancy** — `ContextScope{Customer, Job, ...}` + scoped tokens; auth is delegated to the host. `docs/10-extension-points.md`.
+- **Multi-tenancy** — `ContextScope{Customer, Job, ...}` + scoped tokens; auth is delegated to the host. `docs/14-host-adapters.md`.
 
 ## Rules for working in this repo
 
@@ -110,7 +116,9 @@ cd web && npm install && npm test
 
 ## Deeper context
 
-- `docs/00-vision.md`, `docs/01-architecture.md` — what it is and how it fits together.
+- `docs/01-architecture.md` — what it is and how it fits together.
 - `docs/15-standalone-stack.md`, `README-stack.md` — running it.
-- `docs/16-derived-images.md`, `installations/README.md` — installations / image layering.
+- `installations/README.md` — installations / image layering (derived-image tree, overlay model, `imagetree`).
+- `docs/17-product-spec.md` — the authoritative product spec entry point (goal, atoms,
+  principles, non-goals); component designs incl. the work-plan checklist in `docs/spec/`.
 - `MIGRATION.md` — current status + the registry/GCP roadmap.

@@ -48,7 +48,7 @@ Point at a non-Anthropic upstream with `ANTHROPIC_UPSTREAM_URL`.
 The Runner launches `BASE_IMAGE` per session. Build your own on top of
 `agentkit-sandbox` and add tools via the app-image contract
 (`/app/product-plugins`, `/workspace/lib`, `/workspace/.claude`,
-`/workspace/CLAUDE.md`) — see `docs/10-extension-points.md`. Per-app **UI** plugins
+`/workspace/CLAUDE.md`) — see `docs/14-host-adapters.md`. Per-app **UI** plugins
 register against `@agentkit/chat-ui`'s render-plugin seam in the app's frontend.
 
 > Agent *profiles* (named base-image + prompt + tool bundles referenced at session

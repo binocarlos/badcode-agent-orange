@@ -43,7 +43,7 @@ type ImageRegistry interface {
 	// Persist takes an in-engine image ref (typically from ExecutionEnvironment.Snapshot)
 	// and stores it durably, returning a Handle that survives process/host restarts.
 	// • local-tar adapter:   `docker save` → write the tar somewhere
-	// • blob-archive adapter: commit-diff → tar → gzip → blob (today's suspend/restore)
+	// • blob-archive adapter: commit-diff → tar → gzip → blob (the archive/restore fast path)
 	// • remote adapter:       `docker push` → return the registry reference as the handle
 	Persist(ctx context.Context, ref execenv.ImageRef, opts PersistOptions) (Handle, error)
 
@@ -64,7 +64,7 @@ type ImageRegistry interface {
 
 // Handle is an opaque, durable pointer to a persisted image. Its concrete meaning is
 // adapter-specific (a file path, a blob path + metadata, a registry reference); the
-// orchestration core stores it on the session row via SessionStore and passes it back to
+// orchestration core stores it on the session row via RunnerStore and passes it back to
 // Materialize on restore. It must be JSON-serialisable.
 type Handle struct {
 	Kind string            // "local-tar" | "blob-archive" | "registry"
@@ -95,7 +95,7 @@ type ImageLayer string
 
 const (
 	LayerCore ImageLayer = "core" // the agentkit base image (the in-image agent + harness binaries)
-	LayerApp  ImageLayer = "app"  // base + product binaries/skills (e.g. Platinum's pt) — default launch image
+	LayerApp  ImageLayer = "app"  // base + product binaries/skills — the default launch image
 	LayerUser ImageLayer = "user" // app + a curated set of artifacts (see "User images")
 )
 
@@ -126,9 +126,8 @@ type Capabilities struct {
 
 ## The snapshot/restore flow, decomposed
 
-The single most intricate behaviour in the current system is suspend→archive→restore
-(`sandbox-manager.ts` lines ~886–1285). The library decomposes it cleanly across the two interfaces.
-Today it is one tangled method; here each half lives where it belongs.
+The single most intricate behaviour in the system is archive→restore. The library decomposes it
+cleanly across the two interfaces, so each half lives where it belongs.
 
 **Archive (snapshot a cold session so it can be resurrected):**
 
@@ -163,17 +162,16 @@ demand") is generic Go in the core; the *mechanism* ("how do bytes get durable")
 | Adapter | `EnsurePresent` | `Build` | `Persist` | `Materialize` | Pairs with |
 |---------|-----------------|---------|-----------|---------------|------------|
 | **`ociregistry`** | `docker pull` (or force-pull with `AlwaysPull`) | not supported | `docker push` to registry | pull from registry handle | DinD + registry (dev: `registry:5000`, prod: ACR) |
-| **`blobarchive`** | no-op | not supported | commit-diff → tar → gzip → **blob** | download → gunzip → apply diff → commit | DinD (Platinum prod/staging) |
+| **`blobarchive`** | no-op | not supported | commit-diff → tar → gzip → **blob** | download → gunzip → apply diff → commit | DinD (prod/staging) |
 | **`remote`** *(sketch)* | `docker pull` | push build to a builder | `docker push` | handle == ref; pull on EnsurePresent | Kubernetes |
 
 > **Note:** The `localbuild` adapter (tar-on-disk via `docker save`/`docker load`) was removed in the
 > registry-everywhere refactor. Use `ociregistry` with `registry:5000` for local dev (images are
 > force-pulled from the local registry on each session launch).
 
-`blobarchive` is essentially today's `azure-upload.ts` + the diff-extraction half of
-`sandbox-manager.ts`, repackaged as an `ImageRegistry`. The blob backend itself is an injected
-`BlobStore` interface (the host supplies it — Platinum passes its `storage.BlobStore`), so the library
-isn't bound to Azure.
+`blobarchive` packages blob upload plus diff-extraction behind the `ImageRegistry` interface. The blob
+backend itself is an injected `BlobStore` interface (the host supplies it — e.g. a GCS or Azure
+implementation), so the library isn't bound to any one storage provider.
 
 ## Composition: why the interfaces are separate
 
@@ -183,37 +181,38 @@ splitting:
 
 - You can run **DinD + blobarchive** (staging/prod) or **DinD + ociregistry** (dev with `registry:5000`) by swapping the registry only.
 - You can run **K8s + remote** without the core learning anything new — `Persist` becomes a push.
-- The **mock registry** round-trips `Snapshot` refs in memory, so suspend/restore is testable with no
+- The **mock registry** round-trips `Snapshot` refs in memory, so archive/restore is testable with no
   Docker and no blob storage at all.
 
 The orchestration core is constructed with one of each:
 
 ```go
-runner := agentkit.NewRunner(agentkit.Deps{
+runner, err := agentkit.NewRunner(agentkit.Deps{
 	Env:      dockerdind.New(cfg),          // ExecutionEnvironment
 	Registry: blobarchive.New(blobStore),   // ImageRegistry
-	Store:    platinumSessionStore{db},     // SessionStore (host)
+	Store:    hostRunnerStore{db},          // RunnerStore (host)
 	Events:   events.NewPipeline(...),      // EventStreamer/pipeline
 	Artifacts: blobArtifactStore{...},      // ArtifactStore (host)
-	OrgContext: platinumOrgContext{...},    // extension
+	OrgContext: hostOrgContext{...},        // extension
 	// ...
 })
+if err != nil { /* fail-fast: trust gate / portability validation */ }
 ```
 
 Tests pass `execenv.NewMock()` + `imageregistry.NewMock()` and everything else mock — see
-[10-extension-points.md](10-extension-points.md).
+[14-host-adapters.md](14-host-adapters.md).
 
 ## The unified image model: three image kinds on one snapshot primitive
 
-App images follow the app image contract in [10-extension-points.md](10-extension-points.md#the-app-image-contract).
+App images follow the app image contract in [14-host-adapters.md](14-host-adapters.md#the-app-image-contract).
 
 There are **three** kinds of image in the system, and they are built two different ways. Getting this
 distinction right is what keeps the model simple.
 
 | Kind | What it is | How it's built | When |
 |------|-----------|----------------|------|
-| **Core → App** image | The agentkit base (in-image agent + all harness binaries) layered with product binaries/skills (e.g. Platinum's `pt`, `CLAUDE.md`, skill folders) | `ImageRegistry.Build` (BaseImage + Overlays / Dockerfile) | **build/CI time**, pushed to the registry. The App image is the default launch image (`Policy.BaseImage`). |
-| **Session-snapshot** image | The *whole filesystem* of a running, **isolated** session, captured as an image layer (copy-on-write diff) | `execenv.Snapshot` → `ImageRegistry.Persist` (diff-archive) | on suspend/archive (see "snapshot/restore flow" above) |
+| **Core → App** image | The agentkit base (in-image agent + all harness binaries) layered with product binaries/skills (a product CLI, `CLAUDE.md`, skill folders) | `ImageRegistry.Build` (BaseImage + Overlays / Dockerfile) | **build/CI time**, pushed to the registry. The App image is the default launch image (`Policy.BaseImage`). |
+| **Session-snapshot** image | The *whole filesystem* of a running, **isolated** session, captured as an image layer (copy-on-write diff) | `execenv.Snapshot` → `ImageRegistry.Persist` (diff-archive) | on archive (see "snapshot/restore flow" above) |
 | **User** image | A *curated* image: an App image + a named set of artifacts copied in, then snapshotted | the **same snapshot primitive** — launch a throwaway container from the App image, copy the artifacts in, snapshot, persist | out-of-band (no LLM); cached by content hash |
 
 The key insight (and the user's refinement): **session-snapshot images and user images are built by the
@@ -222,31 +221,37 @@ session snapshot captures a live session as-is; a user image captures a throwawa
 curated artifacts ([06](06-artifacts.md)). `Build` (Dockerfile/overlays) is reserved for the build-time
 Core→App layers.
 
-### Build-time layering (Core → App) — unchanged via Overlays
+### Build-time layering (Core → App) via Overlays
 
 ```go
 ref, _ := registry.Build(ctx, imageregistry.BuildSpec{
 	Layer:     imageregistry.LayerApp,
 	BaseImage: "agentkit-sandbox:base",                 // the core image
 	Overlays: []imageregistry.Overlay{
-		{Source: "./bin/pt",             Target: "/usr/local/bin/pt"},
+		{Source: "./bin/tool",           Target: "/usr/local/bin/tool"},
 		{Source: "./skills/forecasting", Target: "/workspace/.claude/skills/forecasting"},
 		{Source: "./CLAUDE.md",          Target: "/workspace/CLAUDE.md"},
 	},
-	Tag: "platinum-sandbox:v123",
+	Tag: "app-sandbox:v123",
 })
 ```
 
 There is deliberately **no runtime "install skill" method** — skills are an image concern. Per-customer
 skill sets are App-image overlays at build time.
 
-### User images — curated artifacts, built via snapshot
+### User images — curated artifacts, built via snapshot (roadmap)
+
+> **Status: future / roadmap — not yet implemented.** The `BuildUserImage` / `PrewarmUserImage`
+> orchestration verbs below are a design sketch, not `Runner` methods that exist today. The forward
+> plan for custom/user images lives in [17-product-spec.md](17-product-spec.md); this section records
+> the intended shape so the `Snapshot`/`Persist` primitives stay sufficient for it.
 
 A *user image* lets a user save a useful capability (a script, a set of files) they produced in the
-agent and re-launch from it later. It is built by the orchestration core (not the LLM):
+agent and re-launch from it later. The intent is that it is built by the orchestration core (not the
+LLM):
 
 ```
-Runner.BuildUserImage(ctx, {BaseImage: appImage, Artifacts: [...named artifact refs...], Name}):
+BuildUserImage(ctx, {BaseImage: appImage, Artifacts: [...named artifact refs...], Name}):   // roadmap
   1. resolve content-hash tag = hash(BaseImage + sorted artifact identities)
   2. if Resolve(spec) hits → return the cached ref            // returning user, unchanged inputs
   3. miss: Provision a throwaway instance from BaseImage
@@ -255,17 +260,18 @@ Runner.BuildUserImage(ctx, {BaseImage: appImage, Artifacts: [...named artifact r
   6.       Destroy the throwaway instance
 ```
 
-`CreateSessionRequest` resolves its launch image as: explicit `Image` override > resolved user image >
-App default (`Policy.BaseImage`). Build timing is **prewarm + cache-by-hash** (an out-of-band
-`Runner.PrewarmUserImage` called when the user edits customisations; launch resolves-then-builds only on
-a true miss).
+Today's launch-image resolution is simpler and explicit (`resolveLaunchImage` in `go/runner.go`):
+**explicit `Image` > `CustomImageID` (materialized via `Deps.CustomImages`) > `Policy.BaseImage`**.
+A resolved-user-image tier would slot in ahead of the base default, with build timing of **prewarm +
+cache-by-hash** so a launch resolves-then-builds only on a true cache miss.
 
 ### Two rules that fall out of this model
 
 1. **Shared tenancy cannot snapshot** — and therefore cannot produce session-snapshot OR user images.
    When many sessions share one container ([02](02-execution-environment.md)), a file diff is not
-   attributable to a single session, so `Snapshot`/`BuildUserImage` **error**. The environment reports
-   `SupportsSnapshot=false`. Only `TenancyPerSession` (one container per session) supports these.
+   attributable to a single session, so a snapshot **errors** (`SupportsSnapshot=false`). Only
+   `TenancyPerSession` (one container per session) supports these. See [02](02-execution-environment.md)
+   for the trust gate and capability axes.
 2. **The diff base is the launch image, not always `Policy.BaseImage`.** A session launched from a user
    image must diff against *that* image, or the diff archive is wrong. The Runner records the launch
    image on the instance/session and passes it as `PersistOptions.BaseImage` (fixing the v0
@@ -273,7 +279,7 @@ a true miss).
 
 ### Content-hash tagging (so cache hits are deterministic)
 
-Adopt the OpenHands-style triple so rebuilds are minimised and `Resolve` is exact:
+Use a content-hash triple so rebuilds are minimised and `Resolve` is exact:
 - **Versioned tag** (`…:v123`) — human, deploy-pinned (the App image / `Policy.BaseImage`).
 - **Content-hash tag** (`…:<sha256(base digest + sorted overlay/artifact hashes + build args)>`) — the
   cache key `Resolve`/`Build` compute. A tag with that hash already in the registry ⇒ cache hit, no build.

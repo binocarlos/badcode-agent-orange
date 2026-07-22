@@ -1,0 +1,40 @@
+# Spec — Management tools & human attention
+
+**Part of the product spec.** Entry point and binding principles: [`../17-product-spec.md`](../17-product-spec.md).
+The core MCP tools every session gets: prompt management and request_human_attention. Section numbers (§) are kept from the original single-file spec, so cross-references
+like §7.6 or §8.8 anywhere in the repo still resolve — the entry point has the full map.
+
+---
+
+## 9. Management tools (core MCP, granted to every session)
+
+Alongside `memory_*` (§7.3), `subscription_list/create/delete`, and
+`schedule_list/create/update/delete` (§8.6):
+
+- `worker_list()` → `[{name, description, enabled}]`
+- `worker_create(name, description, system_prompt, mcp_config?)` — how a manager hires (§8.8)
+- `worker_prompt_read(name)` / `worker_prompt_write(name, system_prompt)` — wholesale string
+  replace (P4). Writing also stores an automatic `kind=prompt-revision` memory containing the
+  previous prompt (provenance + manual rollback; NOT a versioning feature — it's just a memory).
+  This is a load-bearing choice: because every prompt update lands in memory, the *pattern* of
+  prompt updates is itself searchable evidence. A second-layer consultant can study how a
+  first-layer consultant has been revising prompts and steer it — by updating the consultant's
+  prompt. Self-improvement recurses through the same two tools with nothing added to core.
+- `project_prompt_read()` / `project_prompt_write(system_prompt)` — same, project level.
+
+And the human-in-the-loop primitive:
+
+- `request_human_attention(message)` — the worker is saying "a human needs to look at this
+  thread". Mechanics (deliberately almost nothing): agentd posts `{message, session_url}` to
+  the project's `attention_channel` (§5) and stamps the session/`worker.finished` envelope
+  with `attention_requested`; the tool result echoes the permalink; the worker then simply
+  ends its turn. The session pauses the way every session pauses (idle → archived; snapshot
+  and resume already exist). The human clicks through to the **ordinary chat UI**, reads the
+  thread, and whatever they type is the next message — "post it" grants permission; "change
+  the tone" starts a live interaction loop. There is no approval state machine, no draft
+  queue, no pending-items UI: the *thread itself* is the review surface, and staged autonomy
+  (§8.8.3) is one sentence in a prompt.
+
+No approval gate in core. If a project wants review-before-apply beyond that, it is a worker
+arrangement (a proposer that writes `kind=prompt-proposal` memories and a gatekeeper worker
+that applies them). We deleted the approval engine deliberately; do not re-grow it.
