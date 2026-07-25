@@ -10,6 +10,10 @@ One command brings up the whole thing — API, a chat UI, and the container runt
 
 Open http://localhost:8080, create a session, and chat.
 
+For the product layer on top of that — projects, workers, memory, subscriptions,
+schedules, images, skills, the config log — see
+`docs/18-workers-memory-events.md`.
+
 Model credentials (precedence: API key > subscription token > mock):
 
 - **`ANTHROPIC_API_KEY` set** → a real agent, API-billed via agentd's model proxy.
@@ -17,6 +21,21 @@ Model credentials (precedence: API key > subscription token > mock):
   billed to your Claude Code **subscription**; sessions call api.anthropic.com
   directly. See the caveat in `.env.example`.
 - **Neither** → a deterministic mock model replies, so the UI still works offline.
+
+## The product layer needs Postgres
+
+The compose stack sets `DATABASE_URL`, so this is only a trap if you run `agentd`
+yourself. **Everything above session chat is wired only when `DATABASE_URL` is
+set**: without it the event router and scheduler never run, the core MCP server
+(memory, worker, image, skill and management tools) is not mounted at all, and
+project settings and worker prompts silently do not apply. agentd says so at
+boot and then behaves like a healthy stack that does nothing.
+
+Memory specifically **requires** Postgres — the store returns
+`ErrMemoryRequiresPostgres` on sqlite rather than answering searches with
+plausible but incomplete results. Inside Postgres, pgvector is optional: without
+it search drops the semantic leg and ranks on keyword + recency, with the result
+shape unchanged. Details in `docs/15-standalone-stack.md`.
 
 ## Login + projects (optional)
 
@@ -30,9 +49,14 @@ sessions with a filter by user.
 
 ## End-to-end test
 
-The browser e2e (login → create project → new session → streamed reply →
-replay → project namespacing) runs against a stack you keep up between runs —
-the fast loop is:
+The e2e runs against a stack you keep up between runs. It covers the chat flow
+(login → create project → new session → streamed reply → replay → project
+namespacing) and the product layer — session MCP config, workers and settings,
+images and skills, and `acceptance-loop.spec.ts`, in which one worker rewrites
+another worker's system prompt with no human and no deploy, offline (the spec's
+definition of done — §8.7). Specs live in `e2e/features/`
+and run via `playwright.stack.config.ts`; `e2e/tests/` is the older Vite +
+mock-server rig. The fast loop is:
 
     ./e2e/run-stack-e2e.sh up            # build + start (mock mode), ~minutes once
     ./e2e/run-stack-e2e.sh test          # seconds per iteration — repeat at will
@@ -50,6 +74,17 @@ clean-room one-shot: `./e2e/run-stack-e2e.sh run [mock|api-key|subscription|all]
 
 Per-mode logs land in `e2e/stack-e2e-logs-<mode>.txt`.
 
+**Sessions hold a running container until the session is deleted** — nothing
+reaps them on a timer, and a stack that has accumulated enough of them starts
+failing to provision new ones (roughly a hundred was enough once; the symptom is
+"session has no running instance and no snapshot", which reads like a product
+bug and is not one). The suite
+deletes its own sessions; `./e2e/run-stack-e2e.sh clean` removes leftovers when
+something else did not. `clean` also **restarts agentd**, which is not optional:
+pulling containers out from under a running agentd leaves its placement state
+naming instances that no longer exist, and it then refuses to provision *any*
+new session until restarted. The script does the restart for you.
+
 ## What's running
 
 | Service | Role |
@@ -58,7 +93,7 @@ Per-mode logs land in `e2e/stack-e2e-logs-<mode>.txt`.
 | `agentd` | the API + orchestrator + `/agent-proxy`; shares DinD's network namespace |
 | `dind` | Docker-in-Docker; hosts one container per session |
 | `init-sandbox` | one-shot: builds + loads the sandbox image into DinD |
-| `postgres` | session/message store (pgvector image, ready for the memory system) |
+| `postgres` | session/message store **and the whole product layer** — workers, memories, events, schedules, images, skills, the config log. `pgvector/pgvector:pg16`, so `CREATE EXTENSION vector` works without an image swap |
 
 ## Customize the agent image
 
