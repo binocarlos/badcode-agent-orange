@@ -36,6 +36,15 @@ type Config struct {
 	// ProjectSettings backs GET/PUT /agent/project-settings. Left nil it is
 	// filled from AgentDB by New(); with neither set those routes answer 501.
 	ProjectSettings ProjectSettingsStore
+	// Events backs the event/subscription/delivery routes (spec §8). Leave nil
+	// and it defaults to AgentDB when that is set; nil with no AgentDB makes
+	// those routes 501.
+	Events EventStore
+
+	// ProjectTokenIssuer, when set, enables POST /agent/project-token — the
+	// long-lived project credential a headless poster uses to reach
+	// POST /agent/events without a browser login (§8.5). Nil → 501.
+	ProjectTokenIssuer ProjectTokenIssuer
 
 	// ImageResolver, when set, maps a host "installation" name
 	// (createSessionBody.Installation, "" = host default) to a launch image
@@ -82,6 +91,11 @@ func New(cfg Config) (*Handlers, error) {
 	if cfg.ProjectSettings == nil && cfg.AgentDB != nil {
 		cfg.ProjectSettings = cfg.AgentDB
 	}
+	// The event routes ride on the same database as the rich read paths unless
+	// a host deliberately supplies its own store.
+	if cfg.Events == nil && cfg.AgentDB != nil {
+		cfg.Events = cfg.AgentDB
+	}
 	return &Handlers{cfg: cfg}, nil
 }
 
@@ -119,6 +133,14 @@ type Endpoints struct {
 	// Project settings (§5) — project inferred from the JWT, never the path.
 	GetProjectSettings string // "GET /agent/project-settings"
 	PutProjectSettings string // "PUT /agent/project-settings"
+	// Events & routing (§8). Subscriptions/Subscription and Events are
+	// multi-method: the handler switches on r.Method.
+	IngestEvent   string // "POST /agent/events"
+	ListEvents    string // "GET /agent/events"
+	Subscriptions string // "/agent/subscriptions"       (GET list, POST create)
+	Subscription  string // "/agent/subscriptions/{id}"  (GET, PUT, DELETE)
+	Deliveries    string // "GET /agent/deliveries"
+	ProjectToken  string // "POST /agent/project-token"
 	// TODO: an artifact download route (GET by artifact ID, backed by
 	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
 }
@@ -146,6 +168,12 @@ var DefaultEndpoints = Endpoints{
 
 	GetProjectSettings: "GET /agent/project-settings",
 	PutProjectSettings: "PUT /agent/project-settings",
+	IngestEvent:        "POST /agent/events",
+	ListEvents:         "GET /agent/events",
+	Subscriptions:      "/agent/subscriptions",
+	Subscription:       "/agent/subscriptions/{id}",
+	Deliveries:         "GET /agent/deliveries",
+	ProjectToken:       "POST /agent/project-token",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -186,6 +214,19 @@ func (h *Handlers) Mux() *http.ServeMux {
 	}
 	if e.PutProjectSettings != "" {
 		m.HandleFunc(e.PutProjectSettings, h.PutProjectSettings)
+	}
+	// Events & routing — each guarded so a host can unmount one by blanking it.
+	for pattern, handler := range map[string]http.HandlerFunc{
+		e.IngestEvent:   h.IngestEvent,
+		e.ListEvents:    h.ListEvents,
+		e.Subscriptions: h.Subscriptions,
+		e.Subscription:  h.Subscription,
+		e.Deliveries:    h.ListDeliveries,
+		e.ProjectToken:  h.ProjectToken,
+	} {
+		if pattern != "" {
+			m.HandleFunc(pattern, handler)
+		}
 	}
 	return m
 }

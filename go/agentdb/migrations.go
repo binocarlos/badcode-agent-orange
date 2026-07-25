@@ -239,6 +239,67 @@ var agentMigrations = []migration{
 			);
 		`,
 	},
+	{
+		// The event spine (spec §8.1–§8.4): the append-only event log, the
+		// subscriptions that route it, and one delivery row per
+		// (event, subscription) attempt — the at-least-once idempotency guard
+		// and the job-history spine the UI renders.
+		//
+		// Deliberately absent: a per-subscription `concurrency` column and a
+		// `dropped` delivery status. Both were superseded 2026-07-25 by the
+		// worker-level `max_instances` gate — deliveries for a worker at
+		// capacity stay `pending`, so nothing ever produces `dropped`.
+		Name: "023_events_subscriptions_deliveries",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS project_events (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				type VARCHAR(255) NOT NULL,
+				text TEXT NOT NULL DEFAULT '',
+				envelope JSONB NOT NULL DEFAULT '{}',
+				occurred_at BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				delivered BOOLEAN NOT NULL DEFAULT FALSE
+			);
+			CREATE INDEX IF NOT EXISTS idx_project_events_project ON project_events(project);
+			CREATE INDEX IF NOT EXISTS idx_project_events_type ON project_events(type);
+			CREATE INDEX IF NOT EXISTS idx_project_events_undelivered ON project_events(delivered, occurred_at);
+
+			CREATE TABLE IF NOT EXISTS subscriptions (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				event_type VARCHAR(255) NOT NULL,
+				filter JSONB NOT NULL DEFAULT '{}',
+				worker VARCHAR(255) NOT NULL,
+				max_firings_per_hour INT NOT NULL DEFAULT 0,
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_subscriptions_project ON subscriptions(project);
+			CREATE INDEX IF NOT EXISTS idx_subscriptions_enabled ON subscriptions(project, enabled);
+
+			CREATE TABLE IF NOT EXISTS event_deliveries (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				event_id VARCHAR(36) NOT NULL,
+				subscription_id VARCHAR(36) NOT NULL,
+				session_id VARCHAR(36) NOT NULL DEFAULT '',
+				status VARCHAR(30) NOT NULL DEFAULT 'pending',
+				started_at BIGINT NOT NULL DEFAULT 0,
+				ended_at BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0,
+				CONSTRAINT event_deliveries_status_check CHECK (
+					status IN ('pending','running','ok','failed','awaiting_human','rate_limited')
+				)
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_event_deliveries_pair
+				ON event_deliveries(event_id, subscription_id);
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_project ON event_deliveries(project);
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_status ON event_deliveries(project, status);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
