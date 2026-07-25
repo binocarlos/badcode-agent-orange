@@ -72,6 +72,10 @@ func (p *pipeline) Run(ctx context.Context, q QueryContext, src io.Reader, clien
 		defer close(done)
 		ticker := time.NewTicker(p.flushCadence)
 		defer ticker.Stop()
+		// Detached for the same reason as persist below: a cadence flush that
+		// races a client disconnect must still land, or the crash-safety flush
+		// evaporates exactly when it is needed.
+		flushCtx := context.WithoutCancel(ctx)
 		go func() {
 			for {
 				select {
@@ -86,7 +90,7 @@ func (p *pipeline) Run(ctx context.Context, q QueryContext, src io.Reader, clien
 					compacted := Compact(snap)
 					searchText := ExtractSearchText(compacted)
 					p.sink.BeginFlush(q.SessionID)
-					_ = p.sink.PersistQueryEvents(ctx, q.SessionID, q.QueryID, compacted, searchText)
+					_ = p.sink.PersistQueryEvents(flushCtx, q.SessionID, q.QueryID, compacted, searchText)
 					p.sink.EndFlush(q.SessionID)
 				case <-done:
 					return
@@ -156,8 +160,14 @@ func (p *pipeline) Run(ctx context.Context, q QueryContext, src io.Reader, clien
 	snap := make([]Envelope, len(collected))
 	copy(snap, collected)
 	mu.Unlock()
-	if err := sc.Err(); err != nil {
-		return p.persist(ctx, q, snap, res)
+	// The scanner can also end because the interruption aborted the body read
+	// (the transport cancels it with the request context) rather than because the
+	// select above tripped. Either way the turn was cut short, so it must not
+	// report the clean-EOF default of "complete" — a truncated turn is
+	// "cancelled". A stream that simply ends without query_complete on a live
+	// context still defaults to "complete", as before.
+	if ctx.Err() != nil {
+		res.Status = "cancelled"
 	}
 	return p.persist(ctx, q, snap, res)
 }
@@ -193,6 +203,20 @@ func (p *pipeline) persist(ctx context.Context, q QueryContext, collected []Enve
 	}
 	compacted := Compact(collected)
 	searchText := ExtractSearchText(compacted)
+	// Detach from the caller's context before writing. Persisting is the whole
+	// point of the pipeline, and the commonest reason to reach here is that the
+	// context was JUST cancelled — a browser reload drops the SSE request, which
+	// cancels it. A real store honours the context it is handed, so persisting
+	// under the cancelled one fails instantly and the entire turn (including the
+	// human's own message, seeded as a LeadingEvent) is dropped on the floor.
+	// That would make the transcript a record of turns that happened to finish
+	// while someone was watching, not of what was said — P8 says the history is
+	// append-only, so what was already said is already history.
+	//
+	// Same reasoning, and same idiom, as the Runner's emitJobOutcome. Note this
+	// is about PERSISTENCE, not events: a cancelled turn still emits no
+	// worker.finished/worker.failed, it just leaves a durable transcript.
+	ctx = context.WithoutCancel(ctx)
 	p.sink.BeginFlush(q.SessionID)
 	defer p.sink.EndFlush(q.SessionID)
 	if err := p.sink.PersistQueryEvents(ctx, q.SessionID, q.QueryID, compacted, searchText); err != nil {
