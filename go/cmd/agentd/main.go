@@ -85,6 +85,15 @@ func main() {
 	jwtSecret := []byte(os.Getenv("AGENTKIT_JWT_SECRET")) // empty → dev-open
 	claims := devclaims.New([]byte(envOr("AGENTKIT_JWT_SECRET", "dev-secret")))
 
+	// ── Public base URL (session permalinks) ─────────────────────────────────────
+	// Where a human clicking a session link lands — the web UI's externally
+	// reachable origin, NOT AGENTKIT_SELF_URL (that is a DinD bridge IP only
+	// containers can reach). Everything that stamps provenance mints its
+	// session_url from this. See permalink.go.
+	permalinks, err := resolvePublicBaseURL(os.Getenv)
+	must(err)
+	log.Printf("[agentd] permalinks=%s/p/<project>/s/<session>", permalinks.BaseURL())
+
 	// ── Docker host (shared by DinD + blobarchive) ───────────────────────────────
 	dockerHost := envOr("DOCKER_HOST", "tcp://localhost:2375")
 

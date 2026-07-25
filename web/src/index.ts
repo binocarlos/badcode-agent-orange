@@ -48,6 +48,19 @@ export type { UseAgentSessionOptions, PersonaInfo } from './useAgentSession.js'
 // available to hosts that want to pre-compute plugin state outside the component.
 export { foldPluginEvents } from './components/AgentChat.js'
 
+// Canonical session permalink (the /p/:projectId/s/:sessionId route)
+export {
+  PROJECT_SEGMENT,
+  SESSION_SEGMENT,
+  SESSION_PERMALINK_FORMAT,
+  buildSessionPath,
+  buildSessionPermalink,
+  parseSessionPermalink,
+} from './permalink.js'
+export type { SessionRoute } from './permalink.js'
+export { default as useSessionPermalink, projectIdFromLocation } from './useSessionPermalink.js'
+export type { UseSessionPermalinkOptions, SessionPermalinkApi } from './useSessionPermalink.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
