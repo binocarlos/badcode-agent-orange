@@ -79,6 +79,7 @@ Every management mutation appends a record. The vocabulary is closed — this is
 | `worker_create` | `worker_create` tool, `PUT /agent/workers/{name}` (new), UI | the whole new worker row |
 | `worker_update` | `worker_update` tool, worker PUT, UI editor | the whole worker row after the partial update — including a change of the **image pointer** (§13), which is therefore always a visible act, never a silent side effect of snapshotting |
 | `worker_enable` / `worker_disable` | the same paths, `enabled` toggled | the whole worker row |
+| `worker_delete` | `DELETE /agent/workers/{name}`, UI | the whole worker row as it last stood (rule 2 — deletes append too) |
 | `worker_prompt_write` | `worker_prompt_write` tool, UI prompt editor | the whole worker row (the new `system_prompt` included in full) |
 | `project_prompt_write` | `project_prompt_write` tool, UI | the new project system prompt |
 | `project_settings_put` | `PUT /agent/project-settings`, UI (§5) | the whole settings row after the write |

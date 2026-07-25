@@ -83,7 +83,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       (`go/agentdb/workers.go`, `go/agentdb/migrations.go`, `go/httpapi/`)
       **Validation:** `go test ./agentdb/... -run 'TestWorkers' -count=1` (must include cases for
       the `max_instances` default and `briefing` round-trip)
-- [ ] **C2.** Job composition: core preamble (fixed text + test pinning its content), prompt
+- [x] **C2.** Job composition: core preamble (fixed text + test pinning its content), prompt
       concatenation order, MCP merge (core ∪ project ∪ worker, worker-wins), event-as-first-
       message rendering. One pure, heavily-tested `ComposeJob` function. `[learnings]` Also:
       write `composed_prompt` on the session row at composition time (§6.2); render the raw
@@ -127,7 +127,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       exact; paraphrase found with zero word overlap), and project-isolation proofs.
       (`go/agentdb/memories.go`, `go/agentdb/migrations.go`)
       **Validation:** `go test ./agentdb/... -run 'TestMemories|TestSelector' -count=1`
-- [ ] **D2.** Embedding provider seam + deterministic mock embedder; NULL-degradation path.
+- [x] **D2.** Embedding provider seam + deterministic mock embedder; NULL-degradation path.
       (`go/extension/embedding/`) — depends D1
       **Validation:** `go test ./extension/... -run TestEmbedding -count=1`
 - [ ] **D3.** Memory MCP tool server in agentd (session-token auth → project scope);
@@ -138,7 +138,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       (`go/cmd/agentd/mcp_memory.go` or `go/httpapi/`) — depends D1, A3 (sessions must be able
       to reach host MCP), F3 (permalink format)
       **Validation:** `go test ./cmd/agentd/... -run 'TestMemoryTools|TestMemoryCurrent' -count=1`
-- [ ] **D4.** sqlite degradation story for the dev store (keyword-only, no vector) or an
+- [x] **D4.** sqlite degradation story for the dev store (keyword-only, no vector) or an
       explicit "memory requires Postgres" error — decide during D1, document in 15-standalone-stack.
       (`go/agentdb/memories.go`, `docs/15-standalone-stack.md`)
       **Validation:** `go test ./agentdb/... -run TestMemorySqlite -count=1`
@@ -437,6 +437,23 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(integration, 2026-07-25)` Config-log adoption pass (commit `d6c94cc`): `PutProjectSettings`,
+  `UpsertWorker` (→ `worker_create`/`worker_enable`/`worker_disable`/`worker_update`, never
+  `worker_prompt_write` — that needs a rationale and belongs to the dedicated path), `DeleteWorker`,
+  and the three subscription mutations now write through the seam; `CreateProjectEvent` and
+  `MarkProjectEventDelivered` are **exempt** under §15.3 rule 3 (events are their own log), with the
+  pinned exemption list grown deliberately 5 → 7. The conformance test was not weakened.
+- `(integration, 2026-07-25)` **§15.3's vocabulary had no `worker_delete`** though rule 2 says
+  deletes append and every other deletable entity has its verb. **The spec has been corrected**
+  (`09-config-log.md` §15.3) and the constant exists.
+- `(integration, 2026-07-25)` No HTTP body on these routes carries a `rationale`, so every HTTP edit
+  logs an empty one. Fine today, but **E4/H1's prompt-write routes must add a `rationale` field to
+  their wire shape** or §15.5's required-rationale validation surfaces as a 500.
+- `(integration, 2026-07-25)` J3 needs a signature change: all six adopted methods currently discard
+  the committed `*ConfigEvent`, and `config.changed` must be emitted after commit keyed on that id.
+- `(integration, 2026-07-25)` Registering a table in `ConfigMutations` **arms the write guard** for
+  it — `project_settings`, `workers` and `subscriptions` are now guarded, so E4/I2/I3 must route
+  every write to their tables through the seam.
 - `(C2, 2026-07-25)` **§6.3's preamble contained an editing artifact** — a dangling "When your" left
   when the `image_create`/`skill_install`/`memory_current` sentence was inserted before "When your
   job is done". C2 implemented the intended reading; **the spec text has been corrected to match**
