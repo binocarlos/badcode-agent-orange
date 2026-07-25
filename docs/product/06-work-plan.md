@@ -73,7 +73,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./... -run 'TestSnapshotTTL|TestSnapshotReaper' -count=1`
 
 ### Track C — Workers `[engine+api+ui]`
-- [ ] **C1.** `workers` table + store + CRUD HTTP (migration 021); `worker` column on sessions.
+- [x] **C1.** `workers` table + store + CRUD HTTP (migration 021); `worker` column on sessions.
       `[learnings]` The same migration 021 also adds the `composed_prompt` and
       `lease_expires_at` columns on sessions (§6.5, §8.4). `[walkthrough]` The same migration 021
       also adds the three §6.1 plumbing columns on `workers`: `image` text (`''` | `name` |
@@ -118,7 +118,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       one headed section each, each capped independently)
 
 ### Track D — Memory `[engine+api]`
-- [ ] **D1.** `memories` table (migration 022, pgvector column), label validation, selector
+- [x] **D1.** `memories` table (migration 022, pgvector column), label validation, selector
       parser + jsonb SQL translator, and the §7.6 relevance contract: keyword (tsvector) +
       semantic (cosine) legs fused by RRF in one query, newest-first for bare selectors,
       recency tiebreak, keyword-only degradation. Store is append-only (create/search/get —
@@ -144,7 +144,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./agentdb/... -run TestMemorySqlite -count=1`
 
 ### Track E — Events & router `[engine+api]`
-- [ ] **E1.** `project_events` + `subscriptions` + `event_deliveries` tables (migration 023),
+- [x] **E1.** `project_events` + `subscriptions` + `event_deliveries` tables (migration 023),
       stores, subscription CRUD HTTP, ingestion endpoint `POST /agent/events`, project token
       minting for headless posters. `[learnings]` The same migration 023 also adds the
       `max_firings_per_hour` (0 = unlimited) column on `subscriptions` (§8.3), and gives
@@ -275,7 +275,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       `cd e2e && npx playwright test tests/image-curation.spec.ts`
 
 ### Track J — Config log (§15) `[engine+api]` `[walkthrough]`
-- [ ] **J1.** `[walkthrough]` `config_events` table (**migration 026**):
+- [x] **J1.** `[walkthrough]` `config_events` table (**migration 026**):
       `{id uuid PK, project text indexed, actor_worker text, actor_session text, action text,
       payload jsonb, rationale text, created_at bigint}` (§15.2) — payload is the **full new
       state**, never a diff. Plus the **dual-write seam**: a store helper that writes the config
@@ -437,6 +437,48 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(C1, 2026-07-25)` Session struct gained `Worker` alongside the pre-existing fleet-placement
+  `WorkerID` — different concepts (product worker vs which host runs the container). Do not confuse
+  them; C2/E3 want `Worker`.
+- `(D1, 2026-07-25)` **D4 decision, made here and not built:** memory is Postgres-only — all three
+  store methods return `ErrMemoryRequiresPostgres` on sqlite rather than silently forgetting.
+  *Within* Postgres pgvector is optional: migration 022 adds the embedding column + hnsw index only
+  when the extension exists and `SearchMemories` drops the semantic CTE otherwise (keyword+recency,
+  unchanged result shape). D4 remains as the docs write-up + `TestMemorySqlite`.
+- `(D1, 2026-07-25)` Label charset is the Kubernetes one (identifiers, ≤63 chars, no `/` prefix
+  segment) — narrower than §7.1's "plain strings". Free-text labels (an email subject) fail loudly
+  by design; `07-reference-prompts.md` should say "labels are identifiers, content is content".
+- `(D1, 2026-07-25)` `memories.created_at` is **milliseconds**, not seconds like the `agent_*`
+  tables — newest-first is load-bearing for the `name=` KV convention and second granularity ties.
+  Anything joining memory timestamps to session/event timestamps must not assume a shared unit.
+  (`config_events.created_at` is ms too — see the J1 bullet.)
+- `(D1, 2026-07-25)` Hybrid search never returns fewer than `min(limit, |filtered|)` rows: §7.6
+  specifies RRF with no distance threshold, so low-relevance rows fill the tail with real-looking
+  scores. Implemented as written; D3's tool description should tell the model a low fused score
+  means "nothing good".
+- `(E1, 2026-07-25)` `ProjectTokenIssuer` is a seam with no agentd wiring, so
+  `POST /agent/project-token` 501s in the standalone stack; wiring is one field in agentd's
+  `httpapi.Config`. Note agentd already has an unrelated `/auth/project-token` (wildcard-login
+  exchange) — the name collision should be resolved when E3 wires it.
+- `(E1, 2026-07-25)` `event_deliveries` has no `worker` column, and schedule-fired deliveries have
+  no subscription row to join through. E3/H1 must decide **once** between a denormalised `worker`
+  column and a synthetic subscription per schedule, for the `max_instances` gate.
+- `(E1, 2026-07-25)` `failed` deliveries record no reason (the spec tuple names no such column);
+  E3 may want one. E1 also added read paths `GET /agent/events` and `GET /agent/deliveries` (F1
+  would otherwise have none) and router/rate-limiter store helpers.
+- `(J1, 2026-07-25)` `config_events.created_at` is unix **milliseconds** (the rest of agentdb uses
+  seconds) to shrink the same-timestamp fold window, since `id` is a random uuid. J2/J3 must decide
+  whether §15.6's fold needs a monotonic per-project sequence — that would be a new column and a
+  spec amendment.
+- `(J1, 2026-07-25)` The §15.3 vocabulary has no `image_delete`/`skill_delete`, but the legacy
+  catalogue-GC methods `DeleteCustomImage`/`DeleteSkill` still exist; they are exempted with
+  recorded reasons. If I1/I3 keep a delete path, §15.3 needs entries.
+- `(J1, 2026-07-25)` The config-event guard is opt-in (installed by tests, not by `Open()`) so
+  un-adopted writes fail at build/test time rather than at runtime. Flipping it on inside `Open()`
+  is a one-line change once every track has adopted the seam.
+- `(J1, 2026-07-25)` The conformance sweep reflects over `*agentdb.Store` only —
+  `extension/sqlitestore` implements host seams separately and would need its own test if
+  configuration mutations ever land there.
 - `(B1, 2026-07-25)` Table naming: legacy tables are `agent_*` but the spec names the new product
   tables bare (`project_settings`, `workers`, `memories`, `project_events`, `config_events`). B1
   used the spec's bare names; **orchestrator decision: bare spec names are the convention** for all
