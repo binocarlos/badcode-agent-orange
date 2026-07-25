@@ -242,6 +242,16 @@ func main() {
 	// once, in attention.go, and the tool is a thin adapter onto this service.
 	var attention *attentionService
 	if agentDB != nil {
+		// The `config.changed` emitter (§15.4, §15.8 — J3). Installed FIRST and
+		// before anything can serve a request, because it is a post-commit hook
+		// on the config-log seam: a configuration mutation that lands before the
+		// hook exists is a change nobody is told about. Its sweep repairs
+		// emissions lost to a crash between commit and append. See
+		// configchanged.go.
+		configChanges := newConfigChangeEmitter(agentDB, log.Printf)
+		agentDB.SetConfigEventHook(configChanges.Hook())
+		go configChanges.Run(ctx)
+
 		gate := newDispatcher(dispatcherConfig{
 			Store: agentDB,
 			// The lease is what the router's reaper claims a dead job by (§8.4
@@ -351,6 +361,7 @@ func main() {
 		mcpSrv.register(newImageTools(agentDB, runner, permalinks).tools()...)
 		mcpSrv.register(newSkillTools(agentDB, runner, permalinks).tools()...)
 		mcpSrv.register(newManagementTools(agentDB, embedder, attention, permalinks).tools()...)
+		mcpSrv.register(newConfigLogTools(agentDB, permalinks).tools()...)
 		root.Handle(coreMCPPath, mcpSrv)
 		// Some MCP clients normalise the endpoint with a trailing slash; both
 		// spellings must reach the same server or the tools simply vanish.

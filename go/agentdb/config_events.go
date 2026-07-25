@@ -63,7 +63,10 @@
 // event carries the row as it last stood and a `*_delete` action.
 //
 // Do NOT emit the routable `config.changed` event from here: it is emitted
-// AFTER commit, never inside the transaction (§15.4) — that is item J3.
+// AFTER commit, never inside the transaction (§15.4). The post-commit hook that
+// carries the committed record out to the emitter is SetConfigEventHook below
+// (J3); the emitter itself lives in cmd/agentd, because stamping an event
+// envelope is the host's job, not the store's.
 package agentdb
 
 import (
@@ -108,9 +111,31 @@ type ConfigEvent struct {
 	Payload      JSONMap `json:"payload" gorm:"type:jsonb;default:'{}'"`
 	Rationale    string  `json:"rationale" gorm:"type:text;default:''"`
 	CreatedAt    int64   `json:"created_at" gorm:"not null;default:0"`
+	// EmittedAt is the `config.changed` watermark (migration 030, J3): unix
+	// milliseconds when the routable event was appended, 0 while it has not
+	// been. It is the ONLY mutable column on this table and it records nothing
+	// anybody decided — it is the same kind of runtime watermark as
+	// `project_events.delivered` (§8.4 step 1), and it exists so that a crash
+	// between commit and emit is repaired by a sweep rather than swallowed
+	// (§15.4: emission is at-least-once).
+	//
+	// The watermark is an OPTIMISATION, not the idempotency guard. The guard is
+	// that the emitted event's id is DERIVED from this record's id, so a second
+	// emission collides with the first (see cmd/agentd/configchanged.go).
+	EmittedAt int64 `json:"emitted_at" gorm:"not null;default:0"`
 }
 
 func (ConfigEvent) TableName() string { return "config_events" }
+
+// EventTypeConfigChanged is the fifth internal event (§8.2, §15.8): one
+// routable event per committed configuration mutation. Named here, beside the
+// log it shadows, exactly as H2's human.attention.timeout is named beside the
+// attention tables.
+//
+// There is ONE type rather than a family, deliberately (§15.8): finer
+// discrimination is a subscription filter on the envelope, or a line in the
+// reacting worker's prompt — never a new event name for core to maintain.
+const EventTypeConfigChanged = "config.changed"
 
 // The closed action vocabulary of §15.3. Nothing outside this list may be
 // logged; adding a verb is a spec change, not an implementation detail.
@@ -250,6 +275,48 @@ func configPayload(v any) (JSONMap, error) {
 // write guard (InstallConfigEventGuard) looks for it.
 type configTxKey struct{}
 
+// ── After the commit: the `config.changed` seam (§15.4, §15.8 — J3) ─────────
+
+// ConfigEventHook is called with the COMMITTED config-log record, once the
+// transaction has landed and never inside it. It is how the routable
+// `config.changed` event of §15.8 gets emitted without the store knowing
+// anything about event envelopes: the host (cmd/agentd) installs a hook that
+// resolves the acting session's envelope and appends the project event.
+//
+// Why a hook and not a return value: every configuration mutation already
+// funnels through WithConfigEvent, so a hook makes "exactly one event per
+// mutation" TRUE BY CONSTRUCTION. Threading the committed *ConfigEvent back out
+// through the sixteen adopted store methods would instead make it one more
+// thing each future mutation path can forget — the failure mode the whole §15.4
+// seam exists to remove.
+//
+// Contract for an implementation:
+//
+//   - It runs synchronously, so the mutation's caller cannot observe a
+//     committed change before its event exists. Keep it short.
+//   - It must not return errors into the mutation: the projection row and the
+//     log row are already committed and failing the caller now would be a lie.
+//     Log, and leave the repair to the sweep (`EmittedAt` is the watermark).
+//   - It is handed a context that has already been detached from the caller's
+//     cancellation — an emission must not be lost because an HTTP client hung
+//     up between the commit and the append.
+type ConfigEventHook func(ctx context.Context, ev *ConfigEvent)
+
+// SetConfigEventHook installs (or clears, with nil) the post-commit hook.
+// Install it at boot, before anything can mutate configuration.
+func (s *Store) SetConfigEventHook(h ConfigEventHook) {
+	s.hookMu.Lock()
+	defer s.hookMu.Unlock()
+	s.configHook = h
+}
+
+// configEventHook reads the installed hook.
+func (s *Store) configEventHook() ConfigEventHook {
+	s.hookMu.RLock()
+	defer s.hookMu.RUnlock()
+	return s.configHook
+}
+
 // WithConfigEvent is THE seam: it runs fn's projection writes and appends the
 // config-log record in ONE transaction (§15.4). Either both land or neither
 // does — there is no window in which the projection says one thing and the log
@@ -300,6 +367,13 @@ func (s *Store) WithConfigEvent(ctx context.Context, c ConfigChange, fn func(tx 
 			return tx.Create(ev).Error
 		})
 		if err == nil {
+			// AFTER the commit, never inside it (§15.4): a routed event must not
+			// exist for a change that rolled back. Every `return nil, err` path
+			// above skips this by construction, which is the whole point of
+			// hanging emission off the seam rather than off each caller.
+			if hook := s.configEventHook(); hook != nil {
+				hook(context.WithoutCancel(ctx), ev)
+			}
 			return ev, nil
 		}
 		// Only a collision on the (project, seq) index is retryable: someone else
@@ -359,9 +433,19 @@ type ConfigEventQuery struct {
 	Project     string // required
 	Action      string // exact, or a trailing-`*` prefix such as "worker_*"
 	ActorWorker string
-	Since       int64 // inclusive, unix ms; 0 = unbounded
-	Until       int64 // inclusive, unix ms; 0 = unbounded
-	Limit       int   // 0 = no limit
+	// Entity restricts the history to ONE entity in the §15.9 rendered form:
+	// "worker:email-answerer", "schedule:sch-7", "image:toolbox:2",
+	// "project-settings". Empty = every entity.
+	//
+	// The key lives in the payload, not in a column (§15.6 keys the fold off
+	// the full state), so this filter narrows by action in SQL and matches the
+	// key in Go — the same choice I3 made for skill label selectors, and for
+	// the same reason: it behaves identically on every backend instead of only
+	// on Postgres jsonb.
+	Entity string
+	Since  int64 // inclusive, unix ms; 0 = unbounded
+	Until  int64 // inclusive, unix ms; 0 = unbounded
+	Limit  int   // 0 = no limit
 	// BeforeSeq is the page cursor: return only records with seq < BeforeSeq
 	// (0 = the newest page). It keys on seq rather than on created_at because
 	// only seq is a total order — two writes can share a millisecond, so a
@@ -369,6 +453,13 @@ type ConfigEventQuery struct {
 	// A caller pages by passing the seq of the last record it received.
 	BeforeSeq int64
 }
+
+// configEntityScanCap bounds the rows an Entity-filtered query reads before it
+// gives up looking further back. Configuration mutations are human- and
+// worker-paced, so a project would need years of history for one entity's
+// records to sit beyond this — and a bounded scan that says so beats an
+// unbounded one that stalls the tool call.
+const configEntityScanCap = 5000
 
 // ListConfigEvents returns matching records newest first. This is history,
 // replay and audit only: no runtime path reads the log (§15.4).
@@ -396,7 +487,20 @@ func (s *Store) ListConfigEvents(ctx context.Context, q ConfigEventQuery) ([]*Co
 	if q.BeforeSeq > 0 {
 		db = db.Where("seq < ?", q.BeforeSeq)
 	}
-	if q.Limit > 0 {
+
+	// The entity filter is two-phase: narrow to the kind's actions in SQL, then
+	// match the key in Go. The SQL limit must therefore become a scan cap —
+	// applying the caller's limit before the key match would return a short page
+	// that looks like the whole history.
+	var wantRef EntityRef
+	if q.Entity != "" {
+		ref, err := ParseEntityRef(q.Entity)
+		if err != nil {
+			return nil, err
+		}
+		wantRef = ref
+		db = db.Where("action IN ?", ActionsForEntityKind(ref.Kind)).Limit(configEntityScanCap)
+	} else if q.Limit > 0 {
 		db = db.Limit(q.Limit)
 	}
 	var out []*ConfigEvent
@@ -406,6 +510,82 @@ func (s *Store) ListConfigEvents(ctx context.Context, q ConfigEventQuery) ([]*Co
 	// on created_at — a caller asking "what changed on Tuesday" means the clock.
 	if err := db.Order("seq DESC").Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("agentdb: list config events: %w", err)
+	}
+	if q.Entity != "" {
+		out = filterByEntity(out, wantRef, q.Limit)
+	}
+	if out == nil {
+		out = []*ConfigEvent{}
+	}
+	return out, nil
+}
+
+// filterByEntity keeps the records whose payload keys to ref, newest first,
+// stopping at limit.
+//
+// A record whose payload cannot be keyed is SKIPPED rather than raised: it
+// genuinely does not match the entity that was asked for, and a single corrupt
+// historical row must not make one worker's history unreadable. The fold
+// (FoldTo) still refuses such a record loudly — that is where corruption is
+// meant to surface, because there it would silently omit a whole entity.
+func filterByEntity(in []*ConfigEvent, ref EntityRef, limit int) []*ConfigEvent {
+	out := make([]*ConfigEvent, 0, len(in))
+	for _, ev := range in {
+		got, err := EntityRefFor(ev)
+		if err != nil || got != ref {
+			continue
+		}
+		out = append(out, ev)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// ── The `config.changed` watermark (§15.4 — J3) ─────────────────────────────
+
+// MarkConfigEventEmitted stamps the record's `config.changed` watermark. It is
+// idempotent and never un-stamps: a second call on an already-stamped record is
+// a no-op, so a duplicate repair pass costs one UPDATE and changes nothing.
+func (s *Store) MarkConfigEventEmitted(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("agentdb: MarkConfigEventEmitted requires a config event id")
+	}
+	err := s.gdb.WithContext(ctx).Model(&ConfigEvent{}).
+		Where("id = ? AND emitted_at = 0", id).
+		UpdateColumn("emitted_at", time.Now().UnixMilli()).Error
+	if err != nil {
+		return fmt.Errorf("agentdb: mark config event %s emitted: %w", id, err)
+	}
+	return nil
+}
+
+// ListUnemittedConfigEvents returns committed records whose `config.changed`
+// event has not been appended yet, OLDEST FIRST — the repair queue for the
+// at-least-once guarantee of §15.4.
+//
+// It is deliberately cross-project: a crash between commit and emit is a
+// host-wide accident, not a tenant's business, and the sweep that repairs it
+// runs once for the whole process. Every event it produces is still stamped
+// with its own record's project, so nothing crosses a namespace (P5).
+//
+// createdBefore (unix ms) excludes records young enough that the inline hook
+// may still be running — without it the sweep would race every live mutation.
+func (s *Store) ListUnemittedConfigEvents(ctx context.Context, createdBefore int64, limit int) ([]*ConfigEvent, error) {
+	db := s.gdb.WithContext(ctx).Model(&ConfigEvent{}).Where("emitted_at = 0")
+	if createdBefore > 0 {
+		db = db.Where("created_at < ?", createdBefore)
+	}
+	if limit > 0 {
+		db = db.Limit(limit)
+	}
+	var out []*ConfigEvent
+	// Oldest first: repairs are replayed in the order the changes happened, so a
+	// reader of `config.changed` sees the organisation's history in sequence
+	// even when it was written during an outage.
+	if err := db.Order("created_at ASC, seq ASC").Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("agentdb: list unemitted config events: %w", err)
 	}
 	if out == nil {
 		out = []*ConfigEvent{}
@@ -567,6 +747,14 @@ var ConfigMutationExempt = map[string]string{
 		"verb for it. THIRD write to a guarded table outside the seam (after DeleteCustomImage and " +
 		"MarkCustomImageReaped) — I1 predicted that a third would mean the guard wants an explicit " +
 		"\"GC/runtime write\" escape rather than a fourth exemption; recorded for the orchestrator, not built here",
+	"MarkConfigEventEmitted": "J3's `config.changed` watermark: it stamps emitted_at on a config-log record that " +
+		"has already been announced (§15.4's at-least-once), so a crash between commit and emit is repaired by a " +
+		"sweep. It mutates NO configuration — it writes the log's own runtime column, exactly as " +
+		"MarkProjectEventDelivered writes the event log's. Logging a config event about announcing a config event " +
+		"would be a loop with no bottom",
+	"SetConfigEventHook": "J3's post-commit seam: it installs the in-process callback that turns a committed " +
+		"record into the routable `config.changed` event (§15.8). It touches no table at all — it is process " +
+		"wiring, called once at boot, and the classifier only flags it because \"Config\" is a configuration noun",
 	"MarkCustomImageReaped": "storage GC, not curation: the snapshot_ttl_days reaper (§5, B4) deleted the bytes " +
 		"and stamps the catalogue row so resolution fails loudly instead of pointing at nothing (§13.7). " +
 		"No agent decided it and §15.3's closed vocabulary has no verb for it. Like DeleteCustomImage it " +

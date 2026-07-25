@@ -304,7 +304,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./... -run 'TestConfigFold|TestRestoreIsForward' -count=1` (cases:
       fold to T reproduces the tables as they stood; a delete then a re-create folds correctly;
       a restore adds events and removes none)
-- [ ] **J3.** `[walkthrough]` `config.changed` emission + `config_history` read tool: emit the
+- [x] **J3.** `[walkthrough]` `config.changed` emission + `config_history` read tool: emit the
       routable event **after commit**, never inside the transaction, at-least-once with an
       idempotency guard on the config-event id (§15.4, §15.8) — `text` = human-readable
       description including the rationale and the config-event id; envelope from the acting
@@ -335,7 +335,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       log of §15.10, built here or as J4 (one implementation, not two; whichever lands first
       owns it). (`web/src/`) — depends E1
       **Validation:** `cd web && npm test`
-- [ ] **F2.** Subscriptions + schedules editors. `[learnings]` NL→cron/filter assist: compile a
+- [x] **F2.** Subscriptions + schedules editors. `[learnings]` NL→cron/filter assist: compile a
       natural-language description to a cron expression / envelope filter at config time and
       echo it back for confirmation — config-time only, never in the firing path (L28).
       (`web/src/`) — depends E1+H1
@@ -481,6 +481,47 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(J3, 2026-07-25)` **The integration bullet's prescription was declined, deliberately — treat it as
+  closed.** Threading the committed `*ConfigEvent` back out of what had grown to **sixteen** adopted
+  store methods would have made emission one more thing every future mutation path can forget — the
+  exact failure mode the §15.4 seam and `TestMutationsAreLogged` exist to remove — and would have
+  rewritten `UpsertWorker`'s signature while E4 was building against it. Instead `WithConfigEvent`
+  gained a post-commit hook, so "every mutation produces exactly one event" is true **by
+  construction**, for paths that exist and paths later tracks add. No store signature changed.
+- `(J3, 2026-07-25)` **Idempotency is a derived id, not a lock:** the emitted event's id is
+  `uuidv5(namespace, config_event.id)`, so a retry after a crash, a concurrent sweep and a
+  double-called hook all converge on one row (a racing insert collides on the primary key).
+  `emitted_at` (migration **030**) is only the repair sweep's watermark — losing it costs a duplicate
+  *attempt*, never a duplicate event. Backfilled with each row's own `created_at`, so the first
+  sweep after deploy does not announce a project's entire history as if it had just happened.
+- `(J3, 2026-07-25)` **When the acting session is unreadable the envelope is stamped depth 1, not
+  0** — depth 0 would give a worker-made change the *external* depth and quietly disarm §8.4's loop
+  floor for whatever reacts to it. A real session with no worker (a human using the management tools
+  by hand) is stamped `source: external, depth 0, interactive: true` **with the session id kept** as
+  provenance — §15.8 names only the two clean cases; this is the third.
+- `(J3, 2026-07-25)` The ms/seconds split bites here too: `config_events.created_at` is ms and
+  `project_events.occurred_at` is seconds, so the emitter divides — pinned by test, because handing
+  the spine a millisecond value dates the change to the year 57000 and silently breaks every time
+  filter.
+- `(J3, 2026-07-25)` The exemption list grew 9 → 11 for `MarkConfigEventEmitted` and
+  `SetConfigEventHook`. These are **not** of a kind with the GC escapes B4 and I1 flagged: they
+  belong to the config log itself (the first is the exact analogue of `MarkProjectEventDelivered` on
+  the event log; the second writes no table at all).
+- `(F2, 2026-07-25)` **`DELETE /agent/schedules/{id}` and the subscription DELETE drop the
+  rationale** — they carry no body and read no query parameter, so every deletion's config event
+  records an empty *why*, precisely where a human most wants one. The UI's `remove` therefore takes
+  no rationale rather than accepting one it cannot honour. Small server-side fix; nobody's item.
+- `(F2, 2026-07-25)` **The cron grammar is now a second implementation of an engine rule** (after
+  F1's subscription matcher), because "is this valid, and what does it mean?" must be answerable
+  while typing. **If §8.6's grammar changes, `web/src/schedules.ts` and `go/agentdb/schedules.go`
+  must move together.** The NL assist refuses rather than guesses: nicknames (H1 rejects them, so
+  the assist can never emit one), sub-minute rates, intervals that don't divide an hour/day,
+  day-of-month **and** day-of-week together, and any filter predicate §8.3 cannot express.
+  `describeCron` says "OR" when both day fields are restricted — cron's dom/dow union is the classic
+  trap and a description that hid it would be worse than none.
+- `(F2, 2026-07-25)` The editors always send `enabled` and `max_firings_per_hour`: those fields are
+  pointers on the wire where absent means "unchanged", so omitting `enabled` to mean false is
+  exactly how a disabled subscription silently comes back on. Pinned by a browser test.
 - `(E4, 2026-07-25)` **§15.3's two prompt-write actions had no store method.** `UpsertWorker`
   deliberately never writes `worker_prompt_write`, and `PutProjectSettings` is whole-object — so a
   prompt rewrite through it would silently rewrite budgets and the attention channel too. Added

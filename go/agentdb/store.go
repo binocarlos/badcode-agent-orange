@@ -24,6 +24,14 @@ type Store struct {
 	// exists (migration 022 adds it only where the extension is available).
 	memVecOnce sync.Once
 	memVecOK   bool
+
+	// configHook is J3's post-commit seam: WithConfigEvent calls it with the
+	// committed record once the transaction has landed, and the host turns that
+	// into the routable `config.changed` event (§15.4). Guarded because it is
+	// installed at boot while other goroutines may already be mutating.
+	// See SetConfigEventHook in config_events.go.
+	hookMu     sync.RWMutex
+	configHook ConfigEventHook
 }
 
 // Open connects to Postgres, runs migrations, and returns a ready Store.

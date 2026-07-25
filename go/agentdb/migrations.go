@@ -595,6 +595,32 @@ var agentMigrations = []migration{
 				ON event_deliveries(project, status, created_at);
 		`,
 	},
+	{
+		// J3. The `config.changed` watermark (§15.4, §15.8).
+		//
+		// Emission happens AFTER the config-event transaction commits, never
+		// inside it, and the spec asks for at-least-once: "a crash between
+		// commit and emit is repaired by a retry rather than by a lost event".
+		// `emitted_at` is what makes the repair queue a cheap indexed read
+		// instead of a scan that re-derives emission state per row.
+		//
+		// It is the only mutable column on config_events, and it records
+		// nothing anybody decided — the same kind of runtime watermark as
+		// project_events.delivered. The append-only invariant of §15.1 is about
+		// the RECORD, which is never rewritten and never deleted.
+		//
+		// Backfill: rows written before this landed are stamped with their own
+		// created_at rather than 0. They pre-date the emitter entirely, so
+		// leaving them unstamped would make the first sweep after deploy
+		// announce the project's whole history as if it had just happened.
+		Name: "030_config_event_emitted",
+		SQL: `
+			ALTER TABLE config_events ADD COLUMN IF NOT EXISTS emitted_at BIGINT NOT NULL DEFAULT 0;
+			UPDATE config_events SET emitted_at = created_at WHERE emitted_at = 0;
+			CREATE INDEX IF NOT EXISTS idx_config_events_unemitted
+				ON config_events(created_at) WHERE emitted_at = 0;
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

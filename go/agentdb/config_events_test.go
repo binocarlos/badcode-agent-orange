@@ -582,14 +582,23 @@ func TestMutationsAreLogged(t *testing.T) {
 		// Grown once more on 2026-07-25 by B4: MarkCustomImageResumed stamps §5's
 		// last_resumed_at when a session launches from a catalogue version —
 		// runtime telemetry, not a decision anyone made.
+		// Grown twice more on 2026-07-25 by J3, and these two are NOT of the same
+		// kind as the GC/telemetry escapes above: they belong to the config log
+		// ITSELF. MarkConfigEventEmitted writes the log's own emission watermark
+		// (the exact analogue of MarkProjectEventDelivered on the event log) and
+		// SetConfigEventHook writes no table at all — it installs the post-commit
+		// callback at boot. Logging a config event about announcing a config
+		// event would be a loop with no bottom.
 		want := []string{
 			"ClearWorkerBinding",
 			"CreateProjectEvent",
 			"DeleteCustomImage",
 			"DeleteSkill",
+			"MarkConfigEventEmitted",
 			"MarkCustomImageReaped",
 			"MarkCustomImageResumed",
 			"MarkProjectEventDelivered",
+			"SetConfigEventHook",
 			"SetSkillVisibility",
 			"SetWorkerBinding",
 		}
