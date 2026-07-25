@@ -133,6 +133,7 @@ per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([spec/0
 
 | File | Sections | Covers |
 | --- | --- | --- |
+| [`spec/00-overview.md`](spec/00-overview.md) | — | **Start here for the quick shape**: one-page map of the system, the decided calls, the build waves, and where the research/plan trail lives. |
 | [`spec/01-session-config.md`](spec/01-session-config.md) | §4–§5 | Session MCP plumbing (G1): Go surface, wire protocol, harness merge, `${VAR}` credential references, snapshot interaction. Project settings (G2): `project_settings` table, precedence, HTTP/UI. |
 | [`spec/02-workers.md`](spec/02-workers.md) | §6 | Worker data model, deterministic job composition (pre-prompt manipulation), the core preamble, interactive chat, HTTP/UI. |
 | [`spec/03-memory.md`](spec/03-memory.md) | §7 | Append-only immutable memory: labels + K8s selectors, the `memory_*` MCP tools with provenance, rolling-summary convention, embeddings, the §7.6 relevance contract (hybrid RRF), the build-on-Postgres decision. |
