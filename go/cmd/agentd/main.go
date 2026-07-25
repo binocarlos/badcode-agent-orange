@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	agentkit "github.com/binocarlos/badcode-agent-orange"
@@ -140,15 +141,43 @@ func main() {
 		log.Printf("[agentd] both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN set — API key wins (proxy mode)")
 	}
 
+	// ── MCP credential env (AGENTKIT_MCP_ENV allowlist) ──────────────────────────
+	// Operator-designated variables travel agentd → session container, where the
+	// sandbox resolves the ${VAR} references in MCP config (§4.4). Allowlist
+	// only: agentd's own secrets (JWT, model keys) are never forwarded — and
+	// naming one is a boot error. See mcpenv.go.
+	mcpEnv, missingMCPEnv, err := resolveMCPEnv(os.Getenv)
+	must(err)
+	sessionEnv = applyMCPEnv(sessionEnv, mcpEnv)
+	if len(mcpEnv) > 0 {
+		log.Printf("[agentd] forwarding MCP credential env into sessions: %s", strings.Join(mcpEnvNames(mcpEnv), ","))
+	}
+	if len(missingMCPEnv) > 0 {
+		log.Printf("[agentd] WARNING: %s names unset variable(s) %s — MCP servers referencing them will fail at spawn",
+			mcpEnvVar, strings.Join(missingMCPEnv, ","))
+	}
+
+	// ── Session context (project settings + workers) ─────────────────────────────
+	// The §5 defaults chain: worker beats project beats global, for base image,
+	// system prompt and MCP config. Needs the product-layer tables, so it is
+	// wired only on the Postgres store. See sessioncontext.go.
+	var sessionCtx extension.SessionContextProvider
+	baseImage := envOr("AGENTKIT_IMAGE", "agentkit-example:dev")
+	if agentDB != nil {
+		sessionCtx = newSessionContextProvider(agentDB, baseImage)
+	}
+	logSessionContextWiring(sessionCtx != nil)
+
 	// ── Runner ───────────────────────────────────────────────────────────────────
 	runner, err := agentkit.NewRunner(agentkit.Deps{
-		Fleet:     f,
-		Registry:  registry,
-		Store:     store,
-		Artifacts: artStore,
-		Claims:    claims,
+		Fleet:          f,
+		Registry:       registry,
+		Store:          store,
+		Artifacts:      artStore,
+		Claims:         claims,
+		SessionContext: sessionCtx,
 		Policy: agentkit.Policy{
-			BaseImage:                  envOr("AGENTKIT_IMAGE", "agentkit-example:dev"),
+			BaseImage:                  baseImage,
 			AgentPort:                  3010,
 			SessionEnv:                 sessionEnv,
 			DisableModelAPIKeyOverride: subscriptionMode,
@@ -229,8 +258,7 @@ func main() {
 
 	// ── Serve ────────────────────────────────────────────────────────────────────
 	addr := envOr("ADDR", ":8099")
-	log.Printf("[agentd] listening on %s  image=%s  docker=%s",
-		addr, envOr("AGENTKIT_IMAGE", "agentkit-example:dev"), dockerHost)
+	log.Printf("[agentd] listening on %s  image=%s  docker=%s", addr, baseImage, dockerHost)
 	must(http.ListenAndServe(addr, root))
 }
 
