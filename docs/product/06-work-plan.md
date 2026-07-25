@@ -353,7 +353,10 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       envelope and pauses cleanly. `[walkthrough]` Assert too that the prompt rewrite left a
       `config_events` record with its rationale and produced a `config.changed` event (§15).
       (`e2e/tests/`) — depends everything
-      **Validation:** `cd e2e && npx playwright test tests/acceptance-loop.spec.ts`
+      **Validation:** `cd e2e && npx playwright test --config playwright.stack.config.ts features/acceptance-loop.spec.ts`
+      (corrected 2026-07-25: the product-layer e2e runs against the compose stack under
+      `e2e/features/`, not the legacy `e2e/tests/` Vite+mock-server rig — see the Discovered
+      Issues Log)
 - [ ] **G2.** Docs: update `README-stack.md` + `docs/15-standalone-stack.md`; write
       `docs/18-workers-memory-events.md` user guide distilled from this spec; update CLAUDE.md
       repo map. — depends G1
@@ -437,6 +440,24 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(e2e, 2026-07-25)` **The config log has no HTTP read route**, so asserting it end-to-end means
+  reading Postgres directly. J2/J3 should add `GET /agent/config-events`; `e2e/helpers/configlog.ts`
+  is written so swapping the implementation leaves every spec unchanged.
+- `(e2e, 2026-07-25)` **A `worker_disable` over HTTP requires sending the whole stored row back.**
+  A PUT that merely omits `mcp_config` writes null over the stored `{}`, so the log records
+  `worker_update` rather than `worker_disable` — correct per §15.3's "changes nothing else" rule,
+  but **B3/C3's UI must read-modify-write** or its toggles will log as updates.
+  `e2e/helpers/api.ts`'s `toggleWorkerEnabled` encodes the correct pattern.
+- `(e2e, 2026-07-25)` **G1's validation command points at the legacy harness.**
+  `e2e/tests/acceptance-loop.spec.ts` belongs to the pre-product-layer Vite+mock-server rig; the
+  product-layer e2e lives under `e2e/features/` driven by `playwright.stack.config.ts` against the
+  compose stack. G1's Validation line has been corrected accordingly.
+- `(e2e, 2026-07-25)` `e2e/playwright-report-stack/index.html` was checked-in build output that
+  every stack run rewrote; now gitignored and untracked.
+- `(orchestration, 2026-07-25)` Two process faults worth not repeating: a sweeping `git add -A` in
+  the shared checkout can commit another agent's half-written files (it did, harmlessly, once), and
+  leaving conflict markers in the tree mid-merge breaks `docker compose build` for anyone else
+  working there. Stage narrowly; resolve conflicts in one go.
 - `(C3, 2026-07-25)` **`createSessionBody` has no `worker` field**, so "chat with this worker"
   cannot yet produce a composed session — `go/httpapi/session.go` and `agentkit.CreateSessionRequest`
   both lack it (C2 added `Worker` to the request struct; the HTTP body still needs it). The UI sends
