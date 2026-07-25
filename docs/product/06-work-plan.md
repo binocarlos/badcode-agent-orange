@@ -442,6 +442,22 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(G1, 2026-07-25)` **BLOCKER, now assigned: the stack's mock proxy cannot emit `tool_use`.** It
+  serves a fixed canned SSE script, so **no mock-mode test can make the model invoke any MCP tool** —
+  which means G1's headline assertion (a reviewer rewriting a worker's prompt via
+  `worker_prompt_write`) could only ever run with a real API key, quietly demoting the offline
+  acceptance bar to G3. `go/mockmodel` already supports scripted tool calls; agentd's proxy ignores
+  them. Being wired through now, with the constraint that a stack with **no script configured
+  behaves exactly as today**. Affects every future tool test, not just G1.
+- `(G1, 2026-07-25)` **`composed_prompt` is unreadable over HTTP** — C2 writes it on the session row
+  but no route returns it, so a test cannot read the prompt a job actually ran with, which is how
+  §7.4's "a memory written by one job reaches the next job's prompt" is proved. Being added to the
+  session read path.
+- `(G1, 2026-07-25)` No HTTP route reads memories, so "the reviewer recorded a `kind=lesson` memory"
+  is assertable only via psql or the MCP surface. Left as-is for now (the MCP tools are the
+  sanctioned read path); revisit if e2e ergonomics demand it.
+- `(G1, 2026-07-25)` `/agent/schedules` already accepts a `rationale` that reaches the config event —
+  **the pattern E4's prompt-write routes should follow** (integration's earlier finding).
 - `(I3, 2026-07-25)` **Migration 028 adds `agent_skills.revision` — "newest wins" had no
   deterministic meaning.** `created_at` on that table is *seconds* and `id` is a random uuid, so two
   teachings of one skill inside a second folded by coin toss and `skill_get` could return the
