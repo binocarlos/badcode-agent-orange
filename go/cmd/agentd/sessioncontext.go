@@ -58,23 +58,31 @@ func newSessionContextProvider(store projectConfigStore, globalBaseImage string)
 	return &sessionContextProvider{store: store, globalBaseImage: globalBaseImage}
 }
 
-// resolvedContext is the full §5 resolution. extension.SessionContext carries
-// only prompt + image today, so the MCP defaults are reached through
-// ResolveMCPServers until the wire path (A2) carries them.
+// resolvedContext is the full §5 resolution: prompt, image, and the project ∪
+// worker MCP defaults, all of which travel on extension.SessionContext.
 type resolvedContext struct {
 	SystemPrompt string
 	BaseImage    string
 	MCPServers   agentdb.MCPServers
 }
 
-// Resolve implements extension.SessionContextProvider: the system prompt and the
-// launch image this session defaults to.
+// Resolve implements extension.SessionContextProvider: the system prompt, the
+// launch image, and the MCP servers this session defaults to.
+//
+// MCPServers is load-bearing and easy to drop: A2 added the field and the
+// Runner's merge, B2 computed the union — but nothing filled it in between, so
+// a project's configured tools resolved correctly and then reached no container
+// at all. Populating it here is the whole connection (§5).
 func (p *sessionContextProvider) Resolve(ctx context.Context, scope extension.ContextScope) (*extension.SessionContext, error) {
 	rc, err := p.resolve(ctx, scope)
 	if err != nil {
 		return nil, err
 	}
-	return &extension.SessionContext{SystemPrompt: rc.SystemPrompt, BaseImage: rc.BaseImage}, nil
+	return &extension.SessionContext{
+		SystemPrompt: rc.SystemPrompt,
+		BaseImage:    rc.BaseImage,
+		MCPServers:   rc.MCPServers,
+	}, nil
 }
 
 // ResolveMCPServers returns the project ∪ worker MCP defaults for a scope. The

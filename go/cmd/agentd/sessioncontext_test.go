@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -291,6 +292,58 @@ func TestSessionContextProvider_RequestMCPIsAdditive(t *testing.T) {
 	// Inputs are untouched — the defaults are reused across sessions.
 	if defaults["gmail"].URL != "https://gmail.example/mcp" || len(defaults) != 1 {
 		t.Errorf("MergeMCPServers mutated its input: %v", defaults)
+	}
+}
+
+// TestSessionContextProvider_ResolveCarriesMCPServers pins the connection that
+// was missing: Resolve must put the resolved project ∪ worker union ON the
+// returned SessionContext, because that struct is the only thing the Runner
+// reads. A2 added the field and the Runner's merge and B2 computed the union,
+// but nothing filled it in between — so a project's tools resolved perfectly
+// and then reached no container. Resolving them is not the feature; delivering
+// them is.
+func TestSessionContextProvider_ResolveCarriesMCPServers(t *testing.T) {
+	store := &fakeConfigStore{
+		settings: map[string]*agentdb.ProjectSettings{
+			"acme": {Project: "acme", MCPConfig: mcpJSON(map[string]any{
+				"gmail": httpServer("https://project.example/mcp", nil),
+			})},
+		},
+		workers: map[string]*agentdb.Worker{
+			"acme/marketing": {Project: "acme", Name: "marketing", MCPConfig: mcpJSON(map[string]any{
+				"notion": httpServer("https://worker.example/mcp", nil),
+			})},
+		},
+	}
+	p := newSessionContextProvider(store, "base:dev")
+
+	sc, err := p.Resolve(context.Background(),
+		extension.ContextScope{Customer: "acme", Persona: "marketing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sc.MCPServers) != 2 {
+		t.Fatalf("SessionContext.MCPServers = %v, want both the project and worker servers — "+
+			"an unpopulated field means the project's tools never reach the container",
+			sortedKeys(sc.MCPServers))
+	}
+	if sc.MCPServers["gmail"].URL != "https://project.example/mcp" {
+		t.Errorf("project server lost: %+v", sc.MCPServers["gmail"])
+	}
+	if sc.MCPServers["notion"].URL != "https://worker.example/mcp" {
+		t.Errorf("worker server lost: %+v", sc.MCPServers["notion"])
+	}
+
+	// And what Resolve carries must be exactly what ResolveMCPServers computes —
+	// two code paths that can disagree are how this broke in the first place.
+	direct, err := p.ResolveMCPServers(context.Background(),
+		extension.ContextScope{Customer: "acme", Persona: "marketing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(sc.MCPServers, direct) {
+		t.Errorf("Resolve and ResolveMCPServers disagree:\n  Resolve = %v\n  direct  = %v",
+			sortedKeys(sc.MCPServers), sortedKeys(direct))
 	}
 }
 
