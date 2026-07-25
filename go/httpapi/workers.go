@@ -14,8 +14,8 @@ import (
 type WorkersStore interface {
 	ListWorkers(ctx context.Context, project string) ([]*agentdb.Worker, error)
 	GetWorker(ctx context.Context, project, name string) (*agentdb.Worker, error)
-	UpsertWorker(ctx context.Context, w *agentdb.Worker) (*agentdb.Worker, error)
-	DeleteWorker(ctx context.Context, project, name string) error
+	UpsertWorker(ctx context.Context, w *agentdb.Worker, cw agentdb.ConfigWrite) (*agentdb.Worker, error)
+	DeleteWorker(ctx context.Context, project, name string, cw agentdb.ConfigWrite) error
 }
 
 // workerBody is the PUT payload. PUT is create-or-replace, not patch: an absent
@@ -111,7 +111,7 @@ func (h *Handlers) PutWorker(w http.ResponseWriter, r *http.Request) {
 		worker.Enabled = *body.Enabled
 	}
 
-	stored, err := store.UpsertWorker(r.Context(), worker)
+	stored, err := store.UpsertWorker(r.Context(), worker, humanEdit())
 	if err != nil {
 		writeWorkerErr(w, err)
 		return
@@ -129,7 +129,7 @@ func (h *Handlers) DeleteWorker(w http.ResponseWriter, r *http.Request) {
 	if store == nil {
 		return
 	}
-	if err := store.DeleteWorker(r.Context(), id.Customer, r.PathValue("name")); err != nil {
+	if err := store.DeleteWorker(r.Context(), id.Customer, r.PathValue("name"), humanEdit()); err != nil {
 		writeWorkerErr(w, err)
 		return
 	}

@@ -401,7 +401,11 @@ func validateSubscription(sub *Subscription) error {
 // CreateSubscription stores a new subscription. Enabled is taken literally —
 // callers that want the "new subscriptions are live" default set it themselves
 // (the HTTP layer does).
-func (s *Store) CreateSubscription(ctx context.Context, sub *Subscription) (*Subscription, error) {
+//
+// Routing configuration is configuration: the write appends a
+// `subscription_create` event in the same transaction (§15.3/§15.4). cw is the
+// who/why; a human/API edit passes the zero value.
+func (s *Store) CreateSubscription(ctx context.Context, sub *Subscription, cw ConfigWrite) (*Subscription, error) {
 	if err := validateSubscription(sub); err != nil {
 		return nil, err
 	}
@@ -411,7 +415,14 @@ func (s *Store) CreateSubscription(ctx context.Context, sub *Subscription) (*Sub
 	if sub.Filter == nil {
 		sub.Filter = JSONMap{}
 	}
-	if err := s.gdb.WithContext(ctx).Create(sub).Error; err != nil {
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: sub.Project,
+		Action:  ActionSubscriptionCreate,
+		Payload: sub,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Create(sub).Error
+	}); err != nil {
 		return nil, fmt.Errorf("failed to create subscription: %w", err)
 	}
 	return sub, nil
@@ -466,7 +477,7 @@ func (s *Store) ListEnabledSubscriptions(ctx context.Context, project string) ([
 // UpdateSubscription overwrites the mutable fields of an existing row. The
 // project on sub is the authorization boundary: a row owned by another project
 // is never found, so it is never written.
-func (s *Store) UpdateSubscription(ctx context.Context, sub *Subscription) (*Subscription, error) {
+func (s *Store) UpdateSubscription(ctx context.Context, sub *Subscription, cw ConfigWrite) (*Subscription, error) {
 	if sub == nil || sub.ID == "" {
 		return nil, fmt.Errorf("subscription id is required")
 	}
@@ -485,7 +496,17 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *Subscription) (*Sub
 	existing.Worker = sub.Worker
 	existing.MaxFiringsPerHour = sub.MaxFiringsPerHour
 	existing.Enabled = sub.Enabled
-	if err := s.gdb.WithContext(ctx).Save(existing).Error; err != nil {
+	// One action whether or not the write flips `enabled`: unlike workers,
+	// §15.3 gives subscriptions no enable/disable verbs — a disabled
+	// subscription is an ordinary field change on the routing row.
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: existing.Project,
+		Action:  ActionSubscriptionUpdate,
+		Payload: existing,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Save(existing).Error
+	}); err != nil {
 		return nil, fmt.Errorf("failed to update subscription: %w", err)
 	}
 	return existing, nil
@@ -493,17 +514,41 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *Subscription) (*Sub
 
 // DeleteSubscription removes a project's subscription. Deleting another
 // project's row is a not-found, never a silent success.
-func (s *Store) DeleteSubscription(ctx context.Context, project, id string) error {
+//
+// The delete appends too (§15.3 rule 2), carrying the subscription as it last
+// stood — which is what makes "restore the subscription we deleted on Tuesday"
+// a lookup (§15.7). The row is read first so there is a final state to carry.
+func (s *Store) DeleteSubscription(ctx context.Context, project, id string, cw ConfigWrite) error {
 	if project == "" || id == "" {
 		return fmt.Errorf("project and id are required")
 	}
-	res := s.gdb.WithContext(ctx).
-		Where("project = ? AND id = ?", project, id).Delete(&Subscription{})
-	if res.Error != nil {
-		return fmt.Errorf("failed to delete subscription: %w", res.Error)
+	existing, err := s.GetSubscription(ctx, project, id)
+	if err != nil {
+		return err
 	}
-	if res.RowsAffected == 0 {
-		return fmt.Errorf("subscription not found")
+	vanished := false
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: project,
+		Action:  ActionSubscriptionDelete,
+		Payload: existing,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		res := tx.Where("project = ? AND id = ?", project, id).Delete(&Subscription{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Lost a race with a concurrent delete: roll back rather than log a
+			// deletion this call did not perform.
+			vanished = true
+			return fmt.Errorf("subscription not found")
+		}
+		return nil
+	}); err != nil {
+		if vanished {
+			return fmt.Errorf("subscription not found")
+		}
+		return fmt.Errorf("failed to delete subscription: %w", err)
 	}
 	return nil
 }

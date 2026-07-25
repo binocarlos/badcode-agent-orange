@@ -125,7 +125,13 @@ func (s *Store) GetProjectSettings(ctx context.Context, project string) (*Projec
 // PutProjectSettings writes the whole settings object for ps.Project (no patch
 // semantics — §5: "PUT is whole-object"), creating the row on first write, and
 // returns the stored state read back from the row that was written.
-func (s *Store) PutProjectSettings(ctx context.Context, ps *ProjectSettings) (*ProjectSettings, error) {
+//
+// The write appends a `project_settings_put` config event in the same
+// transaction (§15.3/§15.4). It is one action whether the row was created or
+// replaced: §5's settings row has no create/update distinction — it is created
+// lazily and always written whole. cw carries the who/why; a human/API edit
+// passes the zero value.
+func (s *Store) PutProjectSettings(ctx context.Context, ps *ProjectSettings, cw ConfigWrite) (*ProjectSettings, error) {
 	if ps == nil {
 		return nil, fmt.Errorf("%w: settings are required", ErrInvalidProjectSettings)
 	}
@@ -148,12 +154,26 @@ func (s *Store) PutProjectSettings(ctx context.Context, ps *ProjectSettings) (*P
 		existing.DailyTokensHard = next.DailyTokensHard
 		existing.BriefingMaxBytes = next.BriefingMaxBytes
 		existing.SnapshotTTLDays = next.SnapshotTTLDays
-		if err := s.gdb.WithContext(ctx).Save(&existing).Error; err != nil {
+		if _, err := s.WithConfigEvent(ctx, ConfigChange{
+			Project: existing.Project,
+			Action:  ActionProjectSettingsPut,
+			Payload: &existing,
+			Write:   cw,
+		}, func(tx *gorm.DB) error {
+			return tx.Save(&existing).Error
+		}); err != nil {
 			return nil, fmt.Errorf("failed to update project settings: %w", err)
 		}
 		return &existing, nil
 	case errors.Is(err, gorm.ErrRecordNotFound):
-		if err := s.gdb.WithContext(ctx).Create(&next).Error; err != nil {
+		if _, err := s.WithConfigEvent(ctx, ConfigChange{
+			Project: next.Project,
+			Action:  ActionProjectSettingsPut,
+			Payload: &next,
+			Write:   cw,
+		}, func(tx *gorm.DB) error {
+			return tx.Create(&next).Error
+		}); err != nil {
 			return nil, fmt.Errorf("failed to create project settings: %w", err)
 		}
 		return &next, nil

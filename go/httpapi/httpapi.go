@@ -110,6 +110,17 @@ func New(cfg Config) (*Handlers, error) {
 	return &Handlers{cfg: cfg}, nil
 }
 
+// humanEdit is the ConfigWrite every configuration mutation made over HTTP
+// carries: no acting worker and no acting session. That emptiness is the
+// record, not an omission — §15.2 says a human/UI/API edit logs no actor,
+// because who was at the keyboard is the login audit's business, not the config
+// log's. Workers acting through their MCP tools supply their own actor.
+//
+// Rationale stays empty here too: no request body on these routes carries one.
+// The two writes that REQUIRE a rationale (§15.5) are the prompt writes, which
+// have their own route set (H1) and must thread it from the body.
+func humanEdit() agentdb.ConfigWrite { return agentdb.ConfigWrite{} }
+
 // identify runs the host's extractor; on error writes 401 and returns ok=false.
 func (h *Handlers) identify(w http.ResponseWriter, r *http.Request) (Identity, bool) {
 	id, err := h.cfg.Identity(r)

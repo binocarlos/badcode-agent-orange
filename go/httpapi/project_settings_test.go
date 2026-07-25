@@ -22,6 +22,9 @@ type fakeProjectSettingsStore struct {
 	putErr  error
 	lastGet string
 	lastPut *agentdb.ProjectSettings
+	// The config-log actor the handler passed down, and how many writes it made.
+	lastWrite agentdb.ConfigWrite
+	puts      int
 }
 
 func newFakeProjectSettings() *fakeProjectSettingsStore {
@@ -39,8 +42,10 @@ func (f *fakeProjectSettingsStore) GetProjectSettings(_ context.Context, project
 	return agentdb.DefaultProjectSettings(project), nil
 }
 
-func (f *fakeProjectSettingsStore) PutProjectSettings(_ context.Context, ps *agentdb.ProjectSettings) (*agentdb.ProjectSettings, error) {
+func (f *fakeProjectSettingsStore) PutProjectSettings(_ context.Context, ps *agentdb.ProjectSettings, cw agentdb.ConfigWrite) (*agentdb.ProjectSettings, error) {
 	f.lastPut = ps
+	f.lastWrite = cw
+	f.puts++
 	if f.putErr != nil {
 		return nil, f.putErr
 	}

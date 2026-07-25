@@ -31,6 +31,9 @@ type fakeEventStore struct {
 	lastEventQuery agentdb.ProjectEventQuery
 	lastDelQuery   agentdb.DeliveryQuery
 	lastSubProject string
+	// The config-log actor the handler passed down, and how many writes it made.
+	lastWrite agentdb.ConfigWrite
+	writes    int
 }
 
 func newFakeEventStore() *fakeEventStore { return &fakeEventStore{} }
@@ -73,7 +76,9 @@ func (f *fakeEventStore) ListProjectEvents(_ context.Context, q agentdb.ProjectE
 	return out, nil
 }
 
-func (f *fakeEventStore) CreateSubscription(_ context.Context, sub *agentdb.Subscription) (*agentdb.Subscription, error) {
+func (f *fakeEventStore) CreateSubscription(_ context.Context, sub *agentdb.Subscription, cw agentdb.ConfigWrite) (*agentdb.Subscription, error) {
+	f.lastWrite = cw
+	f.writes++
 	if sub.Project == "" || sub.EventType == "" || sub.Worker == "" {
 		return nil, errors.New("project, event_type and worker are required")
 	}
@@ -104,7 +109,9 @@ func (f *fakeEventStore) ListSubscriptions(_ context.Context, project string) ([
 	return out, nil
 }
 
-func (f *fakeEventStore) UpdateSubscription(_ context.Context, sub *agentdb.Subscription) (*agentdb.Subscription, error) {
+func (f *fakeEventStore) UpdateSubscription(_ context.Context, sub *agentdb.Subscription, cw agentdb.ConfigWrite) (*agentdb.Subscription, error) {
+	f.lastWrite = cw
+	f.writes++
 	for i, s := range f.subs {
 		if s.ID == sub.ID && s.Project == sub.Project {
 			cp := *sub
@@ -115,7 +122,9 @@ func (f *fakeEventStore) UpdateSubscription(_ context.Context, sub *agentdb.Subs
 	return nil, errors.New("subscription not found")
 }
 
-func (f *fakeEventStore) DeleteSubscription(_ context.Context, project, id string) error {
+func (f *fakeEventStore) DeleteSubscription(_ context.Context, project, id string, cw agentdb.ConfigWrite) error {
+	f.lastWrite = cw
+	f.writes++
 	for i, s := range f.subs {
 		if s.ID == id && s.Project == project {
 			f.subs = append(f.subs[:i], f.subs[i+1:]...)

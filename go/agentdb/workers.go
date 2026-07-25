@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 // Worker store errors. They are sentinels so callers (notably the httpapi CRUD
@@ -142,11 +144,60 @@ func validateWorker(w *Worker) error {
 	return nil
 }
 
+// workerConfigEqual compares everything a worker carries EXCEPT `enabled` — and
+// except the identity and timestamp columns, which an upsert never changes. It
+// is what distinguishes "the operator flipped the switch" from "the operator
+// rewrote the worker and happened to flip the switch too".
+func workerConfigEqual(a, b *Worker) bool {
+	if a.Description != b.Description || a.SystemPrompt != b.SystemPrompt ||
+		a.Image != b.Image || a.MaxInstances != b.MaxInstances {
+		return false
+	}
+	return jsonValueEqual(a.MCPConfig, b.MCPConfig) && jsonValueEqual(a.Briefing, b.Briefing)
+}
+
+// jsonValueEqual compares two JSON-serialisable column values structurally.
+// Marshalling rather than reflect.DeepEqual keeps nil and empty distinguishable
+// (a nil Briefing is SQL NULL, an empty one is `[]`) without a type switch.
+func jsonValueEqual(a, b any) bool {
+	ab, err1 := json.Marshal(a)
+	bb, err2 := json.Marshal(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return string(ab) == string(bb)
+}
+
+// workerUpsertAction picks the most specific §15.3 action the write represents:
+// a new row is a create; a write that only flips `enabled` is an enable or a
+// disable; anything else is an update.
+//
+// Deliberately never worker_prompt_write: that action requires a rationale
+// (§15.5) and belongs to the dedicated prompt-write path (H1). A whole-object
+// PUT that carries a new system_prompt is an update.
+func workerUpsertAction(existing, next *Worker) string {
+	if existing == nil {
+		return ActionWorkerCreate
+	}
+	if existing.Enabled != next.Enabled && workerConfigEqual(existing, next) {
+		if next.Enabled {
+			return ActionWorkerEnable
+		}
+		return ActionWorkerDisable
+	}
+	return ActionWorkerUpdate
+}
+
 // UpsertWorker creates or replaces the worker row identified by
 // (project, name). Replace, not patch: every column on w is written, so callers
 // doing partial updates must read-modify-write (see GetWorker). Returns the
 // stored row read back.
-func (s *Store) UpsertWorker(ctx context.Context, w *Worker) (*Worker, error) {
+//
+// The write appends one config event in the same transaction (§15.4), carrying
+// the whole worker row as its payload and the most specific action of
+// worker_create / worker_update / worker_enable / worker_disable. cw is the
+// who/why; a human/API edit passes the zero value.
+func (s *Store) UpsertWorker(ctx context.Context, w *Worker, cw ConfigWrite) (*Worker, error) {
 	if err := validateWorker(w); err != nil {
 		return nil, err
 	}
@@ -156,6 +207,7 @@ func (s *Store) UpsertWorker(ctx context.Context, w *Worker) (*Worker, error) {
 		Where("project = ? AND name = ?", w.Project, w.Name).
 		First(&existing).Error
 	if err == nil {
+		action := workerUpsertAction(&existing, w)
 		existing.Description = w.Description
 		existing.SystemPrompt = w.SystemPrompt
 		existing.MCPConfig = w.MCPConfig
@@ -163,7 +215,14 @@ func (s *Store) UpsertWorker(ctx context.Context, w *Worker) (*Worker, error) {
 		existing.MaxInstances = w.MaxInstances
 		existing.Briefing = w.Briefing
 		existing.Enabled = w.Enabled
-		if err := s.gdb.WithContext(ctx).Save(&existing).Error; err != nil {
+		if _, err := s.WithConfigEvent(ctx, ConfigChange{
+			Project: existing.Project,
+			Action:  action,
+			Payload: &existing,
+			Write:   cw,
+		}, func(tx *gorm.DB) error {
+			return tx.Save(&existing).Error
+		}); err != nil {
 			return nil, fmt.Errorf("failed to update worker: %w", err)
 		}
 		return &existing, nil
@@ -172,7 +231,14 @@ func (s *Store) UpsertWorker(ctx context.Context, w *Worker) (*Worker, error) {
 		return nil, fmt.Errorf("failed to look up worker: %w", err)
 	}
 
-	if err := s.gdb.WithContext(ctx).Create(w).Error; err != nil {
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: w.Project,
+		Action:  ActionWorkerCreate,
+		Payload: w,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Create(w).Error
+	}); err != nil {
 		return nil, fmt.Errorf("failed to create worker: %w", err)
 	}
 	return w, nil
@@ -220,21 +286,43 @@ func (s *Store) ListWorkers(ctx context.Context, project string) ([]*Worker, err
 
 // DeleteWorker removes a worker row. Sessions the worker already ran keep their
 // `worker` value and their `composed_prompt`: history is not rewritten.
-func (s *Store) DeleteWorker(ctx context.Context, project, name string) error {
+//
+// The delete appends too (§15.3 rule 2): the event carries the worker as it
+// last stood, so restoring a retired worker is a lookup rather than an
+// archaeology project. The row is read before the transaction precisely so
+// there is a final state to carry.
+func (s *Store) DeleteWorker(ctx context.Context, project, name string, cw ConfigWrite) error {
 	if project == "" {
 		return fmt.Errorf("%w: project is required", ErrWorkerInvalid)
 	}
 	if name == "" {
 		return fmt.Errorf("%w: name is required", ErrWorkerInvalid)
 	}
-	res := s.gdb.WithContext(ctx).
-		Where("project = ? AND name = ?", project, name).
-		Delete(&Worker{})
-	if res.Error != nil {
-		return fmt.Errorf("failed to delete worker: %w", res.Error)
+	existing, err := s.GetWorker(ctx, project, name)
+	if err != nil {
+		return err
 	}
-	if res.RowsAffected == 0 {
-		return fmt.Errorf("%w: %s/%s", ErrWorkerNotFound, project, name)
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: project,
+		Action:  ActionWorkerDelete,
+		Payload: existing,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		res := tx.Where("project = ? AND name = ?", project, name).Delete(&Worker{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Lost a race with a concurrent delete: roll the whole thing back
+			// rather than log a deletion this call did not perform.
+			return fmt.Errorf("%w: %s/%s", ErrWorkerNotFound, project, name)
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return err
+		}
+		return fmt.Errorf("failed to delete worker: %w", err)
 	}
 	return nil
 }

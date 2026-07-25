@@ -21,6 +21,9 @@ import (
 type fakeWorkerStore struct {
 	rows map[string]*agentdb.Worker
 	err  error // when set, every method returns it
+	// The config-log actor the handler passed down, and how many writes it made.
+	lastWrite agentdb.ConfigWrite
+	writes    int
 }
 
 func newFakeWorkerStore(workers ...*agentdb.Worker) *fakeWorkerStore {
@@ -56,7 +59,9 @@ func (f *fakeWorkerStore) GetWorker(_ context.Context, project, name string) (*a
 	return w, nil
 }
 
-func (f *fakeWorkerStore) UpsertWorker(_ context.Context, w *agentdb.Worker) (*agentdb.Worker, error) {
+func (f *fakeWorkerStore) UpsertWorker(_ context.Context, w *agentdb.Worker, cw agentdb.ConfigWrite) (*agentdb.Worker, error) {
+	f.lastWrite = cw
+	f.writes++
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -67,7 +72,9 @@ func (f *fakeWorkerStore) UpsertWorker(_ context.Context, w *agentdb.Worker) (*a
 	return w, nil
 }
 
-func (f *fakeWorkerStore) DeleteWorker(_ context.Context, project, name string) error {
+func (f *fakeWorkerStore) DeleteWorker(_ context.Context, project, name string, cw agentdb.ConfigWrite) error {
+	f.lastWrite = cw
+	f.writes++
 	if f.err != nil {
 		return f.err
 	}

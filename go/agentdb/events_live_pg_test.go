@@ -206,7 +206,7 @@ func TestLivePG_SubscriptionsRateLimitColumn(t *testing.T) {
 
 	sub, err := s.CreateSubscription(ctx, &Subscription{
 		Project: project, EventType: "email.*", Worker: "answerer", Enabled: false,
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestLivePG_SubscriptionsRateLimitColumn(t *testing.T) {
 	got.MaxFiringsPerHour = 6
 	got.Enabled = true
 	got.Filter = JSONMap{"worker": "answerer"}
-	if _, err := s.UpdateSubscription(ctx, got); err != nil {
+	if _, err := s.UpdateSubscription(ctx, got, ConfigWrite{}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	reread, err := s.GetSubscription(ctx, project, sub.ID)
@@ -237,7 +237,7 @@ func TestLivePG_SubscriptionsRateLimitColumn(t *testing.T) {
 
 	// A negative cap never reaches the column.
 	reread.MaxFiringsPerHour = -1
-	if _, err := s.UpdateSubscription(ctx, reread); err == nil ||
+	if _, err := s.UpdateSubscription(ctx, reread, ConfigWrite{}); err == nil ||
 		!strings.Contains(err.Error(), "must not be negative") {
 		t.Fatalf("negative cap must be refused, got %v", err)
 	}

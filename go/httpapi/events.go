@@ -39,11 +39,11 @@ type EventStore interface {
 	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
 	ListProjectEvents(ctx context.Context, q agentdb.ProjectEventQuery) ([]*agentdb.ProjectEvent, error)
 
-	CreateSubscription(ctx context.Context, sub *agentdb.Subscription) (*agentdb.Subscription, error)
+	CreateSubscription(ctx context.Context, sub *agentdb.Subscription, cw agentdb.ConfigWrite) (*agentdb.Subscription, error)
 	GetSubscription(ctx context.Context, project, id string) (*agentdb.Subscription, error)
 	ListSubscriptions(ctx context.Context, project string) ([]*agentdb.Subscription, error)
-	UpdateSubscription(ctx context.Context, sub *agentdb.Subscription) (*agentdb.Subscription, error)
-	DeleteSubscription(ctx context.Context, project, id string) error
+	UpdateSubscription(ctx context.Context, sub *agentdb.Subscription, cw agentdb.ConfigWrite) (*agentdb.Subscription, error)
+	DeleteSubscription(ctx context.Context, project, id string, cw agentdb.ConfigWrite) error
 
 	ListDeliveries(ctx context.Context, q agentdb.DeliveryQuery) ([]*agentdb.EventDelivery, error)
 }
@@ -232,7 +232,7 @@ func (h *Handlers) createSubscription(w http.ResponseWriter, r *http.Request) {
 	if body.MaxFiringsPerHour != nil {
 		sub.MaxFiringsPerHour = *body.MaxFiringsPerHour
 	}
-	created, err := store.CreateSubscription(r.Context(), sub)
+	created, err := store.CreateSubscription(r.Context(), sub, humanEdit())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -294,7 +294,7 @@ func (h *Handlers) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	if body.Enabled != nil {
 		existing.Enabled = *body.Enabled
 	}
-	updated, err := store.UpdateSubscription(r.Context(), existing)
+	updated, err := store.UpdateSubscription(r.Context(), existing, humanEdit())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -311,7 +311,7 @@ func (h *Handlers) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 	if store == nil {
 		return
 	}
-	if err := store.DeleteSubscription(r.Context(), id.Customer, r.PathValue("id")); err != nil {
+	if err := store.DeleteSubscription(r.Context(), id.Customer, r.PathValue("id"), humanEdit()); err != nil {
 		http.Error(w, "subscription not found", http.StatusNotFound)
 		return
 	}

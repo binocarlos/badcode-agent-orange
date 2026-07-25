@@ -13,7 +13,7 @@ import (
 func newProjectSettingsTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t) // from artifacts_test.go (sqlite + AutoMigrate(&Artifact{}))
-	if err := s.gdb.AutoMigrate(&ProjectSettings{}); err != nil {
+	if err := s.gdb.AutoMigrate(&ProjectSettings{}, &ConfigEvent{}); err != nil {
 		t.Fatalf("automigrate ProjectSettings: %v", err)
 	}
 	return s
@@ -128,7 +128,7 @@ func TestProjectSettingsPutRoundTrip(t *testing.T) {
 			ctx := context.Background()
 
 			in := tc.in
-			written, err := s.PutProjectSettings(ctx, &in)
+			written, err := s.PutProjectSettings(ctx, &in, ConfigWrite{})
 			if err != nil {
 				t.Fatalf("put: %v", err)
 			}
@@ -156,12 +156,12 @@ func TestProjectSettingsPutIsWholeObject(t *testing.T) {
 		Project: "acme", BaseImage: "acme/base:v1", SystemPrompt: "first",
 		MCPConfig:       JSONMap{"gmail": map[string]any{"url": "http://x"}},
 		DailyTokensHard: 500, SnapshotTTLDays: 90,
-	}); err != nil {
+	}, ConfigWrite{}); err != nil {
 		t.Fatalf("first put: %v", err)
 	}
 	if _, err := s.PutProjectSettings(ctx, &ProjectSettings{
 		Project: "acme", SystemPrompt: "second",
-	}); err != nil {
+	}, ConfigWrite{}); err != nil {
 		t.Fatalf("second put: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestProjectSettingsValidation(t *testing.T) {
 	s := newProjectSettingsTestStore(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.PutProjectSettings(context.Background(), tc.in)
+			_, err := s.PutProjectSettings(context.Background(), tc.in, ConfigWrite{})
 			if err == nil {
 				t.Fatalf("expected an error")
 			}
@@ -245,7 +245,7 @@ func TestProjectSettingsProjectIsolation(t *testing.T) {
 		Project: "alpha", BaseImage: "alpha/base:v1", SystemPrompt: "alpha secrets",
 		MCPConfig:       JSONMap{"alpha-tool": map[string]any{"url": "http://alpha"}},
 		DailyTokensHard: 111, SnapshotTTLDays: 11,
-	}); err != nil {
+	}, ConfigWrite{}); err != nil {
 		t.Fatalf("seed alpha: %v", err)
 	}
 
@@ -261,7 +261,7 @@ func TestProjectSettingsProjectIsolation(t *testing.T) {
 	// Writing beta must not touch alpha.
 	if _, err := s.PutProjectSettings(ctx, &ProjectSettings{
 		Project: "beta", BaseImage: "beta/base:v1", SystemPrompt: "beta prompt", SnapshotTTLDays: 3,
-	}); err != nil {
+	}, ConfigWrite{}); err != nil {
 		t.Fatalf("put beta: %v", err)
 	}
 	alpha, err := s.GetProjectSettings(ctx, "alpha")
@@ -318,7 +318,7 @@ func TestProjectSettingsLivePG(t *testing.T) {
 		MCPConfig:        JSONMap{"notion": map[string]any{"url": "http://notion-mcp:9000"}},
 		AttentionChannel: JSONMap{"kind": "webhook", "url": "https://hooks.example/live"},
 		DailyTokensSoft:  10, DailyTokensHard: 20, BriefingMaxBytes: 512, SnapshotTTLDays: 0,
-	}); err != nil {
+	}, ConfigWrite{}); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	got, err := s.GetProjectSettings(ctx, project)

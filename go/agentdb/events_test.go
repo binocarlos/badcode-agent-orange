@@ -20,7 +20,7 @@ func newEventStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&ProjectEvent{}, &Subscription{}, &EventDelivery{}); err != nil {
+	if err := db.AutoMigrate(&ProjectEvent{}, &Subscription{}, &EventDelivery{}, &ConfigEvent{}); err != nil {
 		t.Fatalf("automigrate event tables: %v", err)
 	}
 	return &Store{gdb: db}
@@ -47,7 +47,7 @@ func seedSubscription(t *testing.T, s *Store, project, eventType, worker string)
 	t.Helper()
 	sub, err := s.CreateSubscription(context.Background(), &Subscription{
 		Project: project, EventType: eventType, Worker: worker, Enabled: true,
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("seed subscription: %v", err)
 	}
@@ -264,7 +264,7 @@ func TestSubscriptionsValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.CreateSubscription(ctx, tc.in); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			if _, err := s.CreateSubscription(ctx, tc.in, ConfigWrite{}); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
 			}
 		})
@@ -274,7 +274,7 @@ func TestSubscriptionsValidation(t *testing.T) {
 	for _, ok := range []string{"email.received", "email.*", "worker.finished"} {
 		if _, err := s.CreateSubscription(ctx, &Subscription{
 			Project: "acme", EventType: ok, Worker: "w", Enabled: true,
-		}); err != nil {
+		}, ConfigWrite{}); err != nil {
 			t.Fatalf("event_type %q must be legal: %v", ok, err)
 		}
 	}
@@ -292,7 +292,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 		Filter:    JSONMap{"worker": "email-answerer"},
 		Worker:    "email-reviewer",
 		Enabled:   true,
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	// Rate limit + disable, both through Update.
 	got.MaxFiringsPerHour = 12
 	got.Enabled = false
-	updated, err := s.UpdateSubscription(ctx, got)
+	updated, err := s.UpdateSubscription(ctx, got, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -341,10 +341,10 @@ func TestSubscriptionsCRUD(t *testing.T) {
 		t.Fatalf("list all: got %d err=%v", len(all), err)
 	}
 
-	if err := s.DeleteSubscription(ctx, "acme", sub.ID); err != nil {
+	if err := s.DeleteSubscription(ctx, "acme", sub.ID, ConfigWrite{}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if err := s.DeleteSubscription(ctx, "acme", sub.ID); err == nil {
+	if err := s.DeleteSubscription(ctx, "acme", sub.ID, ConfigWrite{}); err == nil {
 		t.Fatalf("deleting a missing subscription must fail loudly")
 	}
 }
@@ -372,7 +372,7 @@ func TestSubscriptionsProjectIsolation(t *testing.T) {
 	spoof := *theirs
 	spoof.Project = "acme"
 	spoof.Worker = "hijacked"
-	if _, err := s.UpdateSubscription(ctx, &spoof); err == nil {
+	if _, err := s.UpdateSubscription(ctx, &spoof, ConfigWrite{}); err == nil {
 		t.Fatalf("cross-project update must fail")
 	}
 	stillTheirs, err := s.GetSubscription(ctx, "other-co", theirs.ID)
@@ -380,7 +380,7 @@ func TestSubscriptionsProjectIsolation(t *testing.T) {
 		t.Fatalf("other project's row was modified: %+v err=%v", stillTheirs, err)
 	}
 
-	if err := s.DeleteSubscription(ctx, "acme", theirs.ID); err == nil {
+	if err := s.DeleteSubscription(ctx, "acme", theirs.ID, ConfigWrite{}); err == nil {
 		t.Fatalf("cross-project delete must fail")
 	}
 	if _, err := s.GetSubscription(ctx, "other-co", theirs.ID); err != nil {

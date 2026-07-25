@@ -22,15 +22,15 @@ func newWorkerTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&Worker{}); err != nil {
-		t.Fatalf("automigrate Worker: %v", err)
+	if err := db.AutoMigrate(&Worker{}, &ConfigEvent{}); err != nil {
+		t.Fatalf("automigrate Worker + config log: %v", err)
 	}
 	return &Store{gdb: db}
 }
 
 func mustUpsertWorker(t *testing.T, s *Store, w *Worker) *Worker {
 	t.Helper()
-	got, err := s.UpsertWorker(context.Background(), w)
+	got, err := s.UpsertWorker(context.Background(), w, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("upsert worker %s/%s: %v", w.Project, w.Name, err)
 	}
@@ -87,7 +87,7 @@ func TestWorkersMaxInstancesDefault(t *testing.T) {
 	// A negative cap is nonsense and must fail loudly rather than be coerced.
 	bad := NewWorker("acme", "bad-worker")
 	bad.MaxInstances = -1
-	if _, err := s.UpsertWorker(ctx, bad); !errors.Is(err, ErrWorkerInvalid) {
+	if _, err := s.UpsertWorker(ctx, bad, ConfigWrite{}); !errors.Is(err, ErrWorkerInvalid) {
 		t.Fatalf("negative max_instances: want ErrWorkerInvalid, got %v", err)
 	}
 }
@@ -136,7 +136,7 @@ func TestWorkersBriefingRoundTrip(t *testing.T) {
 	// A blank selector is a configuration mistake, not an empty list.
 	w := NewWorker("acme", "blank-selector")
 	w.Briefing = SelectorList{"kind=ok", "   "}
-	if _, err := s.UpsertWorker(ctx, w); !errors.Is(err, ErrWorkerInvalid) {
+	if _, err := s.UpsertWorker(ctx, w, ConfigWrite{}); !errors.Is(err, ErrWorkerInvalid) {
 		t.Fatalf("blank selector: want ErrWorkerInvalid, got %v", err)
 	}
 }
@@ -221,7 +221,7 @@ func TestWorkersValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := s.UpsertWorker(ctx, tc.worker); !errors.Is(err, tc.wantErr) {
+			if _, err := s.UpsertWorker(ctx, tc.worker, ConfigWrite{}); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("want %v, got %v", tc.wantErr, err)
 			}
 		})
@@ -229,7 +229,7 @@ func TestWorkersValidation(t *testing.T) {
 
 	// Names the spec's examples use must be accepted.
 	for _, name := range []string{"email-answerer", "email-review-consultant", "archivist", "worker2"} {
-		if _, err := s.UpsertWorker(ctx, NewWorker("acme", name)); err != nil {
+		if _, err := s.UpsertWorker(ctx, NewWorker("acme", name), ConfigWrite{}); err != nil {
 			t.Fatalf("valid name %q rejected: %v", name, err)
 		}
 	}
@@ -242,12 +242,12 @@ func TestWorkersNotFound(t *testing.T) {
 	if _, err := s.GetWorker(ctx, "acme", "nobody"); !errors.Is(err, ErrWorkerNotFound) {
 		t.Fatalf("get missing: want ErrWorkerNotFound, got %v", err)
 	}
-	if err := s.DeleteWorker(ctx, "acme", "nobody"); !errors.Is(err, ErrWorkerNotFound) {
+	if err := s.DeleteWorker(ctx, "acme", "nobody", ConfigWrite{}); !errors.Is(err, ErrWorkerNotFound) {
 		t.Fatalf("delete missing: want ErrWorkerNotFound, got %v", err)
 	}
 
 	mustUpsertWorker(t, s, NewWorker("acme", "archivist"))
-	if err := s.DeleteWorker(ctx, "acme", "archivist"); err != nil {
+	if err := s.DeleteWorker(ctx, "acme", "archivist", ConfigWrite{}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := s.GetWorker(ctx, "acme", "archivist"); !errors.Is(err, ErrWorkerNotFound) {
@@ -261,7 +261,7 @@ func TestWorkersNotFound(t *testing.T) {
 	if _, err := s.GetWorker(ctx, "", "archivist"); !errors.Is(err, ErrWorkerInvalid) {
 		t.Fatalf("get without project: want ErrWorkerInvalid, got %v", err)
 	}
-	if err := s.DeleteWorker(ctx, "", "archivist"); !errors.Is(err, ErrWorkerInvalid) {
+	if err := s.DeleteWorker(ctx, "", "archivist", ConfigWrite{}); !errors.Is(err, ErrWorkerInvalid) {
 		t.Fatalf("delete without project: want ErrWorkerInvalid, got %v", err)
 	}
 }
@@ -316,14 +316,14 @@ func TestWorkersProjectIsolation(t *testing.T) {
 	}
 
 	// Deleting from other must not delete acme's row.
-	if err := s.DeleteWorker(ctx, "other", "email-answerer"); err != nil {
+	if err := s.DeleteWorker(ctx, "other", "email-answerer", ConfigWrite{}); err != nil {
 		t.Fatalf("delete other: %v", err)
 	}
 	if _, err := s.GetWorker(ctx, "acme", "email-answerer"); err != nil {
 		t.Fatalf("cross-project delete leaked: %v", err)
 	}
 	// And a delete aimed at a foreign project's row is a no-op not-found.
-	if err := s.DeleteWorker(ctx, "other", "acme-only"); !errors.Is(err, ErrWorkerNotFound) {
+	if err := s.DeleteWorker(ctx, "other", "acme-only", ConfigWrite{}); !errors.Is(err, ErrWorkerNotFound) {
 		t.Fatalf("cross-project delete: want ErrWorkerNotFound, got %v", err)
 	}
 	if _, err := s.GetWorker(ctx, "acme", "acme-only"); err != nil {

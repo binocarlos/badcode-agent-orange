@@ -116,6 +116,12 @@ const (
 	ActionScheduleDelete     = "schedule_delete"
 	ActionImageCreate        = "image_create"
 	ActionSkillCreate        = "skill_create"
+
+	// ActionWorkerDelete records a worker being retired. §15.3's table has no
+	// row for it — an omission, not a decision: rule 2 says deletes append too,
+	// and every other deletable configuration entity (subscriptions, schedules)
+	// has its `*_delete` verb. Named to match them.
+	ActionWorkerDelete = "worker_delete"
 )
 
 // ConfigActions is the complete §15.3 vocabulary, in spec order.
@@ -124,6 +130,7 @@ var ConfigActions = []string{
 	ActionWorkerUpdate,
 	ActionWorkerEnable,
 	ActionWorkerDisable,
+	ActionWorkerDelete,
 	ActionWorkerPromptWrite,
 	ActionProjectPromptWrite,
 	ActionProjectSettingsPut,
@@ -349,12 +356,8 @@ type ConfigMutation struct {
 // ConfigMutations is the registry. APPEND to it when you add a configuration
 // mutation method (see the adoption recipe at the top of this file).
 //
-// Tracks B1/C1/E1/E4/H1/I2/I3 add their entries as they land:
-//
-//	{Method: "PutProjectSettings", Actions: []string{ActionProjectSettingsPut}, Tables: []string{"project_settings"}},
-//	{Method: "CreateWorker",       Actions: []string{ActionWorkerCreate},       Tables: []string{"workers"}},
-//	{Method: "DeleteSubscription", Actions: []string{ActionSubscriptionDelete}, Tables: []string{"subscriptions"}},
-//	…
+// Tracks E4/H1/I2/I3 add their entries as they land (schedules, the two prompt
+// writes, the named-image and skill catalogues).
 var ConfigMutations = []ConfigMutation{
 	{
 		Method:  "UpsertSkill",
@@ -365,6 +368,42 @@ var ConfigMutations = []ConfigMutation{
 		Method:  "UpsertCustomImage",
 		Actions: []string{ActionImageCreate},
 		Tables:  []string{"agent_custom_images"},
+	},
+	{
+		Method:  "PutProjectSettings",
+		Actions: []string{ActionProjectSettingsPut},
+		Tables:  []string{"project_settings"},
+	},
+	{
+		// The whole-object worker write picks the most specific action it can:
+		// create for a new row, enable/disable when the write only flips
+		// `enabled`, update otherwise. It deliberately never writes
+		// worker_prompt_write — that action requires a rationale (§15.5) and
+		// belongs to the dedicated prompt-write path (H1), not to a PUT that
+		// happens to carry a different system_prompt.
+		Method:  "UpsertWorker",
+		Actions: []string{ActionWorkerCreate, ActionWorkerUpdate, ActionWorkerEnable, ActionWorkerDisable},
+		Tables:  []string{"workers"},
+	},
+	{
+		Method:  "DeleteWorker",
+		Actions: []string{ActionWorkerDelete},
+		Tables:  []string{"workers"},
+	},
+	{
+		Method:  "CreateSubscription",
+		Actions: []string{ActionSubscriptionCreate},
+		Tables:  []string{"subscriptions"},
+	},
+	{
+		Method:  "UpdateSubscription",
+		Actions: []string{ActionSubscriptionUpdate},
+		Tables:  []string{"subscriptions"},
+	},
+	{
+		Method:  "DeleteSubscription",
+		Actions: []string{ActionSubscriptionDelete},
+		Tables:  []string{"subscriptions"},
 	},
 }
 
@@ -382,6 +421,10 @@ var ConfigMutationExempt = map[string]string{
 		"append-only at the tool surface (§14.2). I3 replaces this catalogue",
 	"DeleteCustomImage": "legacy catalogue GC; §15.3's closed vocabulary has no image_delete because images are " +
 		"append-only at the tool surface (§13). I1 replaces this catalogue",
+	"CreateProjectEvent": "§15.3 rule 3: only configuration lives in the config log. project_events IS its own " +
+		"append-only log (§8.4) — logging every trigger a second time would duplicate a substrate, not record a decision",
+	"MarkProjectEventDelivered": "§15.3 rule 3: the router's delivered watermark is runtime state on the event log " +
+		"(§8.4 step 1), not configuration; it touches no sender-visible field and no setting",
 }
 
 // configGuardedTables is the set of projection tables under the write guard,

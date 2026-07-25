@@ -19,7 +19,8 @@ import (
 func newConfigLogTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t) // sqlite + AutoMigrate(&Artifact{})
-	if err := s.gdb.AutoMigrate(&ConfigEvent{}, &Skill{}, &CustomImage{}); err != nil {
+	if err := s.gdb.AutoMigrate(&ConfigEvent{}, &Skill{}, &CustomImage{},
+		&ProjectSettings{}, &Worker{}, &Subscription{}); err != nil {
 		t.Fatalf("automigrate config log + projections: %v", err)
 	}
 	return s
@@ -372,6 +373,66 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
 		return err
 	},
+	"PutProjectSettings": func(ctx context.Context, s *Store) error {
+		_, err := s.PutProjectSettings(ctx, &ProjectSettings{
+			Project: probeProject, SystemPrompt: "probe",
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
+	"UpsertWorker": func(ctx context.Context, s *Store) error {
+		_, err := s.UpsertWorker(ctx, NewWorker(probeProject, "probe"), ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
+	"DeleteWorker": func(ctx context.Context, s *Store) error {
+		if err := seedProbeWorker(ctx, s); err != nil {
+			return err
+		}
+		return s.DeleteWorker(ctx, probeProject, "probe", ConfigWrite{Worker: "prober", Session: "s-probe"})
+	},
+	"CreateSubscription": func(ctx context.Context, s *Store) error {
+		_, err := s.CreateSubscription(ctx, &Subscription{
+			Project: probeProject, EventType: "email.received", Worker: "probe", Enabled: true,
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
+	"UpdateSubscription": func(ctx context.Context, s *Store) error {
+		if err := seedProbeSubscription(ctx, s); err != nil {
+			return err
+		}
+		_, err := s.UpdateSubscription(ctx, &Subscription{
+			ID: probeSubscriptionID, Project: probeProject, EventType: "email.*", Worker: "probe", Enabled: false,
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
+	"DeleteSubscription": func(ctx context.Context, s *Store) error {
+		if err := seedProbeSubscription(ctx, s); err != nil {
+			return err
+		}
+		return s.DeleteSubscription(ctx, probeProject, probeSubscriptionID, ConfigWrite{Worker: "prober", Session: "s-probe"})
+	},
+}
+
+const probeSubscriptionID = "sub-probe"
+
+// The update and delete probes need a row to act on, and they must produce
+// exactly ONE config event — so the precondition cannot be seeded through the
+// seam. Raw SQL is the deliberate escape: it bypasses both the seam and the
+// write guard (which hooks GORM's create/update/delete callbacks, not Exec),
+// which is exactly what a fixture wants and what no production path may do.
+func seedProbeWorker(ctx context.Context, s *Store) error {
+	return s.gdb.WithContext(ctx).Exec(
+		`INSERT INTO workers (project, name, description, system_prompt, mcp_config, image, briefing,
+		                      max_instances, enabled, created_at, updated_at)
+		 VALUES (?, ?, '', '', '{}', '', NULL, 1, 1, 0, 0)`,
+		probeProject, "probe").Error
+}
+
+func seedProbeSubscription(ctx context.Context, s *Store) error {
+	return s.gdb.WithContext(ctx).Exec(
+		`INSERT INTO subscriptions (id, project, event_type, filter, worker, max_firings_per_hour,
+		                            enabled, created_at, updated_at)
+		 VALUES (?, ?, 'email.received', '{}', 'probe', 0, 1, 0, 0)`,
+		probeSubscriptionID, probeProject).Error
 }
 
 const probeProject = "probe-project"
@@ -445,10 +506,16 @@ func TestMutationsAreLogged(t *testing.T) {
 	// 2. Exemptions are pinned: growing the escape hatch is a deliberate edit of
 	//    this list, never a silent omission.
 	t.Run("exemptions_are_pinned", func(t *testing.T) {
+		// Grown deliberately on 2026-07-25 by the two event-store methods: §15.3
+		// rule 3 keeps the event spine out of the config log — project_events is
+		// already its own append-only log and the delivered flag is the router's
+		// runtime watermark, not a setting.
 		want := []string{
 			"ClearWorkerBinding",
+			"CreateProjectEvent",
 			"DeleteCustomImage",
 			"DeleteSkill",
+			"MarkProjectEventDelivered",
 			"SetSkillVisibility",
 			"SetWorkerBinding",
 		}
@@ -584,7 +651,7 @@ func TestMutationsAreLogged(t *testing.T) {
 	//    mutation guards its table without a second list to maintain.
 	t.Run("guarded_tables_are_derived_from_the_registry", func(t *testing.T) {
 		got := ConfigGuardedTables()
-		want := []string{"agent_custom_images", "agent_skills"}
+		want := []string{"agent_custom_images", "agent_skills", "project_settings", "subscriptions", "workers"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("guarded tables: want %v, got %v", want, got)
 		}

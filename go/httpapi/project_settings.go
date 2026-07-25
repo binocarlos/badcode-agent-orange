@@ -14,7 +14,7 @@ import (
 // wires it from AgentDB automatically, and tests substitute a fake.
 type ProjectSettingsStore interface {
 	GetProjectSettings(ctx context.Context, project string) (*agentdb.ProjectSettings, error)
-	PutProjectSettings(ctx context.Context, ps *agentdb.ProjectSettings) (*agentdb.ProjectSettings, error)
+	PutProjectSettings(ctx context.Context, ps *agentdb.ProjectSettings, cw agentdb.ConfigWrite) (*agentdb.ProjectSettings, error)
 }
 
 // projectScope resolves the project these routes act on. It is ALWAYS the
@@ -67,7 +67,7 @@ func (h *Handlers) PutProjectSettings(w http.ResponseWriter, r *http.Request) {
 	body.Project = project // identity wins for tenancy, as on every other write
 	body.UpdatedAt = 0     // stamped by the store, never by the caller
 
-	ps, err := store.PutProjectSettings(r.Context(), &body)
+	ps, err := store.PutProjectSettings(r.Context(), &body, humanEdit())
 	if err != nil {
 		writeProjectSettingsError(w, err)
 		return
