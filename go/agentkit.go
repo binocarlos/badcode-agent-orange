@@ -250,6 +250,16 @@ type CreateSessionRequest struct {
 	// re-supply it — MCP config is session config, not filesystem state, so a
 	// snapshot does not carry it (docs/product/01-session-config.md §4.5).
 	MCPServers map[string]MCPServerConfig
+
+	// Worker names the product-level worker (persona) whose job this session is
+	// (docs/product/02-workers.md §6.5). Empty for plain vanilla sessions.
+	//
+	// When set, the request is expected to carry a composed session: SystemPrompt
+	// is ComposedJob.SystemPrompt, and the runner records both on the session row
+	// (`worker`, `composed_prompt`) at create time, so every transcript is tied
+	// to the exact prompt that produced it (§6.2). Not to be confused with the
+	// fleet-placement worker (which host runs the container).
+	Worker string
 }
 
 // MCPServerConfig describes one MCP server available to a session
