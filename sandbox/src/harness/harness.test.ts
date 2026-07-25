@@ -253,6 +253,7 @@ describe('ClaudeAgentSdkHarness', () => {
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},
+      sessionMCPServers: {},
       markers: [],
     };
 
@@ -407,6 +408,7 @@ describe('ClaudeAgentSdkHarness', () => {
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},
+      sessionMCPServers: {},
       markers: [],
     };
 
@@ -486,6 +488,7 @@ describe('ClaudeAgentSdkHarness', () => {
       allowedTools: [],
       disallowedTools: [],
       mcpServers: {},
+      sessionMCPServers: {},
       markers: [],
     };
 

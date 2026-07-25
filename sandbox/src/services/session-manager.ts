@@ -6,6 +6,8 @@
 import type { Harness } from '../harness/harness.js';
 import { resolveHarness } from '../harness/bootstrap.js';
 import { streamService } from './stream-service.js';
+import { validateSessionMCPServers } from '../tools/registry.js';
+import type { SessionMCPServers } from '../tools/registry.js';
 
 // ---------------------------------------------------------------------------
 // Typed errors that the control server converts to HTTP responses
@@ -41,6 +43,13 @@ interface TurnRecord {
 interface SessionRecord {
   harness: Harness;
   harnessName: string;
+  /**
+   * Session MCP server config, as supplied by the Runner on session create
+   * (docs/product/01-session-config.md §4). Stored UNRESOLVED — `${VAR}`
+   * references are resolved by the harness at MCP-process spawn time.
+   * Safe to hold and display: values name env vars, never secrets (§4.4).
+   */
+  mcpServers: SessionMCPServers;
   turns: Map<string, TurnRecord>;
   createdAt: number;
   lastActivity: number;
@@ -55,6 +64,20 @@ export interface CreateSessionOptions {
   harness?: string;
   model?: string;
   maxTurns?: number;
+  /**
+   * MCP servers for this session (wire field `mcp_servers`). Merged over the
+   * in-image tool registry for every turn; validated here so a bad config is a
+   * session-create failure rather than a mid-turn surprise.
+   */
+  mcpServers?: SessionMCPServers;
+}
+
+/** Thrown when session-supplied MCP config fails validation on session create. */
+export class InvalidMCPServersError extends Error {
+  readonly errorCode = 'INVALID_MCP_SERVERS' as const;
+  constructor(public readonly http: HarnessErrorBody) {
+    super(`Invalid mcp_servers: ${JSON.stringify(http.body)}`);
+  }
 }
 
 export class SessionManager {
@@ -67,11 +90,29 @@ export class SessionManager {
   create(sessionId: string, opts: CreateSessionOptions = {}): void {
     const harnessName = opts.harness || 'claude-agent-sdk';
 
+    // Validate MCP config before touching session state: a bad config must fail
+    // the create call, never silently reach a turn.
+    const mcpServers = opts.mcpServers ?? {};
+    try {
+      validateSessionMCPServers(mcpServers);
+    } catch (err) {
+      throw new InvalidMCPServersError({
+        status: 400,
+        body: {
+          code: 'INVALID_MCP_SERVERS',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+
     // Idempotent: if session already exists with the same harness, do nothing
     const existing = this.sessions.get(sessionId);
     if (existing) {
       if (existing.harnessName === harnessName) {
-        return; // already created with matching harness — no-op
+        // Re-supply MCP config on resume / re-provision (§4.5): the config is
+        // session config, not filesystem state, so the Runner sends it again.
+        existing.mcpServers = mcpServers;
+        return; // already created with matching harness — no-op otherwise
       }
       // Different harness requested — treat as error (session already exists with different harness)
       // Per spec: "Idempotent if the session already exists with the same harness"
@@ -93,6 +134,7 @@ export class SessionManager {
     this.sessions.set(sessionId, {
       harness,
       harnessName,
+      mcpServers,
       turns: new Map(),
       createdAt: Date.now(),
       lastActivity: Date.now(),

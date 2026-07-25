@@ -7,7 +7,9 @@ import {
   ToolRegistry,
   ToolPlugin,
   ResolvedTools,
+  SessionMCPServers,
   DEFAULT_DISALLOWED_TOOLS,
+  mcpServerToolSpec,
 } from './registry.js';
 import { askUserTool } from './builtin/ask_user.js';
 import { writeFileTool } from './builtin/write_file.js';
@@ -42,8 +44,9 @@ export class DefaultToolRegistry implements ToolRegistry {
     this._plugins.push(p);
   }
 
-  resolve(allowed?: string[]): ResolvedTools {
+  resolve(allowed?: string[], sessionMCPServers: SessionMCPServers = {}): ResolvedTools {
     const allPlugins = [...this._builtins, ...this._plugins];
+    const sessionServerNames = Object.keys(sessionMCPServers);
 
     // Build the MCP server from all plugin tools
     const mcpServer = createSdkMcpServer({
@@ -85,6 +88,23 @@ export class DefaultToolRegistry implements ToolRegistry {
       resolvedAllowedTools = [...sdkDefaults, ...mcpToolNames, 'Skill'];
     }
 
+    // Session-supplied MCP servers extend the allowlist at server granularity:
+    // their tool names aren't known until the server connects, so we grant
+    // `mcp__<name>__*` (docs/product/01-session-config.md §4.3).
+    //
+    // A session server that shadows an in-image server name REPLACES it at spawn
+    // (the harness spreads session config last), so drop the now-dead per-tool
+    // entries for that name rather than leaving them pointing at nothing.
+    if (sessionServerNames.length > 0) {
+      const shadowedPrefixes = sessionServerNames.map(n => `mcp__${n}__`);
+      resolvedAllowedTools = resolvedAllowedTools.filter(
+        t => !shadowedPrefixes.some(p => t.startsWith(p)),
+      );
+      for (const name of sessionServerNames) {
+        resolvedAllowedTools.push(mcpServerToolSpec(name));
+      }
+    }
+
     // Collect marker specs from all plugins that have one
     const markers = allPlugins
       .filter(p => p.marker != null)
@@ -94,6 +114,7 @@ export class DefaultToolRegistry implements ToolRegistry {
       allowedTools: resolvedAllowedTools,
       disallowedTools: DEFAULT_DISALLOWED_TOOLS,
       mcpServers: { [serverName]: mcpServer },
+      sessionMCPServers,
       markers,
     };
   }

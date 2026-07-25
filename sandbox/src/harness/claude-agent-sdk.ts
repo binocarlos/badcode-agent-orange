@@ -18,6 +18,7 @@ import { processAttachments, EmbeddedImage } from '../services/attachment-prompt
 import type { QueryRequest } from '../types/index.js';
 import type { Harness, TurnContext } from './harness.js';
 import type { HarnessDescriptor } from './registry.js';
+import { resolveSessionMCPServers } from '../tools/registry.js';
 
 // ---------------------------------------------------------------------------
 // Per-session header proxy
@@ -503,6 +504,25 @@ export class ClaudeAgentSdkHarness implements Harness {
         delete subprocessEnv['ANTHROPIC_API_KEY'];
       }
 
+      // Session-supplied MCP servers (docs/product/01-session-config.md §4).
+      // Whole-value ${VAR} references in env/headers are resolved HERE, at spawn
+      // time, from the environment the MCP processes will actually inherit. An
+      // unset or empty variable throws — we never spawn an MCP server with an
+      // unresolved or empty credential; the catch below turns it into a loud
+      // AGENT_ERROR event instead.
+      const sessionMcpServers = resolveSessionMCPServers(
+        resolved.sessionMCPServers ?? {},
+        subprocessEnv,
+      );
+      const sessionMcpNames = Object.keys(sessionMcpServers);
+      if (sessionMcpNames.length > 0) {
+        console.log(
+          `[ClaudeAgentSdkHarness] Session MCP servers resolved: ${sessionMcpNames.join(', ')}`,
+        );
+      }
+      // Session config wins on name collision (§4.3).
+      const mcpServers = { ...resolved.mcpServers, ...sessionMcpServers };
+
       console.log(`[SSE-DEBUG][ClaudeAgentSdkHarness] Entering SDK for-await loop at ${Date.now()}`);
       for await (const message of query({
         prompt: promptInput,
@@ -518,7 +538,7 @@ export class ClaudeAgentSdkHarness implements Harness {
           settingSources: ['project'],
           allowedTools: resolved.allowedTools,
           disallowedTools: resolved.disallowedTools,
-          mcpServers: resolved.mcpServers,
+          mcpServers,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           includePartialMessages: true,
