@@ -38,6 +38,7 @@ import (
 	"github.com/binocarlos/badcode-agent-orange/extension"
 	"github.com/binocarlos/badcode-agent-orange/extension/blobartifacts"
 	"github.com/binocarlos/badcode-agent-orange/extension/devclaims"
+	"github.com/binocarlos/badcode-agent-orange/extension/embedding"
 	"github.com/binocarlos/badcode-agent-orange/extension/sqlitestore"
 	"github.com/binocarlos/badcode-agent-orange/fleet"
 	"github.com/binocarlos/badcode-agent-orange/httpapi"
@@ -77,14 +78,34 @@ func main() {
 	// bytes and (for the blob-archive registry) snapshot tarballs.
 	blobCfg, err := resolveBlobConfig(os.Getenv, dataDir)
 	must(err)
+
+	// ── Embedding provider (memory semantic leg, §7.5) ───────────────────────────
+	// AGENTKIT_EMBEDDING_BACKEND: none (default) | mock. A nil provider is a
+	// supported deployment, not a failure — memories store a NULL embedding and
+	// search degrades to keyword+recency with the same result shape (§7.6.5). A
+	// typo in the variable IS a failure, so it is a boot error rather than a
+	// silent fall back to "none".
+	embedder, err := embedding.NewFromEnv(os.Getenv)
+	must(err)
+	if embedder == nil {
+		log.Printf("[agentd] embeddings=none — memory search is keyword+recency")
+	} else {
+		log.Printf("[agentd] embeddings=%s", envOr("AGENTKIT_EMBEDDING_BACKEND", "none"))
+	}
 	blobs, closeBlobs, err := newBlobs(ctx, blobCfg)
 	must(err)
 	defer closeBlobs() //nolint:errcheck
 	artStore := blobartifacts.New(blobs)
 
 	// ── Claims issuer ────────────────────────────────────────────────────────────
+	// Two secrets, deliberately: jwtSecret verifies API callers and may be empty
+	// (dev-open, so the demo UI works with no configuration), while
+	// sessionSecret is what the Runner MINTS per-session tokens with and is
+	// never empty. The core MCP server verifies against sessionSecret — a
+	// session's memories must not be reachable just because the API is open.
 	jwtSecret := []byte(os.Getenv("AGENTKIT_JWT_SECRET")) // empty → dev-open
-	claims := devclaims.New([]byte(envOr("AGENTKIT_JWT_SECRET", "dev-secret")))
+	sessionSecret := []byte(envOr("AGENTKIT_JWT_SECRET", "dev-secret"))
+	claims := devclaims.New(sessionSecret)
 
 	// ── Public base URL (session permalinks) ─────────────────────────────────────
 	// Where a human clicking a session link lands — the web UI's externally
@@ -262,6 +283,26 @@ func main() {
 	}
 
 	root.Handle("/agent-proxy/", http.StripPrefix("/agent-proxy", newModelProxyHandler()))
+
+	// ── Core MCP tools (memory today; images/skills/management next) ─────────────
+	// One http MCP server, mounted outside the API auth middleware because it
+	// authenticates differently: the caller is a session container bearing its
+	// per-session token, and the project scope comes from that token's claims.
+	// See mcpserver.go. Needs the product-layer tables, so — like the session
+	// context provider — it is wired only on the Postgres store.
+	if agentDB != nil {
+		mcpSrv := newMCPServer(coreMCPServerName, newSessionTokenAuth(sessionSecret, agentDB).authenticate)
+		mcpSrv.register(newMemoryTools(agentDB, embedder, permalinks).tools()...)
+		root.Handle(coreMCPPath, mcpSrv)
+		// Some MCP clients normalise the endpoint with a trailing slash; both
+		// spellings must reach the same server or the tools simply vanish.
+		root.Handle(coreMCPPath+"/", mcpSrv)
+		log.Printf("[agentd] core mcp: %s%s tools=%s", selfURL, coreMCPPath,
+			strings.Join(sortedStrings(mcpSrv.toolNames()), ","))
+	} else {
+		log.Printf("[agentd] core mcp DISABLED (no DATABASE_URL): memory requires Postgres")
+	}
+
 	// Everything else goes through auth.
 	root.Handle("/", jwtAuthMiddleware(jwtSecret, apiMux))
 

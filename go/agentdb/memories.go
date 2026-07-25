@@ -171,6 +171,56 @@ func (s *Store) GetMemory(ctx context.Context, project, id string) (*Memory, err
 	return &mem, nil
 }
 
+// NewestMemory returns the newest memory matching selector within project, in
+// FULL — content, not the search snippet. Nothing matching is ErrMemoryNotFound:
+// absence is a normal answer here, not a failure.
+//
+// It exists because two callers both mean "the current value of this selector"
+// and both need the whole body:
+//
+//   - the `name=` KV convention (§7.1), read by the `memory_current` tool (§7.3);
+//   - each briefing-section lookup at job composition (§7.4) — the ONLY memory
+//     reads core itself ever performs, one fixed newest-match query per selector.
+//
+// It is deliberately NOT SearchMemories with limit 1: search returns 500-byte
+// snippets, and a briefing section that silently stopped mid-sentence would be a
+// lie about what the worker remembers. Ordering is the §7.6.2 bare-selector rule
+// (newest first, id as the tiebreak) — the same recency question, asked for one
+// row.
+func (s *Store) NewestMemory(ctx context.Context, project, selector string) (*Memory, error) {
+	if err := s.requirePostgres(); err != nil {
+		return nil, err
+	}
+	if project == "" {
+		return nil, fmt.Errorf("agentdb: memory project is required")
+	}
+	// The project filter binds first and in code, exactly as in SearchMemories:
+	// a selector may narrow the set, never widen it past the project.
+	where := "project = ?"
+	args := []any{project}
+	labelSQL, labelArgs, err := LabelSelectorSQL(selector, "labels")
+	if err != nil {
+		return nil, fmt.Errorf("agentdb: newest memory selector: %w", err)
+	}
+	if labelSQL != "" {
+		where += " AND " + labelSQL
+		args = append(args, labelArgs...)
+	}
+
+	var mem Memory
+	err = s.gdb.WithContext(ctx).Model(&Memory{}).
+		Where(where, args...).
+		Order("created_at DESC, id DESC").
+		First(&mem).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrMemoryNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("agentdb: newest memory: %w", err)
+	}
+	return &mem, nil
+}
+
 // SearchMemories implements the §7.6 relevance contract in one query:
 //
 //  1. hard filter on project (always, in code), then the label selector;

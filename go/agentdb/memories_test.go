@@ -16,7 +16,7 @@ func TestMemoriesStoreIsAppendOnly(t *testing.T) {
 
 	mutators := []string{"update", "delete", "set", "patch", "remove", "upsert", "purge", "prune"}
 	var found []string
-	haveCreate, haveGet, haveSearch := false, false, false
+	haveCreate, haveGet, haveSearch, haveNewest := false, false, false, false
 	for i := 0; i < typ.NumMethod(); i++ {
 		name := typ.Method(i).Name
 		lower := strings.ToLower(name)
@@ -30,6 +30,8 @@ func TestMemoriesStoreIsAppendOnly(t *testing.T) {
 			haveGet = true
 		case "SearchMemories":
 			haveSearch = true
+		case "NewestMemory":
+			haveNewest = true
 		}
 		for _, m := range mutators {
 			if strings.Contains(lower, m) {
@@ -40,9 +42,9 @@ func TestMemoriesStoreIsAppendOnly(t *testing.T) {
 	if len(found) > 0 {
 		t.Fatalf("memories are immutable (§7.1): no mutating store method may exist, found %v", found)
 	}
-	if !haveCreate || !haveGet || !haveSearch {
-		t.Fatalf("expected CreateMemory/GetMemory/SearchMemories to exist, got create=%v get=%v search=%v",
-			haveCreate, haveGet, haveSearch)
+	if !haveCreate || !haveGet || !haveSearch || !haveNewest {
+		t.Fatalf("expected CreateMemory/GetMemory/SearchMemories/NewestMemory to exist, got create=%v get=%v search=%v newest=%v",
+			haveCreate, haveGet, haveSearch, haveNewest)
 	}
 }
 
@@ -104,6 +106,13 @@ func TestMemorySqlite(t *testing.T) {
 		}},
 		{"search, nil query", func(s *Store) error {
 			_, err := s.SearchMemories(ctx, nil)
+			return err
+		}},
+		// The briefing / memory_current read path (C4, D3) is Postgres-only for
+		// the same reason: a briefing that silently degrades to "no memory" would
+		// make every worker look freshly amnesiac with nothing in the logs.
+		{"newest", func(s *Store) error {
+			_, err := s.NewestMemory(ctx, "p", "kind=rolling-summary,worker=w")
 			return err
 		}},
 	}

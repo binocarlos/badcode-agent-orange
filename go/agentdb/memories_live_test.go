@@ -563,6 +563,66 @@ func TestMemoriesLiveSnippetsAndLimits(t *testing.T) {
 	}
 }
 
+// TestMemoriesLiveNewestMemory covers the one query behind both `memory_current`
+// (D3) and every briefing-section lookup (C4): the newest match of a selector,
+// in FULL, project-scoped, ErrMemoryNotFound when there is nothing.
+func TestMemoriesLiveNewestMemory(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	project := newLiveProject(t, s)
+	other := newLiveProject(t, s)
+
+	long := strings.Repeat("summary ", 400) // far longer than a search snippet
+	base := int64(1_700_000_000_000)
+	older := mustCreateMemory(t, s, &Memory{
+		Project: project, Labels: LabelSet{"kind": "rolling-summary", "worker": "email-answerer"},
+		Content: "the old summary", CreatedAt: base,
+	}, nil)
+	newest := mustCreateMemory(t, s, &Memory{
+		Project: project, Labels: LabelSet{"kind": "rolling-summary", "worker": "email-answerer"},
+		Content: long, CreatedAt: base + 1000,
+	}, nil)
+	// A same-labelled memory in another project must be invisible from here.
+	mustCreateMemory(t, s, &Memory{
+		Project: other, Labels: LabelSet{"kind": "rolling-summary", "worker": "email-answerer"},
+		Content: "someone else's summary", CreatedAt: base + 5000,
+	}, nil)
+
+	got, err := s.NewestMemory(ctx, project, "kind=rolling-summary,worker=email-answerer")
+	if err != nil {
+		t.Fatalf("NewestMemory: %v", err)
+	}
+	if got.ID != newest.ID || got.ID == older.ID {
+		t.Fatalf("got %s, want the newest match %s", got.ID, newest.ID)
+	}
+	// Full content, not a snippet — the whole reason this is not SearchMemories.
+	if got.Content != long {
+		t.Fatalf("content is %d bytes, want the full %d", len(got.Content), len(long))
+	}
+
+	// A bare (empty) selector is the newest memory in the project, full stop.
+	bare, err := s.NewestMemory(ctx, project, "")
+	if err != nil || bare.ID != newest.ID {
+		t.Fatalf("bare selector: got %v err=%v, want %s", bare, err, newest.ID)
+	}
+
+	// Nothing matching is not an error condition, it is an answer.
+	if _, err := s.NewestMemory(ctx, project, "kind=rolling-summary,worker=nobody"); !errors.Is(err, ErrMemoryNotFound) {
+		t.Fatalf("missing selector err = %v, want ErrMemoryNotFound", err)
+	}
+	// Project isolation from the other side too.
+	if _, err := s.NewestMemory(ctx, other, "name=nothing-here"); !errors.Is(err, ErrMemoryNotFound) {
+		t.Fatalf("cross-project: %v", err)
+	}
+	// A malformed selector fails loudly rather than degrading to "no filter".
+	if _, err := s.NewestMemory(ctx, project, "kind=="); err == nil {
+		t.Fatalf("a malformed selector must error, not match everything")
+	}
+	if _, err := s.NewestMemory(ctx, "", "kind=rolling-summary"); err == nil {
+		t.Fatalf("an empty project must error: the namespace is never optional")
+	}
+}
+
 func approx(a, b float64) bool {
 	d := a - b
 	return d < 1e-9 && d > -1e-9
