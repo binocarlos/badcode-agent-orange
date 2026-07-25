@@ -46,21 +46,101 @@ func TestMemoriesStoreIsAppendOnly(t *testing.T) {
 	}
 }
 
-// The dev store is sqlite; memory is not available there. Rather than pretend
-// (a store that silently forgets is worse than no store), every entry point
-// fails loudly with ErrMemoryRequiresPostgres. See docs/15-standalone-stack.md.
-func TestMemoriesRequirePostgres(t *testing.T) {
-	s := newTestStore(t) // sqlite
+// TestMemorySqlite pins the degradation decision (§7, docs/15-standalone-stack.md):
+// **memory requires Postgres**, and the sqlite dev store says so out loud.
+//
+// The alternative — a keyword-only sqlite implementation — was rejected: the
+// memory system's whole promise is that what a worker wrote down is there
+// later, and a store that quietly drops jsonb selectors, tsvector ranking and
+// the semantic leg would keep answering searches with plausible, incomplete
+// results. A store that silently forgets is worse than no store, so all three
+// entry points fail with ErrMemoryRequiresPostgres on any non-Postgres dialect.
+//
+// (This is the outer boundary only. *Within* Postgres, pgvector is optional:
+// migration 022 adds the vector column when the extension is available and
+// search drops the semantic CTE when it is not — that degradation is silent by
+// design, because keyword+recency still returns real rows in the same shape.)
+func TestMemorySqlite(t *testing.T) {
 	ctx := context.Background()
+	sqliteStore := newTestStore(t)
 
-	if _, err := s.CreateMemory(ctx, &Memory{Project: "p", Content: "hello"}, nil); !errors.Is(err, ErrMemoryRequiresPostgres) {
-		t.Fatalf("CreateMemory on sqlite: want ErrMemoryRequiresPostgres, got %v", err)
+	// A sqlite store that HAS a memories table is the interesting case: the
+	// refusal must come from the dialect, not from a missing table, or a
+	// half-working store would appear the moment someone ran AutoMigrate.
+	migrated := newTestStore(t)
+	if err := migrated.DB().AutoMigrate(&Memory{}); err != nil {
+		t.Fatalf("automigrate Memory on sqlite: %v", err)
 	}
-	if _, err := s.GetMemory(ctx, "p", "id"); !errors.Is(err, ErrMemoryRequiresPostgres) {
-		t.Fatalf("GetMemory on sqlite: want ErrMemoryRequiresPostgres, got %v", err)
+
+	// (*Store)(nil) is the "no store wired" case — still an error, not a panic.
+	var nilStore *Store
+
+	tests := []struct {
+		name string
+		call func(s *Store) error
+	}{
+		{"create", func(s *Store) error {
+			_, err := s.CreateMemory(ctx, &Memory{
+				Project: "p", Content: "the refund window is 30 days",
+				Labels: LabelSet{"kind": "fact"},
+			}, nil)
+			return err
+		}},
+		{"create with embedding", func(s *Store) error {
+			_, err := s.CreateMemory(ctx, &Memory{Project: "p", Content: "x"}, make([]float32, MemoryEmbeddingDim))
+			return err
+		}},
+		{"get", func(s *Store) error {
+			_, err := s.GetMemory(ctx, "p", "some-id")
+			return err
+		}},
+		{"search, bare selector", func(s *Store) error {
+			_, err := s.SearchMemories(ctx, &MemorySearchQuery{Project: "p", LabelSelector: "kind=fact"})
+			return err
+		}},
+		{"search, query text", func(s *Store) error {
+			_, err := s.SearchMemories(ctx, &MemorySearchQuery{Project: "p", Query: "refund window"})
+			return err
+		}},
+		{"search, nil query", func(s *Store) error {
+			_, err := s.SearchMemories(ctx, nil)
+			return err
+		}},
 	}
-	if _, err := s.SearchMemories(ctx, &MemorySearchQuery{Project: "p"}); !errors.Is(err, ErrMemoryRequiresPostgres) {
-		t.Fatalf("SearchMemories on sqlite: want ErrMemoryRequiresPostgres, got %v", err)
+
+	for _, tc := range tests {
+		for _, store := range []struct {
+			label string
+			s     *Store
+		}{
+			{"sqlite", sqliteStore},
+			{"sqlite with a memories table", migrated},
+			{"nil store", nilStore},
+		} {
+			t.Run(tc.name+"/"+store.label, func(t *testing.T) {
+				err := tc.call(store.s)
+				if !errors.Is(err, ErrMemoryRequiresPostgres) {
+					t.Fatalf("want ErrMemoryRequiresPostgres, got %v", err)
+				}
+				// The message has to tell an operator what to do about it:
+				// it names Postgres and why (jsonb/tsvector/pgvector).
+				for _, want := range []string{"Postgres", "jsonb", "tsvector", "pgvector"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error message must mention %q, got %q", want, err.Error())
+					}
+				}
+			})
+		}
+	}
+
+	// Nothing was written along the way: the refusal happens before any SQL, so
+	// a caller cannot end up with rows it can never read back.
+	var rows int64
+	if err := migrated.DB().Raw("SELECT COUNT(*) FROM memories").Scan(&rows).Error; err != nil {
+		t.Fatalf("count sqlite memories: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("sqlite must accept no memory writes at all, found %d rows", rows)
 	}
 }
 
