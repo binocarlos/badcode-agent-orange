@@ -74,6 +74,10 @@ services:
       # externally reachable base URL) — NOT AGENTKIT_SELF_URL, which is a DinD
       # bridge address only containers can reach. Route: /p/<project>/s/<session>.
       AGENTKIT_PUBLIC_BASE_URL: ${AGENTKIT_PUBLIC_BASE_URL:-http://localhost:${WEB_PORT:-8080}}
+      # Memory's semantic leg (§7.5): none (default) | mock. Without this line the
+      # variable never reached agentd, so setting it in .env silently did nothing
+      # and memory search stayed keyword+recency whatever the docs said.
+      AGENTKIT_EMBEDDING_BACKEND: ${AGENTKIT_EMBEDDING_BACKEND:-}
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
       # Login modes (see .env.example). Neither set → legacy dev-open demo.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
