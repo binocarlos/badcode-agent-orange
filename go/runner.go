@@ -36,6 +36,36 @@ func (e *ErrHarnessUnavailable) Error() string {
 	return fmt.Sprintf("harness unavailable (status %d): %s", e.StatusCode, e.Body)
 }
 
+// codeInvalidMCPServers is the sandbox's error code for a create payload whose
+// `mcp_servers` it refuses (docs/product/01-session-config.md §4.2).
+const codeInvalidMCPServers = "INVALID_MCP_SERVERS"
+
+// ErrInvalidMCPServers is returned by CreateSession when the sandbox rejects the
+// session's MCP configuration with a 400. It is terminal, never retryable: the
+// config is wrong and will be just as wrong next time. The host cleans up the
+// orphan session row exactly as it does for ErrHarnessUnavailable.
+type ErrInvalidMCPServers struct {
+	// Body is the raw response body from the sandbox.
+	Body string
+}
+
+func (e *ErrInvalidMCPServers) Error() string {
+	return fmt.Sprintf("invalid mcp servers: %s", e.Body)
+}
+
+// sandboxErrorCode pulls the `code` field out of a sandbox error body, or ""
+// when the body is not the expected shape (which keeps an unparseable 400 on
+// the pre-existing ErrHarnessUnavailable path rather than swallowing it).
+func sandboxErrorCode(body []byte) string {
+	var parsed struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	return parsed.Code
+}
+
 // runnerImpl is the default Runner. It contains the generic orchestration logic
 // ported from the TypeScript orchestrator (sandbox-manager.ts, routes/sessions.ts,
 // state-machine.ts) plus the SSE relay ported from goapi/pkg/server/agent.go.
@@ -55,6 +85,11 @@ type runnerImpl struct {
 	lastActivity    map[string]time.Time
 	seq             int
 
+	// queryErrors holds the error text seen on the in-flight turn, keyed
+	// sessionID+"\x00"+queryID, so worker.failed can report what went wrong.
+	// Written by the error MarkerHook, drained at the end of every turn.
+	queryErrors map[string]string
+
 	// userImageHandles caches content-hash → Handle for previously built user images.
 	// On a cache hit from registry.Resolve, the runner returns this handle directly
 	// without calling Provision/Snapshot/Persist (the build path).
@@ -73,6 +108,7 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 		instances:        map[string]*execenv.Instance{},
 		instanceWorkers:  map[string]string{},
 		lastActivity:     map[string]time.Time{},
+		queryErrors:      map[string]string{},
 		userImageHandles: map[string]imageregistry.Handle{},
 		progress:         newProgressStore(),
 		stop:             make(chan struct{}),
@@ -96,6 +132,11 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 				Type events.Type
 				Hook events.MarkerHook
 			}{Type: events.SkillInstalled, Hook: r.onSkillInstalled},
+			// Capture the error text of a failing turn for worker.failed (§8.2).
+			struct {
+				Type events.Type
+				Hook events.MarkerHook
+			}{Type: events.Error, Hook: r.onQueryError},
 		)
 	}
 	return r
@@ -130,6 +171,12 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		}
 	}()
 
+	// Fold the host-resolved project ∪ worker MCP defaults under the
+	// request-supplied servers, so the union a SessionContextProvider computes
+	// actually reaches the container (§4.1, §5).
+	if req.MCPServers, err = r.sessionMCPServers(ctx, req); err != nil {
+		return nil, err
+	}
 	// Record session-scoped MCP config on the session row before anything is
 	// provisioned, so resume / re-provision can re-supply it (§4.5) and so a
 	// malformed config fails the create loudly instead of reaching the harness.
@@ -185,6 +232,40 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 	}
 
 	return &SessionHandle{SessionID: req.SessionID, Address: inst.Address, State: string(inst.State)}, nil
+}
+
+// sessionMCPServers resolves the effective MCP configuration for a create:
+// the host's project ∪ worker defaults (extension.SessionContext.MCPServers)
+// with the request-supplied servers layered on top, so a request entry wins a
+// name collision (§5 — the resolved context is "the defaults which the request
+// may extend").
+//
+// Returns req.MCPServers unchanged when no provider is wired or it contributes
+// nothing, which keeps every pre-existing caller on exactly the old path. A
+// provider error fails the create: a session that silently launched without the
+// project's tools is the failure this seam exists to prevent.
+func (r *runnerImpl) sessionMCPServers(ctx context.Context, req CreateSessionRequest) (map[string]MCPServerConfig, error) {
+	if r.deps.SessionContext == nil {
+		return req.MCPServers, nil
+	}
+	scope := extension.ContextScope{
+		Customer: req.Customer, Job: req.Job, Persona: req.Persona, UserEmail: req.UserEmail,
+	}
+	sc, err := r.deps.SessionContext.Resolve(ctx, scope)
+	if err != nil {
+		return nil, fmt.Errorf("resolve session context: %w", err)
+	}
+	if sc == nil || len(sc.MCPServers) == 0 {
+		return req.MCPServers, nil
+	}
+	merged := make(agentdb.MCPServers, len(sc.MCPServers)+len(req.MCPServers))
+	for name, cfg := range sc.MCPServers {
+		merged[name] = cfg
+	}
+	for name, cfg := range req.MCPServers {
+		merged[name] = cfg
+	}
+	return merged, nil
 }
 
 // persistMCPServers validates and writes the session's MCP config onto its
@@ -280,7 +361,16 @@ func (r *runnerImpl) provisionOnWorker(ctx context.Context, sessionID string, im
 
 // postCreateSession calls POST {addr}/sessions on the in-image control server.
 // A 400 (UNKNOWN_HARNESS) or 424 (HARNESS_CREDENTIALS_MISSING) response is mapped
-// to *ErrHarnessUnavailable.
+// to *ErrHarnessUnavailable; a 400 whose body carries INVALID_MCP_SERVERS is
+// mapped to *ErrInvalidMCPServers instead, because "your MCP config is wrong" is
+// a different thing for a host to report than "that harness does not exist".
+//
+// The create is the ONLY place session MCP config crosses into the container
+// (§4.2): the payload carries `mcp_servers` in snake_case, whose inner shape is
+// exactly the JSON tags of agentdb.MCPServerConfig (command/args/env for stdio,
+// url/headers for http) — a plain marshal is the wire format, no adapter.
+// Re-provision posts create again with the config read back off the session row,
+// so an idempotent create refreshes it (§4.5).
 func (r *runnerImpl) postCreateSession(ctx context.Context, addr string, req CreateSessionRequest) error {
 	harnessName := string(req.Harness)
 	if harnessName == "" {
@@ -296,6 +386,9 @@ func (r *runnerImpl) postCreateSession(ctx context.Context, addr string, req Cre
 	if req.MaxTurns > 0 {
 		payload["maxTurns"] = req.MaxTurns
 	}
+	if len(req.MCPServers) > 0 {
+		payload["mcp_servers"] = req.MCPServers
+	}
 	body, _ := json.Marshal(payload)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, addr+"/sessions", bytes.NewReader(body))
 	if err != nil {
@@ -309,6 +402,9 @@ func (r *runnerImpl) postCreateSession(ctx context.Context, addr string, req Cre
 	defer resp.Body.Close()
 	if resp.StatusCode == 400 || resp.StatusCode == 424 {
 		respBody, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == 400 && sandboxErrorCode(respBody) == codeInvalidMCPServers {
+			return &ErrInvalidMCPServers{Body: string(respBody)}
+		}
 		return &ErrHarnessUnavailable{StatusCode: resp.StatusCode, Body: string(respBody)}
 	}
 	// Drain body to allow connection reuse.
@@ -585,8 +681,11 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 		}}
 	}
 
-	_, err = r.pipeline.Run(ctx, q, resp.Body, w)
+	res, err := r.pipeline.Run(ctx, q, resp.Body, w)
 	r.touch(ref.SessionID)
+	// The turn has settled and (crucially) been persisted: emit the §8.2
+	// internal event for it, if this session is a worker job.
+	r.emitJobOutcome(ctx, ref.SessionID, queryID, res, err)
 	return err
 }
 
@@ -874,10 +973,37 @@ func (r *runnerImpl) restoreToWorker(ctx context.Context, sessionID string, work
 	return inst, nil
 }
 
-// rehydrateConversation reads the session's persisted query events, reconstructs
-// the ordered user/assistant conversation, and loads it into the restored
-// sandbox's in-image harness. Best-effort: errors are logged, never fatal.
+// rehydrateConversation re-establishes a restored session inside its fresh
+// container: it re-creates the sandbox's session record (re-supplying the MCP
+// configuration, which is session config rather than filesystem state and so is
+// NOT carried by the snapshot — §4.5), then reconstructs the ordered
+// user/assistant conversation from the persisted query events and loads it into
+// the in-image harness. Best-effort: errors are logged, never fatal.
+//
+// The create runs even when there is nothing to load. A restored session with
+// an empty transcript still needs its MCP servers back, and query-stream's lazy
+// auto-create would otherwise mint a session record with no MCP config at all.
 func (r *runnerImpl) rehydrateConversation(ctx context.Context, sessionID string, inst *execenv.Instance) {
+	// The session row is the durable home of the config the container lost.
+	sess, err := r.deps.Store.GetSession(ctx, sessionID)
+	if err != nil {
+		log.Printf("agentkit: rehydrate %s: get session: %v", sessionID, err)
+		return
+	}
+
+	// /load-conversation 404s unless the session exists in the restored sandbox's
+	// in-memory sessionManager (empty after a fresh container start). query-stream
+	// auto-creates lazily, but load-conversation does not — so create it first.
+	// Harness is left empty, which the sandbox resolves to the default
+	// (claude-agent-sdk) — the same harness the original session was created with.
+	if err := r.postCreateSession(ctx, inst.Address, CreateSessionRequest{
+		SessionID:  sessionID,
+		MCPServers: sess.MCPServers,
+	}); err != nil {
+		log.Printf("agentkit: rehydrate %s: create session: %v", sessionID, err)
+		return
+	}
+
 	evs, err := r.deps.Store.ListQueryEventsFlat(ctx, sessionID)
 	if err != nil {
 		log.Printf("agentkit: rehydrate %s: list events: %v", sessionID, err)
@@ -885,31 +1011,13 @@ func (r *runnerImpl) rehydrateConversation(ctx context.Context, sessionID string
 	}
 	msgs := reconstructConversation(evs)
 	if len(msgs) == 0 {
-		return // nothing to load
+		return // config re-supplied; nothing to load
 	}
 
-	// /load-conversation 404s unless the session exists in the restored sandbox's
-	// in-memory sessionManager (empty after a fresh container start). query-stream
-	// auto-creates lazily, but load-conversation does not — so create it first.
-	sess, err := r.deps.Store.GetSession(ctx, sessionID)
-	if err != nil {
-		log.Printf("agentkit: rehydrate %s: get session: %v", sessionID, err)
-		return
-	}
 	scope := extension.ContextScope{Customer: sess.Customer, Job: sess.Job, Persona: sess.Persona, UserEmail: sess.UserEmail}
 	token, err := r.issueToken(ctx, scope, sessionID)
 	if err != nil {
 		log.Printf("agentkit: rehydrate %s: issue token: %v", sessionID, err)
-		return
-	}
-
-	// Ensure the in-memory session entry exists before loading the conversation.
-	// Harness is left empty, which the sandbox resolves to the default
-	// (claude-agent-sdk) — the same harness the original session was created with.
-	if err := r.postCreateSession(ctx, inst.Address, CreateSessionRequest{
-		SessionID: sessionID,
-	}); err != nil {
-		log.Printf("agentkit: rehydrate %s: create session: %v", sessionID, err)
 		return
 	}
 
@@ -1005,6 +1113,275 @@ func deltaText(delta any) string {
 		}
 	}
 	return ""
+}
+
+// --- internal worker events (§8.2) -------------------------------------------
+//
+// Two of the five internal events core emits are produced here, because the
+// Runner is the only thing that knows the moment they describe: a job's query
+// completed (worker.finished) or ended badly (worker.failed). Both fire ONLY
+// for worker jobs — a session whose `worker` column is empty is a plain
+// interactive session and emits nothing at all (§8.2).
+//
+// worker.finished is *the* composition primitive: its text is the whole
+// exchange, so the next worker wakes up already holding it.
+
+// WorkerEventStore is the durable surface the §8.2 internal emitters need: the
+// session row (which names the project and the worker), the event that
+// triggered the job (whose depth the emitted event adds one to), and the append
+// itself. *agentdb.Store satisfies it.
+//
+// It is a seam rather than a concrete store so the Runner keeps its existing
+// nil-dependency shape: a host that has not wired the event spine simply emits
+// no internal events, and every pre-existing caller stays on the old path.
+type WorkerEventStore interface {
+	GetSession(ctx context.Context, id string) (*agentdb.Session, error)
+	SessionTriggerEvent(ctx context.Context, sessionID string) (*agentdb.ProjectEvent, error)
+	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
+}
+
+// WorkerJob is the §8.1 envelope identity of a running worker job — everything
+// an internal event needs to stamp about *whose* job finished or failed.
+// Build it with ResolveWorkerJob rather than by hand.
+type WorkerJob struct {
+	// Project is the tenancy namespace (the session's customer).
+	Project string
+	// Worker is the product-level worker whose job this is.
+	Worker string
+	// SessionID is the session the job ran in.
+	SessionID string
+	// Depth is the depth to stamp on the emitted event: the triggering event's
+	// depth + 1, or 0 when a human started the job. This is the loop floor of
+	// §8.4 — get it wrong and worker-to-worker cycles stop being bounded.
+	Depth int
+	// Interactive marks a job a human started by chatting, so subscriptions that
+	// should not react to chats can filter it out.
+	Interactive bool
+}
+
+// ResolveWorkerJob loads the envelope facts for a session's job.
+//
+// ok=false means "not a worker job" — the session's `worker` column is empty,
+// so nothing should be emitted for it. That is a normal outcome, not an error.
+//
+// Depth and Interactive come from the same fact: whether a delivery links this
+// session to a triggering event. If one does, this job is a link in a chain and
+// its events sit one level deeper; if none does, a human started it, which is
+// depth 0 and interactive (§8.1).
+//
+// Exported because E3 (the router) reuses it for the lease reaper, which must
+// stamp the same envelope for a session it never streamed.
+func ResolveWorkerJob(ctx context.Context, store WorkerEventStore, sessionID string) (WorkerJob, bool, error) {
+	if store == nil {
+		return WorkerJob{}, false, fmt.Errorf("resolve worker job: store is required")
+	}
+	if sessionID == "" {
+		return WorkerJob{}, false, fmt.Errorf("resolve worker job: session id is required")
+	}
+	sess, err := store.GetSession(ctx, sessionID)
+	if err != nil {
+		return WorkerJob{}, false, fmt.Errorf("resolve worker job %s: %w", sessionID, err)
+	}
+	if strings.TrimSpace(sess.Worker) == "" {
+		return WorkerJob{}, false, nil
+	}
+	job := WorkerJob{
+		Project:     sess.Customer,
+		Worker:      sess.Worker,
+		SessionID:   sessionID,
+		Interactive: true,
+	}
+	trigger, err := store.SessionTriggerEvent(ctx, sessionID)
+	if err != nil {
+		return WorkerJob{}, false, fmt.Errorf("resolve worker job %s: trigger event: %w", sessionID, err)
+	}
+	if trigger != nil {
+		job.Depth = trigger.Envelope.Depth + 1
+		job.Interactive = false
+	}
+	return job, true, nil
+}
+
+// EmitWorkerFinished appends the §8.2 `worker.finished` event for a completed
+// job. transcript is the full rendered conversation (see renderTranscript) and
+// becomes the event text verbatim — that text is what the next worker reads as
+// its first message, so it is the exchange itself, never a summary of it.
+//
+// attentionRequested is passed in rather than derived: the
+// `request_human_attention` tool is work-plan item H2, which owns setting it.
+func EmitWorkerFinished(ctx context.Context, store WorkerEventStore, job WorkerJob, transcript string, attentionRequested bool) (*agentdb.ProjectEvent, error) {
+	return appendWorkerEvent(ctx, store, agentdb.EventTypeWorkerFinished, job, transcript, "", attentionRequested)
+}
+
+// EmitWorkerFailed appends the §8.2 `worker.failed` event. reason is one of
+// agentdb.FailureReasons: "error" when the session itself errored (the Runner's
+// error path, below) or "lost" when a session's lease expired without the
+// sandbox reporting back. The reason is a parameter precisely so E3's lease
+// reaper emits through this same function rather than growing a second, subtly
+// different stamping of the envelope:
+//
+//	agentkit.EmitWorkerFailed(ctx, store, job, agentdb.FailureReasonLost, msg)
+func EmitWorkerFailed(ctx context.Context, store WorkerEventStore, job WorkerJob, reason, text string) (*agentdb.ProjectEvent, error) {
+	if !agentdb.ValidFailureReason(reason) {
+		return nil, fmt.Errorf("worker.failed: invalid reason %q (want one of %s)",
+			reason, strings.Join(agentdb.FailureReasons, "|"))
+	}
+	return appendWorkerEvent(ctx, store, agentdb.EventTypeWorkerFailed, job, text, reason, false)
+}
+
+// appendWorkerEvent is the single place a worker-sourced internal event is
+// stamped, so finished and failed can never disagree about the envelope.
+func appendWorkerEvent(ctx context.Context, store WorkerEventStore, eventType string, job WorkerJob, text, reason string, attentionRequested bool) (*agentdb.ProjectEvent, error) {
+	if store == nil {
+		return nil, fmt.Errorf("%s: store is required", eventType)
+	}
+	if job.Worker == "" {
+		return nil, fmt.Errorf("%s: worker is required", eventType)
+	}
+	if job.SessionID == "" {
+		return nil, fmt.Errorf("%s: session id is required", eventType)
+	}
+	if job.Depth < 0 {
+		return nil, fmt.Errorf("%s: depth must not be negative", eventType)
+	}
+	return store.CreateProjectEvent(ctx, &agentdb.ProjectEvent{
+		Project: job.Project,
+		Type:    eventType,
+		Text:    text,
+		Envelope: agentdb.EventEnvelope{
+			Depth:              job.Depth,
+			Source:             agentdb.EventSourceWorker,
+			Worker:             job.Worker,
+			SessionID:          job.SessionID,
+			Interactive:        job.Interactive,
+			AttentionRequested: attentionRequested,
+			Reason:             reason,
+		},
+	})
+}
+
+// onQueryError is the MarkerHook for the `error` event: it stashes the error
+// text for the turn so the worker.failed emitted after the turn settles carries
+// what actually went wrong rather than a generic "the session errored". The
+// hook is the only place that text is visible — events.Result records that a
+// turn errored, but not why.
+func (r *runnerImpl) onQueryError(_ context.Context, q events.QueryContext, ev events.Envelope) {
+	text := errorEventText(ev)
+	if text == "" {
+		return
+	}
+	r.mu.Lock()
+	r.queryErrors[q.SessionID+"\x00"+q.QueryID] = text
+	r.mu.Unlock()
+}
+
+// takeQueryError reads and clears the stashed error text for a turn. Always
+// called at the end of a turn, so the map cannot grow without bound.
+func (r *runnerImpl) takeQueryError(sessionID, queryID string) string {
+	key := sessionID + "\x00" + queryID
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	text := r.queryErrors[key]
+	delete(r.queryErrors, key)
+	return text
+}
+
+// errorEventText pulls a human-readable message out of an `error` envelope,
+// falling back to the whole data payload so nothing is silently lost.
+func errorEventText(ev events.Envelope) string {
+	for _, key := range []string{"error", "message", "text"} {
+		if s, ok := ev.Data[key].(string); ok {
+			if s = strings.TrimSpace(s); s != "" {
+				return s
+			}
+		}
+	}
+	if len(ev.Data) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(ev.Data)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// emitJobOutcome fires the internal event for a settled turn (§8.2). It runs
+// after the pipeline has persisted the turn, which is what lets worker.finished
+// carry a transcript that actually includes the turn that just finished.
+//
+// Nothing is emitted for a plain interactive session (no worker), for a
+// cancelled turn (a human pressing stop did not finish a job), or when no
+// WorkerEventStore is wired.
+func (r *runnerImpl) emitJobOutcome(ctx context.Context, sessionID, queryID string, res events.Result, runErr error) {
+	errText := r.takeQueryError(sessionID, queryID)
+	if r.deps.WorkerEvents == nil {
+		return
+	}
+	failed := runErr != nil || res.Status == "error"
+	if !failed && res.Status == "cancelled" {
+		return
+	}
+	// Detach from the request context: the client may already have disconnected,
+	// and the event is the durable record of what the job did — losing it would
+	// silently break every subscription downstream of this worker.
+	ctx = context.WithoutCancel(ctx)
+
+	job, ok, err := ResolveWorkerJob(ctx, r.deps.WorkerEvents, sessionID)
+	if err != nil {
+		log.Printf("agentkit: worker event %s: %v", sessionID, err)
+		return
+	}
+	if !ok {
+		return // vanilla session — §8.2: fires only for worker jobs
+	}
+
+	if failed {
+		if errText == "" {
+			if runErr != nil {
+				errText = runErr.Error()
+			} else {
+				errText = "the session errored"
+			}
+		}
+		if _, err := EmitWorkerFailed(ctx, r.deps.WorkerEvents, job, agentdb.FailureReasonError, errText); err != nil {
+			log.Printf("agentkit: emit worker.failed %s: %v", sessionID, err)
+		}
+		return
+	}
+	// H2 owns populating attention_requested; until it lands no job has called
+	// request_human_attention, so false is the truth rather than a placeholder.
+	if _, err := EmitWorkerFinished(ctx, r.deps.WorkerEvents, job, r.renderTranscript(ctx, sessionID), false); err != nil {
+		log.Printf("agentkit: emit worker.finished %s: %v", sessionID, err)
+	}
+}
+
+// renderTranscript renders the session's whole conversation as the text of a
+// worker.finished event. It reuses the rehydration reconstruction
+// (reconstructConversation) deliberately — one renderer, so what a resumed
+// harness is told it said and what the next worker reads can never drift.
+func (r *runnerImpl) renderTranscript(ctx context.Context, sessionID string) string {
+	evs, err := r.deps.Store.ListQueryEventsFlat(ctx, sessionID)
+	if err != nil {
+		log.Printf("agentkit: transcript %s: list events: %v", sessionID, err)
+		return ""
+	}
+	return renderConversation(reconstructConversation(evs))
+}
+
+// renderConversation serialises a reconstructed conversation as plain text —
+// the §8.1 payload is text, and this is the only shape it takes. Pure function.
+func renderConversation(msgs []conversationMessage) string {
+	var b strings.Builder
+	for i, m := range msgs {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(m.Role)
+		b.WriteString(":\n")
+		b.WriteString(m.Content)
+	}
+	return b.String()
 }
 
 // workerEnvFor resolves the ExecutionEnvironment for a session using the

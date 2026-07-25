@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 
@@ -75,11 +76,20 @@ func (s *MemStore) PersistQueryEventsFlat(ctx context.Context, sessionID, queryI
 func (s *MemStore) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []events.Envelope
-	for k, evs := range s.queryEvents {
+	// Map iteration order is random, so collect the matching query keys and sort
+	// them: a flat event list whose turns arrive in a different order on every
+	// call is not a conversation, and callers that reconstruct one (rehydration,
+	// worker.finished transcripts) would be silently non-deterministic.
+	var keys []string
+	for k := range s.queryEvents {
 		if strings.HasPrefix(k, sessionID+"\x00") {
-			out = append(out, evs...)
+			keys = append(keys, k)
 		}
+	}
+	sort.Strings(keys)
+	var out []events.Envelope
+	for _, k := range keys {
+		out = append(out, s.queryEvents[k]...)
 	}
 	return out, nil
 }
