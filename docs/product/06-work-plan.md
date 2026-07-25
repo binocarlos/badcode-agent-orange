@@ -238,7 +238,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./agentdb/... -run 'TestCustomImages|TestImageResolve' -count=1`
       (cases: version allocation is monotonic and gap-free per name; bare name resolves to
       latest; pin resolves exactly; unknown ref errors; label selector filters; project isolation)
-- [ ] **I2.** `[walkthrough]` `image_create(name, labels)` → `{name, version}` and
+- [x] **I2.** `[walkthrough]` `image_create(name, labels)` → `{name, version}` and
       `image_list(label_selector?)` MCP tools on the same host MCP server as the memory tools
       (session token → project scope). `image_create` snapshots the **calling session's** current
       environment via the existing `Snapshot()`/`imageregistry.Persist()` path and records the
@@ -248,7 +248,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       record in-transaction (J1) and its `config.changed` emission comes with J3.
       (`go/cmd/agentd/mcp_images.go`, `go/runner.go`) — depends I1+D3 (host MCP + auth seam)+F3
       **Validation:** `go test ./cmd/agentd/... -run 'TestImageTools' -count=1`
-- [ ] **I3.** `[walkthrough]` Skills store + tools (§14): the existing `agentdb` `skills`
+- [x] **I3.** `[walkthrough]` Skills store + tools (§14): the existing `agentdb` `skills`
       catalogue extended (migration **025**, shared with I1) with project-scoped `labels`, the
       `markdown` + `install_sh` pair, and worker/session provenance; versioned by append
       (`skill_create` on an existing name records a new revision; resolution is newest-wins).
@@ -442,6 +442,49 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(I3, 2026-07-25)` **Migration 028 adds `agent_skills.revision` — "newest wins" had no
+  deterministic meaning.** `created_at` on that table is *seconds* and `id` is a random uuid, so two
+  teachings of one skill inside a second folded by coin toss and `skill_get` could return the
+  superseded document (proved by a red test first). `revision` is a monotonic per-`(project, name)`
+  ordinal, allocated exactly as image versions are. **This is not a version:** §14.1 gives skills
+  none, there is no `name:revision` reference form, and nothing resolves by it.
+- `(I3, 2026-07-25)` The §14-vs-legacy discriminator is `markdown <> ''` (images use `version > 0`).
+  `scopeWhere` now excludes catalogue rows, because a legacy latest-wins `UpsertSkill` sharing a
+  name would otherwise have **overwritten an append-only revision**.
+- `(I3, 2026-07-25)` **`skill_list` matches the label selector in Go, not in jsonb SQL** —
+  deliberately: filtering in SQL first would let an old revision still carrying a dropped label
+  surface *as if it were current*. Side benefit: it works on every backend, where `image_list`'s
+  selector is Postgres-only. Still D1's one parser.
+- `(I3, 2026-07-25)` Two §14 gaps pinned by test: `skill_list` returns **one entry per name** (the
+  current revision), and each carries `has_install_script` — the one useful fact that is neither
+  markdown nor provenance.
+- `(I3, 2026-07-25)` The skills directory `/workspace/.claude/skills/<name>/SKILL.md` is derived
+  from the harness's `cwd` + `settingSources` — **one decision spelled in two files with nothing
+  connecting them.** If the harness's cwd or setting sources change, `skill-install.ts` must move
+  with them.
+- `(I3, 2026-07-25)` A skill installed mid-turn is usable on the **next** turn (the SDK loads skills
+  at query start). Stated in the tool description and pinned; changing it needs a harness reload
+  hook, not a tool change.
+- `(I3, 2026-07-25)` **Real bug found writing the timeout test:** killing the install script's
+  `bash` left its children holding the pipes, so `close` never fired and **the timeout hung the call
+  it exists to bound**. Fixed by spawning detached and killing the process *group*, with a
+  last-resort resolve; the script also runs from a temp file with stdin `/dev/null` so a script
+  containing `read` cannot consume its own source.
+- `(I3, 2026-07-25)` `skill_create`'s config-event payload is the full row **including markdown**
+  (§15.2 requires full state), so the config log and the changelog view will carry whole skill
+  documents — worth knowing before rendering payloads inline.
+- `(I2, 2026-07-25)` **`Runner.Snapshot` also calls `SetSnapshotHandle`**, so `image_create`
+  overwrites the calling session's own archive handle: a session's resume snapshot and its published
+  image become the same object. Benign today, adjacent to B4's session-snapshot finding — whoever
+  owns session lifecycle should decide whether they should diverge.
+- `(I2, 2026-07-25)` `image_list`/`skill_list` cap at **200 newest** and say so in the result
+  (`truncated` + a note to narrow with a selector), because §13.4 specifies no limit and a silently
+  short list would read as "that is all there is". The registry handle is deliberately **not** in
+  `image_create`'s result — it names storage locations.
+- `(I2, 2026-07-25)` `ListCustomImageVersions`'s **cross-name** ordering within one second is not a
+  recency statement (`created_at` is seconds). Harmless within a name, misleading across names.
+- `(I2/I3, 2026-07-25)` Both `image_create` and `skill_install` refuse a token with no `sid` — there
+  is no argument with which to name a substitute session, which is the point.
 - `(BUGFIX, 2026-07-25)` **Interrupted turns: fixed, and half the report was wrong.** Root cause:
   `events.pipeline.Run` *did* handle cancellation, but `persist` then handed the **already-cancelled
   context** to the sink, so a real store failed the write instantly and discarded every collected
