@@ -85,6 +85,16 @@ services:
       # ANTHROPIC_API_KEY is unset → sessions bill the subscription directly.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
       AGENTKIT_DATA: /data
+      # MCP credential allowlist (see .env.example). Comma-separated NAMES of
+      # environment variables agentd forwards into every session container, so
+      # the sandbox can resolve the ${VAR} references in MCP config. Unset =
+      # forward nothing. agentd refuses to forward its own secrets (JWT secret,
+      # model keys, DATABASE_URL) even if listed.
+      AGENTKIT_MCP_ENV: ${AGENTKIT_MCP_ENV:-}
+      # …and the variables themselves must reach agentd. Compose cannot pass a
+      # dynamic set of names, so add one line per credential you allowlisted:
+      #   GMAIL_API_KEY: ${GMAIL_API_KEY:-}
+      #   NOTION_AUTH: ${NOTION_AUTH:-}
       # Storage backends — unset = local (fs blobs + blob-archive). See .env.example.
       AGENTKIT_BLOB_BACKEND: ${AGENTKIT_BLOB_BACKEND:-}
       GCS_BUCKET: ${GCS_BUCKET:-}
