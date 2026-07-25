@@ -2,6 +2,7 @@ package agentdb
 
 import (
 	"fmt"
+	"sync"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -12,6 +13,11 @@ import (
 // connection pool and runs migrations on startup.
 type Store struct {
 	gdb *gorm.DB
+
+	// memVecOnce/memVecOK cache whether the pgvector column on `memories`
+	// exists (migration 022 adds it only where the extension is available).
+	memVecOnce sync.Once
+	memVecOK   bool
 }
 
 // Open connects to Postgres, runs migrations, and returns a ready Store.
