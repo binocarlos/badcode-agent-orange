@@ -236,6 +236,11 @@ func main() {
 	// never fire and the attention route is not mounted (404). See router.go /
 	// scheduler.go / attention.go, and dispatch.go for the ONE gate the router
 	// and the scheduler share — capacity is decided in exactly one place.
+	//
+	// attention is declared out here because it is shared by the HTTP route and
+	// E4's `request_human_attention` MCP tool: the §9 mechanics are implemented
+	// once, in attention.go, and the tool is a thin adapter onto this service.
+	var attention *attentionService
 	if agentDB != nil {
 		gate := newDispatcher(dispatcherConfig{
 			Store: agentDB,
@@ -267,7 +272,7 @@ func main() {
 		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate})
 		go sched.Run(ctx)
 
-		attention := newAttentionService(agentDB, permalinks)
+		attention = newAttentionService(agentDB, permalinks)
 		apiMux.HandleFunc("POST /agent/attention", attentionHandler(attention))
 		go newAttentionSweeper(agentDB).Run(ctx)
 		log.Printf("[agentd] router + scheduler + attention sweep running (zone=%s)", time.Local)
@@ -329,7 +334,7 @@ func main() {
 
 	root.Handle("/agent-proxy/", http.StripPrefix("/agent-proxy", newModelProxyHandler()))
 
-	// ── Core MCP tools (memory, images, skills; management next) ─────────────────
+	// ── Core MCP tools (memory, images, skills, management) ──────────────────────
 	// One http MCP server, mounted outside the API auth middleware because it
 	// authenticates differently: the caller is a session container bearing its
 	// per-session token, and the project scope comes from that token's claims.
@@ -345,6 +350,7 @@ func main() {
 		mcpSrv.register(newMemoryTools(agentDB, embedder, permalinks).tools()...)
 		mcpSrv.register(newImageTools(agentDB, runner, permalinks).tools()...)
 		mcpSrv.register(newSkillTools(agentDB, runner, permalinks).tools()...)
+		mcpSrv.register(newManagementTools(agentDB, embedder, attention, permalinks).tools()...)
 		root.Handle(coreMCPPath, mcpSrv)
 		// Some MCP clients normalise the endpoint with a trailing slash; both
 		// spellings must reach the same server or the tools simply vanish.

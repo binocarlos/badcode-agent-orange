@@ -183,7 +183,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./cmd/agentd/... -run 'TestRouter' -count=1` (cases: at-capacity
       delivery stays `pending`; FIFO order on release; `max_instances` respected identically for
       schedule-fired and event-matched deliveries)
-- [ ] **E4.** Core MCP management tools: `worker_*` (incl. `worker_create`),
+- [x] **E4.** Core MCP management tools: `worker_*` (incl. `worker_create`),
       `project_prompt_*`, `subscription_*`, `schedule_*` (+ prompt-revision provenance memory
       on write). `[learnings]` Every mutation tool validates its input, then reads the stored
       row back and echoes it in the tool result; malformed input fails loudly, never
@@ -481,6 +481,41 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(E4, 2026-07-25)` **§15.3's two prompt-write actions had no store method.** `UpsertWorker`
+  deliberately never writes `worker_prompt_write`, and `PutProjectSettings` is whole-object — so a
+  prompt rewrite through it would silently rewrite budgets and the attention channel too. Added
+  narrow `SetWorkerPrompt`/`SetProjectPrompt`, each writing one config event and **returning the
+  superseded prompt**, which is the only race-free way to record it.
+- `(E4, 2026-07-25)` **F1's open question answered: `project_prompt_write`'s payload is
+  `{project, system_prompt}`**, not the whole settings row — what §15.3 asks for, and what J2's fold
+  expects for the project-prompt singleton (a full settings row under that key would make the
+  project-prompt entity carry a settings row).
+- `(E4, 2026-07-25)` The prompt-revision memory: labels `kind=prompt-revision, worker=<name>` (or
+  `scope=project`), content carrying the rationale and the **previous** prompt inside superseded
+  markers; an absent previous prompt is stated explicitly, never left blank. **If the memory write
+  fails the tool still succeeds**, returning `prompt_revision:{stored:false}` and a warning — the
+  prompt is already live and config-evented, so failing would tell the model the opposite of the
+  truth. §9 does not specify these labels; cheap to change only before G1 seeds prompts.
+- `(E4, 2026-07-25)` Result rule pinned by test: **a result carries prompt text only when the call
+  wrote or read the prompt**; `worker_list`/`worker_update` carry `system_prompt_bytes` instead —
+  otherwise a five-worker list is a wall of prompts and `worker_update` would echo the one thing it
+  may not touch. `worker_create` **refuses an existing name** rather than upserting, since an upsert
+  would let a "hire" silently discard a working prompt.
+- `(E4, 2026-07-25)` **No `worker_delete` tool** — §9's list has none; retiring is
+  `worker_update(name, {enabled:false})` and `DeleteWorker` stays HTTP/UI-only. **§9 also gives
+  subscriptions `list/create/delete` only, with no `subscription_update`** though the store has one
+  and §8.3's row is editable; implemented as specified (rewiring = delete + create), flagged in case
+  that was an omission rather than a decision.
+- `(E4, 2026-07-25)` `subscription_create`/`schedule_create` **verify the worker exists** (§9's
+  "known worker name"), which E1's and H1's stores do not — without it a subscription pointed at a
+  missing worker is discovered only when it fires, or a schedule only when §8.6 disables it at 03:00.
+- `(E4, 2026-07-25)` **The HTTP-rationale gap is still open:** E4 added no HTTP route, so
+  `PUT /agent/workers/{name}` still logs `worker_update` with an empty rationale and **no HTTP path
+  can produce a `worker_prompt_write` event at all** — the changelog shows prompt rewrites only when
+  they come from the MCP tool. Whoever adds a prompt-write route must carry `rationale` in the body.
+- `(E4, 2026-07-25)` E4's report claims D3's last mile still blocks G1 — **stale**: it was written
+  against a pre-E3 base. E3 wired `coreMCPServers(selfURL)` into the dispatcher
+  (`cmd/agentd/main.go:253`), verified at merge, so every routed job is told the core tools exist.
 - `(unblock, 2026-07-25)` **RESOLVED — scriptable mock tool calls, and they are stack
   configuration rather than API surface.** `AGENTKIT_MOCK_MODEL_SCRIPT` / `..._FILE` on agentd, read
   only in mock mode and only at boot. Rules match on a **substring of the raw model request** (the

@@ -470,6 +470,23 @@ var ConfigMutations = []ConfigMutation{
 		Tables:  []string{"workers"},
 	},
 	{
+		// The dedicated prompt-write path (E4, §9). It is the ONLY writer of
+		// `worker_prompt_write`: the action requires a rationale (§15.5), which is
+		// exactly why UpsertWorker refuses to write it. Narrow on purpose — a
+		// prompt rewrite changes the prompt and nothing else (§8.7).
+		Method:  "SetWorkerPrompt",
+		Actions: []string{ActionWorkerPromptWrite},
+		Tables:  []string{"workers"},
+	},
+	{
+		// The project-level twin (E4, §9). Same reasoning, and it keeps the
+		// whole-object `project_settings_put` from ever masquerading as a prompt
+		// rewrite in the changelog.
+		Method:  "SetProjectPrompt",
+		Actions: []string{ActionProjectPromptWrite},
+		Tables:  []string{"project_settings"},
+	},
+	{
 		Method:  "CreateSubscription",
 		Actions: []string{ActionSubscriptionCreate},
 		Tables:  []string{"subscriptions"},
