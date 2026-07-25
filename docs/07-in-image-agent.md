@@ -338,4 +338,4 @@ There is no way for the *host* to hand a session a set of MCP servers at create 
 payload with a snake_case `mcp_servers`, storing it on the session record, and merging those servers
 (never replacing) with the in-image registry when a turn resolves its tools. `Env`/`Headers` values
 support a single whole-value `${VAR}` substitution resolved from the container env at MCP-process
-spawn, failing loudly on an unset variable. See `docs/17-product-spec.md` §4 for the full design.
+spawn, failing loudly on an unset variable. See `docs/product/17-product-spec.md` §4 for the full design.

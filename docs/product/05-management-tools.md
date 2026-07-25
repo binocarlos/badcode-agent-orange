@@ -1,6 +1,6 @@
 # Spec — Management tools & human attention
 
-**Part of the product spec.** Entry point and binding principles: [`../17-product-spec.md`](../17-product-spec.md).
+**Part of the product spec.** Entry point and binding principles: [`17-product-spec.md`](17-product-spec.md).
 The core MCP tools every session gets: prompt management and request_human_attention. Section numbers (§) are kept from the original single-file spec, so cross-references
 like §7.6 or §8.8 anywhere in the repo still resolve — the entry point has the full map.
 

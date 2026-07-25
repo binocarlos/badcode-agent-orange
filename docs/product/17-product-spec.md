@@ -4,7 +4,7 @@
 (the `go/orchestrator/` + `cmd/oranged/` + fragments/board/tickets layer was deleted wholesale —
 see git history ≤ `dc49595` for the old design), split into component files 2026-07-22. This
 document is the **entry point**: the goal, the atoms, the binding principles, what exists, the
-vocabulary, and the non-goals. The component designs live in [`spec/`](spec/) (map below) and
+vocabulary, and the non-goals. The component designs live as sibling files in this folder (map below) and
 keep their original section numbers, so a reference like §7.6 or §8.8 always means the same
 thing. The numbered engine docs (`01`–`15`) describe the runtime as built; this spec describes
 what we build **on top of it**, and nothing here may violate the engine rules in `CLAUDE.md`.
@@ -57,7 +57,7 @@ one of them, the feature loses.
   the Claude Agent SDK orchestrates them inside the session (subagents, parallel tool dispatch).
   Research note: this matches Anthropic's own guidance — prompt-driven orchestration *within* a
   session, deterministic code only for coordination *between* agents. Our "between" layer is the
-  event router (§8, [spec/04](spec/04-events-and-schedules.md)), which is deliberately trivial: a subscriptions table, nothing more.
+  event router (§8, [`04-events-and-schedules.md`](04-events-and-schedules.md)), which is deliberately trivial: a subscriptions table, nothing more.
   Multi-step arrangements across workers are *emergent* from chained events, never declared.
 - **P4 — Prompts are plain strings.** No fragments, no templates, no `{{placeholders}}`,
   no versioned prompt store. A consultant improves another worker by *rewriting its system
@@ -69,7 +69,7 @@ one of them, the feature loses.
   schedule, not a human. Humans *may* chat with any worker interactively, but nothing in the
   design may depend on a human being present (`ask_user` must never be load-bearing for a
   background worker). The sanctioned way for a background worker to involve a human is the core
-  `request_human_attention` tool (§9, [spec/05](spec/05-management-tools.md)): notify a configured channel with a link to the session,
+  `request_human_attention` tool (§9, [`05-management-tools.md`](05-management-tools.md)): notify a configured channel with a link to the session,
   end the turn, and carry on when the human's reply arrives as the next message in the thread.
   "Staged autonomy" — ask first, later just act — is then purely a prompt edit, never a feature.
 - **P7 — Engine invariants hold.** The `go/` module imports nothing from host apps;
@@ -98,10 +98,10 @@ Built, tested, and kept. Reference only — no work items here beyond the two ga
 
 **Gap G1 — per-session MCP config is not plumbed.** `CreateSessionRequest` has no MCP surface;
 the sandbox resolves tools exclusively from its in-image registry (builtins + `PRODUCT_PLUGINS_DIR`
-plugins) in `sandbox/src/tools/registry.ts`. Fixed by §4 ([spec/01](spec/01-session-config.md)).
+plugins) in `sandbox/src/tools/registry.ts`. Fixed by §4 ([`01-session-config.md`](01-session-config.md)).
 
 **Gap G2 — no per-project defaults.** Base image is the global `AGENTKIT_IMAGE`; system prompt is
-per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([spec/01](spec/01-session-config.md)).
+per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([`01-session-config.md`](01-session-config.md)).
 
 ---
 
@@ -133,14 +133,14 @@ per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([spec/0
 
 | File | Sections | Covers |
 | --- | --- | --- |
-| [`spec/00-overview.md`](spec/00-overview.md) | — | **Start here for the quick shape**: one-page map of the system, the decided calls, the build waves, and where the research/plan trail lives. |
-| [`spec/01-session-config.md`](spec/01-session-config.md) | §4–§5 | Session MCP plumbing (G1): Go surface, wire protocol, harness merge, `${VAR}` credential references, snapshot interaction. Project settings (G2): `project_settings` table, precedence, HTTP/UI. |
-| [`spec/02-workers.md`](spec/02-workers.md) | §6 | Worker data model, deterministic job composition (pre-prompt manipulation), the core preamble, interactive chat, HTTP/UI. |
-| [`spec/03-memory.md`](spec/03-memory.md) | §7 | Append-only immutable memory: labels + K8s selectors, the `memory_*` MCP tools with provenance, rolling-summary convention, embeddings, the §7.6 relevance contract (hybrid RRF), the build-on-Postgres decision. |
-| [`spec/04-events-and-schedules.md`](spec/04-events-and-schedules.md) | §8 | Event shape (text + core envelope), the four internal events (`worker.finished`/`worker.failed`/`human.attention.timeout`/`subscription.throttled`), subscriptions, the router + loop floors, external ingestion, schedules (cron + input text), the acceptance scenario (§8.7) and the BadCode marketing-manager reference use case (§8.8). |
-| [`spec/05-management-tools.md`](spec/05-management-tools.md) | §9 | Core management MCP tools (`worker_*`, `project_prompt_*`, prompt-revision memories) and `request_human_attention`. |
-| [`spec/06-work-plan.md`](spec/06-work-plan.md) | §11–§12 | The parallelisable checklist (tracks A–H, waves) and the verification strategy. |
-| [`spec/07-reference-prompts.md`](spec/07-reference-prompts.md) | — | Optional reference prompts — archivist, consultant, manager, failure notifier; conventions, never mechanisms. |
+| [`00-overview.md`](00-overview.md) | — | **Start here for the quick shape**: one-page map of the system, the decided calls, the build waves, and where the research/plan trail lives. |
+| [`01-session-config.md`](01-session-config.md) | §4–§5 | Session MCP plumbing (G1): Go surface, wire protocol, harness merge, `${VAR}` credential references, snapshot interaction. Project settings (G2): `project_settings` table, precedence, HTTP/UI. |
+| [`02-workers.md`](02-workers.md) | §6 | Worker data model, deterministic job composition (pre-prompt manipulation), the core preamble, interactive chat, HTTP/UI. |
+| [`03-memory.md`](03-memory.md) | §7 | Append-only immutable memory: labels + K8s selectors, the `memory_*` MCP tools with provenance, rolling-summary convention, embeddings, the §7.6 relevance contract (hybrid RRF), the build-on-Postgres decision. |
+| [`04-events-and-schedules.md`](04-events-and-schedules.md) | §8 | Event shape (text + core envelope), the four internal events (`worker.finished`/`worker.failed`/`human.attention.timeout`/`subscription.throttled`), subscriptions, the router + loop floors, external ingestion, schedules (cron + input text), the acceptance scenario (§8.7) and the BadCode marketing-manager reference use case (§8.8). |
+| [`05-management-tools.md`](05-management-tools.md) | §9 | Core management MCP tools (`worker_*`, `project_prompt_*`, prompt-revision memories) and `request_human_attention`. |
+| [`06-work-plan.md`](06-work-plan.md) | §11–§12 | The parallelisable checklist (tracks A–H, waves) and the verification strategy. |
+| [`07-reference-prompts.md`](07-reference-prompts.md) | — | Optional reference prompts — archivist, consultant, manager, failure notifier; conventions, never mechanisms. |
 
 Sections §1–§3 and §10 live in this file.
 
@@ -159,11 +159,11 @@ Sections §1–§3 and §10 live in this file.
   budget: no schedule-recursion guards, no per-job iteration caps, no stuck detector in v1
   (considered 2026-07-25, rejected — prompt vigilance plus root-only prompt editing covers the
   risk today; revisit with live evidence; see
-  [`research/2026-07-22-landscape-learnings.md`](research/2026-07-22-landscape-learnings.md)).
+  [`2026-07-22-landscape-learnings.md`](2026-07-22-landscape-learnings.md)).
 - No per-worker visibility filtering of project MCP tools, and no roles/authorization inside a
   project — any worker may adjust anything; the project is the only boundary. Review topology is
   fully prompt-defined: core never protects one worker's prompt from another — even "never edit
-  your reviewer" is only a suggested pattern ([spec/07](spec/07-reference-prompts.md)).
+  your reviewer" is only a suggested pattern ([`07-reference-prompts.md`](07-reference-prompts.md)).
 - No approval queues, draft queues, or approval UI — `request_human_attention` + the ordinary
   chat thread is the entire human-review surface (§9); staged autonomy is a prompt pattern.
 - No core auto-archiving of conversations.

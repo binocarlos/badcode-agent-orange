@@ -1,6 +1,6 @@
 # Spec — Events, schedules, and routing
 
-**Part of the product spec.** Entry point and binding principles: [`../17-product-spec.md`](../17-product-spec.md).
+**Part of the product spec.** Entry point and binding principles: [`17-product-spec.md`](17-product-spec.md).
 The deterministic between-workers mechanisms, plus the two worked examples. Section numbers (§) are kept from the original single-file spec, so cross-references
 like §7.6 or §8.8 anywhere in the repo still resolve — the entry point has the full map.
 

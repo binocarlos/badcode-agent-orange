@@ -8,7 +8,7 @@ persisted), and snapshot-able (commit a running session to a new image, then res
 
 Everything else a product needs — workers, consultants, memory, review loops — is meant to be
 *data and wiring on top of those session atoms*, never new engine machinery. The forward-looking
-product spec is [`docs/17-product-spec.md`](docs/17-product-spec.md).
+product spec is [`docs/product/17-product-spec.md`](docs/product/17-product-spec.md).
 
 ## Quickstart
 
@@ -53,7 +53,7 @@ not yet been `npm`-built in this fork. The plan and live status are in
 ## Documentation
 
 Start at [`docs/01-architecture.md`](docs/01-architecture.md); the authoritative forward spec is
-[`docs/17-product-spec.md`](docs/17-product-spec.md).
+[`docs/product/17-product-spec.md`](docs/product/17-product-spec.md).
 
 | Doc | Topic |
 |---|---|
@@ -66,7 +66,7 @@ Start at [`docs/01-architecture.md`](docs/01-architecture.md); the authoritative
 | [docs/13-fleet-placement.md](docs/13-fleet-placement.md) | Fleet & placement — horizontal scaling across a worker pool |
 | [docs/14-host-adapters.md](docs/14-host-adapters.md) | Every seam a host app implements (stores, context, claims, costing) |
 | [docs/15-standalone-stack.md](docs/15-standalone-stack.md) | Running the standalone stack; library vs standalone |
-| [docs/17-product-spec.md](docs/17-product-spec.md) | **The authoritative forward spec** — atoms, workers, memory, events |
+| [docs/product/17-product-spec.md](docs/product/17-product-spec.md) | **The authoritative forward spec** — atoms, workers, memory, events |
 
 Alongside the numbered docs:
 

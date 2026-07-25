@@ -1,6 +1,6 @@
 # Spec — Reference prompts
 
-**Part of the product spec.** Entry point and binding principles: [`../17-product-spec.md`](../17-product-spec.md).
+**Part of the product spec.** Entry point and binding principles: [`17-product-spec.md`](17-product-spec.md).
 Optional, copy-paste-able starting points for the recurring worker roles — archivist, consultant,
 manager, failure notifier. This file carries no § numbers: it is reference material, not
 mechanism, so nothing here is cross-referenced from the rest of the spec except as a pointer.

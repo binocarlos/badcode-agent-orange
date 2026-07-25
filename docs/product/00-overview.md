@@ -1,15 +1,18 @@
 # Spec — Overview: the shape of what we're building
 
 **Start here.** This page is the quick map: the shape, the status, and where every piece of
-detail lives. Everything about this plan is under `docs/`:
+detail lives. Everything about this plan — spec, tickets, research trail, execution record —
+lives in this one folder, `docs/product/`:
 
-| Where | What |
+| File | What |
 | --- | --- |
-| [`../17-product-spec.md`](../17-product-spec.md) | The entry point — goal, atoms, binding principles P1–P7, vocabulary, non-goals (§10). |
-| `docs/spec/` (this folder) | The component designs (§4–§9) and **the engineering tickets** ([`06-work-plan.md`](06-work-plan.md)). |
-| [`../research/2026-07-22-landscape-learnings.md`](../research/2026-07-22-landscape-learnings.md) | The research trail: the landscape verdict (nobody has built this shape) and the 33 mechanisms mined from other projects, with final dispositions. |
-| [`../plans/2026-07-25-fold-landscape-learnings.md`](../plans/2026-07-25-fold-landscape-learnings.md) | The executed record of how those learnings were interviewed, decided, and folded into this spec. |
-| `docs/01`–`15` | The engine as already built (architecture, containers, images, events, harness, stack). Reference, not work. |
+| [`17-product-spec.md`](17-product-spec.md) | The entry point — goal, atoms, binding principles P1–P7, vocabulary, non-goals (§10). |
+| `01`–`07` (component specs) | The designs, §4–§9 (table below), plus **the engineering tickets** ([`06-work-plan.md`](06-work-plan.md)). |
+| [`2026-07-22-landscape-learnings.md`](2026-07-22-landscape-learnings.md) | The research trail: the landscape verdict (nobody has built this shape) and the 33 mechanisms mined from other projects, with final dispositions. |
+| [`2026-07-25-fold-landscape-learnings.md`](2026-07-25-fold-landscape-learnings.md) | The executed record of how those learnings were interviewed, decided, and folded into this spec. |
+
+The engine the product layer builds on (architecture, containers, images, events, harness,
+stack) is documented in `../01`–`../15` — reference, not work.
 
 ## The one-sentence goal
 
@@ -55,7 +58,7 @@ describes the whole workforce, reconciling it into existence on a schedule.
 ## What's decided (the load-bearing calls)
 
 - **Mechanism, not policy** — core ships substrates; all opinion lives in prompts (P1–P7 in
-  [`../17-product-spec.md`](../17-product-spec.md)). No DAGs, no roles-as-code, no approval queues.
+  [`17-product-spec.md`](17-product-spec.md)). No DAGs, no roles-as-code, no approval queues.
 - **Loop safety is minimal by choice** — depth ≤ 8, per-project concurrency, per-project daily
   token budget. No stuck detectors or recursion guards in v1: prompt vigilance + root-only
   prompt editing (decided 2026-07-25; §10 records the reasoning and the revisit condition).

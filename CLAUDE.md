@@ -7,7 +7,7 @@ run it, and the rules to keep it healthy.
 
 BadCode is two people: **Kai Davenport** (main developer) and **Jack** (lead creative
 designer). Either may be the user in a session. BadCode's marketing manager is the first real
-Agent Orange use case (`docs/17-product-spec.md` §8.8).
+Agent Orange use case (`docs/product/17-product-spec.md` §8.8).
 
 ## What Agent Orange is
 
@@ -45,7 +45,7 @@ Agent Orange. Three pieces:
 | `sandbox/` | In-image agent (TS). The HTTP/SSE control server + harness adapter that runs inside a session container. `sandbox/Dockerfile` builds the harness image. |
 | `web/` | React chat UI. The single event reducer drives live + replay identically. |
 | `installations/` | **Example** base images (`core`, `example`) — see `installations/README.md`. Real per-project images live in their own project repos. |
-| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`. Start at `01`. The authoritative forward spec (workers/memory/events) is `17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/spec/00`–`07` (`00-overview` = quick map; component designs; original § numbers preserved). Dated research notes live in `docs/research/`. |
+| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`. Start at `01`. The authoritative forward spec (workers/memory/events) is `17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/product/00`–`07` (`00-overview` = quick map; component designs; original § numbers preserved). The research trail and executed plan records live beside the spec as dated files in the same folder. |
 | `migration-reference/` | **Reference only — do NOT build or import.** Platinum host-side image pipeline + the original Platinum installations, kept to port from. May contain host-app coupling. |
 | `deploy/`, `docker-compose*.yml`, `README-stack.md` | The standalone stack (run it with one command — below). |
 | `mock-server/`, `e2e/`, `examples/` | Mock model server, end-to-end tests, example host + web bits. |
@@ -119,6 +119,6 @@ cd web && npm install && npm test
 - `docs/01-architecture.md` — what it is and how it fits together.
 - `docs/15-standalone-stack.md`, `README-stack.md` — running it.
 - `installations/README.md` — installations / image layering (derived-image tree, overlay model, `imagetree`).
-- `docs/17-product-spec.md` — the authoritative product spec entry point (goal, atoms,
-  principles, non-goals); component designs incl. the work-plan checklist in `docs/spec/`.
+- `docs/product/17-product-spec.md` — the authoritative product spec entry point (goal, atoms,
+  principles, non-goals); component designs incl. the work-plan checklist in `docs/product/`.
 - `MIGRATION.md` — current status + the registry/GCP roadmap.
