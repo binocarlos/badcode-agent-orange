@@ -243,6 +243,30 @@ var agentMigrations = []migration{
 			);
 		`,
 	},
+	{
+		Name: "021_workers",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS workers (
+				project VARCHAR(255) NOT NULL,
+				name VARCHAR(255) NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				system_prompt TEXT NOT NULL DEFAULT '',
+				mcp_config JSONB NOT NULL DEFAULT '{}',
+				image TEXT NOT NULL DEFAULT '',
+				max_instances INT NOT NULL DEFAULT 1,
+				briefing JSONB DEFAULT NULL,
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0,
+				PRIMARY KEY (project, name)
+			);
+			CREATE INDEX IF NOT EXISTS idx_workers_project ON workers(project);
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS worker TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS composed_prompt TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_expires_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_worker ON agent_sessions(worker);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
