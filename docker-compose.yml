@@ -70,6 +70,10 @@ services:
       DOCKER_HOST: tcp://localhost:2375
       AGENTKIT_IMAGE: ${BASE_IMAGE:-agentkit-sandbox:dev}
       AGENTKIT_SELF_URL: http://172.17.0.1:8099
+      # Where a human clicking a session permalink lands (the web UI's
+      # externally reachable base URL) — NOT AGENTKIT_SELF_URL, which is a DinD
+      # bridge address only containers can reach. Route: /p/<project>/s/<session>.
+      AGENTKIT_PUBLIC_BASE_URL: ${AGENTKIT_PUBLIC_BASE_URL:-http://localhost:${WEB_PORT:-8080}}
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
       # Login modes (see .env.example). Neither set → legacy dev-open demo.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
