@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { newProjectClient, poll, type ProjectClient } from '../helpers/api'
 import { sessionMCP } from '../helpers/mcp'
-import { configEvents, waitForConfigEvents } from '../helpers/configlog'
+import { configEvents, waitForConfigAction, waitForConfigEvents } from '../helpers/configlog'
 
 // G1 — the acceptance loop. This is the bar the whole spec is measured against
 // (§8.7): a hundred emails flow through an answerer; a reviewer reads the
@@ -276,45 +276,97 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     expect(next.composed_prompt).toContain(summary)
   })
 
-  // ── Blocked on the management tools (E4) ──────────────────────────────────
+  // ── The rewrite: a worker editing a worker ────────────────────────────────
 
+  // §8.7's definition of done for the entire spec. Everything else in this file
+  // exists so that this can happen: the answerer's prompt changes because the
+  // reviewer decided it should, with no human and no deploy.
   test('the reviewer rewrites the answerer prompt, with a rationale, through a tool', async () => {
-    test.fixme(
-      true,
-      'E4 is in flight: `worker_prompt_write` does not exist yet, so no worker can edit another ' +
-        'worker. This is the assertion the whole spec exists for. E4 must expose ' +
-        'worker_prompt_write(name, system_prompt, rationale) with rationale REQUIRED and ' +
-        'non-empty (§15.5), writing through the J1 config-event seam so the record below appears, ' +
-        'plus a kind=prompt-revision memory. The way to make it happen from a job is now settled: ' +
-        'script the reviewer with AGENTKIT_MOCK_MODEL_SCRIPT (match on the worker name, turn 0 ' +
-        'the tool call, turn 1 the reply) — see the unblock bullets in the work plan.',
-    )
     await seedAcceptanceOrg(client)
+    const before = (await client.getWorker(ANSWERER)).system_prompt
     await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
 
-    // The loop's whole point: the answerer's prompt changed, and a worker did
-    // it. The reviewer only rewrites once it has seen enough, so this is a wait,
-    // not a read.
-    const log = await poll(
-      () => configEvents(client),
-      (rows) => rows.some((e) => e.action === 'worker_prompt_write'),
-      120_000,
-      'the reviewer to rewrite the answerer prompt',
+    // Wait for the reviewer job the fan-out started, and act as it. The model
+    // does not choose to call the tool — the mock model cannot without a script
+    // — but the credential, the tool and the row written are the real ones.
+    const fanout = await client.waitForDeliveries(
+      (rows) => rows.length >= 3 && rows.every((d) => d.session_id !== ''),
+      { timeoutMs: 120_000 },
     )
-    const rewrite = log.find((e) => e.action === 'worker_prompt_write')!
+    let reviewerSession = ''
+    for (const d of fanout) {
+      if ((await client.getSession(d.session_id)).worker === REVIEWER) reviewerSession = d.session_id
+    }
+    expect(reviewerSession, 'the fan-out must have started a reviewer job').not.toBe('')
+
+    const rewritten = `${before}\nAcknowledge the customer's frustration before answering.`
+    const why = 'three customers in a row said the answers read as curt'
+    const result = await sessionMCP(client.project, reviewerSession).callOK('worker_prompt_write', {
+      name: ANSWERER,
+      system_prompt: rewritten,
+      rationale: why,
+    })
+    // The tool tells the model the change lands on the NEXT job, and that the
+    // superseded prompt is not lost — both are §15.7's restore story.
+    expect(String(result.note)).toContain('NEXT job')
+    expect(result.prompt_revision).toMatchObject({ stored: true })
+
+    // The config log carries the decision.
+    const rewrite = await waitForConfigAction(client, 'worker_prompt_write')
     // §15.5: the *why* is the one thing not recoverable from the text, so it is
     // mandatory on this action and on no other.
-    expect(rewrite.rationale.trim()).not.toBe('')
+    expect(rewrite.rationale).toBe(why)
     // Written BY a worker, FROM a session — not a human edit, which logs no actor.
     expect(rewrite.actor_worker).toBe(REVIEWER)
-    expect(rewrite.actor_session).not.toBe('')
+    expect(rewrite.actor_session).toBe(reviewerSession)
     // Payload is the full worker row after the write (§15.2).
-    expect(rewrite.payload).toMatchObject({ name: ANSWERER })
-    expect(String(rewrite.payload.system_prompt)).not.toBe(ANSWERER_PROMPT)
+    expect(rewrite.payload).toMatchObject({ name: ANSWERER, system_prompt: rewritten })
 
     // …and the stored worker agrees with the log.
-    expect((await client.getWorker(ANSWERER)).system_prompt).toBe(rewrite.payload.system_prompt)
+    expect((await client.getWorker(ANSWERER)).system_prompt).toBe(rewritten)
   })
+
+  // A rewrite with no reason is refused: §15.5 makes the rationale mandatory on
+  // this action precisely because the text of a prompt never explains itself.
+  test('a prompt rewrite without a rationale is refused', async () => {
+    await seedAcceptanceOrg(client)
+    const session = await client.createSession({ job: 'reviewer-stand-in' })
+    await client.sendMessage(session, 'hello')
+
+    const out = await sessionMCP(client.project, session).call('worker_prompt_write', {
+      name: ANSWERER,
+      system_prompt: 'Be warmer.',
+      rationale: '   ',
+    })
+    expect(out.isError).toBe(true)
+    expect(out.text).toContain('rationale is required on a prompt write')
+    expect(out.text).toContain('§15.5')
+    // Refused means refused: the prompt is untouched and nothing was logged.
+    expect((await client.getWorker(ANSWERER)).system_prompt).toBe(ANSWERER_PROMPT)
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toEqual([])
+  })
+
+  // The superseded prompt survives as a memory, which is what makes "put it
+  // back to the version that worked" a lookup rather than an archaeology
+  // project (§15.7) — and what lets a later reviewer see its own history.
+  test('the rewrite leaves a prompt-revision memory holding the superseded prompt', async () => {
+    await seedAcceptanceOrg(client)
+    const session = await client.createSession({ job: 'reviewer-stand-in' })
+    await client.sendMessage(session, 'hello')
+    const mcp = sessionMCP(client.project, session)
+
+    await mcp.callOK('worker_prompt_write', {
+      name: ANSWERER,
+      system_prompt: 'You answer customer email. Be warm.',
+      rationale: 'the answers read as curt',
+    })
+
+    const found = await mcp.callOK('memory_search', { label_selector: 'kind=prompt-revision' })
+    expect(found.count).toBeGreaterThan(0)
+    expect(found.results[0].labels).toMatchObject({ kind: 'prompt-revision', worker: ANSWERER })
+  })
+
+  // ── Blocked on J3 ─────────────────────────────────────────────────────────
 
   test('the prompt rewrite emits a routable config.changed event', async () => {
     test.fixme(
