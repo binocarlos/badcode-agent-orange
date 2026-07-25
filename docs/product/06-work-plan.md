@@ -481,6 +481,35 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(G1, 2026-07-26)` **§8.7 is fully asserted end to end offline.** The reviewer's job rewrites the
+  *answerer's* system prompt through `worker_prompt_write`; the config log carries the mandatory
+  rationale, the acting worker and the acting session; the superseded prompt survives as a
+  `kind=prompt-revision` memory; a blank rationale is refused with nothing written; and — the
+  substrate assertion — **a memory written by one job appears verbatim in the next job's
+  `composed_prompt`** under the heading its briefing selector asked for. `config.changed` is
+  asserted too (names its config-event id, carries the rationale, stamped `worker` at non-zero depth
+  so the loop floor still bites for subscribers).
+- `(G1, 2026-07-26)` **A test caught its own wrong assumption:** a prompt change made from a plain
+  stand-in session was asserted to stamp `source: worker` and returned `external` — which is
+  *correct*, because a change made outside a job is a human-shaped edit. The test now makes the
+  change from the reviewer's real job and records why both stampings are right. Also corrected: an
+  assertion on `prompt_revision.stored` — a field E4 explicitly does **not** guarantee. Tests now
+  assert the config event (guaranteed) and check the memory only when the tool reports one.
+- `(G1, 2026-07-26)` **The ~100-container ceiling is real and its symptom is misleading.** Past it,
+  every new session fails with "has no running instance and no snapshot" — indistinguishable from a
+  product bug, and it cost two debugging rounds. `ProjectClient.cleanup()` now sweeps **every**
+  session in the project (the router creates one per delivery and the browser creates more, so
+  tracking only self-created sessions leaked precisely the ones it didn't create); leakage went from
+  ~100 to ~11 per full run. `DELETE` was verified to actually destroy the container.
+- `(G1, 2026-07-26)` **J3 changed an invariant several tests could have quietly assumed:** another
+  project's event log is no longer empty, because config mutations now emit `config.changed`. The
+  project-isolation claim had to become "none of *mine* are in there" rather than "nothing is". A
+  merge can invalidate a test's *premise* rather than its assertion — worth watching for.
+- `(G1, 2026-07-26)` **Decision: `AGENTKIT_MOCK_MODEL_SCRIPT` is wired per-run, not baked into
+  `up`.** It is read at boot and applies to every session in the stack, so baking it in would
+  silently change model behaviour for every spec sharing that stack, including specs whose authors
+  don't know a script exists. A run without the flag must be byte-identical to today; a rig that
+  cannot restore cleanly should fail loudly rather than leave a stack scripted.
 - `(G2, 2026-07-25)` **The I4 gap was worse than "not wired" — it was a footgun.** `composeImage`
   **errors the job** when a worker carries an `image` and no resolver is bound (`compose.go:348`),
   and C3 had already shipped an image picker in the worker editor — so filling in that field broke
