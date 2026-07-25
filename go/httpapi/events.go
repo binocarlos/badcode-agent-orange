@@ -382,6 +382,17 @@ func (h *Handlers) ProjectToken(w http.ResponseWriter, r *http.Request) {
 }
 
 // queryInt reads a non-negative integer query parameter, falling back to def.
+// queryInt64 reads a non-negative int64 query parameter (unix-millisecond
+// timestamps and sequence cursors overflow int on a 32-bit build). Absent,
+// malformed or negative → 0, which every store query reads as "unbounded".
+func queryInt64(r *http.Request, key string) int64 {
+	v, err := strconv.ParseInt(r.URL.Query().Get(key), 10, 64)
+	if err != nil || v < 0 {
+		return 0
+	}
+	return v
+}
+
 func queryInt(r *http.Request, key string, def int) int {
 	if v, err := strconv.Atoi(r.URL.Query().Get(key)); err == nil && v >= 0 {
 		return v

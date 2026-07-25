@@ -84,6 +84,12 @@ services:
       # Claude Code subscription token (`claude setup-token`). Only used when
       # ANTHROPIC_API_KEY is unset → sessions bill the subscription directly.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Offline mock-model script (see .env.example). Only read when
+      # ANTHROPIC_API_KEY is unset. Unset → today's canned single-text-turn mock;
+      # set → the mock can emit tool_use, which is how an offline test makes a
+      # worker call an MCP tool. FILE is a path INSIDE this container.
+      AGENTKIT_MOCK_MODEL_SCRIPT: ${AGENTKIT_MOCK_MODEL_SCRIPT:-}
+      AGENTKIT_MOCK_MODEL_SCRIPT_FILE: ${AGENTKIT_MOCK_MODEL_SCRIPT_FILE:-}
       AGENTKIT_DATA: /data
       # MCP credential allowlist (see .env.example). Comma-separated NAMES of
       # environment variables agentd forwards into every session container, so
@@ -112,6 +118,10 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
     volumes:
       - agentd-data:/data
+      # Offline mock-model script as a file, for scripts too long to sit on one
+      # .env line. Uncomment BOTH this and AGENTKIT_MOCK_MODEL_SCRIPT_FILE:
+      #  - ./mock-model-script.json:/mock-model-script.json:ro
+      #    …with AGENTKIT_MOCK_MODEL_SCRIPT_FILE=/mock-model-script.json
       # GCP credentials (ADC) for gcs/ociregistry — pick ONE (see docs/15):
       #  • local dev: mount your gcloud ADC (after `gcloud auth application-default login`)
       #    - ${HOME}/.config/gcloud:/root/.config/gcloud:ro

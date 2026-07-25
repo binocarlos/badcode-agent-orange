@@ -92,6 +92,14 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
+		// Same defense-in-depth tenancy check as the Store branch below: the row
+		// now carries `composed_prompt`, which contains the project's system
+		// prompt and its memory briefings — never serve it across projects.
+		// 404, not 403, so existence does not leak.
+		if session.Customer != "" && id.Customer != "" && session.Customer != id.Customer {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
 		writeJSON(w, map[string]any{
 			"id":             session.ID,
 			"created_at":     session.CreatedAt,
@@ -106,6 +114,14 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 			"current_node":   session.CurrentNode,
 			"metadata":       session.Metadata,
 			"snapshot_state": session.SnapshotState,
+			// Composition provenance (§6.2, C2). `worker` names the worker this
+			// job ran as ("" for a plain human session) and `composed_prompt` is
+			// the EXACT system prompt ComposeJob produced for it — preamble +
+			// project prompt + worker prompt + memory briefing sections. It is
+			// the only way to prove from outside that a memory written by one
+			// job reached the next job's prompt (§7.4), which is what G1 asserts.
+			"worker":          session.Worker,
+			"composed_prompt": session.ComposedPrompt,
 		})
 		return
 	}
