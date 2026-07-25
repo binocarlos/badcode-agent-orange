@@ -440,6 +440,28 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(uiwire, 2026-07-25)` **ENGINE DEFECT — interrupted turns are never persisted (P8 violation).**
+  Reloading the page mid-answer loses the whole turn **including the human's own message**:
+  `GET /agent/session/{id}/messages` returns `count:0` and the session row is stuck at
+  `status:"running"` indefinitely, never recovering. A turn allowed to finish persists and replays
+  perfectly, so it is specifically interruption-before-end. Pinned by a deliberately-red e2e that
+  asserts the API (the UI cannot replay what was never written). Likely also leaks a session/lease
+  stuck in `running`, which **E3's reaper must account for**. Assigned to a dedicated fix agent —
+  this is an engine bug the product layer exposed, not a UI bug.
+- `(uiwire, 2026-07-25)` A near-miss worth remembering: the first permalink test navigated away
+  mid-stream and saw a blank transcript, which *looked* like an F3 permalink failure. It was the
+  test racing the model; `e2e/helpers/ui.ts:sendAndSettle` now waits for the reply to stop changing.
+  The real defect (above) was hiding underneath a false one.
+- `(uiwire, 2026-07-25)` The library components ship **no `data-testid`** — pages are driven by
+  role/label, which is better practice but means a renamed label breaks a test. Decide whether
+  B3/C3 should add stable ids.
+- `(uiwire, 2026-07-25)` The stack serves a **built** image of `examples/web`, so UI edits are
+  invisible to browser tests until `docker compose ... up -d --build web`. Documented in
+  `e2e/README.md`. Also: `examples/web/dist/` is committed build output that nothing uses (the
+  Dockerfile builds its own inside the image) and every local `vite build` dirties it — untrack it.
+- `(uiwire, 2026-07-25)` Confirmed C3's note in the browser: the Workers page's Chat tab opens a
+  **plain** session because `createSessionBody` has no `worker` field; the Jobs tab is unexercised
+  until E3 writes deliveries. Both listed as blocked in `e2e/README.md` rather than tested.
 - `(D3, 2026-07-25)` **There was no MCP server in the repo at all** (no Go MCP library in `go.mod`,
   and adding one would touch the liftability story), so D3 also wrote the transport:
   `go/cmd/agentd/mcpserver.go` — JSON-RPC over POST at `/mcp`, mounted outside the JWT middleware
