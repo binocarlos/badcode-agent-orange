@@ -355,6 +355,16 @@ func validEventSource(src string) bool {
 	return false
 }
 
+// ErrProjectEventNotFound is what GetProjectEvent returns for a row that is
+// absent — or that belongs to another project, which is the same answer (P5).
+//
+// It is a sentinel rather than a bare message because J3's `config.changed`
+// emission must distinguish "this change has not been announced yet" from "the
+// database is unwell": the first means append the event, the second means try
+// again later, and treating the second as the first would announce a change
+// twice. The message text is unchanged.
+var ErrProjectEventNotFound = errors.New("project event not found")
+
 // GetProjectEvent reads one event. A row belonging to another project looks
 // like a missing row — the only project-isolation answer a caller ever gets.
 func (s *Store) GetProjectEvent(ctx context.Context, project, id string) (*ProjectEvent, error) {
@@ -365,7 +375,7 @@ func (s *Store) GetProjectEvent(ctx context.Context, project, id string) (*Proje
 	err := s.gdb.WithContext(ctx).Where("project = ? AND id = ?", project, id).First(&ev).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, fmt.Errorf("project event not found")
+			return nil, ErrProjectEventNotFound
 		}
 		return nil, fmt.Errorf("failed to get project event: %w", err)
 	}

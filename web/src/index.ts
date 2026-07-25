@@ -174,6 +174,47 @@ export type {
   SessionTokensApi,
 } from './useEvents.js'
 
+// Subscriptions + schedules — the EDITING surface (F2), §8.3 and §8.6. The
+// reading half stays in events.js above; this adds validation, the write
+// bodies, the cron grammar and its plain-English description, and the
+// config-time NL assist. The assist compiles a description into a cron
+// expression or an envelope filter ONCE, for a human to confirm — nothing here
+// runs when a schedule fires or an event is routed.
+export {
+  SUBSCRIPTION_ENDPOINTS,
+  SUBSCRIPTION_QUERY_PARAM,
+  newSubscriptionDraft,
+  subscriptionBody,
+  validateSubscription,
+  validateFilterEntry,
+  describeSubscription,
+  subscriptionFromSearch,
+  buildSubscriptionSearch,
+} from './subscriptions.js'
+export type { SubscriptionDraft, SubscriptionFieldErrors } from './subscriptions.js'
+export {
+  SCHEDULE_ENDPOINTS,
+  SCHEDULE_QUERY_PARAM,
+  CRON_FIELD_NAMES,
+  WEEKDAY_LABELS,
+  newScheduleDraft,
+  coerceSchedule,
+  scheduleBody,
+  validateCron,
+  validateCronField,
+  validateSchedule,
+  describeCron,
+  scheduleFromSearch,
+  buildScheduleSearch,
+} from './schedules.js'
+export type { Schedule, ScheduleDraft, ScheduleFieldErrors, CronFieldName } from './schedules.js'
+export { compileCron, compileEnvelopeFilter, weekdayNames } from './nlAssist.js'
+export type { CompileResult, CronProposal, FilterProposal, NlCompiler } from './nlAssist.js'
+export { default as useSubscriptions } from './useSubscriptions.js'
+export type { UseSubscriptionsOptions, SubscriptionsApi } from './useSubscriptions.js'
+export { default as useSchedules } from './useSchedules.js'
+export type { UseSchedulesOptions, SchedulesApi } from './useSchedules.js'
+
 // The config log / changelog (F1, owning J4) — §15.10. NOTE: the read route
 // `GET /agent/config-events` does not exist yet (J2/J3 owns it); until it does,
 // pass `fetchConfigEvents`. The exact contract is in configLog.ts's header.
@@ -281,6 +322,16 @@ export { default as EventReplayPanel } from './components/EventReplayPanel.js'
 export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
 export { default as ChangelogView, ACTION_FILTERS } from './components/ChangelogView.js'
 export type { ChangelogViewProps } from './components/ChangelogView.js'
+
+// Subscription + schedule editors (F2) — the two ways a worker is woken.
+export { default as AutomationPage } from './components/AutomationPage.js'
+export type { AutomationPageProps, AutomationTab } from './components/AutomationPage.js'
+export { default as SubscriptionEditor } from './components/SubscriptionEditor.js'
+export type { SubscriptionEditorProps } from './components/SubscriptionEditor.js'
+export { default as ScheduleEditor } from './components/ScheduleEditor.js'
+export type { ScheduleEditorProps } from './components/ScheduleEditor.js'
+export { default as NlAssistField } from './components/NlAssistField.js'
+export type { NlAssistFieldProps } from './components/NlAssistField.js'
 
 // Artifact utilities
 export { buildArtifactTree } from './artifactTree.js'

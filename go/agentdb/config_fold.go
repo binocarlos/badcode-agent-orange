@@ -110,6 +110,75 @@ func (r EntityRef) String() string {
 	return string(r.Kind) + ":" + r.Key
 }
 
+// EntityKinds is the complete set of fold kinds, in §15.3 order. Closed for the
+// same reason the action vocabulary is.
+var EntityKinds = []EntityKind{
+	EntityWorker,
+	EntitySubscription,
+	EntitySchedule,
+	EntityImage,
+	EntitySkill,
+	EntityProjectSettings,
+	EntityProjectPrompt,
+}
+
+// ParseEntityRef reads the rendered form back — "worker:email-answerer",
+// "image:toolbox:2", "project-settings". It is the parser behind
+// `config_history`'s `entity` filter (§15.9).
+//
+// The kind is everything before the FIRST colon, so an image's `name:version`
+// key survives intact. An unknown kind is an error rather than a filter that
+// matches nothing: a typo must not read as "this worker has no history".
+func ParseEntityRef(s string) (EntityRef, error) {
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return EntityRef{}, fmt.Errorf("agentdb: entity reference is empty")
+	}
+	kindPart, key, _ := strings.Cut(trimmed, ":")
+	kind := EntityKind(kindPart)
+	known := false
+	for _, k := range EntityKinds {
+		if k == kind {
+			known = true
+			break
+		}
+	}
+	if !known {
+		names := make([]string, 0, len(EntityKinds))
+		for _, k := range EntityKinds {
+			names = append(names, string(k))
+		}
+		return EntityRef{}, fmt.Errorf(
+			"agentdb: %q is not a known entity kind (want one of %s, e.g. \"worker:email-answerer\")",
+			kindPart, strings.Join(names, ", "))
+	}
+	switch kind {
+	case EntityProjectSettings, EntityProjectPrompt:
+		if key != "" {
+			return EntityRef{}, fmt.Errorf(
+				"agentdb: %q is a singleton — it takes no key (write %q)", kindPart, kindPart)
+		}
+	default:
+		if strings.TrimSpace(key) == "" {
+			return EntityRef{}, fmt.Errorf(
+				"agentdb: entity %q needs a key, e.g. %q", trimmed, kindPart+":<name>")
+		}
+	}
+	return EntityRef{Kind: kind, Key: key}, nil
+}
+
+// ActionsForEntityKind lists the §15.3 actions that write one kind of entity —
+// the SQL narrowing behind the `entity` filter. Order is the vocabulary's.
+func ActionsForEntityKind(kind EntityKind) []string {
+	out := make([]string, 0, 6)
+	for _, a := range ConfigActions {
+		if entityKindForAction[a] == kind {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // entityKindForAction maps the closed §15.3 vocabulary onto fold keys. A new
 // action MUST be added here: an unmapped action makes the fold incomplete, and
 // the fold failing loudly is far better than a snapshot that silently omits an
