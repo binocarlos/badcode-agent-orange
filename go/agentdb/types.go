@@ -116,11 +116,17 @@ type Session struct {
 	// LeaseExpiresAt is the unix-seconds deadline of the router's session lease;
 	// the reaper fails jobs whose lease lapsed (04-events-and-schedules §8.4).
 	// 0 = no lease held.
-	LeaseExpiresAt int64  `json:"lease_expires_at,omitempty" gorm:"default:0"`
-	ArtifactCount  int    `json:"artifact_count" gorm:"->;<-:false"`
-	MessageCount   int    `json:"message_count" gorm:"->;<-:false"`
-	ToolCallCount  int    `json:"tool_call_count" gorm:"->;<-:false"`
-	ContainerState string `json:"container_state" gorm:"-"`
+	LeaseExpiresAt int64 `json:"lease_expires_at,omitempty" gorm:"default:0"`
+	// AttentionRequested is the §9 stamp: true while this session has an open
+	// `request_human_attention` call. §8.2 copies it onto the `worker.finished`
+	// envelope so reviewers can skip deliberately half-done work. Written by
+	// agentdb/attention.go; NO gorm `default:` tag, because a declared default
+	// makes GORM omit the false value and the flag could never be cleared.
+	AttentionRequested bool   `json:"attention_requested,omitempty"`
+	ArtifactCount      int    `json:"artifact_count" gorm:"->;<-:false"`
+	MessageCount       int    `json:"message_count" gorm:"->;<-:false"`
+	ToolCallCount      int    `json:"tool_call_count" gorm:"->;<-:false"`
+	ContainerState     string `json:"container_state" gorm:"-"`
 }
 
 func (Session) TableName() string { return "agent_sessions" }

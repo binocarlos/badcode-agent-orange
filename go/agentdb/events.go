@@ -213,6 +213,15 @@ type EventDelivery struct {
 	EventID        string `json:"event_id" gorm:"type:varchar(36);not null;uniqueIndex:idx_event_deliveries_pair,priority:1"`
 	SubscriptionID string `json:"subscription_id" gorm:"type:varchar(36);not null;uniqueIndex:idx_event_deliveries_pair,priority:2"`
 	SessionID      string `json:"session_id" gorm:"type:varchar(36)"`
+	// Worker is denormalised from the subscription (or the schedule) at dispatch
+	// time. It is what the shared dispatch gate counts and queues on (§8.4 step
+	// 7): a schedule firing has no subscription row to join through, and the gate
+	// must behave identically for both paths. Added by migration 024.
+	Worker string `json:"worker" gorm:"type:varchar(255);index:idx_ed_worker"`
+	// ScheduleID names the schedule a firing came from; empty for event-matched
+	// deliveries. Schedule-fired rows carry the same id in SubscriptionID so the
+	// (event_id, subscription_id) idempotency index covers both paths unchanged.
+	ScheduleID string `json:"schedule_id" gorm:"type:varchar(36)"`
 	// Status is one of DeliveryStatuses.
 	Status    string `json:"status" gorm:"type:varchar(30);not null"`
 	StartedAt int64  `json:"started_at"`
@@ -681,6 +690,67 @@ func (s *Store) ListDeliveries(ctx context.Context, q DeliveryQuery) ([]*EventDe
 	if err := db.Order("created_at DESC, id DESC").
 		Limit(clampLimit(q.Limit)).Offset(q.Offset).Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("failed to list deliveries: %w", err)
+	}
+	return out, nil
+}
+
+// ── The shared dispatch gate's reads (§8.4 steps 3 and 7) ───────────────────
+//
+// These three helpers are what the ONE gated dispatch point in agentd
+// (cmd/agentd/dispatch.go) counts and queues on. Router and scheduler share
+// them, which is what makes "a firing for a worker already at max_instances
+// queues as pending" true for both paths rather than for whichever one
+// remembered to check.
+//
+// "Active" means status = running: a delivery that has started a session and has
+// not finished. pending deliveries are the queue, terminal ones are history.
+
+// CountActiveDeliveries counts a project's in-flight jobs — what the per-project
+// max_concurrent_jobs cap (§5, §8.4 step 3) is measured against.
+func (s *Store) CountActiveDeliveries(ctx context.Context, project string) (int64, error) {
+	if project == "" {
+		return 0, fmt.Errorf("project is required")
+	}
+	var n int64
+	if err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("project = ? AND status = ?", project, DeliveryRunning).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("failed to count active deliveries: %w", err)
+	}
+	return n, nil
+}
+
+// CountActiveDeliveriesForWorker counts one worker's in-flight jobs — what
+// `max_instances` (§6.1, §8.4 step 7) is measured against.
+func (s *Store) CountActiveDeliveriesForWorker(ctx context.Context, project, worker string) (int64, error) {
+	if project == "" || worker == "" {
+		return 0, fmt.Errorf("project and worker are required")
+	}
+	var n int64
+	if err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("project = ? AND worker = ? AND status = ?", project, worker, DeliveryRunning).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("failed to count active deliveries for worker: %w", err)
+	}
+	return n, nil
+}
+
+// ListPendingDeliveries returns a project's queued deliveries OLDEST FIRST —
+// the FIFO order §8.4 step 7 requires when instances free up. Scoped to one
+// worker when worker is non-empty.
+func (s *Store) ListPendingDeliveries(ctx context.Context, project, worker string, limit int) ([]*EventDelivery, error) {
+	if project == "" {
+		return nil, fmt.Errorf("project is required")
+	}
+	db := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("project = ? AND status = ?", project, DeliveryPending)
+	if worker != "" {
+		db = db.Where("worker = ?", worker)
+	}
+	out := []*EventDelivery{}
+	if err := db.Order("created_at ASC, id ASC").
+		Limit(clampLimit(limit)).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list pending deliveries: %w", err)
 	}
 	return out, nil
 }
