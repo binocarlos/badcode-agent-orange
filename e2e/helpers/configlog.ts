@@ -1,23 +1,15 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { poll } from './api'
-
-const exec = promisify(execFile)
+import { lit, psql, stackDbReadable } from './stackdb'
 
 // Reading the config log (§15) from an e2e test.
 //
 // The log has no HTTP route yet — J1 built the table and the store seam,
 // `GET /agent/config-events` is still unbuilt (see e2e/README.md). So the one
 // way to assert "that mutation was recorded" end-to-end is to read the stack's
-// Postgres directly, through the compose project the runner script starts.
+// Postgres directly, through helpers/stackdb.ts.
 //
-// This is deliberately the ONLY place in the suite that reaches past the HTTP
-// API. When the read route lands, replace the body of `configEvents` with a
-// client call and every feature spec keeps working unchanged.
-
-const COMPOSE_PROJECT = process.env.STACK_COMPOSE_PROJECT || 'agent-orange-stack-e2e'
-const PG_USER = process.env.POSTGRES_USER || 'agentorange'
-const PG_DB = process.env.POSTGRES_DB || 'agentorange'
+// When the read route lands, replace the body of `configEvents` with a client
+// call and every feature spec keeps working unchanged.
 
 /** One row of `config_events` (go/agentdb/config_events.go). */
 export interface ConfigEvent {
@@ -29,32 +21,6 @@ export interface ConfigEvent {
   payload: Record<string, unknown>
   rationale: string
   created_at: number
-}
-
-/** Runs one SQL statement in the stack's postgres and returns raw stdout. */
-async function psql(sql: string): Promise<string> {
-  const { stdout } = await exec('docker', [
-    'compose',
-    '-p',
-    COMPOSE_PROJECT,
-    'exec',
-    '-T',
-    'postgres',
-    'psql',
-    '-U',
-    PG_USER,
-    '-d',
-    PG_DB,
-    '-At',
-    '-c',
-    sql,
-  ])
-  return stdout
-}
-
-/** Escapes a string for a single-quoted SQL literal. */
-function lit(v: string): string {
-  return `'${v.replace(/'/g, "''")}'`
 }
 
 /**
@@ -97,10 +63,5 @@ export function waitForConfigEvents(
 
 /** True when the stack's postgres is reachable — lets a spec skip rather than error. */
 export async function configLogReadable(): Promise<boolean> {
-  try {
-    await psql('select 1;')
-    return true
-  } catch {
-    return false
-  }
+  return stackDbReadable()
 }

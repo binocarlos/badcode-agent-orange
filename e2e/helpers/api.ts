@@ -132,6 +132,13 @@ export interface SessionMessage {
   created_at: number
 }
 
+/** What the in-image agent reports about a turn (sandbox `session_info`). */
+export interface SessionInfo {
+  tools: string[]
+  model: string
+  mcpServers: Array<{ name: string; status: string }>
+}
+
 /** The session row, trimmed to what the e2e suite asserts on. */
 export interface SessionRow {
   id: string
@@ -359,6 +366,92 @@ export class ProjectClient {
   }
 
   // ── Sessions ──────────────────────────────────────────────────────────────
+
+  /** Creates a session and returns its id. */
+  async createSession(body: { job?: string; persona?: string; systemPrompt?: string } = {}): Promise<string> {
+    const { id } = await this.json<{ id: string }>('POST', '/agent/session', body)
+    return id
+  }
+
+  /**
+   * Sends a message and waits for the turn to finish.
+   *
+   * The route answers with the turn's SSE stream, so the response body arriving
+   * complete *is* the end-of-turn signal — no polling needed.
+   */
+  async sendMessage(sessionId: string, content: string, timeoutMs = 120_000): Promise<string> {
+    const resp = await this.request.post(`/agent/session/${encodeURIComponent(sessionId)}/message`, {
+      headers: this.headers(),
+      data: { content },
+      timeout: timeoutMs,
+    })
+    if (!resp.ok()) throw new Error(`send message → ${resp.status()}: ${await resp.text()}`)
+    return resp.text()
+  }
+
+  /** Snapshots the session and destroys its container (§4.5's snapshot half). */
+  async archiveSession(sessionId: string): Promise<{ kind: string; ref: string }> {
+    return this.json('POST', `/agent/session/${encodeURIComponent(sessionId)}/archive`)
+  }
+
+  /** Re-provisions an archived session — the resume path that must re-supply MCP config. */
+  async restoreSession(sessionId: string): Promise<{ SessionID: string; State: string }> {
+    return this.json('POST', `/agent/session/${encodeURIComponent(sessionId)}/restore`)
+  }
+
+  /**
+   * The `session_info` payloads the in-image agent emitted for this session.
+   *
+   * This is the one window onto what the *container* actually received: the
+   * harness reports the model, the tool names it was given, and every MCP
+   * server with its connection status. `status: "connected"` means a real
+   * JSON-RPC handshake with that server succeeded and its tool list came back —
+   * which is as close to "callable" as mock mode can get, since the mock model
+   * emits a fixed script and can never be made to invoke a tool.
+   */
+  async sessionInfoEvents(sessionId: string): Promise<SessionInfo[]> {
+    const rows = await this.queryEvents(sessionId)
+    return rows.filter((e) => e.type === 'session_info').map((e) => e.data as unknown as SessionInfo)
+  }
+
+  /** Every stored SSE event for a session, oldest first. */
+  async queryEvents(sessionId: string): Promise<Array<{ type: string; data: Record<string, unknown> }>> {
+    const body = await this.json<{ events?: unknown[] }>(
+      'GET',
+      `/agent/session/${encodeURIComponent(sessionId)}/query-events`,
+    )
+    const out: Array<{ type: string; data: Record<string, unknown> }> = []
+    for (const row of body.events ?? []) {
+      const raw = (row as { events?: unknown }).events
+      const parsed = typeof raw === 'string' ? (JSON.parse(raw) as unknown[]) : ((raw ?? []) as unknown[])
+      for (const ev of parsed) {
+        const e = ev as { type?: string; data?: Record<string, unknown> }
+        if (e.type) out.push({ type: e.type, data: e.data ?? {} })
+      }
+    }
+    return out
+  }
+
+  /** The `error` events a session emitted — how the in-image agent fails loudly. */
+  async errorEvents(sessionId: string): Promise<Array<{ code?: string; message?: string }>> {
+    return (await this.queryEvents(sessionId))
+      .filter((e) => e.type === 'error')
+      .map((e) => e.data as { code?: string; message?: string })
+  }
+
+  /** Waits for the in-image agent to report a session_info matching `predicate`. */
+  waitForSessionInfo(
+    sessionId: string,
+    predicate: (info: SessionInfo[]) => boolean,
+    timeoutMs = 60_000,
+  ): Promise<SessionInfo[]> {
+    return poll(
+      () => this.sessionInfoEvents(sessionId),
+      predicate,
+      timeoutMs,
+      `session_info for ${sessionId}`,
+    )
+  }
 
   /** The persisted transcript of a session — what a replay has to work from. */
   async listMessages(sessionId: string): Promise<SessionMessage[]> {

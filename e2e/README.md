@@ -95,10 +95,16 @@ From `helpers/ui.ts` (browser):
 that reloads or navigates after talking must settle first or it is racing the model. (Reloading
 mid-turn is itself broken — see the known failure below.)
 
+| `client.createSession()` / `sendMessage()` / `archiveSession()` / `restoreSession()` | session lifecycle; `sendMessage` returns when the turn's SSE stream closes, so it doubles as "wait for the turn" |
+| `client.queryEvents(id)` / `sessionInfoEvents(id)` / `errorEvents(id)` | what the **container** reported: tools, MCP servers and their connection status, and `AGENT_ERROR`s |
+
 From `helpers/configlog.ts`: `configEvents(project)`, `configActions(project)`,
-`waitForConfigEvents(project, n)`. These read Postgres directly **because the config log has no HTTP
-route yet** — see the queue below. When that route lands, rewrite these three functions and every
-spec keeps working.
+`waitForConfigEvents(project, n)`.
+
+From `helpers/stackdb.ts`: `psql()`, `seedSessionMCPServers()`, `storedSessionMCPServers()`. This
+is the **only** place the suite reaches past the HTTP API, and every use marks a missing route: the
+config log has no read route, and a session's `mcp_servers` has no write path at all. When those
+routes land, rewrite these helpers and every spec keeps working.
 
 Two conventions worth keeping:
 
@@ -124,9 +130,21 @@ Two conventions worth keeping:
 | Project settings UI (B3) | `features/product-ui.stack.spec.ts` | edit the prompt and base image in the browser, save, and find them still there after a full reload; one save = one `project_settings_put` |
 | Workers UI (C3) | same | create a worker in the browser, toggle it disabled, edit its prompt — and the config log reads `worker_create, worker_disable, worker_update`, proving the UI sends the **whole row** on a toggle |
 | Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
+| Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
-### Known failure — deliberately red
+### Known failures — deliberately red
+
+`features/session-mcp.stack.spec.ts` › *a project's mcp_config reaches its sessions*.
+
+**No API can configure an MCP server for a session.** `POST /agent/session` has no `mcp_servers`
+field, and the project/worker `mcp_config` that *is* settable (`PUT /agent/project-settings`) is
+resolved correctly by agentd's `sessionContextProvider` and then dropped: its `Resolve` returns
+`&extension.SessionContext{SystemPrompt, BaseImage}` and never sets the `MCPServers` field A2 added
+to that struct and that the runner merges. Nothing in the repo populates it, so a project's tools
+never reach any container. Everything *downstream* of the session row works — proved by the green
+tests beside it, which seed the row directly via `helpers/stackdb.ts` because nothing else can.
+
 
 `features/product-ui.stack.spec.ts` › *an interrupted turn is still persisted*.
 
