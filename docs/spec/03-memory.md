@@ -79,7 +79,9 @@ Each worker *should* have a standing briefing injected into its prompt (§6.2 st
 mechanism: at job-composition time, core runs one fixed query —
 `labels: kind=rolling-summary, worker=<name>` (most recent match) — and injects its content
 verbatim under a "Your memory briefing" heading. That is the *only* memory read core ever
-performs.
+performs. Core truncates the injected briefing at `project_settings.briefing_max_bytes`
+(default 2048) and appends a truncation marker when it does — a runaway summary degrades one
+worker's briefing, never the composition path.
 
 Producing and maintaining that summary is a *worker's* job: the canonical arrangement is an
 archivist worker subscribed to `worker.finished` whose prompt says "read the transcript, store
@@ -87,7 +89,10 @@ whatever is worth keeping with sensible labels, and append a fresh `kind=rolling
 memory for the subject worker — a short paragraph giving the flavour of everything it has been
 up to" (last-10 vs all-time weighting is that prompt's business, tweakable without touching
 code). Append-only fits perfectly here: the composer takes the most recent summary, and the
-superseded ones remain as an honest record of how the worker's self-picture evolved. No archivist wired ⇒ no summary ⇒ workers simply run without a briefing. Core never
+superseded ones remain as an honest record of how the worker's self-picture evolved. Optional
+archivist conventions — supersession labels, dedup-before-write, cursor memories, index-style
+briefings — live as reference prompts in [`07-reference-prompts.md`](07-reference-prompts.md).
+No archivist wired ⇒ no summary ⇒ workers simply run without a briefing. Core never
 auto-archives conversations (explicit decision — the naive "store every transcript" loop is
 exactly the kind of opinion that must stay out of core).
 

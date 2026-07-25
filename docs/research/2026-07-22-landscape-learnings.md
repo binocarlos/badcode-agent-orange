@@ -21,6 +21,30 @@ Disposition legend:
 
 ---
 
+## Decisions (2026-07-25)
+
+Kai interviewed through L1–L33 (2026-07-25); the dispositions below are final and supersede the
+per-item disposition tags in §3 and the summary in §5. The fold-in plan is
+`../plans/2026-07-25-fold-landscape-learnings.md`; the accepted items now live in the spec docs.
+
+- **Adopted (core mechanism):** L3, L5, L6, L7, L8, L9, L10, L11, L12, L13, L16, L24, L25, L30,
+  L33 — folded into `docs/spec/01`–`05` and the work plan (`docs/spec/06`).
+- **Adopted (UI, Track F):** L27, L28, L29 — folded into the F-track work items.
+- **Adopted (reference material, never enforced):** L14, L15, L17, L18, L20, L21, L26 → the new
+  `../spec/07-reference-prompts.md`. These are optional, copy-paste-able patterns only: review
+  topology, prompt-editing etiquette, and memory conventions are per-project choices expressed in
+  prompts; nothing in spec/07 is required of any project.
+- **Rejected for v1:**
+  - L1, L2, L4 — no new runtime loop-safety governors (no schedule-recursion guard, no per-job
+    iteration/timeout caps, no stuck detector); prompt vigilance + root-only prompt editing
+    instead; revisit with live evidence. Recorded in `../17-product-spec.md` §10.
+  - L23 — review topology is fully fluid: no reviewer protection in core or canonical policy;
+    review patterns are per-project prompt constructions and workers may legitimately edit
+    reviewers' prompts. Recorded in `../17-product-spec.md` §10.
+- **Deferred unchanged (no spec change):** L19, L22, L31, L32.
+
+---
+
 ## 1. Validations — where the field confirms the spec (no action)
 
 Worth recording because they close debates:
@@ -338,6 +362,10 @@ per-project concurrency cap, so a busy workforce can't lock the humans out. Trac
   call; never put a model in the event hot path.
 
 ## 5. Suggested spec deltas (summary for the next 17-spec revision)
+
+> **Superseded.** This pre-decision summary is superseded by the decisions block at the top of
+> this file and by the executed plan `../plans/2026-07-25-fold-landscape-learnings.md`; it is
+> kept for the historical record only.
 
 Wave-1-compatible, small: L1, L2, L4, L5, L6, L8, L9, L10, L12, L13, L16, L25, L30, L33.
 Spec-text only: L24 (+ §8.4 note from §2 above). Conventions to write into canonical prompts /

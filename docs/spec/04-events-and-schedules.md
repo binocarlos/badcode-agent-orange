@@ -24,7 +24,7 @@ An event is a **name and a text payload** — deliberately nothing more that a s
   "occurred_at": 1789000000,
   "envelope": {                        // stamped by CORE, never by the sender
     "depth": 1,                        // loop floor (§8.4)
-    "source": "worker|external|schedule",
+    "source": "worker|external|schedule|core",
     "worker": "email-answerer",       // when source=worker
     "session_id": "…",
     "interactive": false,
@@ -40,7 +40,8 @@ another worker's transcript — arrives through the same shape. Stored append-on
 
 ### 8.2 Internal events (emitted by core)
 
-Exactly two to start; growing this list requires a design conversation:
+Exactly four (the original two, plus two added via the 2026-07-25 landscape-learnings plan —
+the design conversation this list's growth requires):
 
 - **`worker.finished`** — a job's query completed and the session went idle (the runtime
   already knows this moment: the `query_complete` event / idle-archive path in `runner.go`).
@@ -52,7 +53,16 @@ Exactly two to start; growing this list requires a design conversation:
   subscriptions that shouldn't react to chats filter on `interactive`. `attention_requested`
   is true when the job called `request_human_attention` that turn, so reviewers/archivists can
   skip work that is deliberately half-done awaiting a human.
-- **`worker.failed`** — the session errored terminally. `text` = the error; envelope as above.
+- **`worker.failed`** — the session errored terminally. `text` = the error; envelope as
+  above, plus a `reason`: `"error"` (the existing behaviour — the session itself errored) or
+  `"lost"` (the session's lease expired without the sandbox reporting back — §8.4).
+- **`human.attention.timeout`** — emitted by the attention sweep when a
+  `request_human_attention` call made with `expires_in` (§9) lapses unanswered. Envelope:
+  `source: "core"`, `depth: 0`, plus the `worker` and `session_id` of the paused session — so
+  a subscription can wake that worker and its prompt decides the fallback.
+- **`subscription.throttled`** — emitted when `max_firings_per_hour` (§8.3) drops deliveries
+  for a subscription; at most one per subscription per rolling-60-minute window. Envelope:
+  `source: "core"`, `depth: 0` — carries neither `worker` nor `session_id`.
 
 Note `worker.finished` fires only for *worker* jobs, not plain vanilla sessions.
 
@@ -67,6 +77,8 @@ Table `subscriptions`:
 | `event_type` | text | exact match or trailing-`*` prefix match (`email.*`); no other patterns |
 | `filter` | jsonb | optional equality match on **envelope** fields (`{"worker":"email-answerer"}`) — enough to express "when *the email worker* finishes"; anything smarter belongs in the reacting worker's prompt ("if this doesn't concern you, finish immediately") |
 | `worker` | text | the worker to start a job for |
+| `concurrency` | text | `parallel` (default — current behaviour), `serialize` (the router does not start a new job for this subscription while one it started is still running; deliveries queue in `event_deliveries` as `pending`), or `drop` (concurrent-arriving deliveries are recorded `dropped`, never run) |
+| `max_firings_per_hour` | int | 0 = unlimited; excess deliveries are recorded `rate_limited`, with one `subscription.throttled` event (§8.2) per rolling-60-minute window |
 | `enabled` | boolean | |
 
 Managed via HTTP (`/agent/subscriptions` CRUD), the UI, and the management MCP tool (§7 core
@@ -81,13 +93,27 @@ purpose):
 2. Router polls (or LISTEN/NOTIFY on Postgres; polling is fine at our scale) undelivered
    events, matches subscriptions, and for each match creates a job: compose (§6.2) → create
    session → send the rendered event as the first message. Marks delivered per subscription in
-   `event_deliveries` (event_id, subscription_id, session_id, status) — at-least-once with an
-   idempotency guard on (event_id, subscription_id).
+   `event_deliveries` (event_id, subscription_id, session_id, status, started_at, ended_at) —
+   at-least-once with an idempotency guard on (event_id, subscription_id). `status` takes
+   `pending|running|ok|failed|awaiting_human|rate_limited|dropped`; with the `started_at`/
+   `ended_at` timestamps (bigint) this tuple is the job-history spine the UI renders.
 3. **Loop safety (the one hard floor, P1-compatible because it's resource safety, not
    opinion):** each event carries `depth` (triggering job's depth + 1, external = 0); the
    router refuses depth > 8 and logs loudly. Plus a per-project concurrent-jobs cap
    (default 4, in `project_settings`). No other governor — runaway prompt design is a prompt
    problem, but infinite loops and fork-bombs are physics.
+4. **Session lease:** session rows carry a lease (`lease_expires_at`) that the event pipeline
+   renews while the sandbox streams; a reaper marks expired-lease sessions failed and emits
+   `worker.failed` with `reason:"lost"` — a dead container can no longer strand a job in
+   limbo forever.
+5. **Interactive exemption:** jobs with `interactive: true` bypass `max_concurrent_jobs`, so
+   background load can't lock humans out of chat.
+6. **Budget enforcement:** before creating a non-interactive job, the router (and the
+   scheduler, §8.6) checks the project's daily token totals against
+   `daily_tokens_soft`/`daily_tokens_hard` per §5's semantics. While a project is
+   hard-budget-stopped, matching event deliveries queue as `pending` and are delivered after
+   midnight; schedule firings during the stop are **skipped**, consistent with §8.6's
+   skip-missed semantics.
 
 ### 8.5 External ingestion
 
@@ -126,6 +152,9 @@ finds due enabled entries, and starts a job per entry with event
 through the identical composition path (§6.2) as every other trigger. Firings missed while
 agentd is down are **skipped, not replayed** (a tweet-writer must not wake to a backlog of
 stale mornings); this is documented behaviour, and per-project `max_concurrent_jobs` applies.
+Firings are idempotent: each firing records a unique occurrence key
+`(schedule_id, scheduled_for)`, so a crash/retry cannot double-fire the same occurrence. A due
+schedule whose worker no longer exists is disabled and logged — not silently retried forever.
 Managed via `GET/PUT/DELETE /agent/schedules`, the UI, and the `schedule_*` tools.
 
 ### 8.7 Worked example (the acceptance scenario)

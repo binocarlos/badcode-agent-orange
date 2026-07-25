@@ -100,6 +100,10 @@ first write (projects themselves remain "a name that exists once something carri
 | `mcp_config` | jsonb | `map[string]MCPServerConfig` — granted to **all** workers, no exceptions, no filtering (explicit decision: no per-worker visibility rules for project tools) |
 | `attention_channel` | jsonb | where `request_human_attention` notifications go (§9). v1: `{"kind":"webhook","url":"..."}` — a generic POST of `{message, session_url}` covers Slack/Discord/ntfy/email bridges. Unset ⇒ the tool still succeeds but only logs (the session still pauses awaiting the human). |
 | `max_concurrent_jobs` | int | router/scheduler concurrency cap for the project (default 4 — §8.4) |
+| `daily_tokens_soft` | bigint | soft daily token budget; crossing it sends one attention-channel notification (0 = off; checked by the router/scheduler — §8.4) |
+| `daily_tokens_hard` | bigint | hard daily token budget; crossing it stops non-interactive job creation until midnight (0 = off; checked by the router/scheduler — §8.4) |
+| `briefing_max_bytes` | int | byte cap on the injected rolling summary at composition time (default 2048 — §7.4) |
+| `snapshot_ttl_days` | int | days before the snapshot reaper deletes a snapshot image (default 30; 0 = never) |
 | `updated_at` | bigint | |
 
 - **agentd wiring:** implement a real `SessionContextProvider` that reads `project_settings`
@@ -112,3 +116,14 @@ first write (projects themselves remain "a name that exists once something carri
   JSON editor. Nothing clever.
 - **Tools:** the project system prompt is also writable from *inside* sessions via the
   management MCP tool (§9), because a consultant must be able to improve it.
+
+**Budget semantics** (two-tier, per project, per day): crossing `daily_tokens_soft` sends exactly
+one attention-channel notification per day — a heads-up, nothing stops. Crossing
+`daily_tokens_hard` makes the router and scheduler create **no non-interactive jobs** until
+midnight (stack-local time), when both counters reset. Both tiers exempt interactive chat — a
+blown budget must never lock a human out of talking to their workers.
+
+**Snapshot TTL semantics:** every snapshot carries metadata `{source session, created_at,
+expiry, last_resumed_at}`; a reaper deletes snapshot images whose expiry has passed.
+`snapshot_ttl_days` sets the expiry at snapshot time (default 30); `0` disables reaping — the
+snapshot is kept forever.

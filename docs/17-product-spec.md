@@ -136,9 +136,10 @@ per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([spec/0
 | [`spec/01-session-config.md`](spec/01-session-config.md) | §4–§5 | Session MCP plumbing (G1): Go surface, wire protocol, harness merge, `${VAR}` credential references, snapshot interaction. Project settings (G2): `project_settings` table, precedence, HTTP/UI. |
 | [`spec/02-workers.md`](spec/02-workers.md) | §6 | Worker data model, deterministic job composition (pre-prompt manipulation), the core preamble, interactive chat, HTTP/UI. |
 | [`spec/03-memory.md`](spec/03-memory.md) | §7 | Append-only immutable memory: labels + K8s selectors, the `memory_*` MCP tools with provenance, rolling-summary convention, embeddings, the §7.6 relevance contract (hybrid RRF), the build-on-Postgres decision. |
-| [`spec/04-events-and-schedules.md`](spec/04-events-and-schedules.md) | §8 | Event shape (text + core envelope), internal events (`worker.finished`/`worker.failed`), subscriptions, the router + loop floors, external ingestion, schedules (cron + input text), the acceptance scenario (§8.7) and the BadCode marketing-manager reference use case (§8.8). |
+| [`spec/04-events-and-schedules.md`](spec/04-events-and-schedules.md) | §8 | Event shape (text + core envelope), the four internal events (`worker.finished`/`worker.failed`/`human.attention.timeout`/`subscription.throttled`), subscriptions, the router + loop floors, external ingestion, schedules (cron + input text), the acceptance scenario (§8.7) and the BadCode marketing-manager reference use case (§8.8). |
 | [`spec/05-management-tools.md`](spec/05-management-tools.md) | §9 | Core management MCP tools (`worker_*`, `project_prompt_*`, prompt-revision memories) and `request_human_attention`. |
 | [`spec/06-work-plan.md`](spec/06-work-plan.md) | §11–§12 | The parallelisable checklist (tracks A–H, waves) and the verification strategy. |
+| [`spec/07-reference-prompts.md`](spec/07-reference-prompts.md) | — | Optional reference prompts — archivist, consultant, manager, failure notifier; conventions, never mechanisms. |
 
 Sections §1–§3 and §10 live in this file.
 
@@ -148,11 +149,20 @@ Sections §1–§3 and §10 live in this file.
 
 - No pipelines / DAGs / workflow definitions (P3).
 - No prompt fragments, templates, or composition beyond §6.2's concatenation (P4).
-- No roles/staff tables, model-tier routing, spend meters, tickets, kanban, approval gates,
-  goal boxes, or manager tick loops. Each was built once and removed; the replacement for every
-  one of them is "a worker with the right prompt".
+- No roles/staff tables, per-worker model-tier routing, per-worker spend meters, tickets,
+  kanban, approval gates, goal boxes, or manager tick loops. Each was built once and removed;
+  the replacement for every one of them is "a worker with the right prompt". (The per-project daily
+  token budget — two-tier, §5, enforced by the router in §8.4 — is not that meter re-grown: like
+  the depth cap, it is resource physics, a project-wide floor, never per-worker accounting.)
+- No runtime loop-safety governors beyond the §8.4 depth + concurrency floors and the §5 daily
+  budget: no schedule-recursion guards, no per-job iteration caps, no stuck detector in v1
+  (considered 2026-07-25, rejected — prompt vigilance plus root-only prompt editing covers the
+  risk today; revisit with live evidence; see
+  [`research/2026-07-22-landscape-learnings.md`](research/2026-07-22-landscape-learnings.md)).
 - No per-worker visibility filtering of project MCP tools, and no roles/authorization inside a
-  project — any worker may adjust anything; the project is the only boundary.
+  project — any worker may adjust anything; the project is the only boundary. Review topology is
+  fully prompt-defined: core never protects one worker's prompt from another — even "never edit
+  your reviewer" is only a suggested pattern ([spec/07](spec/07-reference-prompts.md)).
 - No approval queues, draft queues, or approval UI — `request_human_attention` + the ordinary
   chat thread is the entire human-review surface (§9); staged autonomy is a prompt pattern.
 - No core auto-archiving of conversations.

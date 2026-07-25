@@ -22,9 +22,15 @@ Alongside `memory_*` (§7.3), `subscription_list/create/delete`, and
   prompt. Self-improvement recurses through the same two tools with nothing added to core.
 - `project_prompt_read()` / `project_prompt_write(system_prompt)` — same, project level.
 
+Every mutation tool (`worker_create`, `worker_prompt_write`, `project_prompt_write`,
+`subscription_*`, `schedule_*`) validates its input before writing — non-empty prompt,
+parseable cron, known worker name — then reads the stored row back and echoes it in the tool
+result, so the caller sees exactly what persisted. Malformed input fails loudly with an error;
+nothing is ever half-written (L13).
+
 And the human-in-the-loop primitive:
 
-- `request_human_attention(message)` — the worker is saying "a human needs to look at this
+- `request_human_attention(message, expires_in?)` — the worker is saying "a human needs to look at this
   thread". Mechanics (deliberately almost nothing): agentd posts `{message, session_url}` to
   the project's `attention_channel` (§5) and stamps the session/`worker.finished` envelope
   with `attention_requested`; the tool result echoes the permalink; the worker then simply
@@ -33,7 +39,10 @@ And the human-in-the-loop primitive:
   thread, and whatever they type is the next message — "post it" grants permission; "change
   the tone" starts a live interaction loop. There is no approval state machine, no draft
   queue, no pending-items UI: the *thread itself* is the review surface, and staged autonomy
-  (§8.8.3) is one sentence in a prompt.
+  (§8.8.3) is one sentence in a prompt. `expires_in` is optional; when set, a request that is
+  still unanswered past expiry causes core to emit a `human.attention.timeout` event (§8.2),
+  so the *worker's prompt* decides the fallback on its next run — staged autonomy remains a
+  prompt pattern, and no approval machinery grows (L30).
 
 No approval gate in core. If a project wants review-before-apply beyond that, it is a worker
 arrangement (a proposer that writes `kind=prompt-proposal` memories and a gatekeeper worker
