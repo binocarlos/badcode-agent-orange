@@ -263,7 +263,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       `sandbox/src/tools/`, `sandbox/src/routes/`) — depends I1+A3+D3
       **Validation:** `go test ./agentdb/... ./cmd/agentd/... -run 'TestSkills' -count=1` and
       `cd sandbox && npm test`
-- [ ] **I4.** `[walkthrough]` Worker image pointer end-to-end: C2's resolver seam is bound to
+- [x] **I4.** `[walkthrough]` Worker image pointer end-to-end: C2's resolver seam is bound to
       I1's `Resolve`, and `runner.go:resolveLaunchImage`'s priority chain
       (`Image > CustomImageID > Policy.BaseImage`) **gains the resolved worker pointer at the
       front** (§13.5, §13.6) — so composition step 1 is `worker.image > project base_image >
@@ -481,6 +481,45 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(I4, 2026-07-26)` **C2's promise that the store could satisfy the resolver seam directly was not
+  true.** `ImageResolver.Resolve` returns `(string, error)`; `ResolveCustomImage` returns
+  `(*CustomImage, error)` and stops at the catalogue row — binding is resolve → decode the
+  `registry_handle` → `Materialize`. Hence a small agentd type (`cmd/agentd/imageresolver.go`),
+  which is also the only sane home for the `MarkCustomImageResumed` stamp since both callers pass
+  through it. **B4's "nothing calls it" is now closed** and the e2e reads `last_resumed_at` back.
+- `(I4, 2026-07-26)` **`resolveLaunchImage` could not tell a §13 pointer from an image ref** —
+  `SessionContext` carried one `BaseImage` string, and when the winner is a worker's pointer,
+  `toolbox` is not launchable. Guessing is wrong both ways (refuse a legitimate `acme/base:v1`, or
+  silently launch a worker somewhere it was not pointed). Added `SessionContext.WorkerImage`: the
+  pointer, unresolved, alongside an unchanged `BaseImage`.
+- `(I4, 2026-07-26)` The chain is `explicit Image > worker pointer > CustomImageID >
+  SessionContext.BaseImage > Policy.BaseImage` — a deviation from §13.6's literal "at the front",
+  because a worker job arrives with its image already composed and an e2e override must still win.
+  **It reverses a documented httpapi contract** ("the caller's custom image must win"), which now
+  holds against `Installation` but not against a worker pointer. Theoretical in the standalone stack
+  (nothing sets `custom_image_id`), but a host using both should know.
+- `(I4, 2026-07-26)` **B2's dead precedence went live as a side effect, and it cuts both ways:**
+  `project_settings.base_image` now applies to plain sessions, not just worker jobs — which also
+  means a project whose `base_image` names a nonexistent image now **fails its sessions** instead of
+  quietly using the global. That is the intended reading of §5, but no item announced it.
+- `(I4, 2026-07-26)` **Every §13 resolution failure fails the job; nothing substitutes an image.**
+  Through composition the delivery is marked `failed` and **no session is created**; through the
+  launch chain a new `ErrLaunchImageUnresolvable` wraps every case including "pointer set but no
+  resolver wired". The legacy `CustomImageID` keeps its opposite contract (log, fall back, session
+  starts) and the two are pinned apart by test.
+- `(I4, 2026-07-26)` **A failed resolution creates no session, and the delivery cannot say why** —
+  `event_deliveries` has no reason column, so the cause lives only in agentd's log. E1 and E3 both
+  flagged this; a `reason` column is the obvious follow-up.
+- `(I4, 2026-07-26)` **The e2e asserts the container, not the catalogue:** each burned version
+  carries a marker file written by a skill's `install_sh`, read back through DinD. A test that only
+  checked resolution would pass on a build that resolved perfectly and then launched the base
+  image — the exact regression §13.3 exists to prevent.
+- `(I4, 2026-07-26)` Two e2e hazards for whoever owns that tree: **router-created sessions escape
+  `ProjectClient.cleanup()`** unless deleted by hand (worth a `client.track()` helper), and a
+  positional `stack.spec.ts` argument to Playwright is a **substring filter, not a file** — it
+  silently runs the whole suite. Also a pre-existing flake: `config-and-workers` asserts another
+  project's event log is empty, which now races J3's `config.changed` emitter; the fix is one word
+  (filter by type).
 - `(G1, 2026-07-26)` **§8.7 is fully asserted end to end offline.** The reviewer's job rewrites the
   *answerer's* system prompt through `worker_prompt_write`; the config log carries the mandatory
   rationale, the acting worker and the acting session; the superseded prompt survives as a
