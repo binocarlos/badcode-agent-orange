@@ -50,10 +50,10 @@ var EventSources = []string{
 	EventSourceCore,
 }
 
-// Internal event types emitted by core (§8.2). Only the two the Runner emits
-// are named here; the remaining three internal events (`human.attention.timeout`,
-// `subscription.throttled`, `config.changed`) belong to the tracks that produce
-// them and name themselves.
+// Internal event types emitted by core (§8.2). The two the Runner emits are
+// named here, alongside the one the ROUTER emits — the remaining two
+// (`human.attention.timeout`, `config.changed`) belong to the tracks that
+// produce them and name themselves.
 const (
 	// EventTypeWorkerFinished is emitted when a worker job's query completed and
 	// the session went idle. Its text is the full rendered transcript (§8.2).
@@ -61,6 +61,12 @@ const (
 	// EventTypeWorkerFailed is emitted when a worker job ended badly. Its text is
 	// the error, and the envelope carries a Reason (§8.2).
 	EventTypeWorkerFailed = "worker.failed"
+	// EventTypeSubscriptionThrottled is emitted by the router when
+	// max_firings_per_hour drops deliveries for a subscription (§8.2, §8.3). Its
+	// envelope is core's — {source: "core", depth: 0} — and carries neither
+	// worker nor session_id, because a throttle is a fact about a subscription,
+	// not about anybody's job.
+	EventTypeSubscriptionThrottled = "subscription.throttled"
 )
 
 // worker.failed reasons (§8.2). The vocabulary is closed: "error" is the
@@ -283,9 +289,13 @@ type DeliveryQuery struct {
 	Project        string
 	EventID        string
 	SubscriptionID string
-	Status         string
-	Limit          int
-	Offset         int
+	// SessionID finds the delivery a session is running — the reverse of the
+	// depth walk, and what the lease reaper needs to close the job history of a
+	// session nobody reported back on (§8.4 step 4).
+	SessionID string
+	Status    string
+	Limit     int
+	Offset    int
 }
 
 const defaultEventLimit = 100
@@ -756,6 +766,9 @@ func (s *Store) ListDeliveries(ctx context.Context, q DeliveryQuery) ([]*EventDe
 	if q.SubscriptionID != "" {
 		db = db.Where("subscription_id = ?", q.SubscriptionID)
 	}
+	if q.SessionID != "" {
+		db = db.Where("session_id = ?", q.SessionID)
+	}
 	if q.Status != "" {
 		db = db.Where("status = ?", q.Status)
 	}
@@ -826,6 +839,44 @@ func (s *Store) ListPendingDeliveries(ctx context.Context, project, worker strin
 		return nil, fmt.Errorf("failed to list pending deliveries: %w", err)
 	}
 	return out, nil
+}
+
+// ListProjectsWithPendingDeliveries returns the distinct projects that have at
+// least one queued delivery — the router's drain list (§8.4 step 7).
+//
+// Deliberately unscoped, like ListUndeliveredProjectEvents: the router is core,
+// not a tenant, and a project whose deliveries queued behind a busy worker must
+// get its turn even when no new event arrives for it.
+func (s *Store) ListProjectsWithPendingDeliveries(ctx context.Context) ([]string, error) {
+	out := []string{}
+	if err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("status = ?", DeliveryPending).
+		Distinct().Order("project ASC").
+		Pluck("project", &out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list projects with pending deliveries: %w", err)
+	}
+	return out, nil
+}
+
+// CountRateLimitedDeliveriesSince counts the deliveries a subscription had
+// REFUSED at or after `since` (unix seconds).
+//
+// This is the record §8.2's "at most one `subscription.throttled` per
+// subscription per rolling-60-minute window" is derived from: the router emits
+// the event only when this returns 0 for the last hour, so a subscription that
+// is being throttled continuously says so once rather than once per event.
+func (s *Store) CountRateLimitedDeliveriesSince(ctx context.Context, subscriptionID string, since int64) (int64, error) {
+	if subscriptionID == "" {
+		return 0, fmt.Errorf("subscription_id is required")
+	}
+	var n int64
+	if err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("subscription_id = ? AND created_at >= ? AND status = ?",
+			subscriptionID, since, DeliveryRateLimited).
+		Count(&n).Error; err != nil {
+		return 0, fmt.Errorf("failed to count rate-limited deliveries: %w", err)
+	}
+	return n, nil
 }
 
 // CountSubscriptionFiringsSince counts deliveries created for a subscription at

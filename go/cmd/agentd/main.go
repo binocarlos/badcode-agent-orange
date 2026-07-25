@@ -230,28 +230,49 @@ func main() {
 	// API mux (authenticated) + an outer root mux for unauthenticated routes.
 	apiMux := api.Mux()
 
-	// ── Scheduler + human attention (product layer) ──────────────────────────────
-	// Both need the product-layer tables, so both are wired only on the Postgres
-	// store; on the SQLite fallback schedules never fire and the attention route
-	// is not mounted (404). See scheduler.go / attention.go, and
-	// dispatch.go for the gate the scheduler shares with the router.
+	// ── Router + scheduler + human attention (product layer) ─────────────────────
+	// All three need the product-layer tables, so all three are wired only on the
+	// Postgres store; on the SQLite fallback events are never routed, schedules
+	// never fire and the attention route is not mounted (404). See router.go /
+	// scheduler.go / attention.go, and dispatch.go for the ONE gate the router
+	// and the scheduler share — capacity is decided in exactly one place.
 	if agentDB != nil {
 		gate := newDispatcher(dispatcherConfig{
-			Store:        agentDB,
-			Starter:      newRunnerSessionStarter(runner, store),
+			Store: agentDB,
+			// The lease is what the router's reaper claims a dead job by (§8.4
+			// step 4), so the starter must be able to take and release it.
+			Starter: newRunnerSessionStarter(runner, store).withLeases(agentDB),
+			// The core tool servers every job is told about (§6.2 step 3). This is
+			// what makes memory_search & co. reachable from inside a worker job;
+			// E4/I2 add their tools to the same server, so this line does not grow.
+			CoreMCP:      coreMCPServers(selfURL),
 			DefaultImage: baseImage,
-			// CoreMCP (the memory/management/image tool servers) is filled by D3/E4/I2;
+			// The briefing read seam (§6.2 step 2.4, §7.4) — the rolling summary
+			// and each of the worker's own selectors.
+			Memories: agentDB,
+			Budget: newTokenBudget(tokenBudgetConfig{
+				Store:  agentDB,
+				Notify: softBudgetNotifier(os.Getenv, log.Printf),
+			}),
 			// Images is bound to the §13 catalogue's Resolve by I4.
 		})
+
+		rt := newRouter(routerConfig{
+			Store:      agentDB,
+			Dispatcher: gate,
+			Reaper:     newLeaseReaper(agentDB),
+		})
+		go rt.Run(ctx)
+
 		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate})
 		go sched.Run(ctx)
 
 		attention := newAttentionService(agentDB, permalinks)
 		apiMux.HandleFunc("POST /agent/attention", attentionHandler(attention))
 		go newAttentionSweeper(agentDB).Run(ctx)
-		log.Printf("[agentd] scheduler + attention sweep running (zone=%s)", time.Local)
+		log.Printf("[agentd] router + scheduler + attention sweep running (zone=%s)", time.Local)
 	} else {
-		log.Printf("[agentd] no DATABASE_URL — schedules and request_human_attention are unavailable")
+		log.Printf("[agentd] no DATABASE_URL — event routing, schedules and request_human_attention are unavailable")
 	}
 
 	// ── Login modes ──────────────────────────────────────────────────────────────

@@ -551,6 +551,24 @@ var agentMigrations = []migration{
 				ON agent_custom_images(customer, expires_at) WHERE version > 0 AND reaped_at = 0;
 		`,
 	},
+	{
+		// The router's two hot sweeps (E3). No new columns — everything §8.4
+		// needs already exists (migration 021 added `lease_expires_at`, 023/024
+		// the delivery tuple) — only the indexes those sweeps run every poll:
+		//
+		//  1. expired-lease sessions. Partial on `lease_expires_at > 0` because
+		//     the overwhelming majority of session rows hold no lease at all,
+		//     and the reaper only ever asks about the ones that do.
+		//  2. queued deliveries per project, which is both the FIFO drain
+		//     (§8.4 step 7) and the running-job counts the capacity gates read.
+		Name: "028_router_sweeps",
+		SQL: `
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_lease
+				ON agent_sessions(lease_expires_at) WHERE lease_expires_at > 0;
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_project_status
+				ON event_deliveries(project, status, created_at);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
