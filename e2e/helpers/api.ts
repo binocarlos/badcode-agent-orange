@@ -443,17 +443,34 @@ export class ProjectClient {
   }
 
   /**
-   * Deletes every session this client created.
+   * Deletes every session in this project — not merely the ones this client
+   * created.
+   *
+   * That distinction is the whole point. The router creates a session per
+   * delivery, so an acceptance test that posts one event ends up owning three
+   * or four sessions it never asked for, and a browser test creates them
+   * through the UI. Tracking only `createSession` calls leaks all of those.
+   *
+   * Sweeping the project is safe because every test gets a fresh, run-scoped
+   * project of its own (`newProjectClient`) — there is nothing else in it.
    *
    * Not optional housekeeping: a session holds a *running container* inside
-   * DinD until it is deleted, and nothing reaps them on a timer. A suite that
-   * creates sessions and walks away fills the daemon until `image_create` fails
-   * with "no running instance" — which looks like a product bug and is not one.
-   * Call it from afterEach in any spec that creates sessions.
+   * DinD until it is deleted, nothing reaps them on a timer, and the daemon
+   * stops accepting new ones at around a hundred. Past that, every session
+   * fails to provision with "has no running instance and no snapshot", which
+   * looks exactly like a product bug and is not one.
    */
   async cleanup(): Promise<void> {
-    for (const id of this.created.splice(0)) {
-      await this.raw('DELETE', `/agent/session/${encodeURIComponent(id)}`).catch(() => {})
+    this.created.splice(0)
+    // `user_email=*` is load-bearing: the route defaults to the caller's own
+    // email, and the router creates job sessions under a different one. Without
+    // it, exactly the sessions a test did not create are the ones it leaks.
+    const resp = await this.raw('GET', '/agent/sessions?user_email=*&limit=500').catch(() => null)
+    if (!resp?.ok()) return
+    const listed = (await resp.json().catch(() => [])) as unknown
+    const rows = Array.isArray(listed) ? listed : ((listed as { sessions?: unknown[] })?.sessions ?? [])
+    for (const row of rows as Array<{ id?: string }>) {
+      if (row?.id) await this.raw('DELETE', `/agent/session/${encodeURIComponent(row.id)}`).catch(() => {})
     }
   }
 

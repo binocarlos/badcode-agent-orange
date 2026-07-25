@@ -1,5 +1,5 @@
-import { expect, type Page } from '@playwright/test'
-import { TEST_EMAIL, TEST_PASSWORD, uniqueProject } from './api'
+import { expect, type APIRequestContext, type Page } from '@playwright/test'
+import { projectClient, TEST_EMAIL, TEST_PASSWORD, uniqueProject } from './api'
 
 // Browser fixtures for the example app (examples/web/src/App.tsx).
 //
@@ -41,7 +41,25 @@ export async function openFreshProject(page: Page, prefix = 'e2e-ui'): Promise<s
   await page.getByTestId('new-project-input').fill(project)
   await page.getByTestId('new-project-create').click()
   await expect(page.getByTestId('session-sidebar')).toBeVisible({ timeout: 30_000 })
+  openedProjects.push(project)
   return project
+}
+
+/** Projects a browser test created, so their sessions can be released. */
+const openedProjects: string[] = []
+
+/**
+ * Deletes every session in every project a browser test opened.
+ *
+ * Sessions started through the UI belong to no ProjectClient, so nothing else
+ * knows about them — and each one holds a running container until deleted. Call
+ * this from an afterEach in any spec that uses `openFreshProject`.
+ */
+export async function cleanupOpenedProjects(request: APIRequestContext): Promise<void> {
+  for (const project of openedProjects.splice(0)) {
+    const client = await projectClient(request, project).catch(() => null)
+    if (client) await client.cleanup()
+  }
 }
 
 /** Switches the workspace view and waits for the button to read as selected. */

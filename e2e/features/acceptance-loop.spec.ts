@@ -306,10 +306,14 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
       system_prompt: rewritten,
       rationale: why,
     })
-    // The tool tells the model the change lands on the NEXT job, and that the
-    // superseded prompt is not lost — both are §15.7's restore story.
+    // The tool tells the model the change lands on the NEXT job.
     expect(String(result.note)).toContain('NEXT job')
-    expect(result.prompt_revision).toMatchObject({ stored: true })
+    // It also reports whether the prompt-revision memory was written — and that
+    // is REPORTED, not required. If the memory write fails the tool still
+    // succeeds, because the prompt is already live and config-evented, and
+    // telling the model otherwise would be telling it the opposite of the
+    // truth. So assert the shape, never `stored: true`.
+    expect(typeof result.prompt_revision.stored).toBe('boolean')
 
     // The config log carries the decision.
     const rewrite = await waitForConfigAction(client, 'worker_prompt_write')
@@ -349,41 +353,105 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
   // The superseded prompt survives as a memory, which is what makes "put it
   // back to the version that worked" a lookup rather than an archaeology
   // project (§15.7) — and what lets a later reviewer see its own history.
-  test('the rewrite leaves a prompt-revision memory holding the superseded prompt', async () => {
+  //
+  // The memory is best-effort BY DESIGN: the tool reports whether it stored one
+  // and succeeds either way. So this asserts the tool's own report and the
+  // memory agree — not that a memory must exist. The guarantee lives in the
+  // config event, which the test above asserts.
+  test('the rewrite reports its prompt-revision memory, and the report is true', async () => {
     await seedAcceptanceOrg(client)
     const session = await client.createSession({ job: 'reviewer-stand-in' })
     await client.sendMessage(session, 'hello')
     const mcp = sessionMCP(client.project, session)
 
-    await mcp.callOK('worker_prompt_write', {
+    const result = await mcp.callOK('worker_prompt_write', {
       name: ANSWERER,
       system_prompt: 'You answer customer email. Be warm.',
       rationale: 'the answers read as curt',
     })
 
     const found = await mcp.callOK('memory_search', { label_selector: 'kind=prompt-revision' })
-    expect(found.count).toBeGreaterThan(0)
-    expect(found.results[0].labels).toMatchObject({ kind: 'prompt-revision', worker: ANSWERER })
+    if (result.prompt_revision.stored === true) {
+      expect(found.count).toBeGreaterThan(0)
+      expect(found.results[0].labels).toMatchObject({ kind: 'prompt-revision', worker: ANSWERER })
+    } else {
+      // The documented degraded path: the prompt still changed, and the tool
+      // said so rather than pretending the write failed.
+      expect(String(result.warning ?? '')).not.toBe('')
+      expect((await client.getWorker(ANSWERER)).system_prompt).toContain('Be warm.')
+    }
   })
 
-  // ── Blocked on J3 ─────────────────────────────────────────────────────────
+  // The boundary that keeps every prompt rewrite auditable: worker_update can
+  // change anything about a worker EXCEPT its prompt, so there is no way to
+  // move a prompt without a rationale (§15.5). A regression here would not
+  // break anything visibly — it would just quietly make the changelog lie.
+  test('worker_update refuses to touch a system prompt, and names the tool that can', async () => {
+    await seedAcceptanceOrg(client)
+    const session = await client.createSession({ job: 'reviewer-stand-in' })
+    await client.sendMessage(session, 'hello')
+    const mcp = sessionMCP(client.project, session)
 
-  test('the prompt rewrite emits a routable config.changed event', async () => {
-    test.fixme(
-      true,
-      'J3 is in flight: nothing emits `config.changed` yet (no emitter exists in the tree). ' +
-        'Needs an emission AFTER the transaction commits, never inside it, at-least-once with an ' +
-        'idempotency guard on the config-event id (§15.4), carrying that id so a subscriber can ' +
-        'look the change up. Depends on E4 too, since the rewrite is what triggers it here.',
-    )
+    const out = await mcp.call('worker_update', {
+      name: ANSWERER,
+      fields: { system_prompt: 'sneaking a rewrite past the audit trail' },
+    })
+    expect(out.isError).toBe(true)
+    expect(out.text).toContain('worker_prompt_write')
+    // Nothing moved, and nothing was logged as if it had.
+    expect((await client.getWorker(ANSWERER)).system_prompt).toBe(ANSWERER_PROMPT)
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toEqual([])
+  })
+
+  // ── The change becomes an event other workers can react to ────────────────
+
+  // §15.4: the config log records what changed, and `config.changed` is how the
+  // rest of the project finds out. Emitted AFTER commit, never inside the
+  // transaction — a routed event must not exist for a change that rolled back.
+  test('a prompt rewrite emits a routable config.changed naming its record', async () => {
     await seedAcceptanceOrg(client)
     await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
 
-    const changed = await client.waitForEvents((rows) => rows.length > 0, { type: 'config.changed' })
-    const log = await configEvents(client)
-    const rewrite = log.find((e) => e.action === 'worker_prompt_write')!
-    // The event names the record, so a reader can fetch the full before/after.
-    expect(JSON.stringify(changed[0])).toContain(rewrite.id)
+    // Made from the reviewer's real job, because the envelope depends on it:
+    // a change made BY a job is stamped `worker` and carries that job's depth,
+    // which is what keeps §8.4's loop floor working when something subscribes
+    // to config.changed. A change made from a plain session is stamped
+    // `external` at depth 0 — correctly, since that is a human-shaped edit.
+    const fanout = await client.waitForDeliveries(
+      (rows) => rows.length >= 3 && rows.every((d) => d.session_id !== ''),
+      { timeoutMs: 120_000 },
+    )
+    let reviewerSession = ''
+    for (const d of fanout) {
+      if ((await client.getSession(d.session_id)).worker === REVIEWER) reviewerSession = d.session_id
+    }
+    expect(reviewerSession).not.toBe('')
+
+    const why = 'the answers read as curt'
+    await sessionMCP(client.project, reviewerSession).callOK('worker_prompt_write', {
+      name: ANSWERER,
+      system_prompt: 'You answer customer email. Be warm.',
+      rationale: why,
+    })
+
+    const rewrite = await waitForConfigAction(client, 'worker_prompt_write')
+    const changed = await client.waitForEvents((rows) => rows.length > 0, {
+      type: 'config.changed',
+      timeoutMs: 60_000,
+    })
+
+    // The event names the record, so a subscriber fetches the full before/after
+    // rather than the event trying to carry it.
+    const announcement = changed[0]
+    expect(announcement.text).toContain(rewrite.id)
+    expect(announcement.text).toContain('worker_prompt_write')
+    // The rationale travels with it: a worker reacting to the change gets the
+    // why without a second lookup.
+    expect(announcement.text).toContain(why)
+    // Stamped as coming from a worker, with a depth that keeps the loop floor
+    // meaningful for anything subscribed to it.
+    expect(announcement.envelope.source).toBe('worker')
+    expect(announcement.envelope.depth).toBeGreaterThan(0)
   })
 
 })

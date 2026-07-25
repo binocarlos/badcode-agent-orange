@@ -135,11 +135,15 @@ Two conventions worth keeping:
   they need no cleanup and repeated runs against one long-lived stack never collide.
 - **Never assert a mapped project is empty.** `apples-oranges` and `pears-plums` are shared with the
   browser spec and with previous runs.
-- **Delete the sessions you create.** A session holds a *running container* inside DinD until it is
-  deleted, and nothing reaps them on a timer. Call `client.cleanup()` from `afterEach` (or a
-  `finally`) in any spec that creates sessions. A suite that skips this fills the daemon — at 100
-  live containers `image_create` starts failing with "no running instance", which looks exactly like
-  a product bug and is not one.
+- **Release sessions, including the ones you did not create.** A session holds a *running container*
+  inside DinD until deleted, and nothing reaps them on a timer. `client.cleanup()` sweeps **every**
+  session in the project, which matters because the router creates one per delivery and the browser
+  creates them through the UI — tracking only your own `createSession` calls leaks exactly those.
+  (It lists with `user_email=*`: the route defaults to the caller's own email, and job sessions run
+  under a different one.) Call it from `afterEach`; browser specs use
+  `cleanupOpenedProjects(request)`. **The ceiling is real**: at ~100 live containers every new
+  session fails to provision with "has no running instance and no snapshot", which looks exactly
+  like a product bug and is not one.
 
 ## Coverage
 
@@ -159,7 +163,7 @@ Two conventions worth keeping:
 | Workers UI (C3) | same | create a worker in the browser, toggle it disabled, edit its prompt — and the config log reads `worker_create, worker_disable, worker_update`, proving the UI sends the **whole row** on a toggle |
 | Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
 | Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
-| **The acceptance loop §8.7/§8.8** | `features/acceptance-loop.spec.ts` | the org seeds and every hire is logged; an inbound email enters with a core-stamped envelope; **the router starts an answerer job** and the composed prompt it ran with carries the worker's prompt; **the answerer finishing fans out to reviewer and archivist** at depth 1, and the reviewer does *not* react to its own finish; **a memory written by one job appears verbatim in the next job's composed prompt** under the heading its briefing selector asked for (§7.4 — the loop's substrate); **the reviewer rewrites the answerer's prompt through `worker_prompt_write`**, logged with its rationale and the acting worker+session, leaving a `kind=prompt-revision` memory holding the superseded text — §8.7's definition of done for the whole spec; a rewrite with a blank rationale is refused and changes nothing (§15.5); and the §8.8 bootstrap is one manager plus two schedules |
+| **The acceptance loop §8.7/§8.8** | `features/acceptance-loop.spec.ts` | the org seeds and every hire is logged; an inbound email enters with a core-stamped envelope; **the router starts an answerer job** and the composed prompt it ran with carries the worker's prompt; **the answerer finishing fans out to reviewer and archivist** at depth 1, and the reviewer does *not* react to its own finish; **a memory written by one job appears verbatim in the next job's composed prompt** under the heading its briefing selector asked for (§7.4 — the loop's substrate); **the reviewer rewrites the answerer's prompt through `worker_prompt_write`**, logged with its rationale and the acting worker+session — §8.7's definition of done for the whole spec; a blank rationale is refused and changes nothing, and `worker_update` refuses to touch a prompt at all, naming the tool that can (§15.5, the boundary that keeps rewrites auditable); the rewrite emits a routable **`config.changed`** naming its config-event id, stamped `worker` with a non-zero depth so the loop floor still bites; and the §8.8 bootstrap is one manager plus two schedules |
 | Images §13 / skills §14 | `features/images-and-skills.stack.spec.ts` | curate-then-burn end to end: `skill_create` → `skill_install` lands the document and runs its script; **a failing script is a loud failure** carrying exit status, stderr and "do not proceed"; `image_create` allocates versions 1 then 2, gap-free, listed newest-first with worker/session/`session_url` provenance; an older version survives a newer burn unchanged; the catalogue exposes **no update or delete verb**; `image_create`/`skill_create` are logged with the acting session while `skill_install` logs nothing (§14.2); both lists cap at 200 with `truncated`; and a token with no `sid` is refused by both |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
@@ -204,7 +208,7 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Schedules §8.6 | Track H | a due schedule fires a job; a missed window is skipped, not caught up |
 | `request_human_attention` (§9) | H2 | delivery goes `awaiting_human`, the attention channel receives `{message, session_url}` |
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
-| **G1: the §8.7 acceptance loop** | J3, plus a mock script | **live** in `features/acceptance-loop.spec.ts` — see Covered. Three pending: `config.changed` (J3 has no emitter yet), and the two §8.8 tests that need a *job* to call a tool, which wants `AGENTKIT_MOCK_MODEL_SCRIPT` wired into the run script. Do not delete one to make the file green |
+| **G1: the §8.7 acceptance loop** | a mock script | **live** in `features/acceptance-loop.spec.ts` — see Covered. Two pending, both §8.8: they need a *job* to call a tool, which wants `AGENTKIT_MOCK_MODEL_SCRIPT` wired through the run script. Do not delete one to make the file green |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
 
 ## Notes for whoever extends this

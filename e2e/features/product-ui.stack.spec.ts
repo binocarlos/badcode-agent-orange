@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { gotoView, openFreshProject, selectedProject, sendAndSettle } from '../helpers/ui'
+import { cleanupOpenedProjects, gotoView, openFreshProject, selectedProject, sendAndSettle } from '../helpers/ui'
 import { projectClient } from '../helpers/api'
 import { configActions, waitForConfigEvents } from '../helpers/configlog'
 
@@ -16,6 +16,12 @@ import { configActions, waitForConfigEvents } from '../helpers/configlog'
 
 test.describe('product UI', () => {
   test.describe.configure({ mode: 'serial' })
+
+  // Sessions started through the UI belong to no client, and each holds a
+  // running container until deleted (see ProjectClient.cleanup).
+  test.afterEach(async ({ request }) => {
+    await cleanupOpenedProjects(request)
+  })
 
   test('project settings: edit, save, and survive a reload', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-ui-set')
@@ -138,6 +144,10 @@ test.describe('product UI', () => {
 // that way — a DOM assertion here would pass on a UI that renders an optimistic
 // echo of a message the server never stored.
 test.describe('product UI — interruption', () => {
+  test.afterEach(async ({ request }) => {
+    await cleanupOpenedProjects(request)
+  })
+
   test('a turn interrupted by a reload is still persisted', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-ui-mid')
     await page.getByTestId('new-session').click()

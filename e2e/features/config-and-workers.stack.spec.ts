@@ -218,9 +218,13 @@ test.describe('project settings + workers + config log', () => {
     await other.deleteWorker('shared-name')
     expect((await client.getWorker('shared-name')).description).toBe('mine')
 
-    // Events do not cross either.
-    await client.postEvent({ type: 'email.received', text: 'mine' })
-    expect(await other.listEvents()).toEqual([])
+    // Events do not cross either. Note the other project's log is NOT empty:
+    // every configuration mutation now emits its own `config.changed` (J3), so
+    // the isolation claim is "none of mine are in there", not "nothing is".
+    const mineEvent = await client.postEvent({ type: 'email.received', text: 'mine' })
+    const theirEvents = await other.listEvents()
+    expect(theirEvents.map((e) => e.id)).not.toContain(mineEvent.id)
+    expect(theirEvents.every((e) => e.project === other.project)).toBe(true)
 
     // And neither does the config log: each project's history is its own.
     const mine = await configEvents(client)
