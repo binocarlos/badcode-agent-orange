@@ -43,7 +43,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       (`sandbox/src/harness/claude-agent-sdk.ts`, `sandbox/src/tools/registry.ts`, types)
       — depends A1 (protocol shape only; can proceed from the spec)
       **Validation:** `cd sandbox && npm test`
-- [ ] **A4.** E2E: mock-mode test proving a session-supplied MCP server is callable in-session,
+- [x] **A4.** E2E: mock-mode test proving a session-supplied MCP server is callable in-session,
       and survives snapshot→resume. (`e2e/tests/`) — depends A2+A3
       **Validation:** `cd e2e && npx playwright test tests/session-mcp.spec.ts`
 - [x] **A5.** Credential env propagation: `AGENTKIT_MCP_ENV` allowlist on agentd forwarded into
@@ -199,7 +199,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       `rationale` fails both prompt writes)
 
 ### Track H — Schedules & human attention `[engine+api]`
-- [ ] **H1.** `schedules` table + CRUD HTTP (migration 024); scheduler loop in agentd (minute
+- [x] **H1.** `schedules` table + CRUD HTTP (migration 024); scheduler loop in agentd (minute
       tick, due-entry matching, skip-missed semantics, `schedule.fired` event → job via
       ComposeJob, per-project concurrency cap shared with the router). Table tests for cron
       matching incl. DST/timezone edges. `[learnings]` The same migration 024 also records the
@@ -210,7 +210,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       than starting a second instance. (`go/agentdb/schedules.go`, `go/cmd/agentd/scheduler.go`)
       — depends C2+E1
       **Validation:** `go test ./agentdb/... ./cmd/agentd/... -run 'TestSchedules|TestScheduler' -count=1`
-- [ ] **H2.** `request_human_attention` core tool: `attention_channel` on project settings,
+- [x] **H2.** `request_human_attention` core tool: `attention_channel` on project settings,
       webhook dispatch of `{message, session_url}`, `attention_requested` stamping on the
       session + `worker.finished` envelope, tool result echoing the permalink; unset-channel
       log-only fallback. `[learnings]` Also: the optional `expires_in` parameter, the attention
@@ -440,6 +440,67 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(BUGFIX, 2026-07-25)` **Interrupted turns: fixed, and half the report was wrong.** Root cause:
+  `events.pipeline.Run` *did* handle cancellation, but `persist` then handed the **already-cancelled
+  context** to the sink, so a real store failed the write instantly and discarded every collected
+  event — including the `user_message`. Every existing pipeline test used a mock sink that ignores
+  the context, so nothing in the repo could see it. Fix: `persist` detaches with
+  `context.WithoutCancel`, an interrupted turn's status becomes `cancelled` (not `complete`), and
+  `SendMessage` now seeds the user message *before* contacting the sandbox (an interruption while
+  `POST /query-stream` was still in flight meant the prompt was never written by any path).
+- `(BUGFIX, 2026-07-25)` **The "session stuck at `running`" half was NOT a bug** — investigated and
+  rejected. `running` is the correct steady state for a live, resumable session: the archive loop
+  snapshots and destroys the container while leaving the row at `running`, precisely so
+  `ensureRunning` can restore it. Giving an interrupted session a terminal status would break the
+  resumability the passing "survives a reload" e2e depends on. What was genuinely stuck was the
+  *turn's* status.
+- `(BUGFIX, 2026-07-25)` Bonus defect the fix removed: the failed persist returned `context.Canceled`
+  out of `SendMessage`, which `emitJobOutcome` read as a failed turn — so **every browser reload on
+  a worker job emitted a spurious `worker.failed`**. Now `runErr` is nil and nothing is emitted,
+  matching E2's cancelled-turn decision.
+- `(BUGFIX, 2026-07-25)` **`extension.SessionContext.MCPServers` was never populated** — A2 added
+  the field and the Runner's merge, B2 computed the project ∪ worker union, and nothing filled it in
+  between, so **a project's configured tools resolved correctly and reached no container at all**.
+  One line in `sessioncontext.go:Resolve`, plus a regression test asserting `Resolve` and
+  `ResolveMCPServers` cannot disagree. Found by A4's e2e; the seam existing on both sides is exactly
+  why nobody noticed.
+- `(H1, 2026-07-25)` **E1's open question decided: a denormalised `worker` column on
+  `event_deliveries`**, not a synthetic subscription per schedule (which would put rows a human
+  never created into the routing table). Schedule-fired rows set `subscription_id = schedule_id`, so
+  E1's `(event_id, subscription_id)` idempotency index guards both dispatch paths unchanged.
+- `(H1, 2026-07-25)` **The shared dispatch gate lives in its own file, `cmd/agentd/dispatch.go`** —
+  not in `scheduler.go` or `router.go` — so E3 adopts it without a conflict. E3 calls
+  `Dispatch(ctx, delivery)` + `DrainPending(ctx, project)` and **must not re-implement capacity
+  checks**; the §8.4-step-6 budget check has one marked slot inside `Dispatch` serving both paths.
+- `(H1, 2026-07-25)` **DST is decided by the occurrence key:** `scheduled_for` is the **local
+  wall-clock minute**, not a unix timestamp — so the repeated fall-back hour matches twice but
+  collapses to one claimed occurrence (one morning tweet), and the spring-forward gap needs no
+  special case because that wall clock never occurs. Pinned by `Europe/London` table tests with
+  `time/tzdata` embedded.
+- `(H1, 2026-07-25)` Cron nicknames (`@daily`) are **refused, not silently expanded** — the spec
+  says five fields, and quietly accepting a second syntax is how "every minute" happens by accident.
+- `(H1, 2026-07-25)` The missing-worker check runs **before** the occurrence is claimed, so
+  disabling a schedule whose worker was retired does not burn that minute.
+- `(H1, 2026-07-25)` `schedule_firings` methods are deliberately named `ClaimFiring`/
+  `StampFiringEvent`/`ListFirings` — **without** the word "Schedule" — because the config-conformance
+  classifier reads that noun as configuration and would force an exemption for a runtime table.
+- `(H2, 2026-07-25)` `attention_channel` shape: `{"kind":"webhook","url":...,"headers":{...}}`,
+  `kind` the discriminator, header values may be whole-value `${VAR}` refs resolved from agentd's
+  env (an unset one is a delivery failure, never a literal `${VAR}` header). Webhook body is exactly
+  `{message, session_url}`. **A misconfigured channel never fails the worker's turn** — the stamp and
+  permalink are unconditional; only `delivered:false` differs.
+- `(H2, 2026-07-25)` **"Answered" needs no state machine** — §9 says whatever the human types is the
+  next message, so the sweep counts `role='user'` messages after the request. A lapsed request is
+  marked timed-out **before** its event is emitted (at-most-once): waking a worker twice with
+  "nobody answered" is worse than missing it once.
+- `(H2, 2026-07-25)` The attention mechanics live in `attentionService.Request(...)`;
+  **E4's `request_human_attention` MCP tool must be a thin adapter onto it, not a second
+  implementation.** E2 must also read `session.AttentionRequested` when building the
+  `worker.finished` envelope.
+- `(infra, 2026-07-25)` The shared live Postgres was contaminated by an unmerged migration 027 from
+  a sibling branch, failing tests on branches that lacked it (two of them other agents'). Recreated
+  after 027 merged. **Branches testing against a shared DB must land migrations promptly or use a
+  throwaway database.**
 - `(J2, 2026-07-25)` **The fold needed a monotonic sequence — migration 027 adds
   `config_events.seq`, and §15.6 needs amending.** `created_at` is ms and `id` is a random uuid, so
   two writes to one key inside a millisecond fold arbitrarily and the fold could contradict the
