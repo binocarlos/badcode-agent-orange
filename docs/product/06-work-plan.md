@@ -45,7 +45,9 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `cd sandbox && npm test`
 - [x] **A4.** E2E: mock-mode test proving a session-supplied MCP server is callable in-session,
       and survives snapshot→resume. (`e2e/tests/`) — depends A2+A3
-      **Validation:** `cd e2e && npx playwright test tests/session-mcp.spec.ts`
+      **Validation:** `cd e2e && npx playwright test --config playwright.stack.config.ts features/session-mcp.stack.spec.ts`
+      (corrected 2026-07-25, same reason as G1: the product-layer e2e runs against the compose
+      stack under `e2e/features/`, not the legacy `e2e/tests/` rig)
 - [x] **A5.** Credential env propagation: `AGENTKIT_MCP_ENV` allowlist on agentd forwarded into
       every session container via the existing `SessionEnv` injection seam; compose/.env.example
       documentation; test proving non-allowlisted agentd env (JWT secret, `ANTHROPIC_API_KEY`)
