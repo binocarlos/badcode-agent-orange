@@ -437,6 +437,32 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(C2, 2026-07-25)` **§6.3's preamble contained an editing artifact** — a dangling "When your" left
+  when the `image_create`/`skill_install`/`memory_current` sentence was inserted before "When your
+  job is done". C2 implemented the intended reading; **the spec text has been corrected to match**
+  (`02-workers.md` §6.3), so the byte-for-byte pin in `go/compose_test.go` is the authority now.
+- `(C2, 2026-07-25)` **Prompt-injection seam, needs a spec decision:** event text is injected
+  verbatim (correctly — rewriting it would make the transcript a lie), so event text *containing*
+  `--- event text ends ---` can close the untrusted-data block early and have the remainder read as
+  trusted prompt. Implemented as specified and pinned by test. The fix is either a per-job nonce in
+  the markers or line-escaping; both change the normative marker text, so **§6.2.4 must choose** —
+  raised for Kai, not decided by an executor.
+- `(C2, 2026-07-25)` B1 and C1 both persist `mcp_config` as untyped `agentdb.JSONMap`, so
+  `ComposeJob` converts via a JSON round-trip and fails the job loudly (naming the row) on a
+  malformed stored server. A typed `MCPServers` column on both tables would remove the only place
+  composition can fail on data written months earlier.
+- `(C2, 2026-07-25)` Composition emits `""` for the image when nothing is configured anywhere
+  (no worker pointer, no `base_image`, no global default) rather than erroring — composition has no
+  opinion; the engine's `Policy.BaseImage` applies at launch. Pinned by test in case I4 wants the
+  opposite.
+- `(C2, 2026-07-25)` Two conventions the spec left open, now pinned by test and cheap to change only
+  before C4/E3 land: prompt separators are `--- project prompt ---` / `--- worker prompt ---` /
+  `--- <briefing heading> ---`, and the first-message envelope block is `Event:` / `Occurred:`
+  (RFC3339 UTC) / `Source:` / `Depth:` / `From worker:` / `From session:` / `Interactive:` /
+  `Attention requested:` / `Reason:`, empty optional fields omitted.
+- `(A1/C2, 2026-07-25)` `extension/sqlitestore`'s hand-written sessions DDL now silently drops
+  **three** product columns (`mcp_servers`, `worker`, `composed_prompt`). One decision covers all
+  three: extend sqlitestore, or declare the sqlite fallback unsupported for the product layer.
 - `(C1, 2026-07-25)` Session struct gained `Worker` alongside the pre-existing fleet-placement
   `WorkerID` — different concepts (product worker vs which host runs the container). Do not confuse
   them; C2/E3 want `Worker`.
