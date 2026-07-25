@@ -481,7 +481,54 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
-- `(G1, 2026-07-25)` **BLOCKER, now assigned: the stack's mock proxy cannot emit `tool_use`.** It
+- `(unblock, 2026-07-25)` **RESOLVED — scriptable mock tool calls, and they are stack
+  configuration rather than API surface.** `AGENTKIT_MOCK_MODEL_SCRIPT` / `..._FILE` on agentd, read
+  only in mock mode and only at boot. Rules match on a **substring of the raw model request** (the
+  worker name is the natural key — it appears in every composed system prompt) and the turn is
+  selected by the **assistant-message count**, so it is stateless: parallel sessions, retries and
+  re-runs cannot contaminate each other. Matching nothing yields the ordinary canned turn, never a
+  stray tool call; a malformed script is a boot failure, because a rig that asked for a script and
+  silently didn't get one is worse than one that refuses to start. **Every future tool-shaped
+  assertion uses this; nothing else needs a real key.**
+- `(unblock, 2026-07-25)` `match`/`absent` are a **match predicate only** — sequencing is always the
+  turn list. An earlier draft sequenced the post-tool turn with a second rule, which silently
+  conflicted with the assistant-count index. Anyone extending the format must keep exactly one
+  sequencer. `go/mockmodel` and the agentd proxy are now one implementation; `go/systemtest/`
+  still holds a third, legacy copy of the SSE builder that will drift.
+- `(unblock, 2026-07-25)` **`GET /agent/session/{id}` had no tenancy check on its AgentDB branch** —
+  only the legacy branch did. Exposing `composed_prompt` (which contains the project prompt and the
+  memory briefings) would have turned that dormant gap into a real cross-project leak, so the
+  404-not-403 check now guards both. **Worth deciding whether `Messages`, `QueryEvents` and the
+  artifact routes want the same treatment** now that session rows carry project content.
+  Separately, `GET /agent/sessions` was already serialising `composed_prompt`/`worker` (it marshals
+  whole rows) — project-filtered, so not a leak, but the payload grew silently when C1 added them.
+- `(unblock, 2026-07-25)` `GET /agent/config-events` implements F1's pinned contract plus
+  **`?before_seq=` as the page cursor**, because J2's `seq` is the log's only total order and a
+  `created_at` cursor would skip or repeat at a page boundary. **GET only** — a config event exists
+  solely as the shadow of a real mutation, so a POST would be forging history (test-pinned). F1's UI
+  can now drop its injected fetcher prop.
+- `(images-e2e, 2026-07-25)` **Sessions leak running containers.** A session holds a running
+  container inside DinD until the session is *deleted*, and nothing reaps them on a timer; ~100
+  accumulated during one e2e run, after which `image_create` fails with "session has no running
+  instance and no snapshot" — which reads exactly like a product bug and is not one. The suite now
+  cleans up after itself (`ProjectClient.cleanup()` in `afterEach`). **Whether long-lived idle
+  sessions should reap their containers is a real product question**, adjacent to B4's session-
+  snapshot finding.
+- `(images-e2e, 2026-07-25)` **`run-stack-e2e.sh clean` wedges a running agentd.** Removing session
+  containers out from under it leaves agentd unable to provision *any* new session — brand-new
+  creates fail permanently with the same error until agentd restarts. Confirmed both ways (broken
+  after `clean`, fixed by `docker compose restart agentd`, DinD healthy throughout). The script
+  documents `clean` as ordinary maintenance, so this is a trap in the tooling; the fix belongs in
+  the script or in agentd's placement state.
+- `(images-e2e, 2026-07-25)` Every §13/§14 behaviour asserted — versioning, provenance,
+  append-only-by-absence, the 200-row truncation notice, the config-log asymmetry
+  (`image_create`/`skill_create` logged, `skill_install` not), and both no-`sid` refusals — behaved
+  exactly as specified. The failing-install report is pinned in full: exit status, the script's own
+  stderr, "Do not proceed as though this capability is available", **and** that the document did
+  land — partial success reported as partial rather than rounded to either end, which is what stops
+  a model retry-looping on a file that was never the problem.
+- `(G1, 2026-07-25)` **BLOCKER, now RESOLVED (see the unblock bullets above): the stack's mock proxy
+  could not emit `tool_use`.** It
   serves a fixed canned SSE script, so **no mock-mode test can make the model invoke any MCP tool** —
   which means G1's headline assertion (a reviewer rewriting a worker's prompt via
   `worker_prompt_write`) could only ever run with a real API key, quietly demoting the offline
