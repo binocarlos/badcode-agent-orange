@@ -42,10 +42,19 @@ cd e2e && STACK_BASE_URL=http://localhost:8080 npx playwright test \
 ```
 e2e/
   stack.spec.ts              browser journey: login → project → session → streamed reply → replay
-  features/                  product-layer features through the HTTP API (fast, no browser)
+  features/                  product-layer features (HTTP, and the browser where the UI is the point)
   helpers/api.ts             login, project-scoped client, typed /agent/* calls, polling
+  helpers/ui.ts              browser fixtures: login, fresh project, view switch, send-and-settle
   helpers/configlog.ts       reads config_events out of the stack's postgres
   run-stack-e2e.sh           stack lifecycle
+```
+
+**Changing the UI?** The stack serves a *built* image of `examples/web`, so edits to
+`examples/web/` or `web/` are invisible to the browser tests until you rebuild it:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.stack-e2e.yml \
+  -p agent-orange-stack-e2e up -d --build web
 ```
 
 Feature specs are plain HTTP against the running stack — the whole `features/` directory runs in
@@ -68,7 +77,23 @@ From `helpers/api.ts`:
 | `client.createSubscription()` / `listSubscriptions()` / `updateSubscription()` / `deleteSubscription()` | routing config (§8.3) |
 | `client.listDeliveries()` / `waitForDeliveries()` / `waitForEvents()` | job history, with polling for anything asynchronous |
 | `client.raw(method, path, body)` | the unchecked response, for asserting 401/404 |
+| `client.listMessages(id)` / `getSession(id)` | the persisted transcript and the session row |
+| `projectClient(request, project)` | a client for an *existing* project — e.g. one a browser test just created |
 | `client.permalink(sessionId)` / `sessionPermalink()` | `<base>/p/<project>/s/<session>` (F3) |
+
+From `helpers/ui.ts` (browser):
+
+| Fixture | What it gives you |
+| --- | --- |
+| `loginUI(page)` | logged in, at the project picker, with stale localStorage cleared |
+| `openFreshProject(page, prefix?)` | logged in and inside a brand-new project's workspace; returns the id |
+| `gotoView(page, 'chat' \| 'workers' \| 'settings')` | the workspace view switch |
+| `selectedProject(page)` | which project the switcher shows |
+| `sendAndSettle(page, prompt)` | sends a prompt and waits for the reply to **stop changing** |
+
+`sendAndSettle` is not optional politeness: a turn is only persisted once it ends, so any test
+that reloads or navigates after talking must settle first or it is racing the model. (Reloading
+mid-turn is itself broken — see the known failure below.)
 
 From `helpers/configlog.ts`: `configEvents(project)`, `configActions(project)`,
 `waitForConfigEvents(project, n)`. These read Postgres directly **because the config log has no HTTP
@@ -96,7 +121,24 @@ Two conventions worth keeping:
 | Project isolation §12 | same | another project's rows are **404, not 403**; same-named workers in two projects are two rows; events and config history never cross |
 | Auth | same | no token and a garbage token both 401 on read *and* write |
 | Config log §15 | same | every mutation appended the action §15.3 names (`worker_create/update/disable/enable/delete`, `project_settings_put`, `subscription_create/update/delete`), payloads are full state, deletes carry the final state, HTTP edits log an **empty actor**, and `POST /agent/events` correctly logs **nothing** (§15.3 rule 3) |
+| Project settings UI (B3) | `features/product-ui.stack.spec.ts` | edit the prompt and base image in the browser, save, and find them still there after a full reload; one save = one `project_settings_put` |
+| Workers UI (C3) | same | create a worker in the browser, toggle it disabled, edit its prompt — and the config log reads `worker_create, worker_disable, worker_update`, proving the UI sends the **whole row** on a toggle |
+| Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
+
+### Known failure — deliberately red
+
+`features/product-ui.stack.spec.ts` › *an interrupted turn is still persisted*.
+
+**Reload the page while the agent is answering and the entire turn is lost, including the human's
+own message.** `GET /agent/session/{id}/messages` returns `{"count":0,...}` for that session, and
+the session row is left stuck at `status: "running"` indefinitely. Re-opening it — by permalink or
+from the sidebar — shows a blank transcript that never recovers (verified over 60s). A turn allowed
+to finish replays perfectly, so this is specifically about interruption.
+
+It is left failing rather than adjusted, because the product is wrong: P8 says a transcript is an
+immutable record of what happened, and this is the one way a human can silently lose their own
+words. The assertion is against the API, not the DOM — the UI cannot replay what was never written.
 
 ### The queue — not covered, and why
 
@@ -104,6 +146,8 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 
 | Spec area | Blocked on | The e2e to write |
 | --- | --- | --- |
+| "Chat with this worker" (the workers page's Chat tab) | `createSessionBody` has no `worker` field | assert a session started from a worker's Chat tab carries that worker and its composed prompt. Today the tab opens a **plain** session, so the test would pass while proving nothing |
+| Worker job history (the Jobs tab) | E3 (nothing writes deliveries yet) | assert a worker's Jobs tab lists its deliveries and that clicking one opens that session — the `onOpenSession` wiring is in place and unexercised |
 | Router: event → delivery → job (§8.4) | Track E3 | post an event with a matching subscription; assert a delivery row appears, goes `pending → running → ok`, and a session is created for the right worker |
 | Loop floor / depth, rate limits (§8.3–§8.4) | E3 | an event storm asserts depth caps and `rate_limited` deliveries |
 | `max_instances` gating (§6.1) | E3 | deliveries beyond capacity stay `pending` and dispatch FIFO |
@@ -123,7 +167,14 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 
 - **A failing test that names a real gap is worth more than a passing one that dodges it.** If a
   feature cannot pass because the product is wrong, leave the test failing with a name that says
-  what is broken, and log it in the work plan's Discovered Issues.
+  what is broken, and log it in the work plan's Discovered Issues. Put it in its own `describe`
+  so a serial block does not skip the tests after it.
+- **The library components carry no `data-testid`.** `ProjectSettingsPage`, `WorkersPage` and
+  `WorkerEditor` are driven by accessible role and label (`getByLabel('System prompt')`,
+  `getByRole('button', { name: 'Save worker' })`) — which is the better habit anyway, but means a
+  renamed label breaks a test. The app shell (`examples/web`) does have test ids: `login-*`,
+  `project-picker`, `project-switcher`, `new-session`, `session-sidebar`, `session-row`, and the
+  view switch `nav-chat` / `nav-workers` / `nav-settings`.
 - `features/*.spec.ts` are serial per file (`fullyParallel: false`, one worker) because they share
   one stack. Keep them independent anyway — each mints its own project.
 - The stack build takes minutes; the tests take seconds. Use `up` once and `test` in a loop.

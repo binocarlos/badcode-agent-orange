@@ -122,6 +122,25 @@ export interface EventDelivery {
   updated_at: number
 }
 
+/** One persisted message of a session transcript. */
+export interface SessionMessage {
+  id: string
+  session_id: string
+  role: string
+  content: string
+  sequence_num: number
+  created_at: number
+}
+
+/** The session row, trimmed to what the e2e suite asserts on. */
+export interface SessionRow {
+  id: string
+  customer: string
+  status: string
+  title: string
+  worker?: string
+}
+
 // ── Login ───────────────────────────────────────────────────────────────────
 
 export interface Login {
@@ -339,6 +358,22 @@ export class ProjectClient {
     return poll(() => this.listEvents(filter), predicate, timeoutMs, 'events')
   }
 
+  // ── Sessions ──────────────────────────────────────────────────────────────
+
+  /** The persisted transcript of a session — what a replay has to work from. */
+  async listMessages(sessionId: string): Promise<SessionMessage[]> {
+    const { messages } = await this.json<{ count: number; messages: SessionMessage[]; total: number }>(
+      'GET',
+      `/agent/session/${encodeURIComponent(sessionId)}/messages`,
+    )
+    return messages ?? []
+  }
+
+  /** The session row, including its status. */
+  getSession(sessionId: string): Promise<SessionRow> {
+    return this.json<SessionRow>('GET', `/agent/session/${encodeURIComponent(sessionId)}`)
+  }
+
   /** The canonical permalink for a session in this project. */
   permalink(sessionId: string): string {
     return sessionPermalink(this.project, sessionId)
@@ -361,6 +396,22 @@ export async function newProjectClient(
   const project = uniqueProject(prefix)
   const token = await mintProjectToken(request, auth.login_token, project)
   return new ProjectClient(request, project, token)
+}
+
+/**
+ * A client for a project that already exists — typically one a browser test
+ * created through the UI, so an assertion can be made against the API for the
+ * same project. The wildcard test account can mint a token for any id.
+ */
+export async function projectClient(
+  request: APIRequestContext,
+  project: string,
+): Promise<ProjectClient> {
+  const auth = await login(request)
+  const existing = auth.projects.find((p) => p.id === project)
+  if (existing) return new ProjectClient(request, project, existing.token)
+  if (!auth.login_token) throw new Error('login returned no wildcard login_token')
+  return new ProjectClient(request, project, await mintProjectToken(request, auth.login_token, project))
 }
 
 /** A client for one of the pre-mapped projects (apples-oranges, pears-plums). */
