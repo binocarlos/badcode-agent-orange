@@ -124,10 +124,30 @@ cmd_down() {
   rm -f "$MODE_FILE"
 }
 
+# cmd_clean removes leftover session containers — and then restarts agentd,
+# which is NOT optional.
+#
+# Pulling containers out from under a running agentd leaves its placement state
+# describing instances that no longer exist, and it then refuses to provision
+# ANY new session: every create fails with "has no running instance and no
+# snapshot", including brand-new sessions, until it is restarted. That is a
+# wedged stack produced by a command advertised as routine maintenance, so the
+# restart happens here rather than in a note somebody has to read.
+#
+# Prefer deleting sessions through the API (the e2e suite's ProjectClient.cleanup
+# does this in afterEach); reach for `clean` when a previous run left containers
+# behind and nothing is going to delete them for you.
 cmd_clean() {
   echo "── stack e2e: removing leftover session containers inside DinD ──"
   "${COMPOSE[@]}" exec -T dind sh -c \
     'docker ps -aq --filter name=sandbox- | xargs -r docker rm -f' || true
+
+  # Only worth restarting something that is actually up.
+  if "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx agentd; then
+    echo "── stack e2e: restarting agentd (its placement state now names dead containers) ──"
+    "${COMPOSE[@]}" restart agentd >/dev/null || true
+    wait_ready
+  fi
 }
 
 cmd_run() {

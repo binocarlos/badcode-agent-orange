@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { newProjectClient, poll, type ProjectClient } from '../helpers/api'
+import { sessionMCP } from '../helpers/mcp'
 import { configEvents, waitForConfigEvents } from '../helpers/configlog'
 
 // G1 — the acceptance loop. This is the bar the whole spec is measured against
@@ -8,21 +9,26 @@ import { configEvents, waitForConfigEvents } from '../helpers/configlog'
 // next email is answered better. Behaviour changed by a worker editing a
 // worker, with no human and no deploy.
 //
-// # Why this file is half-written on purpose
+// # State of the loop
 //
-// The router (E3) is what turns an event into a job, and the management tools
-// (E4) are what let a worker rewrite another worker's prompt. Neither exists
-// yet. Everything that does not depend on them is written and runs; everything
-// that does is written out in full and marked `test.fixme()` with the item that
-// blocks it.
+// The router (E3) now runs it, so most of this file asserts real behaviour: an
+// email starts an answerer job, the answerer finishing fans out to the reviewer
+// and the archivist, and — the part the whole design rests on — what one job
+// writes down is in front of the next job.
 //
-// So this file is the *shape* of the finished acceptance test. When E3 lands,
-// deleting one `test.fixme()` line should be most of the work — and if it is
-// not, that gap is the thing worth knowing early. Do not delete a pending test
-// to make the file green.
+// What remains pending is the rewrite itself: `worker_prompt_write` is E4, in
+// flight. Those tests are written out in full against E4's contract and marked
+// `test.fixme()` with the item that blocks them, so they flip the moment it
+// merges. Do not delete a pending test to make the file green.
 //
-// What each pending test needs is stated at its `fixme`, so nobody has to
-// reverse-engineer the intent from an empty body.
+// # On driving tools without the model
+//
+// The mock model serves a canned script and only calls a tool when agentd is
+// given one (AGENTKIT_MOCK_MODEL_SCRIPT). Where a test needs a job to have used
+// a tool, it calls that tool with the job's OWN session credential: same tool,
+// same auth, same provenance row — only the decision to call it is the test's
+// rather than the model's. That is the honest limit of a mock-mode acceptance
+// test, and it is stated at each such call.
 
 /** The §8.7 cast: who reacts to what. */
 const ANSWERER = 'email-answerer'
@@ -57,6 +63,10 @@ async function seedAcceptanceOrg(client: ProjectClient): Promise<void> {
   await client.putWorker(ANSWERER, {
     description: 'answers inbound customer email',
     system_prompt: ANSWERER_PROMPT,
+    // The answerer is the worker being improved, so it is the one that reads
+    // the rolling summary the archivist writes (§7.4). This selector is the
+    // seam the whole loop closes through.
+    briefing: ['kind=rolling-summary'],
   })
   await client.putWorker(REVIEWER, {
     description: 'reviews answered threads and retunes the answerer',
@@ -65,7 +75,6 @@ async function seedAcceptanceOrg(client: ProjectClient): Promise<void> {
   await client.putWorker(ARCHIVIST, {
     description: 'keeps the rolling summary',
     system_prompt: ARCHIVIST_PROMPT,
-    briefing: ['kind=rolling-summary'],
   })
 
   // An inbound email starts an answerer job.
@@ -96,6 +105,12 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     client = await newProjectClient(request, 'e2e-g1')
   })
 
+  // The router creates a session per delivery, and each holds a running
+  // container until it is deleted. This loop makes three or four per test.
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
   // ── What is provable today ────────────────────────────────────────────────
 
   test('the §8.7 organisation can be seeded, and the config log records every hire', async () => {
@@ -107,9 +122,9 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     // which would make the loop silently never start.
     expect(workers.every((w) => w.enabled)).toBe(true)
     expect((await client.getWorker(REVIEWER)).system_prompt).toContain('worker_prompt_write')
-    // The archivist's briefing selector is what pulls the rolling summary into
-    // its job (§7.4).
-    expect((await client.getWorker(ARCHIVIST)).briefing).toEqual(['kind=rolling-summary'])
+    // The answerer's briefing selector is what pulls the archivist's rolling
+    // summary into the next answerer job (§7.4) — the loop's substrate.
+    expect((await client.getWorker(ANSWERER)).briefing).toEqual(['kind=rolling-summary'])
 
     const subs = await client.listSubscriptions()
     expect(subs).toHaveLength(3)
@@ -121,7 +136,7 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     expect(byWorker[ARCHIVIST]).toMatchObject({ event_type: 'worker.finished', filter: { worker: ANSWERER } })
 
     // Seeding an org is configuration, so all six writes are in the log (§15.3).
-    const actions = (await waitForConfigEvents(client.project, 6)).map((e) => e.action).reverse()
+    const actions = (await waitForConfigEvents(client, 6)).map((e) => e.action).reverse()
     expect(actions).toEqual([
       'worker_create',
       'worker_create',
@@ -150,55 +165,115 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
 
     // Ingesting an event is not configuration — §15.3 rule 3 keeps the event
     // spine out of the config log — so the only records are the six from seeding.
-    expect(await configEvents(client.project)).toHaveLength(6)
+    expect(await configEvents(client)).toHaveLength(6)
   })
 
-  // ── Blocked on the router (E3) ────────────────────────────────────────────
+  // ── The loop, now that the router runs it ─────────────────────────────────
 
   test('the router starts an answerer job for the inbound email', async () => {
-    test.fixme(
-      true,
-      'E3 (router) is unbuilt: nothing polls undelivered events, so no delivery row is ever ' +
-        'written and no session is created. Needs: a delivery per (event, matching subscription), ' +
-        'status pending → running → ok, and a session whose `worker` is the subscription target.',
-    )
     await seedAcceptanceOrg(client)
     const event = await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
 
+    // One matching subscription, so exactly one delivery — the (event,
+    // subscription) pair is the idempotency key, so a retrying router cannot
+    // double-deliver (§8.4).
     const deliveries = await client.waitForDeliveries((rows) => rows.length > 0, { event_id: event.id })
     expect(deliveries).toHaveLength(1)
-    expect(deliveries[0].subscription_id).toBeTruthy()
-    await client.waitForDeliveries((rows) => rows.every((d) => d.status === 'ok'), { event_id: event.id })
+    await client.waitForDeliveries((rows) => rows.every((d) => d.status === 'ok'), {
+      event_id: event.id,
+      timeoutMs: 120_000,
+    })
 
-    // The job ran as the answerer, with the event as its first message (§6.2).
-    const session = await client.getSession(deliveries[0].session_id)
+    // The job ran as the answerer, and the prompt it ran with is on the record.
+    const [delivery] = await client.listDeliveries({ event_id: event.id })
+    const session = await client.getSession(delivery.session_id)
     expect(session.worker).toBe(ANSWERER)
+    expect(session.composed_prompt).toContain(ANSWERER_PROMPT)
+    // Composition puts the worker's own prompt after the core preamble, and the
+    // preamble is what tells a worker how to treat event text (§6.2/§6.3).
+    expect(session.composed_prompt).toContain('--- worker prompt ---')
   })
 
   test('the answerer finishing fans out to the reviewer and the archivist', async () => {
-    test.fixme(
-      true,
-      'E3 (router). E2 already emits worker.finished with {worker} on the envelope; what is ' +
-        'missing is the router matching it against the two filtered subscriptions. Needs: two ' +
-        'delivery rows for the one worker.finished event, and the reviewer NOT reacting to its ' +
-        'own finish (the filter is what prevents an infinite loop).',
-    )
     await seedAcceptanceOrg(client)
     await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
 
     const finished = await client.waitForEvents(
       (rows) => rows.some((e) => e.envelope.worker === ANSWERER),
-      { type: 'worker.finished' },
+      { type: 'worker.finished', timeoutMs: 120_000 },
     )
     const trigger = finished.find((e) => e.envelope.worker === ANSWERER)!
-    // Its depth is one more than the job that produced it — the loop floor.
+    // Depth is one more than the job that produced it. This is the loop floor,
+    // and it only works because the router stamps depth BEFORE the turn runs.
     expect(trigger.envelope.depth).toBe(1)
+    expect(trigger.envelope.source).toBe('worker')
 
-    const fanout = await client.waitForDeliveries((rows) => rows.length >= 2, { event_id: trigger.id })
+    // Two subscriptions match that one event, so two jobs start. A delivery is
+    // created before its session exists, so wait for both to be dispatched
+    // rather than for the rows to appear.
+    const fanout = await client.waitForDeliveries(
+      (rows) => rows.length >= 2 && rows.every((d) => d.session_id !== ''),
+      { event_id: trigger.id, timeoutMs: 120_000 },
+    )
+    expect(fanout).toHaveLength(2)
     const workers = await Promise.all(
       fanout.map(async (d) => (await client.getSession(d.session_id)).worker),
     )
     expect(workers.sort()).toEqual([ARCHIVIST, REVIEWER].sort())
+
+    // …and the reviewer does NOT react to its own finish. The envelope filter is
+    // what stops that; without it this project would run for ever.
+    const reviewerFinished = (await client.listEvents({ type: 'worker.finished' })).filter(
+      (e) => e.envelope.worker === REVIEWER,
+    )
+    for (const e of reviewerFinished) {
+      expect(await client.listDeliveries({ event_id: e.id })).toEqual([])
+    }
+  })
+
+  // The assertion the loop actually rests on: what one job writes down, the
+  // next job reads. Until `composed_prompt` was exposed there was no way to
+  // observe it, and it is the difference between "the archivist ran" and "the
+  // archivist changed what the answerer knows".
+  test("a memory written by one job reaches the next job's composed prompt", async () => {
+    await seedAcceptanceOrg(client)
+    await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
+
+    // Wait for the archivist job the fan-out started, and act as it.
+    const fanout = await client.waitForDeliveries(
+      (rows) => rows.length >= 3 && rows.every((d) => d.session_id !== ''),
+      { timeoutMs: 120_000 },
+    )
+    let archivistSession = ''
+    for (const d of fanout) {
+      if ((await client.getSession(d.session_id)).worker === ARCHIVIST) archivistSession = d.session_id
+    }
+    expect(archivistSession, 'the fan-out must have started an archivist job').not.toBe('')
+
+    // The archivist writes the rolling summary with its OWN session credential,
+    // so the memory carries that job's provenance. The model does not choose to
+    // call the tool — the mock model cannot — but everything else is the real
+    // path: same tool, same auth, same row.
+    const summary = 'ROLLING SUMMARY: three customers said the answers were curt.'
+    await sessionMCP(client.project, archivistSession).callOK('memory_create', {
+      content: summary,
+      labels: { kind: 'rolling-summary', name: 'email' },
+    })
+
+    // A second email starts a fresh answerer job…
+    const second = await client.postEvent({ type: 'email.received', text: 'From: carol\n\nanother one' })
+    const [delivery] = await client.waitForDeliveries(
+      (rows) => rows.length > 0 && rows.every((d) => d.session_id !== ''),
+      { event_id: second.id, timeoutMs: 120_000 },
+    )
+    const next = await client.getSession(delivery.session_id)
+    expect(next.worker).toBe(ANSWERER)
+
+    // …and that job's prompt carries the archivist's summary, under the heading
+    // its briefing selector asked for. This is §7.4 closing: a lesson learned in
+    // one job is in front of the next one, with no human in between.
+    expect(next.composed_prompt).toContain('--- Your memory briefing: kind=rolling-summary ---')
+    expect(next.composed_prompt).toContain(summary)
   })
 
   // ── Blocked on the management tools (E4) ──────────────────────────────────
@@ -206,12 +281,13 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
   test('the reviewer rewrites the answerer prompt, with a rationale, through a tool', async () => {
     test.fixme(
       true,
-      'E4 (core MCP management tools) is unbuilt: `worker_prompt_write` does not exist, so no ' +
-        'worker can edit another worker. This is the assertion the whole spec exists for. ' +
-        'E4 must expose worker_prompt_write(name, system_prompt, rationale) with rationale ' +
-        'REQUIRED and non-empty (§15.5), writing through the J1 config-event seam so the record ' +
-        'below appears, plus a kind=prompt-revision memory. It also needs a deterministic way to ' +
-        'make the mock model call it — see the (G1) findings in the work plan.',
+      'E4 is in flight: `worker_prompt_write` does not exist yet, so no worker can edit another ' +
+        'worker. This is the assertion the whole spec exists for. E4 must expose ' +
+        'worker_prompt_write(name, system_prompt, rationale) with rationale REQUIRED and ' +
+        'non-empty (§15.5), writing through the J1 config-event seam so the record below appears, ' +
+        'plus a kind=prompt-revision memory. The way to make it happen from a job is now settled: ' +
+        'script the reviewer with AGENTKIT_MOCK_MODEL_SCRIPT (match on the worker name, turn 0 ' +
+        'the tool call, turn 1 the reply) — see the unblock bullets in the work plan.',
     )
     await seedAcceptanceOrg(client)
     await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
@@ -220,7 +296,7 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     // it. The reviewer only rewrites once it has seen enough, so this is a wait,
     // not a read.
     const log = await poll(
-      () => configEvents(client.project),
+      () => configEvents(client),
       (rows) => rows.some((e) => e.action === 'worker_prompt_write'),
       120_000,
       'the reviewer to rewrite the answerer prompt',
@@ -243,45 +319,21 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
   test('the prompt rewrite emits a routable config.changed event', async () => {
     test.fixme(
       true,
-      'J3 is unbuilt: nothing emits `config.changed` after a config-event commit. Needs an ' +
-        'emission AFTER the transaction commits (never inside), at-least-once with an ' +
+      'J3 is in flight: nothing emits `config.changed` yet (no emitter exists in the tree). ' +
+        'Needs an emission AFTER the transaction commits, never inside it, at-least-once with an ' +
         'idempotency guard on the config-event id (§15.4), carrying that id so a subscriber can ' +
-        'look the change up.',
+        'look the change up. Depends on E4 too, since the rewrite is what triggers it here.',
     )
     await seedAcceptanceOrg(client)
     await client.postEvent({ type: 'email.received', text: 'From: bob\n\nstill broken' })
 
     const changed = await client.waitForEvents((rows) => rows.length > 0, { type: 'config.changed' })
-    const log = await configEvents(client.project)
+    const log = await configEvents(client)
     const rewrite = log.find((e) => e.action === 'worker_prompt_write')!
     // The event names the record, so a reader can fetch the full before/after.
     expect(JSON.stringify(changed[0])).toContain(rewrite.id)
   })
 
-  test("the archivist's rolling summary reaches the next job's composed prompt", async () => {
-    test.fixme(
-      true,
-      'Blocked twice over. (1) E3, for the archivist job to run at all. (2) `composed_prompt` ' +
-        'is written on the session row by C2 but is not exposed by any HTTP route, so a test ' +
-        'cannot read the prompt a job actually ran with. Needs: composed_prompt on the session ' +
-        'read path (or an equivalent), otherwise the single most valuable assertion in G1 — that ' +
-        'a memory written by one job shows up in the next job\'s prompt — is unobservable.',
-    )
-    await seedAcceptanceOrg(client)
-    await client.postEvent({ type: 'email.received', text: 'From: bob\n\nfirst' })
-    await client.waitForDeliveries((rows) => rows.length >= 3, {})
-
-    // A second email, after the archivist has summarised the first round.
-    const second = await client.postEvent({ type: 'email.received', text: 'From: carol\n\nsecond' })
-    const [delivery] = await client.waitForDeliveries((rows) => rows.length > 0, { event_id: second.id })
-    const session = await client.getSession(delivery.session_id)
-
-    // The briefing section the archivist wrote is in the prompt this job ran
-    // with — the proof that memory feeds the next job (§7.4).
-    expect((session as unknown as { composed_prompt?: string }).composed_prompt ?? '').toContain(
-      'rolling-summary',
-    )
-  })
 })
 
 // §8.8 — the shape the first real deployment takes: one human-seeded manager
@@ -303,6 +355,10 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
 
   test.beforeEach(async ({ request }) => {
     client = await newProjectClient(request, 'e2e-g1-mgr')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
   })
 
   test('a single seeded manager plus its two schedules is the whole bootstrap', async () => {
@@ -334,7 +390,7 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
     expect(schedules.map((s) => s.cron).sort()).toEqual(['0 10 * * 1', '0 9 * * *'])
 
     // One worker and two schedules — and the log says a human did it (no actor).
-    const log = await waitForConfigEvents(client.project, 3)
+    const log = await waitForConfigEvents(client, 3)
     expect(log.map((e) => e.action).reverse()).toEqual([
       'worker_create',
       'schedule_create',
@@ -348,14 +404,15 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
   test('the daily reconcile builds the workforce described in the prompt', async () => {
     test.fixme(
       true,
-      'Blocked on E3 (a due schedule must dispatch a job) and E4 (`worker_create` as a tool). ' +
-        'The point of the assertion is that NO bootstrap code path exists: the org appears ' +
-        'because a worker read its own prompt and called tools.',
+      'E3 has landed, so a due schedule now dispatches a job; what is missing is E4\'s ' +
+        '`worker_create` tool for the manager to call, and a mock script driving it. The point ' +
+        'of the assertion is that NO bootstrap code path exists: the org appears because a ' +
+        'worker read its own prompt and called tools.',
     )
     // …after the daily schedule fires, workers the human never created exist.
     const workers = await client.listWorkers()
     expect(workers.map((w) => w.name)).toContain('tweet-author')
-    const log = await configEvents(client.project)
+    const log = await configEvents(client)
     const created = log.filter((e) => e.action === 'worker_create' && e.actor_worker === MANAGER)
     expect(created.length).toBeGreaterThan(0)
   })
@@ -363,10 +420,11 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
   test('a content worker pauses cleanly for human sign-off', async () => {
     test.fixme(
       true,
-      'Blocked on E3. H2 built request_human_attention and the attention sweep, but nothing ' +
-        'starts the job that would call it. Needs: the delivery parked at `awaiting_human` with ' +
-        'no ended_at, an envelope carrying attention_requested, and a POST to the project ' +
-        'attention channel of {message, session_url}.',
+      'H2 built request_human_attention and the attention sweep, and E3 now starts the jobs — ' +
+        'what is missing is a job that CALLS the tool, which needs a mock script ' +
+        '(AGENTKIT_MOCK_MODEL_SCRIPT) driving the content worker. Needs: the delivery parked at ' +
+        '`awaiting_human` with no ended_at, an envelope carrying attention_requested, and a POST ' +
+        'to the project attention channel of {message, session_url}.',
     )
     await client.putSettings({
       attention_channel: { kind: 'webhook', url: 'http://127.0.0.1:9/never' },

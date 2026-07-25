@@ -1,67 +1,58 @@
-import { poll } from './api'
-import { lit, psql, stackDbReadable } from './stackdb'
+import { poll, type ConfigEvent, type ProjectClient } from './api'
 
 // Reading the config log (§15) from an e2e test.
 //
-// The log has no HTTP route yet — J1 built the table and the store seam,
-// `GET /agent/config-events` is still unbuilt (see e2e/README.md). So the one
-// way to assert "that mutation was recorded" end-to-end is to read the stack's
-// Postgres directly, through helpers/stackdb.ts.
+// This used to go through psql, because J1 built the table and the store seam
+// but no read route. `GET /agent/config-events` (F1) is now live, so these read
+// the log the way the changelog UI does — over the API.
 //
-// When the read route lands, replace the body of `configEvents` with a client
-// call and every feature spec keeps working unchanged.
+// They take a ProjectClient rather than a project name precisely so scoping is
+// the token's business: a test cannot ask for another project's history even by
+// accident, because it has no credential that would answer.
 
-/** One row of `config_events` (go/agentdb/config_events.go). */
-export interface ConfigEvent {
-  id: string
-  project: string
-  actor_worker: string
-  actor_session: string
-  action: string
-  payload: Record<string, unknown>
-  rationale: string
-  created_at: number
-}
+export type { ConfigEvent } from './api'
 
-/**
- * Returns a project's config-log records, newest first — the same order and
- * scoping ListConfigEvents gives (§15.9). Project is mandatory here for the
- * same reason it is in the store: there is no cross-project read.
- */
-export async function configEvents(project: string): Promise<ConfigEvent[]> {
-  const out = await psql(
-    `select coalesce(json_agg(row_to_json(t) order by t.created_at desc, t.id desc), '[]')
-     from (select id, project, actor_worker, actor_session, action, payload, rationale, created_at
-           from config_events where project = ${lit(project)}) t;`,
-  )
-  return JSON.parse(out.trim() || '[]') as ConfigEvent[]
+/** A project's config-log records, newest first (§15.9). */
+export async function configEvents(client: ProjectClient): Promise<ConfigEvent[]> {
+  return client.configEvents()
 }
 
 /** Just the action verbs, newest first — what most assertions actually compare. */
-export async function configActions(project: string): Promise<string[]> {
-  return (await configEvents(project)).map((e) => e.action)
+export async function configActions(client: ProjectClient): Promise<string[]> {
+  return (await configEvents(client)).map((e) => e.action)
 }
 
 /**
- * Waits until a project's log holds at least `count` records and returns them.
- * The dual write commits inside the mutation's transaction (§15.4), so this is
- * normally satisfied on the first read — the poll exists so a slow machine
- * fails with a useful message instead of a bare length mismatch.
+ * Waits until the log holds at least `count` records and returns them.
+ *
+ * For a mutation the test made itself this is satisfied on the first read — the
+ * dual write commits inside the mutation's transaction (§15.4). It is a poll
+ * because a record written by a *job* lands whenever that job gets to it.
  */
 export function waitForConfigEvents(
-  project: string,
+  client: ProjectClient,
   count: number,
   timeoutMs = 10_000,
 ): Promise<ConfigEvent[]> {
   return poll(
-    () => configEvents(project),
+    () => configEvents(client),
     (rows) => rows.length >= count,
     timeoutMs,
-    `${count} config event(s) in ${project}`,
+    `${count} config event(s) in ${client.project}`,
   )
 }
 
-/** True when the stack's postgres is reachable — lets a spec skip rather than error. */
-export async function configLogReadable(): Promise<boolean> {
-  return stackDbReadable()
+/** Waits for a record with the given action and returns the newest such record. */
+export async function waitForConfigAction(
+  client: ProjectClient,
+  action: string,
+  timeoutMs = 120_000,
+): Promise<ConfigEvent> {
+  const rows = await poll(
+    () => client.configEvents({ action }),
+    (found) => found.length > 0,
+    timeoutMs,
+    `a ${action} record in ${client.project}`,
+  )
+  return rows[0]
 }

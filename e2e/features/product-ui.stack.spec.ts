@@ -17,8 +17,9 @@ import { configActions, waitForConfigEvents } from '../helpers/configlog'
 test.describe('product UI', () => {
   test.describe.configure({ mode: 'serial' })
 
-  test('project settings: edit, save, and survive a reload', async ({ page }) => {
+  test('project settings: edit, save, and survive a reload', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-ui-set')
+    const api = await projectClient(request, project)
     await gotoView(page, 'settings')
 
     const prompt = page.getByLabel('Project system prompt')
@@ -41,11 +42,12 @@ test.describe('product UI', () => {
     await expect(page.getByLabel('Base image')).toHaveValue('acme/base:v1')
 
     // One save is one config-log record (§15.3).
-    expect(await configActions(project)).toEqual(['project_settings_put'])
+    expect(await configActions(api)).toEqual(['project_settings_put'])
   })
 
-  test('worker: create, disable, edit — and the log says disable, not update', async ({ page }) => {
+  test('worker: create, disable, edit — and the log says disable, not update', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-ui-wk')
+    const api = await projectClient(request, project)
     await gotoView(page, 'workers')
 
     // ── create ──────────────────────────────────────────────────────────────
@@ -70,7 +72,7 @@ test.describe('product UI', () => {
     await expect(page.getByText('No unsaved changes')).toBeVisible({ timeout: 15_000 })
 
     // ── the log is the other half, and the reason this test exists ──────────
-    const actions = (await waitForConfigEvents(project, 3)).map((e) => e.action).reverse()
+    const actions = (await waitForConfigEvents(api, 3)).map((e) => e.action).reverse()
     expect(
       actions,
       'the UI must send the whole worker row when toggling `enabled`; a partial ' +

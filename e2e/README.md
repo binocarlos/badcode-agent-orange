@@ -30,12 +30,11 @@ log recorded that" means anything.
 Modes are `mock` (deterministic, offline — the CI signal), `api-key`, and `subscription`. Docker is
 required; the stack runs one session container per session inside DinD.
 
-> **`run-stack-e2e.sh clean` wedges a running agentd.** Removing session containers out from under
-> it leaves agentd unable to provision *any* new session — every create then fails with "no running
-> instance and no snapshot", including brand-new sessions. Restarting agentd
-> (`docker compose -p agent-orange-stack-e2e restart agentd`) recovers it. Prefer deleting sessions
-> through the API (`client.cleanup()`); reach for `clean` only when the stack is already down or you
-> intend to restart agentd straight after.
+> **`clean` restarts agentd, on purpose.** Removing session containers out from under a running
+> agentd leaves its placement state naming dead instances, and it then refuses to provision *any*
+> new session until restarted. `cmd_clean` now does the restart itself. Prefer deleting sessions
+> through the API anyway — `client.cleanup()` in an `afterEach` — and keep `clean` for containers a
+> previous run abandoned.
 
 To iterate on a single spec against an already-running stack:
 
@@ -121,10 +120,14 @@ is how the "must be called from inside a session" refusals are tested. A tool th
 `isError: true` with its report in `text` — that is not a transport error, and `call` does not throw;
 `callOK` does.
 
-From `helpers/stackdb.ts`: `psql()`, `seedSessionMCPServers()`, `storedSessionMCPServers()`. This
-is the **only** place the suite reaches past the HTTP API, and every use marks a missing route: the
-config log has no read route, and a session's `mcp_servers` has no write path at all. When those
-routes land, rewrite these helpers and every spec keeps working.
+From `helpers/configlog.ts`: `configEvents(client)`, `configActions(client)`,
+`waitForConfigEvents(client, n)`, `waitForConfigAction(client, action)`. These read
+`GET /agent/config-events` — they used to go through psql, and swapping the implementation left
+every spec unchanged, which was the point of the seam.
+
+From `helpers/stackdb.ts`: `psql()`, `seedSessionMCPServers()`, `storedSessionMCPServers()`. Now
+down to **one** remaining use: a session's `mcp_servers` still has no write path, so seeding the row
+is the only way to exercise what happens downstream of it.
 
 Two conventions worth keeping:
 
@@ -156,7 +159,7 @@ Two conventions worth keeping:
 | Workers UI (C3) | same | create a worker in the browser, toggle it disabled, edit its prompt — and the config log reads `worker_create, worker_disable, worker_update`, proving the UI sends the **whole row** on a toggle |
 | Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
 | Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
-| G1 seeding §8.7/§8.8 | `features/acceptance-loop.spec.ts` | the §8.7 org (answerer, reviewer, archivist + three filtered subscriptions) seeds cleanly and every hire lands in the config log; an inbound email enters with a core-stamped envelope and logs nothing configuration-shaped; the §8.8 bootstrap — one manager plus two schedules — is one worker and two `schedule_create` records |
+| **The acceptance loop §8.7/§8.8** | `features/acceptance-loop.spec.ts` | the org seeds and every hire is logged; an inbound email enters with a core-stamped envelope; **the router starts an answerer job** and the composed prompt it ran with carries the worker's prompt; **the answerer finishing fans out to reviewer and archivist** at depth 1, and the reviewer does *not* react to its own finish; **a memory written by one job appears verbatim in the next job's composed prompt** under the heading its briefing selector asked for (§7.4 — the loop's substrate); and the §8.8 bootstrap is one manager plus two schedules |
 | Images §13 / skills §14 | `features/images-and-skills.stack.spec.ts` | curate-then-burn end to end: `skill_create` → `skill_install` lands the document and runs its script; **a failing script is a loud failure** carrying exit status, stderr and "do not proceed"; `image_create` allocates versions 1 then 2, gap-free, listed newest-first with worker/session/`session_url` provenance; an older version survives a newer burn unchanged; the catalogue exposes **no update or delete verb**; `image_create`/`skill_create` are logged with the acting session while `skill_install` logs nothing (§14.2); both lists cap at 200 with `truncated`; and a token with no `sid` is refused by both |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
@@ -193,7 +196,6 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Loop floor / depth, rate limits (§8.3–§8.4) | E3 | an event storm asserts depth caps and `rate_limited` deliveries |
 | `max_instances` gating (§6.1) | E3 | deliveries beyond capacity stay `pending` and dispatch FIFO |
 | Job composition in a real session (§6.2) | C4/E3 | the composed prompt of a launched session contains project prompt + worker prompt + briefing + event envelope |
-| Session `composed_prompt` over HTTP | nobody yet | C2 writes it on the session row but no route returns it, so a test cannot read the prompt a job actually ran with — which blocks G1's most valuable assertion |
 | Memory §7 | D3 (tools) | a job writes a memory; a later job's briefing contains it; `name=` singleton replacement; RRF search ordering |
 | Management tools §9 | D3/E4/H1 | a worker hires a worker / rewrites a prompt **through MCP tools**, not HTTP |
 | Prompt rewrite provenance (§15.5) | E4/H1 | `worker_prompt_write` carries a **non-empty rationale** — the one field §15.5 makes mandatory |
@@ -202,7 +204,7 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Schedules §8.6 | Track H | a due schedule fires a job; a missed window is skipped, not caught up |
 | `request_human_attention` (§9) | H2 | delivery goes `awaiting_human`, the attention channel receives `{message, session_url}` |
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
-| **G1: the §8.7 acceptance loop** | E3, then E4 + J3 | **scaffolded** in `features/acceptance-loop.spec.ts`: the seeding and the ingestion assertions run today; the seven router/tool-dependent assertions are written out in full and marked `test.fixme()` with the item that blocks each. Do not delete one to make the file green |
+| **G1: the §8.7 acceptance loop** | E4 (then J3) | mostly **live** in `features/acceptance-loop.spec.ts` — see Covered. What remains pending is the prompt rewrite itself and the `config.changed` it should emit, written out in full against E4's contract and marked `test.fixme()`. Do not delete one to make the file green |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
 
 ## Notes for whoever extends this

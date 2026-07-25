@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { newProjectClient, ProjectClient } from '../helpers/api'
-import { configEvents, configLogReadable, waitForConfigEvents } from '../helpers/configlog'
+import { configEvents, waitForConfigEvents } from '../helpers/configlog'
 
 // Feature e2e: project settings (§5) + workers (§6) through the real HTTP API
 // against the running stack, with the config log (§15) checked after every
@@ -45,7 +45,7 @@ test.describe('project settings + workers + config log', () => {
     expect(settings.daily_tokens_hard).toBe(0)
 
     // Reading defaults is not a write: nothing was logged.
-    expect(await configEvents(client.project)).toHaveLength(0)
+    expect(await configEvents(client)).toHaveLength(0)
     expect(await client.listWorkers()).toEqual([])
   })
 
@@ -76,7 +76,7 @@ test.describe('project settings + workers + config log', () => {
       daily_tokens_hard: 0,
     })
 
-    const log = await waitForConfigEvents(client.project, 2)
+    const log = await waitForConfigEvents(client, 2)
     expect(log.map((e) => e.action)).toEqual(['project_settings_put', 'project_settings_put'])
     // Newest first, and the payload is the full row after the write (§15.2).
     expect(log[0].payload).toMatchObject({ system_prompt: 'Be terse.', base_image: '' })
@@ -134,7 +134,7 @@ test.describe('project settings + workers + config log', () => {
     expect((await client.raw('GET', '/agent/workers/email-answerer')).status()).toBe(404)
 
     // ── the log tells the whole story, in order ─────────────────────────────
-    const log = await waitForConfigEvents(client.project, 5)
+    const log = await waitForConfigEvents(client, 5)
     const actions = log.map((e) => e.action).reverse() // oldest first, as it happened
     expect(actions).toEqual([
       'worker_create',
@@ -184,7 +184,7 @@ test.describe('project settings + workers + config log', () => {
     await client.deleteSubscription(sub.id)
     expect(await client.listSubscriptions()).toEqual([])
 
-    const actions = (await waitForConfigEvents(client.project, 4)).map((e) => e.action).reverse()
+    const actions = (await waitForConfigEvents(client, 4)).map((e) => e.action).reverse()
     expect(actions).toEqual([
       'worker_create',
       'subscription_create',
@@ -223,8 +223,8 @@ test.describe('project settings + workers + config log', () => {
     expect(await other.listEvents()).toEqual([])
 
     // And neither does the config log: each project's history is its own.
-    const mine = await configEvents(client.project)
-    const theirs = await configEvents(other.project)
+    const mine = await configEvents(client)
+    const theirs = await configEvents(other)
     expect(mine.every((e) => e.project === client.project)).toBe(true)
     expect(theirs.every((e) => e.project === other.project)).toBe(true)
     expect(mine.map((e) => e.action).reverse()).toEqual([
@@ -253,14 +253,5 @@ test.describe('project settings + workers + config log', () => {
       ).status(),
     ).toBe(401)
     expect((await client.listWorkers()).map((w) => w.name)).toEqual(['email-answerer'])
-  })
-
-  test.beforeAll(async () => {
-    // Every assertion below the HTTP layer depends on reading the stack's
-    // database; fail loudly here rather than in the middle of a feature test.
-    expect(
-      await configLogReadable(),
-      'cannot read the stack postgres (docker compose exec) — the config-log assertions need it',
-    ).toBe(true)
   })
 })

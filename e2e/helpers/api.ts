@@ -157,7 +157,27 @@ export interface SessionRow {
   customer: string
   status: string
   title: string
+  /** The product worker this job ran as; '' for a plain human session (§6.5). */
   worker?: string
+  /**
+   * The full system prompt ComposeJob produced for this job (§6.2) — core
+   * preamble, project prompt, worker prompt and the memory briefings. This is
+   * how a test sees what a job actually ran with, rather than what it assumes.
+   */
+  composed_prompt?: string
+}
+
+/** One record in the config log (§15.2), as `GET /agent/config-events` returns it. */
+export interface ConfigEvent {
+  id: string
+  project: string
+  seq: number
+  actor_worker: string
+  actor_session: string
+  action: string
+  payload: Record<string, unknown>
+  rationale: string
+  created_at: number
 }
 
 // ── Login ───────────────────────────────────────────────────────────────────
@@ -344,6 +364,22 @@ export class ProjectClient {
 
   async deleteSubscription(id: string): Promise<void> {
     await this.json<{ deleted: boolean }>('DELETE', `/agent/subscriptions/${encodeURIComponent(id)}`)
+  }
+
+  // ── The config log (§15.9) ────────────────────────────────────────────────
+
+  /**
+   * The project's configuration history, newest first. Project scoping is the
+   * token's, so there is no cross-project read to get wrong.
+   */
+  async configEvents(
+    opts: { action?: string; actor_worker?: string; before_seq?: number; limit?: number } = {},
+  ): Promise<ConfigEvent[]> {
+    const { config_events } = await this.json<{ config_events: ConfigEvent[] }>(
+      'GET',
+      `/agent/config-events${query(opts)}`,
+    )
+    return config_events ?? []
   }
 
   // ── Schedules (§8.6) ──────────────────────────────────────────────────────

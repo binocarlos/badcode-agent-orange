@@ -123,7 +123,7 @@ test.describe('§14 — skills', () => {
       name: 'quiet-skill',
       markdown: '# Quiet\n\nNo script.',
     })
-    const before = await configEvents(client.project)
+    const before = await configEvents(client)
     expect(before.map((e) => e.action)).toEqual(['skill_create'])
 
     await mcp.callOK('skill_install', { name: 'quiet-skill' })
@@ -131,7 +131,7 @@ test.describe('§14 — skills', () => {
     // The asymmetry is the design decision worth guarding: creating a skill is
     // a project fact and is logged; installing one changes only this
     // container's filesystem, so the config log must NOT grow (§15.3 rule 3).
-    const after = await configEvents(client.project)
+    const after = await configEvents(client)
     expect(after.map((e) => e.action)).toEqual(['skill_create'])
   })
 
@@ -139,7 +139,7 @@ test.describe('§14 — skills', () => {
     const { id: session, mcp } = await sessionWithMCP(client)
     await mcp.callOK('skill_create', { name: 'logged-skill', markdown: '# Logged' })
 
-    const [record] = await configEvents(client.project)
+    const [record] = await configEvents(client)
     expect(record.action).toBe('skill_create')
     // A tool call is not a human edit: the session is on the record, which is
     // what makes the changelog navigable back to the transcript (§15.2).
@@ -246,7 +246,7 @@ test.describe('§13 — images', () => {
     const { id: session, mcp } = await sessionWithMCP(client)
     await mcp.callOK('image_create', { name: 'logged-image' })
 
-    const [record] = await configEvents(client.project)
+    const [record] = await configEvents(client)
     expect(record.action).toBe('image_create')
     expect(record.actor_session).toBe(session)
     expect(record.payload).toMatchObject({ name: 'logged-image', version: 1 })
@@ -258,7 +258,7 @@ test.describe('§13 — images', () => {
     expect(out.isError).toBe(true)
     expect(out.text).toContain('image_create can only be called from inside a session')
     // …and nothing was recorded for the attempt.
-    expect(await configEvents(client.project)).toHaveLength(0)
+    expect(await configEvents(client)).toHaveLength(0)
   })
 })
 
