@@ -132,6 +132,18 @@ export interface SessionMessage {
   created_at: number
 }
 
+/** A schedule row (§8.6) — a cron expression and the input it delivers. */
+export interface Schedule {
+  id: string
+  project: string
+  worker: string
+  cron: string
+  input: string
+  enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
 /** What the in-image agent reports about a turn (sandbox `session_info`). */
 export interface SessionInfo {
   tools: string[]
@@ -332,6 +344,23 @@ export class ProjectClient {
 
   async deleteSubscription(id: string): Promise<void> {
     await this.json<{ deleted: boolean }>('DELETE', `/agent/subscriptions/${encodeURIComponent(id)}`)
+  }
+
+  // ── Schedules (§8.6) ──────────────────────────────────────────────────────
+
+  createSchedule(body: {
+    worker: string
+    cron: string
+    input: string
+    enabled?: boolean
+    rationale?: string
+  }): Promise<Schedule> {
+    return this.json<Schedule>('POST', '/agent/schedules', body)
+  }
+
+  async listSchedules(): Promise<Schedule[]> {
+    const { schedules } = await this.json<{ schedules: Schedule[] }>('GET', '/agent/schedules')
+    return schedules ?? []
   }
 
   async listDeliveries(

@@ -46,6 +46,7 @@ e2e/
   helpers/api.ts             login, project-scoped client, typed /agent/* calls, polling
   helpers/ui.ts              browser fixtures: login, fresh project, view switch, send-and-settle
   helpers/configlog.ts       reads config_events out of the stack's postgres
+  helpers/stackdb.ts         raw psql — the only reach past the HTTP API; each use marks a missing route
   run-stack-e2e.sh           stack lifecycle
 ```
 
@@ -80,6 +81,8 @@ From `helpers/api.ts`:
 | `client.listMessages(id)` / `getSession(id)` | the persisted transcript and the session row |
 | `projectClient(request, project)` | a client for an *existing* project — e.g. one a browser test just created |
 | `client.permalink(sessionId)` / `sessionPermalink()` | `<base>/p/<project>/s/<session>` (F3) |
+| `client.createSession()` / `sendMessage()` / `archiveSession()` / `restoreSession()` | session lifecycle; `sendMessage` returns when the turn's SSE stream closes, so it doubles as "wait for the turn" |
+| `client.queryEvents(id)` / `sessionInfoEvents(id)` / `errorEvents(id)` | what the **container** reported: tools, MCP servers and their connection status, and `AGENT_ERROR`s |
 
 From `helpers/ui.ts` (browser):
 
@@ -91,12 +94,11 @@ From `helpers/ui.ts` (browser):
 | `selectedProject(page)` | which project the switcher shows |
 | `sendAndSettle(page, prompt)` | sends a prompt and waits for the reply to **stop changing** |
 
-`sendAndSettle` is not optional politeness: a turn is only persisted once it ends, so any test
-that reloads or navigates after talking must settle first or it is racing the model. (Reloading
-mid-turn is itself broken — see the known failure below.)
+`sendAndSettle` is not optional politeness: a turn is only persisted once it ends, so a test that
+reloads or navigates immediately after talking is racing the model, not testing the feature. Writing
+one such race is what turned up the interrupted-turn defect below — but only after the race was
+removed and the failure persisted.
 
-| `client.createSession()` / `sendMessage()` / `archiveSession()` / `restoreSession()` | session lifecycle; `sendMessage` returns when the turn's SSE stream closes, so it doubles as "wait for the turn" |
-| `client.queryEvents(id)` / `sessionInfoEvents(id)` / `errorEvents(id)` | what the **container** reported: tools, MCP servers and their connection status, and `AGENT_ERROR`s |
 
 From `helpers/configlog.ts`: `configEvents(project)`, `configActions(project)`,
 `waitForConfigEvents(project, n)`.
@@ -131,6 +133,7 @@ Two conventions worth keeping:
 | Workers UI (C3) | same | create a worker in the browser, toggle it disabled, edit its prompt — and the config log reads `worker_create, worker_disable, worker_update`, proving the UI sends the **whole row** on a toggle |
 | Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
 | Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
+| G1 seeding §8.7/§8.8 | `features/acceptance-loop.spec.ts` | the §8.7 org (answerer, reviewer, archivist + three filtered subscriptions) seeds cleanly and every hire lands in the config log; an inbound email enters with a core-stamped envelope and logs nothing configuration-shaped; the §8.8 bootstrap — one manager plus two schedules — is one worker and two `schedule_create` records |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
 ### No known failures
@@ -145,10 +148,11 @@ Two defects were found by writing the test first, leaving it red, and reporting 
 the tests stay as regression guards.
 
 - *a turn interrupted by a reload is still persisted* (`product-ui`) — red until `8faaa95`.
-  Reloading mid-answer lost the whole turn, the human's own message included: `persist()` wrote
-  under the caller's context, which the reload had just cancelled, leaving the session stuck at
-  `status: "running"` for ever. Leave it asserting the API rather than the DOM — a DOM assertion
-  would pass on a UI that renders an optimistic echo of a message the server never stored.
+  Reloading mid-answer lost the whole turn, the human's own message included: `persist()` handed
+  the store the caller's *already cancelled* context, so a real sink rejected the write instantly.
+  Every unit test used a mock sink that ignores context, which is why only an e2e caught it. Leave
+  it asserting the API rather than the DOM — a DOM assertion would pass on a UI that renders an
+  optimistic echo of a message the server never stored.
 - *a project's mcp_config reaches its sessions* (`session-mcp`) — red until `7170bed`. A project's
   tools resolved correctly and reached no container: agentd's `Resolve` never set the `MCPServers`
   field the Runner merges. Three tracks each built their half and nothing joined them.
@@ -165,6 +169,7 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Loop floor / depth, rate limits (§8.3–§8.4) | E3 | an event storm asserts depth caps and `rate_limited` deliveries |
 | `max_instances` gating (§6.1) | E3 | deliveries beyond capacity stay `pending` and dispatch FIFO |
 | Job composition in a real session (§6.2) | C4/E3 | the composed prompt of a launched session contains project prompt + worker prompt + briefing + event envelope |
+| Session `composed_prompt` over HTTP | nobody yet | C2 writes it on the session row but no route returns it, so a test cannot read the prompt a job actually ran with — which blocks G1's most valuable assertion |
 | Memory §7 | D3 (tools) | a job writes a memory; a later job's briefing contains it; `name=` singleton replacement; RRF search ordering |
 | Management tools §9 | D3/E4/H1 | a worker hires a worker / rewrites a prompt **through MCP tools**, not HTTP |
 | Prompt rewrite provenance (§15.5) | E4/H1 | `worker_prompt_write` carries a **non-empty rationale** — the one field §15.5 makes mandatory |
@@ -173,7 +178,7 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Schedules §8.6 | Track H | a due schedule fires a job; a missed window is skipped, not caught up |
 | `request_human_attention` (§9) | H2 | delivery goes `awaiting_human`, the attention channel receives `{message, session_url}` |
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
-| **G1: the §8.7 acceptance loop** | everything above | seed answerer + reviewer + archivist + subscriptions; post `email.received`; assert answerer job → reviewer job → prompt rewritten (with rationale, logged) → memory written → rolling summary present in the **next** job's composed prompt |
+| **G1: the §8.7 acceptance loop** | E3, then E4 + J3 | **scaffolded** in `features/acceptance-loop.spec.ts`: the seeding and the ingestion assertions run today; the seven router/tool-dependent assertions are written out in full and marked `test.fixme()` with the item that blocks each. Do not delete one to make the file green |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
 
 ## Notes for whoever extends this

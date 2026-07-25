@@ -121,9 +121,15 @@ test.describe('product UI', () => {
 // fixed. It was red from 2026-07-25 until that fix landed.
 //
 // Reloading the page mid-answer used to lose the whole turn, the human's own
-// message included: `persist()` wrote under the caller's context, which the
-// reload had just cancelled, so every collected event was dropped and the
-// session was left stuck at `status: "running"` for ever. Nothing recovered it.
+// message included: `persist()` handed the store the caller's *already
+// cancelled* context, so a real sink rejected the write instantly and every
+// collected event was discarded. Every existing unit test used a mock sink that
+// ignores context, which is why nothing below this level caught it.
+//
+// (An earlier version of this comment also called the session's `running`
+// status a symptom. It is not: `running` is the correct steady state for a
+// resumable session — the archive loop destroys the container and leaves the
+// row alone so `ensureRunning` can restore it.)
 //
 // It asserts the SERVER, not the DOM, on purpose: the UI can only replay what
 // was written, so this is a question about persistence, not rendering. Keep it
