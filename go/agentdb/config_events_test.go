@@ -372,6 +372,12 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
 		return err
 	},
+	"CreateCustomImage": func(ctx context.Context, s *Store) error {
+		_, err := s.CreateCustomImage(ctx, &CustomImage{
+			Name: "probe", Customer: probeProject, RegistryHandle: `{"kind":"blob-archive","ref":"probe"}`,
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
 }
 
 const probeProject = "probe-project"
@@ -449,6 +455,7 @@ func TestMutationsAreLogged(t *testing.T) {
 			"ClearWorkerBinding",
 			"DeleteCustomImage",
 			"DeleteSkill",
+			"MarkCustomImageReaped",
 			"SetSkillVisibility",
 			"SetWorkerBinding",
 		}

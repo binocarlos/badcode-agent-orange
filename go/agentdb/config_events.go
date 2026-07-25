@@ -366,6 +366,14 @@ var ConfigMutations = []ConfigMutation{
 		Actions: []string{ActionImageCreate},
 		Tables:  []string{"agent_custom_images"},
 	},
+	{
+		// The §13 catalogue write (I1). Publishing an environment is part of the
+		// organisation's history, so burning a version appends `image_create`
+		// with the burning worker/session as the actor (§13.4).
+		Method:  "CreateCustomImage",
+		Actions: []string{ActionImageCreate},
+		Tables:  []string{"agent_custom_images"},
+	},
 }
 
 // ConfigMutationExempt lists methods that the reflection sweep flags but that
@@ -382,6 +390,10 @@ var ConfigMutationExempt = map[string]string{
 		"append-only at the tool surface (§14.2). I3 replaces this catalogue",
 	"DeleteCustomImage": "legacy catalogue GC; §15.3's closed vocabulary has no image_delete because images are " +
 		"append-only at the tool surface (§13). I1 replaces this catalogue",
+	"MarkCustomImageReaped": "storage GC, not curation: the snapshot_ttl_days reaper (§5, B4) deleted the bytes " +
+		"and stamps the catalogue row so resolution fails loudly instead of pointing at nothing (§13.7). " +
+		"No agent decided it and §15.3's closed vocabulary has no verb for it. Like DeleteCustomImage it " +
+		"writes a guarded table outside the seam, so the reaper must not run with the write guard installed",
 }
 
 // configGuardedTables is the set of projection tables under the write guard,

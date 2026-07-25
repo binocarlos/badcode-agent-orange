@@ -204,6 +204,12 @@ func (Skill) TableName() string { return "agent_skills" }
 // ordered set of library skills (see agent-library/go/runner_composition.go).
 // Like Skill, it is a first-class catalog entity (not session-scoped) and uses
 // the same strict customer-scoping visibility rules — except it is never public.
+//
+// Since migration 025 the same table also carries the §13 catalogue: named,
+// versioned, labeled, append-only image records written by CreateCustomImage
+// and read by ResolveCustomImage / ListCustomImages (customimages.go). §13 rows
+// are exactly those with Version >= 1, and their project namespace is the
+// `customer` column — see the namespace note at the top of customimages.go.
 type CustomImage struct {
 	ID               string `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime"`
@@ -219,8 +225,38 @@ type CustomImage struct {
 	RequiresBuild    bool   `json:"requires_build" gorm:"default:false"`                                      // true iff any included skill had install.sh
 	BaseImageID      string `json:"base_image_id" gorm:"type:varchar(36);index:idx_agent_custom_images_base"` // lineage: custom image this was built on ("" = built on platform base)
 	BaseInstallation string `json:"base_installation,omitempty" gorm:"type:text;default:''"`                  // installation name when built directly on a platform installation
-	SourceSessionID  string `json:"source_session_id,omitempty" gorm:"type:varchar(36);default:''"`           // session this image was burned from
 	Focus            string `json:"focus,omitempty" gorm:"type:text;default:''"`                              // CLAUDE.md focus applied in this layer
+
+	// ── §13 catalogue columns (migration 025) ──────────────────────────────
+	//
+	// None of these carries a gorm `default:` tag on purpose: GORM omits a
+	// zero-valued field from the INSERT when a default is declared, which would
+	// silently turn "version 0 / no labels / not reaped" into whatever the DDL
+	// says. The migration still carries DEFAULTs, for rows written outside GORM.
+
+	// Version is the second half of the §13.2 identity `name:version` — a
+	// monotonic, gap-free integer allocated per (project, name) starting at 1.
+	// Zero marks a pre-§13 row written by the legacy latest-wins
+	// UpsertCustomImage path: such rows are not in the catalogue, are never
+	// listed by ListCustomImages, and never resolve (§13.3).
+	Version int `json:"version"`
+	// Labels are the commit message of a version (§13.2) — the same grammar and
+	// the same limits as memory labels (labels.go: one validator, one selector
+	// parser, one jsonb translator for the whole system).
+	Labels LabelSet `json:"labels" gorm:"type:jsonb"`
+	// CreatedByWorker names the worker that burned this version (§13.2).
+	CreatedByWorker string `json:"created_by_worker,omitempty" gorm:"type:text"`
+	// CreatedBySession names the session it was burned from — permalinkable like
+	// a memory hit (§7.3). It deliberately maps onto the pre-existing
+	// `source_session_id` column (migration 018), which already meant exactly
+	// "session this image was burned from": a second column with the same
+	// meaning is drift waiting to happen.
+	CreatedBySession string `json:"created_by_session,omitempty" gorm:"column:source_session_id;type:varchar(36)"`
+	// ReapedAt tombstones a version whose bytes the snapshot_ttl_days reaper
+	// (§5, B4) has deleted: unix seconds, 0 = live. The record outlives the
+	// bytes so the catalogue stays honest — resolving a reaped version fails
+	// loudly with ErrCustomImageReaped rather than pointing at nothing (§13.7).
+	ReapedAt int64 `json:"reaped_at,omitempty"`
 }
 
 func (CustomImage) TableName() string { return "agent_custom_images" }

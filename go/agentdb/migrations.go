@@ -363,6 +363,51 @@ var agentMigrations = []migration{
 		`,
 	},
 	{
+		// Named, versioned, labeled images (§13) and the columns §14's skills
+		// need (I3 builds the skill store and tools on top of them).
+		//
+		// The §13 catalogue is not a new table: it is the existing
+		// agent_custom_images catalogue given an identity (§13.6). Its project
+		// namespace is the existing `customer` column — one namespace column,
+		// not two that can drift; J1 already treats it as the project when it
+		// writes `image_create` config events.
+		//
+		// version 0 means "pre-§13 row", written by the legacy latest-wins
+		// UpsertCustomImage path, so the unique index is PARTIAL: legacy rows
+		// (which may repeat a name across visibility scopes) keep working, while
+		// every catalogue row is uniquely (customer, name, version). That index
+		// is also the concurrency guard for version allocation — two racing
+		// burns of the same name collide on it and one retries, which is what
+		// keeps versions gap-free.
+		//
+		// reaped_at is the §13.7 tombstone: the snapshot_ttl_days reaper (B4)
+		// deletes bytes and stamps the row, so the catalogue never points at
+		// bytes that are gone — resolution fails loudly instead.
+		//
+		// The agent_skills half is columns ONLY (I3 owns the store and the
+		// tools). Both tables reuse their existing `source_session_id` column as
+		// §13.2/§14's created_by_session provenance rather than growing a twin.
+		Name: "025_image_versions_and_skill_columns",
+		SQL: `
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 0;
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '{}';
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS created_by_worker TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS reaped_at BIGINT NOT NULL DEFAULT 0;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_custom_images_version
+				ON agent_custom_images(customer, name, version) WHERE version > 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_custom_images_catalogue
+				ON agent_custom_images(customer, created_at DESC, version DESC) WHERE version > 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_custom_images_labels
+				ON agent_custom_images USING GIN(labels);
+
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '{}';
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS markdown TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS install_sh TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS created_by_worker TEXT NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_agent_skills_labels ON agent_skills USING GIN(labels);
+		`,
+	},
+	{
 		// The config log (§15) — append-only record of every configuration
 		// mutation. payload is the FULL new state, never a diff. Nothing on the
 		// hot path reads this table; the ordinary tables stay the projections.
