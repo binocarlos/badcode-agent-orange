@@ -29,7 +29,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 (incl. J4).
 
 ### Track A — Session MCP plumbing (G1) `[engine]`
-- [ ] **A1.** `MCPServerConfig` + `MCPServers` on `CreateSessionRequest`; persist on session row
+- [x] **A1.** `MCPServerConfig` + `MCPServers` on `CreateSessionRequest`; persist on session row
       (`agentdb` migration 019: `mcp_servers jsonb` on `agent_sessions`). Safe to persist/display
       whole: values are `${VAR}` references, never secrets (§4.4).
       (`go/agentkit.go`, `go/runner.go`, `go/agentdb/sessions.go`)
@@ -53,7 +53,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./cmd/agentd/... -run TestMCPEnvAllowlist -count=1`
 
 ### Track B — Project settings (G2) `[engine+api+ui]`
-- [ ] **B1.** `project_settings` table + store (migration 020); `GET/PUT /agent/project-settings`
+- [x] **B1.** `project_settings` table + store (migration 020); `GET/PUT /agent/project-settings`
       in `httpapi`; JWT-scoped. `[learnings]` The same migration 020 also adds the four §5
       budget/cap columns: `daily_tokens_soft`, `daily_tokens_hard` (0 = off),
       `briefing_max_bytes` (default 2048), `snapshot_ttl_days` (default 30, 0 = never).
@@ -338,7 +338,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       echo it back for confirmation — config-time only, never in the firing path (L28).
       (`web/src/`) — depends E1+H1
       **Validation:** `cd web && npm test`
-- [ ] **F3.** Canonical session permalink route (stable URL per session, project-scoped) —
+- [x] **F3.** Canonical session permalink route (stable URL per session, project-scoped) —
       load-bearing for memory provenance (§7.3), image/skill provenance (§13.2, §14.1),
       config-log actor links (§15.2), and `request_human_attention` (§9); tiny, do it early.
       (`web/src/`, and agentd config for the externally-reachable base URL)
@@ -404,3 +404,53 @@ missing, this plan contradicts the spec, or a decision the plan deferred had to 
 per finding, prefixed with the item id and the date. Do not edit or delete other people's entries.
 
 - (example format) `(I1, 2026-07-25) …what you found, what you did, what still needs deciding.`
+- `(A1, 2026-07-25)` The plan puts `MCPServerConfig` in `go/agentkit.go`, but agentkit imports
+  agentdb, so a persisted column type cannot live in the root package. Canonical definition is in
+  `go/agentdb/sessions.go`; `agentkit.go` re-exports it as a type alias. B1/C2 (`mcp_config` jsonb)
+  should consume the agentdb type.
+- `(A1, 2026-07-25)` Adding the column meant touching `go/agentdb/types.go` (Session struct),
+  which the item's file list did not name — one field only.
+- `(A1, 2026-07-25)` `extension/sqlitestore` (the RunnerStore fallback when DATABASE_URL is unset)
+  has hand-written sessions DDL and will silently drop `mcp_servers`. The shipped stack always
+  sets DATABASE_URL so it's unaffected; A2/A4 must either extend sqlitestore or declare the sqlite
+  fallback unsupported for MCP (same shape as D4's decision).
+- `(A1, 2026-07-25)` MCP-config validation (whole-value `${VAR}` only, exactly one transport) is
+  enforced at the persistence boundary (`SetSessionMCPServers` + runner `CreateSession`), which
+  the item didn't specify — prevents malformed configs becoming silent credential failures. A3
+  still owns spawn-time resolution.
+- `(A1, 2026-07-25)` Pre-existing on main, unrelated: `go vet -tags integration ./systemtest/...`
+  fails (`rig.runner.Suspend` no longer exists on `agentkit.Runner`); untagged `go test ./...`
+  doesn't cover it.
+- `(F3, 2026-07-25)` Phase 0 was a non-event: `web/` builds and tests clean (278 pre-existing
+  tests pass, `tsc` clean) with zero code fixes — CLAUDE.md's and MIGRATION.md Phase 1's
+  "`web/` not yet npm-built in this fork" claim is stale; update in G2.
+- `(F3, 2026-07-25)` Permalink format: `<base>/p/<project>/s/<session>`; env var
+  `AGENTKIT_PUBLIC_BASE_URL` (default `http://localhost:8080`); agentd mints via
+  `permalinker.SessionURL`. The wire/JSON key consumers must emit is exactly `session_url`
+  (D3/H2/I2/J3).
+- `(F3, 2026-07-25)` `web/yarn.lock` replaced with `web/package-lock.json` (npm rewrites a lone
+  yarn.lock destructively; every documented command is npm). `examples/web/` still has the same
+  yarn.lock footgun — untouched, out of scope.
+- `(F3, 2026-07-25)` `web/` is a component *library* with no router/app shell — the shell is
+  `examples/web/src/App.tsx` (state-machine, no URL routing). F3 delivered a format module +
+  History-API hook (`useSessionPermalink`); the ~5-line last-mile wiring of the hook into
+  `examples/web/src/App.tsx` belongs to F1/F2/J4.
+- `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
+  not touched.
+- `(B1, 2026-07-25)` Table naming: legacy tables are `agent_*` but the spec names the new product
+  tables bare (`project_settings`, `workers`, `memories`, `project_events`, `config_events`). B1
+  used the spec's bare names; **orchestrator decision: bare spec names are the convention** for all
+  product-layer tables — tracks C/D/E/H/I/J follow suit.
+- `(B1, 2026-07-25)` §5 gives no meaning to `0` for `max_concurrent_jobs`/`briefing_max_bytes`
+  (unlike the token budgets and `snapshot_ttl_days`). Store reads 0 on those two as "unset ⇒
+  default" (4 / 2048), keeps 0 verbatim where the spec defines it. Pinned by test.
+- `(B1, 2026-07-25)` GORM `default:` struct tags are unusable on any column where 0 is meaningful
+  (gorm substitutes the default for zero values on write — silently turned `snapshot_ttl_days: 0`
+  into 30). Convention: no `default:` tags; column DEFAULTs live in the migration SQL, in-Go
+  defaulting in a `normalize()`. Applies to every later track with 0-meaningful columns.
+- `(B1, 2026-07-25)` `httpapi` had no seam for testing `*agentdb.Store`-backed handlers; B1 added
+  the `ProjectSettingsStore` interface + optional `Config` field auto-filled from `AgentDB` in
+  `New()`. C1/E1 HTTP work should reuse this pattern.
+- `(B1, 2026-07-25)` `attention_channel` and `mcp_config` are stored as opaque jsonb — H2 owns
+  attention-channel shape parsing, B2 decodes `mcp_config` (typing it in agentdb would couple it
+  to A1's types).

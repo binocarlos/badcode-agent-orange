@@ -267,6 +267,40 @@ var agentMigrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_agent_sessions_worker ON agent_sessions(worker);
 		`,
 	},
+	{
+		// Append-only labeled memory (spec §7.1). content_tsv is a stored
+		// generated column (no trigger to keep in sync); content_embedding is
+		// added only when pgvector is available, so a plain Postgres still
+		// migrates cleanly and search degrades to keyword-only (§7.6.5).
+		Name: "022_memories",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS memories (
+				id VARCHAR(36) PRIMARY KEY,
+				project TEXT NOT NULL,
+				labels JSONB NOT NULL DEFAULT '{}',
+				content TEXT NOT NULL DEFAULT '',
+				content_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english'::regconfig, COALESCE(content, ''))) STORED,
+				created_by_worker TEXT NOT NULL DEFAULT '',
+				created_by_session TEXT NOT NULL DEFAULT '',
+				created_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_memories_project_created ON memories(project, created_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_memories_labels ON memories USING GIN(labels);
+			CREATE INDEX IF NOT EXISTS idx_memories_tsv ON memories USING GIN(content_tsv);
+			DO $$
+			BEGIN
+				IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
+					BEGIN
+						CREATE EXTENSION IF NOT EXISTS vector;
+						EXECUTE 'ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_embedding vector(1536)';
+						EXECUTE 'CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories USING hnsw (content_embedding vector_cosine_ops)';
+					EXCEPTION WHEN OTHERS THEN
+						RAISE NOTICE 'agentdb: pgvector setup skipped (%) — memory search degrades to keyword-only', SQLERRM;
+					END;
+				END IF;
+			END $$;
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
