@@ -34,7 +34,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       whole: values are `${VAR}` references, never secrets (§4.4).
       (`go/agentkit.go`, `go/runner.go`, `go/agentdb/sessions.go`)
       **Validation:** `go test ./agentdb/... -run TestSessionMCPServers -count=1`
-- [ ] **A2.** Wire protocol: include `mcp_servers` in the sandbox session-create POST; re-supply
+- [x] **A2.** Wire protocol: include `mcp_servers` in the sandbox session-create POST; re-supply
       on resume/re-provision paths. (`go/runner.go`) — depends A1
       **Validation:** `go test ./... -run TestRunnerMCPServers -count=1`
 - [x] **A3.** Sandbox: accept `mcp_servers`, merge over registry, extend `allowedTools`,
@@ -158,7 +158,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       (`go/agentdb/events.go`, `go/agentdb/migrations.go`, `go/httpapi/`)
       **Validation:** `go test ./agentdb/... ./httpapi/... -run 'TestEvents|TestSubscriptions|TestDeliveries' -count=1`
       (a test asserts the delivery-status vocabulary is exactly the six values above)
-- [ ] **E2.** Internal emitters: `worker.finished` (with full transcript payload, reusing the
+- [x] **E2.** Internal emitters: `worker.finished` (with full transcript payload, reusing the
       rehydration renderer) + `worker.failed`, fired from the Runner's query-complete/error
       paths *only for worker jobs*. (`go/runner.go` hooks — use the existing MarkerHook seam,
       do not fork the pipeline) — depends C1+E1
@@ -440,6 +440,40 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(E2, 2026-07-25)` **Depth had no source of truth.** Nothing on the session row recorded the
+  triggering event, and holding it in memory would mean an agentd restart mid-job silently emits
+  depth 1 instead of depth N+1 — quietly defeating the §8.4 loop floor. Added
+  `Store.SessionTriggerEvent(ctx, sessionID)`, walking `event_deliveries.session_id → project_events`;
+  `Interactive` derives from the same fact (no delivery ⇒ a human started it ⇒ depth 0).
+  **If E3 dispatches without stamping `session_id` on the delivery, depth silently collapses to 0.**
+- `(E2, 2026-07-25)` The plan said "use the MarkerHook seam, do not fork the pipeline", but a hook
+  alone cannot produce `worker.finished`: hooks fire *before* `pipeline.persist` and receive one
+  envelope, not the collection, so a transcript rendered there would omit the turn that just
+  finished. Resolution: the `events.Error` hook captures the error text (which `events.Result`
+  discards) and the durable append happens in `SendMessage` after `pipeline.Run` returns. No second
+  pipeline, no forked persist path.
+- `(E2, 2026-07-25)` §8.2 says `worker.finished` text reuses the rehydration rendering "+ tool
+  summaries", but `reconstructConversation` skips all tool events. Reused as-is rather than writing
+  a second renderer; **tool summaries are absent from the transcript** — either the spec sentence or
+  the renderer needs a deliberate decision.
+- `(E2, 2026-07-25)` A **cancelled** turn emits nothing (a human pressing stop neither finished nor
+  failed a job). The spec doesn't say; test-covered so the decision is visible.
+- `(E2, 2026-07-25)` `attention_requested` is a parameter of `EmitWorkerFinished` and the Runner
+  passes `false` — currently the truth, not a placeholder. **H2 must add a session-level flag and
+  one line in `emitJobOutcome`.**
+- `(A2, 2026-07-25)` **Real bug found and fixed:** `rehydrateConversation` returned early when the
+  reconstructed transcript was empty, so a restored session with no prior turns never got a
+  `POST /sessions` — the sandbox's lazy auto-create then minted a session record with **no MCP
+  config**. The create now runs unconditionally, before the transcript work.
+- `(A2, 2026-07-25)` Closed A1's open sqlite question one way: **extended** `extension/sqlitestore`
+  with an `mcp_servers` column (plus an `addColumnIfMissing` ALTER helper, since
+  `CREATE TABLE IF NOT EXISTS` never touches a DB an older build wrote). It still drops C2's
+  `worker`/`composed_prompt`, so on the sqlite fallback every session reads back with an empty
+  `worker` and **no internal events would ever fire**. Moot today (agentd leaves `WorkerEvents` nil
+  there), but someone must decide whether the sqlite fallback is a supported product-layer config.
+- `(A2, 2026-07-25)` `extension.SessionContext` gained `MCPServers`, and `CreateSession` now calls
+  `SessionContextProvider.Resolve` — which it never did before (only `SendMessage` did). A provider
+  error now fails the create loudly rather than launching a session missing its project tools.
 - `(e2e, 2026-07-25)` **The config log has no HTTP read route**, so asserting it end-to-end means
   reading Postgres directly. J2/J3 should add `GET /agent/config-events`; `e2e/helpers/configlog.ts`
   is written so swapping the implementation leaves every spec unchanged.

@@ -169,6 +169,14 @@ func main() {
 	logSessionContextWiring(sessionCtx != nil)
 
 	// ── Runner ───────────────────────────────────────────────────────────────────
+	// The §8.2 internal emitters (worker.finished / worker.failed) append to the
+	// event spine, which only the Postgres store has. Left nil on the sqlite
+	// fallback: no event tables, so no events — assigning the typed-nil *Store
+	// would hand the Runner a non-nil interface over a nil pointer.
+	var workerEvents agentkit.WorkerEventStore
+	if agentDB != nil {
+		workerEvents = agentDB
+	}
 	runner, err := agentkit.NewRunner(agentkit.Deps{
 		Fleet:          f,
 		Registry:       registry,
@@ -176,6 +184,7 @@ func main() {
 		Artifacts:      artStore,
 		Claims:         claims,
 		SessionContext: sessionCtx,
+		WorkerEvents:   workerEvents,
 		Policy: agentkit.Policy{
 			BaseImage:                  baseImage,
 			AgentPort:                  3010,

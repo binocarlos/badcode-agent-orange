@@ -342,3 +342,89 @@ func TestClearWorkerBindingNoOp(t *testing.T) {
 		t.Fatalf("ClearWorkerBinding on absent session: %v", err)
 	}
 }
+
+// TestSessionMCPServersRoundTrip covers the fallback store's half of A2: a
+// session's MCP config (docs/product/01-session-config.md §4.5) must survive a
+// round trip, because the Runner reads it back off the row to re-supply the
+// container on every re-provision. Before this column the sqlite fallback
+// dropped it silently and a resumed session came back with no tools.
+func TestSessionMCPServersRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	cfg := agentdb.MCPServers{
+		"gmail":  {Command: "gmail-mcp", Args: []string{"--stdio"}, Env: map[string]string{"K": "${K}"}},
+		"notion": {URL: "http://notion:8080/mcp", Headers: map[string]string{"Authorization": "${N}"}},
+	}
+	if _, err := st.UpdateSession(ctx, &agentdb.Session{ID: "s-mcp", Customer: "acme", MCPServers: cfg}); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	got, err := st.GetSession(ctx, "s-mcp")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if len(got.MCPServers) != 2 {
+		t.Fatalf("mcp_servers = %#v, want 2 servers", got.MCPServers)
+	}
+	if got.MCPServers["gmail"].Command != "gmail-mcp" || got.MCPServers["gmail"].Env["K"] != "${K}" {
+		t.Errorf("stdio server did not round-trip: %#v", got.MCPServers["gmail"])
+	}
+	if got.MCPServers["notion"].URL != "http://notion:8080/mcp" {
+		t.Errorf("http server did not round-trip: %#v", got.MCPServers["notion"])
+	}
+
+	// A session with no MCP config reads back as none, not as an error.
+	if _, err := st.UpdateSession(ctx, &agentdb.Session{ID: "s-plain", Customer: "acme"}); err != nil {
+		t.Fatalf("UpdateSession: %v", err)
+	}
+	plain, err := st.GetSession(ctx, "s-plain")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if len(plain.MCPServers) != 0 {
+		t.Errorf("mcp_servers = %#v, want none", plain.MCPServers)
+	}
+}
+
+// TestAddColumnIfMissingIsIdempotent pins the migration path: CREATE TABLE IF
+// NOT EXISTS never touches a DB an older build wrote, so opening over a
+// pre-existing schema must add the column — and opening again must not fail.
+func TestAddColumnIfMissingIsIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+
+	// A DB written by a build that predates the column.
+	raw, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE sessions (
+		id TEXT PRIMARY KEY, customer TEXT NOT NULL DEFAULT '', job TEXT NOT NULL DEFAULT '',
+		user_email TEXT NOT NULL DEFAULT '', persona TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT '', snapshot_handle TEXT NOT NULL DEFAULT '',
+		worker_id TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO sessions(id, customer) VALUES('old','acme')`); err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		st, err := Open(dbPath)
+		if err != nil {
+			t.Fatalf("Open #%d: %v", i+1, err)
+		}
+		sess, err := st.GetSession(context.Background(), "old")
+		if err != nil {
+			t.Fatalf("GetSession #%d: %v", i+1, err)
+		}
+		if sess.Customer != "acme" || len(sess.MCPServers) != 0 {
+			t.Errorf("migrated row #%d = %#v", i+1, sess)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatalf("Close #%d: %v", i+1, err)
+		}
+	}
+}

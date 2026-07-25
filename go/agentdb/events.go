@@ -50,6 +50,41 @@ var EventSources = []string{
 	EventSourceCore,
 }
 
+// Internal event types emitted by core (§8.2). Only the two the Runner emits
+// are named here; the remaining three internal events (`human.attention.timeout`,
+// `subscription.throttled`, `config.changed`) belong to the tracks that produce
+// them and name themselves.
+const (
+	// EventTypeWorkerFinished is emitted when a worker job's query completed and
+	// the session went idle. Its text is the full rendered transcript (§8.2).
+	EventTypeWorkerFinished = "worker.finished"
+	// EventTypeWorkerFailed is emitted when a worker job ended badly. Its text is
+	// the error, and the envelope carries a Reason (§8.2).
+	EventTypeWorkerFailed = "worker.failed"
+)
+
+// worker.failed reasons (§8.2). The vocabulary is closed: "error" is the
+// session itself erroring (the Runner's error path), "lost" is the router's
+// lease reaper finding a session whose lease lapsed without the sandbox
+// reporting back (§8.4).
+const (
+	FailureReasonError = "error"
+	FailureReasonLost  = "lost"
+)
+
+// FailureReasons is the complete set of legal worker.failed reasons.
+var FailureReasons = []string{FailureReasonError, FailureReasonLost}
+
+// ValidFailureReason reports whether s is in the worker.failed vocabulary.
+func ValidFailureReason(s string) bool {
+	for _, v := range FailureReasons {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // EventEnvelope is the part of an event that CORE stamps and a sender never
 // controls (§8.1). It is stored as jsonb so the router can filter on it with
 // plain equality (`envelope->>'worker' = ?`) without a second table.
@@ -364,6 +399,44 @@ func (s *Store) MarkProjectEventDelivered(ctx context.Context, id string) error 
 		return fmt.Errorf("project event not found")
 	}
 	return nil
+}
+
+// SessionTriggerEvent returns the event that triggered the job running in
+// sessionID, or (nil, nil) when there is none.
+//
+// The link is the delivery row: the router stamps `session_id` on the delivery
+// when it dispatches a matched event, so a session's earliest delivery names the
+// event that caused it. That event's depth is what the emitters (§8.2) add one
+// to — the loop floor of §8.4 — and its absence is exactly the "a human started
+// this" case, which is depth 0.
+//
+// A read, not a mutation: it touches neither the event log nor the config log.
+func (s *Store) SessionTriggerEvent(ctx context.Context, sessionID string) (*ProjectEvent, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	var d EventDelivery
+	err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("session_id = ?", sessionID).
+		Order("created_at ASC, id ASC").First(&d).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to look up session trigger delivery: %w", err)
+	}
+	var ev ProjectEvent
+	err = s.gdb.WithContext(ctx).Model(&ProjectEvent{}).
+		Where("id = ?", d.EventID).First(&ev).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// A delivery pointing at a vanished event is not a reason to fail the
+			// job's outcome event — treat it as "no trigger" (depth 0).
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to load session trigger event: %w", err)
+	}
+	return &ev, nil
 }
 
 // ── subscriptions ───────────────────────────────────────────────────────────

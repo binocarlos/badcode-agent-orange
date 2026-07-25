@@ -98,6 +98,13 @@ type Deps struct {
 	SkillCatalog   SkillCatalog                     // nil -> hoisted skills captured as artifacts but not cataloged
 	CustomImages   CustomImageCatalog               // nil -> custom-image launch ids are ignored (base fallback)
 
+	// WorkerEvents is the event-spine store the Runner appends the §8.2 internal
+	// events to (`worker.finished` / `worker.failed`) when a session is a worker
+	// job. nil -> no internal events are emitted, which is the correct behaviour
+	// for a host embedding the engine without the product event layer.
+	// *agentdb.Store satisfies it.
+	WorkerEvents WorkerEventStore
+
 	Policy Policy
 }
 

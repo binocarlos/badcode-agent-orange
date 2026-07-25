@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	persona         TEXT NOT NULL DEFAULT '',
 	status          TEXT NOT NULL DEFAULT '',
 	snapshot_handle TEXT NOT NULL DEFAULT '',
-	worker_id       TEXT NOT NULL DEFAULT ''
+	worker_id       TEXT NOT NULL DEFAULT '',
+	mcp_servers     TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS query_events (
@@ -90,6 +91,38 @@ CREATE TABLE IF NOT EXISTS query_events (
 	if err != nil {
 		return fmt.Errorf("sqlitestore: createTables: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS leaves a DB written by an older build alone, so
+	// columns added later need an explicit ALTER. Session MCP config
+	// (docs/product/01-session-config.md §4.5) must survive resume: without the
+	// column the fallback store would silently drop it and a resumed session
+	// would come back with no tools.
+	if err := addColumnIfMissing(db, "sessions", "mcp_servers", `TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return err
+	}
+	return nil
+}
+
+// addColumnIfMissing adds a column to an existing table, treating "it is already
+// there" as success. sqlite has no ADD COLUMN IF NOT EXISTS.
+func addColumnIfMissing(db *sql.DB, table, column, decl string) error {
+	rows, err := db.Query(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	if err != nil {
+		return fmt.Errorf("sqlitestore: inspect %s.%s: %w", table, column, err)
+	}
+	present := rows.Next()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("sqlitestore: inspect %s.%s: %w", table, column, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("sqlitestore: inspect %s.%s: %w", table, column, err)
+	}
+	if present {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl)); err != nil {
+		return fmt.Errorf("sqlitestore: add %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
@@ -98,19 +131,33 @@ CREATE TABLE IF NOT EXISTS query_events (
 // GetSession returns the session row for id.
 func (s *Store) GetSession(ctx context.Context, id string) (*agentdb.Session, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, customer, job, user_email, persona, status, snapshot_handle, worker_id FROM sessions WHERE id=?`, id)
+		`SELECT id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers FROM sessions WHERE id=?`, id)
 	var sess agentdb.Session
-	if err := row.Scan(&sess.ID, &sess.Customer, &sess.Job, &sess.UserEmail, &sess.Persona, &sess.Status, &sess.SnapshotHandle, &sess.WorkerID); err != nil {
+	var mcp string
+	if err := row.Scan(&sess.ID, &sess.Customer, &sess.Job, &sess.UserEmail, &sess.Persona, &sess.Status, &sess.SnapshotHandle, &sess.WorkerID, &mcp); err != nil {
 		return nil, fmt.Errorf("sqlitestore: GetSession %q: %w", id, err)
+	}
+	if mcp != "" && mcp != "{}" {
+		if err := json.Unmarshal([]byte(mcp), &sess.MCPServers); err != nil {
+			return nil, fmt.Errorf("sqlitestore: GetSession %q: mcp_servers: %w", id, err)
+		}
 	}
 	return &sess, nil
 }
 
 // UpdateSession upserts the session row.
 func (s *Store) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agentdb.Session, error) {
+	mcp := "{}"
+	if len(sess.MCPServers) > 0 {
+		blob, err := json.Marshal(sess.MCPServers)
+		if err != nil {
+			return nil, fmt.Errorf("sqlitestore: UpdateSession %q: mcp_servers: %w", sess.ID, err)
+		}
+		mcp = string(blob)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions(id, customer, job, user_email, persona, status, snapshot_handle, worker_id)
-		 VALUES(?,?,?,?,?,?,?,?)
+		`INSERT INTO sessions(id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers)
+		 VALUES(?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   customer        = CASE WHEN excluded.customer        != '' THEN excluded.customer        ELSE customer        END,
 		   job             = CASE WHEN excluded.job             != '' THEN excluded.job             ELSE job             END,
@@ -118,8 +165,9 @@ func (s *Store) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agen
 		   persona         = CASE WHEN excluded.persona         != '' THEN excluded.persona         ELSE persona         END,
 		   status          = CASE WHEN excluded.status          != '' THEN excluded.status          ELSE status          END,
 		   snapshot_handle = excluded.snapshot_handle,
-		   worker_id       = excluded.worker_id`,
-		sess.ID, sess.Customer, sess.Job, sess.UserEmail, sess.Persona, sess.Status, sess.SnapshotHandle, sess.WorkerID,
+		   worker_id       = excluded.worker_id,
+		   mcp_servers     = excluded.mcp_servers`,
+		sess.ID, sess.Customer, sess.Job, sess.UserEmail, sess.Persona, sess.Status, sess.SnapshotHandle, sess.WorkerID, mcp,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitestore: UpdateSession %q: %w", sess.ID, err)

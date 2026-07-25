@@ -9,6 +9,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/binocarlos/badcode-agent-orange/artifacts"
 )
 
@@ -20,11 +21,22 @@ type ContextScope struct {
 	UserEmail string
 }
 
-// SessionContext carries the resolved per-session context (system prompt and
-// base image) that the Runner uses when provisioning or resuming a session.
+// SessionContext carries the resolved per-session context (system prompt, base
+// image and MCP configuration) that the Runner uses when provisioning or
+// resuming a session.
 type SessionContext struct {
 	SystemPrompt string
 	BaseImage    string
+
+	// MCPServers is the project ∪ worker MCP configuration the host resolved for
+	// this session (docs/product/01-session-config.md §4.1, §5). Without this
+	// field the union a host computes has no route into the container — the
+	// Runner would only ever ship what the create request itself carried.
+	//
+	// These are *defaults*: the Runner merges them UNDER the request-supplied
+	// servers, so a CreateSessionRequest entry wins a name collision (§5:
+	// "the defaults which the request may extend").
+	MCPServers agentdb.MCPServers
 }
 
 // SessionContextProvider assembles the per-session context for a turn. Platinum
