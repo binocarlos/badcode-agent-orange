@@ -642,6 +642,16 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 	}
 	queryID := r.nextQueryID(ref.SessionID)
 
+	// Record the human's message the moment we accept it, BEFORE the sandbox is
+	// asked to do anything. It also rides the pipeline as a LeadingEvent below,
+	// but the pipeline only ever runs if the SSE response headers arrive: if the
+	// caller goes away while POST /query-stream is still in flight (a browser
+	// reload during the model's first think), Do() fails and we return without
+	// the pipeline having existed. That used to lose the prompt entirely.
+	// PersistQueryEventsFlat is an upsert on (session, query), so the pipeline's
+	// end-of-turn write supersedes this seed rather than duplicating it.
+	r.seedUserMessage(ctx, ref.SessionID, queryID, msg.Content)
+
 	// attachments must be a JSON array: a nil slice marshals to null, which the
 	// in-image agent's schema rejects ("expected array, received null").
 	attachments := msg.Attachments
@@ -1800,6 +1810,32 @@ func (s *storeSink) PersistQueryEvents(ctx context.Context, sessionID, queryID s
 		return nil
 	}
 	return s.store.PersistQueryEventsFlat(ctx, sessionID, queryID, evs, searchText)
+}
+
+// seedUserMessage durably records the prompt for (sessionID, queryID) before the
+// turn is dispatched, so a transcript can never lose the human's own words —
+// P8's append-only history has to include the half of the exchange the human
+// wrote, whatever the model or the network then does.
+//
+// Detached from ctx for the same reason as the pipeline's persist: the usual way
+// to reach here and then lose everything is the caller's context being cancelled.
+// Best-effort — the turn still proceeds if the store rejects the seed, and the
+// pipeline's own persist is the authoritative write.
+func (r *runnerImpl) seedUserMessage(ctx context.Context, sessionID, queryID, content string) {
+	if r.deps.Store == nil || content == "" {
+		return
+	}
+	evs := []events.Envelope{{
+		Type:      events.UserMessage,
+		Data:      map[string]any{"content": content},
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	}}
+	ctx = context.WithoutCancel(ctx)
+	r.sink.BeginFlush(sessionID)
+	defer r.sink.EndFlush(sessionID)
+	if err := r.deps.Store.PersistQueryEventsFlat(ctx, sessionID, queryID, evs, events.ExtractSearchText(evs)); err != nil {
+		log.Printf("agentkit: seed user message %s/%s: %v", sessionID, queryID, err)
+	}
 }
 
 func (s *storeSink) pendingCount(sessionID string) int {
