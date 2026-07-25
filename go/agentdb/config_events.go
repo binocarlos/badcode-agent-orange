@@ -83,11 +83,25 @@ import (
 // ConfigEvent is one record in the append-only configuration log.
 //
 // CreatedAt is unix **milliseconds**, deliberately finer than the seconds used
-// by the older agentdb tables: the fold (§15.6) orders by (created_at, id), and
-// second resolution would leave same-second writes ordered by a random uuid.
+// by the older agentdb tables. Seq is what actually orders the log (see below).
 type ConfigEvent struct {
-	ID           string  `json:"id" gorm:"primaryKey;type:varchar(36)"`
-	Project      string  `json:"project" gorm:"type:text;not null;index:idx_config_events_project"`
+	ID      string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	Project string `json:"project" gorm:"type:text;not null;index:idx_config_events_project;uniqueIndex:idx_config_events_project_seq,priority:1"`
+	// Seq is the monotonic per-project sequence number (migration 027, J2).
+	//
+	// §15.6 folds "in created_at/id order", but created_at is a millisecond wall
+	// clock and ID is a RANDOM uuid: two writes to the same entity inside one
+	// millisecond would fold in an arbitrary order, and the fold could therefore
+	// disagree with the projection table it exists to reproduce. That is not
+	// tolerable for a log the spec calls authoritative (§15.4).
+	//
+	// Seq is allocated INSIDE the config-event transaction from the committed
+	// high-water mark, so a transaction can only observe a lower seq once that
+	// lower one has committed: **seq order is commit order**, which is exactly
+	// the order the projection tables were written in. The unique index is what
+	// makes that correct under concurrency — a racing writer loses the insert
+	// and retries with a fresh mark (same pattern as image-version allocation).
+	Seq          int64   `json:"seq" gorm:"not null;default:0;uniqueIndex:idx_config_events_project_seq,priority:2"`
 	ActorWorker  string  `json:"actor_worker" gorm:"type:text;default:''"`
 	ActorSession string  `json:"actor_session" gorm:"type:text;default:''"`
 	Action       string  `json:"action" gorm:"type:text;not null"`
@@ -260,27 +274,79 @@ func (s *Store) WithConfigEvent(ctx context.Context, c ConfigChange, fn func(tx 
 		return nil, err
 	}
 
-	ev := &ConfigEvent{
-		ID:           uuid.New().String(),
-		Project:      c.Project,
-		ActorWorker:  c.Write.Worker,
-		ActorSession: c.Write.Session,
-		Action:       c.Action,
-		Payload:      payload,
-		Rationale:    c.Write.Rationale,
-		CreatedAt:    time.Now().UnixMilli(),
-	}
-
 	txCtx := context.WithValue(ctx, configTxKey{}, true)
-	if err := s.gdb.WithContext(txCtx).Transaction(func(tx *gorm.DB) error {
-		if err := fn(tx); err != nil {
-			return err
+
+	var lastErr error
+	for attempt := 0; attempt < configSeqAllocAttempts; attempt++ {
+		ev := &ConfigEvent{
+			ID:           uuid.New().String(),
+			Project:      c.Project,
+			ActorWorker:  c.Write.Worker,
+			ActorSession: c.Write.Session,
+			Action:       c.Action,
+			Payload:      payload,
+			Rationale:    c.Write.Rationale,
+			CreatedAt:    time.Now().UnixMilli(),
 		}
-		return tx.Create(ev).Error
-	}); err != nil {
+		err := s.gdb.WithContext(txCtx).Transaction(func(tx *gorm.DB) error {
+			seq, err := nextConfigSeq(tx, c.Project)
+			if err != nil {
+				return err
+			}
+			ev.Seq = seq
+			if err := fn(tx); err != nil {
+				return err
+			}
+			return tx.Create(ev).Error
+		})
+		if err == nil {
+			return ev, nil
+		}
+		// Only a collision on the (project, seq) index is retryable: someone else
+		// committed the number we read. Anything else is the caller's error and
+		// must surface unchanged — a rolled-back mutation writes neither row.
+		if isConfigSeqCollision(err) {
+			lastErr = err
+			continue
+		}
 		return nil, err
 	}
-	return ev, nil
+	return nil, fmt.Errorf("agentdb: could not allocate a config-log sequence for project %q after %d attempts: %w",
+		c.Project, configSeqAllocAttempts, lastErr)
+}
+
+// configSeqAllocAttempts bounds the sequence-allocation retry. Configuration
+// mutations are human- and worker-paced, so a collision is already rare and a
+// pathological one should fail loudly rather than spin.
+const configSeqAllocAttempts = 5
+
+// nextConfigSeq reads the project's high-water mark inside the transaction. The
+// read alone is not what makes allocation correct — the unique index is; this
+// just picks the number that will almost always be free.
+func nextConfigSeq(tx *gorm.DB, project string) (int64, error) {
+	var highest int64
+	if err := tx.Model(&ConfigEvent{}).
+		Where("project = ?", project).
+		Select("COALESCE(MAX(seq), 0)").
+		Scan(&highest).Error; err != nil {
+		return 0, fmt.Errorf("agentdb: read config-log sequence high-water mark: %w", err)
+	}
+	return highest + 1, nil
+}
+
+// isConfigSeqCollision reports whether err is the (project, seq) unique-index
+// violation. Both backends name the index or its columns in the message.
+func isConfigSeqCollision(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "seq") {
+		return false
+	}
+	return strings.Contains(msg, "23505") ||
+		strings.Contains(msg, "duplicate key value") ||
+		strings.Contains(msg, "unique constraint")
 }
 
 // ── Reading the log (history/audit only — never the hot path) ───────────────
@@ -325,7 +391,11 @@ func (s *Store) ListConfigEvents(ctx context.Context, q ConfigEventQuery) ([]*Co
 		db = db.Limit(q.Limit)
 	}
 	var out []*ConfigEvent
-	if err := db.Order("created_at DESC, id DESC").Find(&out).Error; err != nil {
+	// Ordered by the per-project sequence, not by the wall clock: seq is commit
+	// order and is total, so "newest first" is one answer rather than one of
+	// several when writes share a millisecond (§15.6). Since/Until still filter
+	// on created_at — a caller asking "what changed on Tuesday" means the clock.
+	if err := db.Order("seq DESC").Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("agentdb: list config events: %w", err)
 	}
 	if out == nil {
@@ -433,6 +503,11 @@ var ConfigMutationExempt = map[string]string{
 		"append-only log (§8.4) — logging every trigger a second time would duplicate a substrate, not record a decision",
 	"MarkProjectEventDelivered": "§15.3 rule 3: the router's delivered watermark is runtime state on the event log " +
 		"(§8.4 step 1), not configuration; it touches no sender-visible field and no setting",
+	"MarkCustomImageResumed": "runtime launch telemetry, not configuration: it stamps §5's `last_resumed_at` when a " +
+		"session launches from a catalogue version. Nobody decided anything and §15.3's closed vocabulary has no " +
+		"verb for it. THIRD write to a guarded table outside the seam (after DeleteCustomImage and " +
+		"MarkCustomImageReaped) — I1 predicted that a third would mean the guard wants an explicit " +
+		"\"GC/runtime write\" escape rather than a fourth exemption; recorded for the orchestrator, not built here",
 	"MarkCustomImageReaped": "storage GC, not curation: the snapshot_ttl_days reaper (§5, B4) deleted the bytes " +
 		"and stamps the catalogue row so resolution fails loudly instead of pointing at nothing (§13.7). " +
 		"No agent decided it and §15.3's closed vocabulary has no verb for it. Like DeleteCustomImage it " +

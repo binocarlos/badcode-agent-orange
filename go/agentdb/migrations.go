@@ -428,6 +428,46 @@ var agentMigrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_config_events_project_action ON config_events(project, action);
 		`,
 	},
+	{
+		// J2 + B4. Two things the fold (§15.6) and the snapshot reaper (§5, §13.7)
+		// need.
+		//
+		//  1. config_events.seq — a monotonic per-project sequence. §15.6 folds in
+		//     `created_at`/`id` order, but created_at is milliseconds and id is a
+		//     RANDOM uuid, so two writes to the same key inside one millisecond
+		//     fold in an arbitrary order and the fold can disagree with the
+		//     projection it exists to reproduce. seq is allocated inside the
+		//     config-event transaction, so seq order IS commit order. The unique
+		//     index — not the read of MAX(seq) — is what makes allocation correct
+		//     under concurrency; the loser of a race re-reads and retries, exactly
+		//     as image-version allocation does. Existing rows are backfilled
+		//     deterministically by (created_at, id): the best order available for
+		//     history written before the column existed.
+		//
+		//  2. agent_custom_images.expires_at / last_resumed_at — the §5 snapshot
+		//     metadata tuple {source session, created_at, expiry, last_resumed_at}.
+		//     "source session" is the pre-existing source_session_id column and
+		//     created_at already exists, so only these two are new. expires_at is
+		//     stamped at burn time from the project's snapshot_ttl_days and is the
+		//     promise the reaper honours; 0 means never — both "the project set 0"
+		//     and pre-B4 rows, which were burned under no TTL promise at all.
+		Name: "027_config_event_seq_and_snapshot_ttl",
+		SQL: `
+			ALTER TABLE config_events ADD COLUMN IF NOT EXISTS seq BIGINT NOT NULL DEFAULT 0;
+			UPDATE config_events ce SET seq = sub.rn
+				FROM (
+					SELECT id, row_number() OVER (PARTITION BY project ORDER BY created_at, id) AS rn
+					FROM config_events
+				) sub
+				WHERE ce.id = sub.id AND ce.seq = 0;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_config_events_project_seq ON config_events(project, seq);
+
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS last_resumed_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_custom_images_expiry
+				ON agent_custom_images(customer, expires_at) WHERE version > 0 AND reaped_at = 0;
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
