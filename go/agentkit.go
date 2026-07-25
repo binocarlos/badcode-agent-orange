@@ -98,6 +98,18 @@ type Deps struct {
 	SkillCatalog   SkillCatalog                     // nil -> hoisted skills captured as artifacts but not cataloged
 	CustomImages   CustomImageCatalog               // nil -> custom-image launch ids are ignored (base fallback)
 
+	// Images resolves a worker's §13 image pointer (a bare `name`, or
+	// `name:version`) into a launch image, for sessions whose resolved
+	// SessionContext carries a WorkerImage. It is the SAME seam job composition
+	// uses (ComposeJobInput.ImageResolver), deliberately: one resolver, so a
+	// worker job and an interactive session on the same worker cannot launch
+	// from different environments.
+	//
+	// nil is legal and means "this host has no image catalogue" — but a nil
+	// resolver facing a SessionContext that DOES carry a worker pointer is an
+	// error, never a fallback to the base image (§13.3).
+	Images ImageResolver
+
 	// WorkerEvents is the event-spine store the Runner appends the §8.2 internal
 	// events to (`worker.finished` / `worker.failed`) when a session is a worker
 	// job. nil -> no internal events are emitted, which is the correct behaviour

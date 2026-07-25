@@ -42,10 +42,12 @@ Agent Orange. Three pieces:
 > SDK), `cd sandbox && npm ci && npm test` (157 tests), `cd web && npm ci && npm test` (543 tests).
 > The **product layer is built** — 33 of `docs/product/06-work-plan.md`'s 37 items are merged and
 > the acceptance loop (§8.7: a worker rewrites another worker's prompt) closes offline in
-> `e2e/features/acceptance-loop.spec.ts`. The four open items are **I4** (a worker's `image`
-> pointer is not yet bound at launch — a worker with `image` set fails its job loudly), **G1**
-> (the acceptance e2e, landed but not yet ticked), **G2** (docs), and **G3** (live run with a real
-> key, then the first production seeding).
+> `e2e/features/acceptance-loop.spec.ts`. **I4** has now landed too — a worker's `image` pointer
+> is bound end to end (`worker.image > project base_image > global`, resolved at every launch,
+> failing the job rather than substituting an image), proved by
+> `e2e/features/image-curation.stack.spec.ts`. The open items are **G1** (the acceptance e2e,
+> landed but not yet ticked), **G2** (docs), and **G3** (live run with a real key, then the first
+> production seeding).
 > GCP support is implemented and **wired into `agentd`**: a GCS `BlobStore` (`extension/gcsblob`),
 > a pluggable registry-auth seam with an ADC provider (`imageregistry/auth`, `auth.GCP`), and
 > config-driven backend selection (`cmd/agentd/backends.go`, env: `AGENTKIT_BLOB_BACKEND`,

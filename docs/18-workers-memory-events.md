@@ -98,7 +98,7 @@ misconfigured credential never silently authenticates as anonymous.
 | `description` | one-liner for the UI and for other workers' context |
 | `system_prompt` | the worker's prompt — wholesale string, no fragments, no templates (P4) |
 | `mcp_config` | worker-level MCP servers, merged over the project's (worker wins collisions) |
-| `image` | `''` \| `name` (floating → latest) \| `name:version` (pinned) — §13. **See §9 below: not yet honoured at launch** |
+| `image` | `''` \| `name` (floating → latest) \| `name:version` (pinned) — §13, honoured at launch. A name that was never burned **fails the job** rather than launching something else |
 | `max_instances` | max simultaneously active jobs for this worker (default 1) |
 | `briefing` | list of label selectors injected as briefing sections (§7.4) |
 | `enabled` | disabled workers ignore subscriptions; manual chat still allowed |
@@ -286,6 +286,21 @@ what you want, check it works, `image_create("toolbox", {...})`, then point work
 There is no `skills` column on workers and core never auto-installs anything — which skills a
 worker installs is its prompt's business (P1).
 
+**Adoption is a separate, visible act.** Burning a new version changes what a floating pointer
+resolves to; it never repoints a worker by itself and never *creates* a pointer. Moving a worker
+onto an image is `worker_update(name, {image: …})` (or the UI's image field), which is a
+config-evented mutation like any other — so "when did this worker start running on the toolbox
+image, and who decided that?" is a query. The pointer is resolved **at launch, every launch**, so
+a floating `toolbox` follows curation and a pinned `toolbox:1` does not. A launch also stamps
+`last_resumed_at` on the version it used, which is how an operator sees that an image due for
+reaping is still in daily use (it does **not** extend the expiry — §5 sets that at burn time).
+
+The launch chain, in full, is `explicit image > worker pointer > custom image id >
+project_settings.base_image > global default`. A worker job arrives with the pointer already
+resolved by composition; anything else on a worker resolves it at launch. The two middle links
+fail in opposite ways on purpose: an unresolvable **custom image id** (the legacy user-image
+path) logs and still starts the session, an unresolvable **worker pointer** never does.
+
 `image_create` and `skill_create` are configuration mutations and appear in the config log;
 `skill_install` changes the *session*, not the project, and writes no config event.
 `image_list`/`skill_list` cap at the 200 newest and say so in the result.
@@ -324,16 +339,14 @@ field for it), so a human edit logs an empty *why*; the MCP tools are the path t
 
 Stated plainly because each one will otherwise be discovered the hard way.
 
-- **A worker's `image` pointer is not yet honoured at launch.** The column exists, the UI edits
-  it, and composition resolves it — but agentd does not yet bind the §13 catalogue resolver, so a
-  worker with `image` set makes composition **fail the job loudly** ("no ImageResolver was
-  supplied") rather than launching from that image. Leave `image` empty and use
-  `project_settings.base_image` until work-plan item I4 lands. Project and global images are
-  unaffected.
-- **`project_settings.base_image` applies to worker jobs, not to plain sessions.** The Runner's
-  launch chain is still `explicit Image > CustomImageID > Policy.BaseImage`; worker jobs pass the
-  composed image explicitly, so it works for them. An interactive session created straight over
-  HTTP gets the global image.
+- **A pointer at an image nobody burned fails the job, on purpose.** `worker_update` accepts any
+  syntactically valid pointer (a worker may be pointed at an image curation is about to publish),
+  and launch-time resolution then refuses an unknown name, a version the TTL reaper tombstoned, or
+  one whose bytes cannot be materialised. The delivery is marked `failed` and **no session is
+  created** — §13.3 forbids falling back to the project default, because a worker that was pointed
+  at an environment and quietly got a different one is the drift §13 exists to prevent. The reason
+  is in agentd's log (`[dispatch] delivery … failed: compose: …`); the delivery row itself carries
+  no reason column.
 - **"Chat with this worker" opens a plain session.** The create-session HTTP body has no `worker`
   field, so the UI's chat tab produces an uncomposed session (no worker prompt, no briefing) —
   never a forged one. It starts working the moment the create path composes.

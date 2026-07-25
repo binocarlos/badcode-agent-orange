@@ -120,8 +120,10 @@ type dispatcher struct {
 
 	// Composition inputs (§6.2). CoreMCP is the engine's own tool servers
 	// (memory tools today — E4/I2 add theirs to the same server); DefaultImage is
-	// the global Policy.BaseImage; Images resolves a worker's image pointer and
-	// stays nil until I4 binds the §13 catalogue's Resolve; Memories is C4's
+	// the global Policy.BaseImage; Images resolves a worker's §13 image pointer
+	// (imageresolver.go — the SAME object the Runner holds, so a job and a chat
+	// with one worker cannot launch from different environments), nil only on
+	// the SQLite fallback where there is no catalogue; Memories is C4's
 	// briefing read seam (nil ⇒ no briefing sections, which is the SQLite
 	// fallback where memory is unavailable by decision).
 	coreMCP      agentdb.MCPServers
