@@ -57,6 +57,31 @@ export interface Attachment {
   fileName: string;
 }
 
+/** POST /sessions request body — the Runner boots a session here.
+ *  Note `mcp_servers` is snake_case: it mirrors the Go JSON tags on
+ *  agentdb.MCPServers exactly (docs/product/01-session-config.md §4.2). */
+export interface CreateSessionRequest {
+  sessionId: string;
+  harness?: string; // harness name; defaults to claude-agent-sdk
+  model?: string;
+  maxTurns?: number;
+  mcp_servers?: Record<string, MCPServerConfig>;
+}
+
+/** One session-scoped MCP server. Exactly ONE transport: stdio
+ *  (`command`/`args`/`env`) or http (`url`/`headers`). Values in `env` and
+ *  `headers` may be whole-value `${VAR}` references — the NAME of an env var of
+ *  the session container, resolved inside the container at MCP-process spawn
+ *  time. Never secret values (§4.4), which is what makes this config safe to
+ *  persist and display. Mirrors go/agentdb.MCPServerConfig field-for-field. */
+export interface MCPServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
 /** GET /health response. */
 export interface HealthResponse {
   status: "ok";
