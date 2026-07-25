@@ -20,9 +20,17 @@ func customImageScopeWhere(db *gorm.DB, ci *CustomImage) *gorm.DB {
 
 // UpsertCustomImage inserts or overwrites the catalog row for a built image,
 // keyed by its scoped name (latest-wins).
-func (s *Store) UpsertCustomImage(ctx context.Context, ci *CustomImage) (*CustomImage, error) {
+//
+// Configuration mutation: the catalog row and an `image_create` config event
+// are written in one transaction (§15.3, §15.4). cw carries the acting worker /
+// session and an optional rationale; human/API callers pass the zero value.
+// The image's Customer is its project namespace and is therefore required.
+func (s *Store) UpsertCustomImage(ctx context.Context, ci *CustomImage, cw ConfigWrite) (*CustomImage, error) {
 	if ci.Name == "" {
 		return nil, fmt.Errorf("custom image name is required")
+	}
+	if ci.Customer == "" {
+		return nil, fmt.Errorf("custom image customer (project) is required")
 	}
 	if ci.Visibility == "" {
 		ci.Visibility = "organizational"
@@ -41,7 +49,14 @@ func (s *Store) UpsertCustomImage(ctx context.Context, ci *CustomImage) (*Custom
 		existing.SkillSet = ci.SkillSet
 		existing.RequiresBuild = ci.RequiresBuild
 		existing.BaseImageID = ci.BaseImageID
-		if err := s.gdb.WithContext(ctx).Save(&existing).Error; err != nil {
+		if _, err := s.WithConfigEvent(ctx, ConfigChange{
+			Project: existing.Customer,
+			Action:  ActionImageCreate,
+			Payload: &existing,
+			Write:   cw,
+		}, func(tx *gorm.DB) error {
+			return tx.Save(&existing).Error
+		}); err != nil {
 			return nil, fmt.Errorf("failed to update custom image: %w", err)
 		}
 		return &existing, nil
@@ -50,7 +65,14 @@ func (s *Store) UpsertCustomImage(ctx context.Context, ci *CustomImage) (*Custom
 	if ci.ID == "" {
 		ci.ID = uuid.New().String()
 	}
-	if err := s.gdb.WithContext(ctx).Create(ci).Error; err != nil {
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: ci.Customer,
+		Action:  ActionImageCreate,
+		Payload: ci,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Create(ci).Error
+	}); err != nil {
 		return nil, fmt.Errorf("failed to create custom image: %w", err)
 	}
 	return ci, nil

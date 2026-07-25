@@ -221,6 +221,27 @@ var agentMigrations = []migration{
 			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS focus TEXT DEFAULT '';
 		`,
 	},
+	{
+		// The config log (§15) — append-only record of every configuration
+		// mutation. payload is the FULL new state, never a diff. Nothing on the
+		// hot path reads this table; the ordinary tables stay the projections.
+		Name: "026_config_events",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS config_events (
+				id VARCHAR(36) PRIMARY KEY,
+				project TEXT NOT NULL DEFAULT '',
+				actor_worker TEXT NOT NULL DEFAULT '',
+				actor_session TEXT NOT NULL DEFAULT '',
+				action TEXT NOT NULL,
+				payload JSONB NOT NULL DEFAULT '{}',
+				rationale TEXT NOT NULL DEFAULT '',
+				created_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_config_events_project ON config_events(project);
+			CREATE INDEX IF NOT EXISTS idx_config_events_project_created ON config_events(project, created_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_config_events_project_action ON config_events(project, action);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

@@ -9,7 +9,10 @@ import (
 func newSkillTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t) // from artifacts_test.go (sqlite + AutoMigrate(&Artifact{}))
-	if err := s.gdb.AutoMigrate(&Skill{}); err != nil {
+	// UpsertSkill is a configuration mutation: it dual-writes the catalog row
+	// and a config_events record in one transaction (§15.4), so the log table
+	// must exist too.
+	if err := s.gdb.AutoMigrate(&Skill{}, &ConfigEvent{}); err != nil {
 		t.Fatalf("automigrate Skill: %v", err)
 	}
 	return s
@@ -22,7 +25,7 @@ func TestUpsertSkill_LatestWinsByScopedName(t *testing.T) {
 	first, err := s.UpsertSkill(ctx, &Skill{
 		Name: "graph-gen", Visibility: "organizational", Customer: "acme", OwnerEmail: "u@acme.com",
 		ContentHash: "hash1", BlobPrefix: "acme/graph-gen/hash1",
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -30,7 +33,7 @@ func TestUpsertSkill_LatestWinsByScopedName(t *testing.T) {
 	second, err := s.UpsertSkill(ctx, &Skill{
 		Name: "graph-gen", Visibility: "organizational", Customer: "acme", OwnerEmail: "u2@acme.com",
 		ContentHash: "hash2", BlobPrefix: "acme/graph-gen/hash2",
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -51,9 +54,9 @@ func TestUpsertSkill_LatestWinsByScopedName(t *testing.T) {
 func TestUpsertSkill_SameNameDifferentScopesAreDistinctRows(t *testing.T) {
 	s := newSkillTestStore(t)
 	ctx := context.Background()
-	_, _ = s.UpsertSkill(ctx, &Skill{Name: "x", Visibility: "organizational", Customer: "acme", OwnerEmail: "a@acme.com"})
-	_, _ = s.UpsertSkill(ctx, &Skill{Name: "x", Visibility: "organizational", Customer: "globex", OwnerEmail: "g@globex.com"})
-	_, _ = s.UpsertSkill(ctx, &Skill{Name: "x", Visibility: "private", Customer: "acme", OwnerEmail: "a@acme.com"})
+	_, _ = s.UpsertSkill(ctx, &Skill{Name: "x", Visibility: "organizational", Customer: "acme", OwnerEmail: "a@acme.com"}, ConfigWrite{})
+	_, _ = s.UpsertSkill(ctx, &Skill{Name: "x", Visibility: "organizational", Customer: "globex", OwnerEmail: "g@globex.com"}, ConfigWrite{})
+	_, _ = s.UpsertSkill(ctx, &Skill{Name: "x", Visibility: "private", Customer: "acme", OwnerEmail: "a@acme.com"}, ConfigWrite{})
 	all := []Skill{}
 	s.gdb.WithContext(ctx).Find(&all)
 	if len(all) != 3 {
@@ -72,7 +75,7 @@ func seedVisibilityFixture(t *testing.T, s *Store) {
 		{Name: "world-pub", Visibility: "public", Customer: "globex", OwnerEmail: "g@globex.com"},
 	}
 	for _, r := range rows {
-		if _, err := s.UpsertSkill(ctx, r); err != nil {
+		if _, err := s.UpsertSkill(ctx, r, ConfigWrite{}); err != nil {
 			t.Fatalf("seed %s: %v", r.Name, err)
 		}
 	}
@@ -141,7 +144,7 @@ func TestGetSkill_VisibilityChecked(t *testing.T) {
 func TestSetSkillVisibility_PromoteToPublic(t *testing.T) {
 	s := newSkillTestStore(t)
 	ctx := context.Background()
-	row, _ := s.UpsertSkill(ctx, &Skill{Name: "p", Visibility: "organizational", Customer: "acme", OwnerEmail: "a@acme.com"})
+	row, _ := s.UpsertSkill(ctx, &Skill{Name: "p", Visibility: "organizational", Customer: "acme", OwnerEmail: "a@acme.com"}, ConfigWrite{})
 	if err := s.SetSkillVisibility(ctx, row.ID, "public", "admin@acme.com"); err != nil {
 		t.Fatalf("SetSkillVisibility: %v", err)
 	}
@@ -154,7 +157,7 @@ func TestSetSkillVisibility_PromoteToPublic(t *testing.T) {
 func TestDeleteSkill(t *testing.T) {
 	s := newSkillTestStore(t)
 	ctx := context.Background()
-	row, _ := s.UpsertSkill(ctx, &Skill{Name: "d", Visibility: "private", Customer: "acme", OwnerEmail: "a@acme.com"})
+	row, _ := s.UpsertSkill(ctx, &Skill{Name: "d", Visibility: "private", Customer: "acme", OwnerEmail: "a@acme.com"}, ConfigWrite{})
 	if err := s.DeleteSkill(ctx, row.ID); err != nil {
 		t.Fatalf("DeleteSkill: %v", err)
 	}

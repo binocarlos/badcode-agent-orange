@@ -15,7 +15,7 @@ func TestDeleteCustomImage(t *testing.T) {
 
 	ci, err := s.UpsertCustomImage(ctx, &CustomImage{
 		Name: "stack", Visibility: "organizational", Customer: "acme", OwnerEmail: "a@acme.com",
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -35,14 +35,14 @@ func TestUpsertCustomImage_Validation(t *testing.T) {
 	s := newCustomImageTestStore(t)
 	ctx := context.Background()
 
-	if _, err := s.UpsertCustomImage(ctx, &CustomImage{Visibility: "organizational", Customer: "acme"}); err == nil {
+	if _, err := s.UpsertCustomImage(ctx, &CustomImage{Visibility: "organizational", Customer: "acme"}, ConfigWrite{}); err == nil {
 		t.Fatalf("expected error for missing name")
 	}
-	if _, err := s.UpsertCustomImage(ctx, &CustomImage{Name: "x", Visibility: "public", Customer: "acme"}); err == nil {
+	if _, err := s.UpsertCustomImage(ctx, &CustomImage{Name: "x", Visibility: "public", Customer: "acme"}, ConfigWrite{}); err == nil {
 		t.Fatalf("expected error for public visibility (custom images are never public)")
 	}
 	// Empty visibility defaults to organizational.
-	ci, err := s.UpsertCustomImage(ctx, &CustomImage{Name: "x", Customer: "acme", OwnerEmail: "a@acme.com"})
+	ci, err := s.UpsertCustomImage(ctx, &CustomImage{Name: "x", Customer: "acme", OwnerEmail: "a@acme.com"}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}

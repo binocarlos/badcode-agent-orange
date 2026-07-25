@@ -25,9 +25,17 @@ func scopeWhere(db *gorm.DB, sk *Skill) *gorm.DB {
 // UpsertSkill inserts or overwrites the catalog row for a skill, keyed by its
 // scoped name (latest-wins). Bytes are never lost (content-addressed blobs live
 // under blob_prefix); only the catalog pointer moves.
-func (s *Store) UpsertSkill(ctx context.Context, sk *Skill) (*Skill, error) {
+//
+// Configuration mutation: the catalog row and a `skill_create` config event are
+// written in one transaction (§15.3, §15.4). cw carries the acting worker /
+// session and an optional rationale; human/API callers pass the zero value.
+// The skill's Customer is its project namespace and is therefore required.
+func (s *Store) UpsertSkill(ctx context.Context, sk *Skill, cw ConfigWrite) (*Skill, error) {
 	if sk.Name == "" {
 		return nil, fmt.Errorf("skill name is required")
+	}
+	if sk.Customer == "" {
+		return nil, fmt.Errorf("skill customer (project) is required")
 	}
 	if sk.Visibility == "" {
 		sk.Visibility = "organizational"
@@ -43,7 +51,14 @@ func (s *Store) UpsertSkill(ctx context.Context, sk *Skill) (*Skill, error) {
 		existing.BlobPrefix = sk.BlobPrefix
 		existing.Manifest = sk.Manifest
 		existing.SourceSessionID = sk.SourceSessionID
-		if err := s.gdb.WithContext(ctx).Save(&existing).Error; err != nil {
+		if _, err := s.WithConfigEvent(ctx, ConfigChange{
+			Project: existing.Customer,
+			Action:  ActionSkillCreate,
+			Payload: &existing,
+			Write:   cw,
+		}, func(tx *gorm.DB) error {
+			return tx.Save(&existing).Error
+		}); err != nil {
 			return nil, fmt.Errorf("failed to update agent skill: %w", err)
 		}
 		return &existing, nil
@@ -52,7 +67,14 @@ func (s *Store) UpsertSkill(ctx context.Context, sk *Skill) (*Skill, error) {
 	if sk.ID == "" {
 		sk.ID = uuid.New().String()
 	}
-	if err := s.gdb.WithContext(ctx).Create(sk).Error; err != nil {
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: sk.Customer,
+		Action:  ActionSkillCreate,
+		Payload: sk,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Create(sk).Error
+	}); err != nil {
 		return nil, fmt.Errorf("failed to create agent skill: %w", err)
 	}
 	return sk, nil

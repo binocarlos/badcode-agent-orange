@@ -10,6 +10,12 @@ import (
 
 // Store is a concrete Postgres-backed store for agent data. It manages its own
 // connection pool and runs migrations on startup.
+//
+// Config-log invariant (§15.4): every method that mutates *project
+// configuration* — workers, project settings and prompts, subscriptions,
+// schedules, images, skills — writes its projection row and its `config_events`
+// record in one transaction, via WithConfigEvent. See the adoption recipe at
+// the top of config_events.go; TestMutationsAreLogged enforces it.
 type Store struct {
 	gdb *gorm.DB
 }
