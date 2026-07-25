@@ -308,15 +308,22 @@ func main() {
 
 	root.Handle("/agent-proxy/", http.StripPrefix("/agent-proxy", newModelProxyHandler()))
 
-	// ── Core MCP tools (memory today; images/skills/management next) ─────────────
+	// ── Core MCP tools (memory, images, skills; management next) ─────────────────
 	// One http MCP server, mounted outside the API auth middleware because it
 	// authenticates differently: the caller is a session container bearing its
 	// per-session token, and the project scope comes from that token's claims.
 	// See mcpserver.go. Needs the product-layer tables, so — like the session
 	// context provider — it is wired only on the Postgres store.
+	//
+	// The image and skill tools additionally take the Runner: image_create
+	// snapshots the calling session's container (§13.4) and skill_install
+	// installs into it (§14.2), both identified from the token, never from a
+	// tool argument.
 	if agentDB != nil {
 		mcpSrv := newMCPServer(coreMCPServerName, newSessionTokenAuth(sessionSecret, agentDB).authenticate)
 		mcpSrv.register(newMemoryTools(agentDB, embedder, permalinks).tools()...)
+		mcpSrv.register(newImageTools(agentDB, runner, permalinks).tools()...)
+		mcpSrv.register(newSkillTools(agentDB, runner, permalinks).tools()...)
 		root.Handle(coreMCPPath, mcpSrv)
 		// Some MCP clients normalise the endpoint with a trailing slash; both
 		// spellings must reach the same server or the tools simply vanish.

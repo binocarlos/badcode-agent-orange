@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { healthRoutes } from './routes/health.js';
 import { workspaceRoutes } from './routes/workspace.js';
 import { sessionRoutes } from './routes/sessions.js';
+import { skillRoutes } from './routes/skills.js';
 import { toolRegistry } from './tools/registry-impl.js';
 import { loadProductPlugins } from './tools/load-plugins.js';
 
@@ -93,6 +94,8 @@ async function main() {
   await fastify.register(healthRoutes);
   await fastify.register(sessionRoutes);
   await fastify.register(workspaceRoutes);
+  // §14.2: the in-session half of skill_install (the host tool POSTs here).
+  await fastify.register(skillRoutes);
 
   // Global error handler
   fastify.setErrorHandler((error, _request, reply) => {

@@ -506,6 +506,16 @@ var ConfigMutations = []ConfigMutation{
 		Actions: []string{ActionImageCreate},
 		Tables:  []string{"agent_custom_images"},
 	},
+	{
+		// The §14 catalogue write (I3). Teaching the project a capability is a
+		// configuration decision, so recording a revision appends `skill_create`
+		// with the recording worker/session as the actor (§14.2). Note what is
+		// NOT here: `skill_install` changes the SESSION, not the project, and
+		// therefore writes no config event at all (§14.2).
+		Method:  "CreateSkill",
+		Actions: []string{ActionSkillCreate},
+		Tables:  []string{"agent_skills"},
+	},
 }
 
 // ConfigMutationExempt lists methods that the reflection sweep flags but that
