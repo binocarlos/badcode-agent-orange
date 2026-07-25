@@ -248,6 +248,31 @@ export class ProjectClient {
     }
   }
 
+  /**
+   * Flips `enabled` and changes nothing else, by reading the stored row and
+   * writing it back with one field different.
+   *
+   * The read-modify-write is the point, not ceremony. PUT is whole-object, and
+   * the config log picks `worker_enable`/`worker_disable` only when every other
+   * field is byte-identical (§15.3) — so a body that merely omits `mcp_config`
+   * writes null over the stored `{}` and the change is logged as a
+   * `worker_update` instead. Sending the row back entire is what makes a toggle
+   * a toggle.
+   */
+  async toggleWorkerEnabled(name: string, enabled: boolean): Promise<Worker> {
+    const stored = await this.getWorker(name)
+    const body: WorkerBody = {
+      description: stored.description,
+      system_prompt: stored.system_prompt,
+      mcp_config: stored.mcp_config,
+      image: stored.image,
+      max_instances: stored.max_instances,
+      enabled,
+    }
+    if (stored.briefing != null) body.briefing = stored.briefing
+    return this.putWorker(name, body)
+  }
+
   // ── Events (§8) ───────────────────────────────────────────────────────────
 
   /** Posts an external trigger. Core stamps the envelope; a sender cannot. */

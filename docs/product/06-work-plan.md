@@ -37,7 +37,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 - [ ] **A2.** Wire protocol: include `mcp_servers` in the sandbox session-create POST; re-supply
       on resume/re-provision paths. (`go/runner.go`) — depends A1
       **Validation:** `go test ./... -run TestRunnerMCPServers -count=1`
-- [ ] **A3.** Sandbox: accept `mcp_servers`, merge over registry, extend `allowedTools`,
+- [x] **A3.** Sandbox: accept `mcp_servers`, merge over registry, extend `allowedTools`,
       stdio + http transports; resolve whole-value `${VAR}` references in Env/Headers from the
       container environment at spawn, failing loudly on unset variables.
       (`sandbox/src/harness/claude-agent-sdk.ts`, `sandbox/src/tools/registry.ts`, types)
@@ -46,7 +46,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 - [ ] **A4.** E2E: mock-mode test proving a session-supplied MCP server is callable in-session,
       and survives snapshot→resume. (`e2e/tests/`) — depends A2+A3
       **Validation:** `cd e2e && npx playwright test tests/session-mcp.spec.ts`
-- [ ] **A5.** Credential env propagation: `AGENTKIT_MCP_ENV` allowlist on agentd forwarded into
+- [x] **A5.** Credential env propagation: `AGENTKIT_MCP_ENV` allowlist on agentd forwarded into
       every session container via the existing `SessionEnv` injection seam; compose/.env.example
       documentation; test proving non-allowlisted agentd env (JWT secret, `ANTHROPIC_API_KEY`)
       never reaches a container. (`go/cmd/agentd/`, `docker-compose.yml`, `.env.example`)
@@ -59,7 +59,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       `briefing_max_bytes` (default 2048), `snapshot_ttl_days` (default 30, 0 = never).
       (`go/agentdb/project_settings.go`, `go/agentdb/migrations.go`, `go/httpapi/`)
       **Validation:** `go test ./agentdb/... ./httpapi/... -run 'TestProjectSettings' -count=1`
-- [ ] **B2.** `SessionContextProvider` implementation in agentd applying base image / prompt /
+- [x] **B2.** `SessionContextProvider` implementation in agentd applying base image / prompt /
       MCP defaults with the precedence rules of §5. (`go/cmd/agentd/`) — depends B1, A1
       **Validation:** `go test ./cmd/agentd/... -run TestSessionContextProvider -count=1`
 - [ ] **B3.** UI: project settings page (image field, prompt textarea, MCP JSON editor).
@@ -219,7 +219,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./cmd/agentd/... -run 'TestRequestHumanAttention|TestAttentionSweep' -count=1`
 
 ### Track I — Images & skills (§13, §14) `[engine+api]` `[walkthrough]`
-- [ ] **I1.** `[walkthrough]` Named, versioned, labeled images (**migration 025**, which also
+- [x] **I1.** `[walkthrough]` Named, versioned, labeled images (**migration 025**, which also
       carries I3's `skills` columns): extend the `customimages` catalogue with the
       `(project, name, version)` identity (monotonic int allocated per `(project, name)`,
       starting at 1), a `labels` jsonb column (same grammar and limits as memory labels — reuse
@@ -437,6 +437,65 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(I1, 2026-07-25)` **§13.7 TTL reconciliation decided: tombstone, not exemption.** Exempting
+  referenced versions would make the reaper a no-op (every catalogue row is referenced by
+  construction). Migration 025 adds `reaped_at`; **B4 must delete the bytes first, then call
+  `MarkCustomImageReaped`** (crash between them leaves one resolvable-but-dead record the next pass
+  fixes; the reverse order orphans bytes forever), driven by
+  `ListCustomImageVersions{CreatedBefore, IncludeReaped:false}`. Tombstones still count toward the
+  version high-water mark, so a reaped number is never reissued, and a floating ref whose newest
+  version is reaped **errors rather than sliding back** to an older one.
+- `(I1, 2026-07-25)` The §13 project namespace is the existing `customer` column — no `project`
+  twin was added (J1's `image_create` events already read `ci.Customer` as the project). The
+  mapping lives in one documented place (`customimages.go` header).
+- `(I1, 2026-07-25)` §13 rows are `version >= 1`; the pre-§13 host-built rows are `version 0`,
+  never listed and never resolvable, and the unique index is partial (`WHERE version > 0`) so
+  legacy private rows repeating a name still work. Burned §13 rows *do* appear in the legacy
+  visibility-scoped `ListCustomImages` view.
+- `(I1, 2026-07-25)` `MarkCustomImageReaped` is the second method (after `DeleteCustomImage`) that
+  writes a config-guarded table outside the seam — both are storage GC, so **the B4 reaper must not
+  run with `InstallConfigEventGuard` armed**. A third such case means the guard needs an explicit
+  "GC write" escape rather than more exemptions.
+- `(I1, 2026-07-25)` I4 should surface `ErrCustomImageNotFound`/`ErrCustomImageReaped`/
+  `ErrCustomImageUnmaterialisable` as **job failures** — `resolveLaunchImage`'s current
+  "log and fall through to the base image" is exactly what §13.3 forbids for a worker pointer.
+- `(A3, 2026-07-25)` **Phase 0 was a no-op for `sandbox/` too** — it installs, type-checks and
+  passes its 85 pre-existing tests untouched. CLAUDE.md's "`sandbox`/`web` have not been npm-built
+  in this fork" is stale for **both** packages (G2).
+- `(A3, 2026-07-25)` `sandbox/` tracks both `package-lock.json` and `yarn.lock`; npm≥7 keeps the
+  yarn lockfile in sync, so `npm install` on a different libc dirties it. Same trap F3 hit in
+  `web/`. Recommend deleting or gitignoring `sandbox/yarn.lock` (and `examples/web/yarn.lock`).
+- `(A3, 2026-07-25)` **Override precedence needed a second-order fix §4.3 doesn't mention:** a
+  session server that shadows an in-image server name (e.g. `ui`) leaves the builtin
+  `mcp__ui__write_file`/`mcp__ui__ask_user` allowlist entries pointing at tools that no longer
+  exist. `resolve()` now filters `mcp__<shadowed>__*` entries before adding the wildcard.
+- `(A3, 2026-07-25)` An **empty** env var is treated as unset and fails loudly — an exported-but-blank
+  credential would otherwise authenticate as anonymous. Resolution happens against the subprocess
+  env pre-`query()`, so an unresolved credential means the model is never invoked at all.
+- `(A3, 2026-07-25)` `ResolvedTools` gained a **required** field `sessionMCPServers`; other agents
+  constructing that literal will hit TS2741 until they add `sessionMCPServers: {}`.
+- `(B2, 2026-07-25)` **`extension.SessionContext` carries only `{SystemPrompt, BaseImage}` — it has
+  no MCP field**, so the project∪worker MCP union B2 resolves cannot reach the Runner through the
+  seam. `ResolveMCPServers`/`MergeMCPServers` are exported for A2 to consume; without that wiring,
+  project/worker MCP defaults resolve but **never reach a container**. Assigned to A2.
+- `(B2, 2026-07-25)` **The Runner ignores `SessionContext.BaseImage` entirely** —
+  `resolveLaunchImage` is `explicitImage > customImageID > Policy.BaseImage` with no provider call,
+  so B2's image precedence is computed and unit-tested but **not live**. This is the engine change
+  I4 owns (§13.5/§13.6).
+- `(B2, 2026-07-25)` The provider is wired only when `DATABASE_URL` is set; on the SQLite fallback
+  project settings silently do not apply (logged at boot). Worth stating in `15-standalone-stack.md`
+  alongside D4's memory-needs-Postgres note.
+- `(B2, 2026-07-25)` **B1's `PutProjectSettings` and C1's `UpsertWorker` store `mcp_config`
+  unvalidated**, so an invalid MCP config can be written over HTTP and only fails later, at session
+  start, for *every* session in the project. Validate at write time against `agentdb.MCPServers`.
+- `(A5, 2026-07-25)` Compose cannot forward a dynamic set of variable names, so an operator adds one
+  `environment:` line per credential *in addition to* listing it in `AGENTKIT_MCP_ENV` (an
+  `env_file:` approach would inject the whole `.env` into agentd, so it was rejected).
+- `(A5, 2026-07-25)` In subscription mode `CLAUDE_CODE_OAUTH_TOKEN` legitimately reaches the
+  container (the in-image CLI authenticates with it), so "no agentd secret reaches a session" is
+  not literally true for that one credential, by design.
+- `(pre-existing, 2026-07-25)` `go/cmd/agentd/modelproxy.go` (and a few older files) fail
+  `gofmt -l` at the wave-1 tip; untouched, worth a formatting sweep.
 - `(integration, 2026-07-25)` Config-log adoption pass (commit `d6c94cc`): `PutProjectSettings`,
   `UpsertWorker` (→ `worker_create`/`worker_enable`/`worker_disable`/`worker_update`, never
   `worker_prompt_write` — that needs a rationale and belongs to the dedicated path), `DeleteWorker`,
