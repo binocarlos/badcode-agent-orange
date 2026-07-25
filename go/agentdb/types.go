@@ -101,10 +101,13 @@ type Session struct {
 	WorkerID          string  `json:"worker_id,omitempty" gorm:"type:varchar(100);default:''"`
 	Installation      string  `json:"installation,omitempty" gorm:"type:text;default:''"`
 	CustomImageID     string  `json:"custom_image_id,omitempty" gorm:"type:text;default:''"`
-	ArtifactCount     int     `json:"artifact_count" gorm:"->;<-:false"`
-	MessageCount      int     `json:"message_count" gorm:"->;<-:false"`
-	ToolCallCount     int     `json:"tool_call_count" gorm:"->;<-:false"`
-	ContainerState    string  `json:"container_state" gorm:"-"`
+	// MCPServers is the session's MCP server config (§4.5). Safe to persist and
+	// display whole: values are ${VAR} references, never secrets (§4.4).
+	MCPServers     MCPServers `json:"mcp_servers,omitempty" gorm:"type:jsonb;default:'{}'"`
+	ArtifactCount  int        `json:"artifact_count" gorm:"->;<-:false"`
+	MessageCount   int        `json:"message_count" gorm:"->;<-:false"`
+	ToolCallCount  int        `json:"tool_call_count" gorm:"->;<-:false"`
+	ContainerState string     `json:"container_state" gorm:"-"`
 }
 
 func (Session) TableName() string { return "agent_sessions" }

@@ -130,6 +130,13 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		}
 	}()
 
+	// Record session-scoped MCP config on the session row before anything is
+	// provisioned, so resume / re-provision can re-supply it (§4.5) and so a
+	// malformed config fails the create loudly instead of reaching the harness.
+	if err = r.persistMCPServers(ctx, req.SessionID, req.MCPServers); err != nil {
+		return nil, err
+	}
+
 	img, err := r.resolveLaunchImage(ctx, req.Image, req.CustomImageID, req.UserEmail, req.Customer)
 	if err != nil {
 		return nil, fmt.Errorf("resolve launch image: %w", err)
@@ -173,6 +180,31 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 	}
 
 	return &SessionHandle{SessionID: req.SessionID, Address: inst.Address, State: string(inst.State)}, nil
+}
+
+// persistMCPServers validates and writes the session's MCP config onto its
+// (host-owned) session row. It is a no-op when the request carries no MCP
+// config, which keeps every pre-existing caller — including tests that never
+// seed a row — on exactly the old path. When config *is* supplied the row is
+// required: the host's contract is to persist the row before CreateSession, and
+// silently dropping MCP config would break resume.
+func (r *runnerImpl) persistMCPServers(ctx context.Context, sessionID string, servers map[string]MCPServerConfig) error {
+	if len(servers) == 0 {
+		return nil
+	}
+	cfg := agentdb.MCPServers(servers)
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("mcp servers: %w", err)
+	}
+	sess, err := r.deps.Store.GetSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("persist mcp servers: load session row: %w", err)
+	}
+	sess.MCPServers = cfg
+	if _, err := r.deps.Store.UpdateSession(ctx, sess); err != nil {
+		return fmt.Errorf("persist mcp servers: %w", err)
+	}
+	return nil
 }
 
 // provisionOnWorker provisions a new instance on the given worker, branching on

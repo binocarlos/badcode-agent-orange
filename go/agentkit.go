@@ -241,7 +241,30 @@ type CreateSessionRequest struct {
 	// Empty value is equivalent to HarnessClaudeAgentSDK (the sandbox default).
 	// See agent-library/docs/12-harness.md.
 	Harness Harness
+
+	// MCPServers configures Model Context Protocol servers available to the
+	// in-image harness for the lifetime of the session. Merged with (never
+	// replacing) the sandbox's built-in tool registry.
+	//
+	// Persisted on the session row at create time so resume / re-provision can
+	// re-supply it — MCP config is session config, not filesystem state, so a
+	// snapshot does not carry it (docs/product/01-session-config.md §4.5).
+	MCPServers map[string]MCPServerConfig
 }
+
+// MCPServerConfig describes one MCP server available to a session
+// (docs/product/01-session-config.md §4.1). Exactly one transport: stdio
+// (Command/Args/Env) or http/sse (URL/Headers). Env and Headers values may be
+// whole-value ${VAR} references naming an environment variable of the session
+// container, resolved at MCP-process spawn time — never secret values (§4.4).
+//
+// Aliased from agentdb because the session row is where it is persisted and
+// agentdb cannot import this package (cycle); the two names are interchangeable.
+type MCPServerConfig = agentdb.MCPServerConfig
+
+// MCPServers is a name-keyed set of MCP server configs. Alias of
+// agentdb.MCPServers.
+type MCPServers = agentdb.MCPServers
 
 // SendMessageRequest is one user turn.
 type SendMessageRequest struct {

@@ -221,6 +221,10 @@ var agentMigrations = []migration{
 			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS focus TEXT DEFAULT '';
 		`,
 	},
+	{
+		Name: "019_agent_sessions_mcp_servers",
+		SQL:  `ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS mcp_servers JSONB NOT NULL DEFAULT '{}';`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
