@@ -373,6 +373,12 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
 		return err
 	},
+	"CreateSkill": func(ctx context.Context, s *Store) error {
+		_, err := s.CreateSkill(ctx, &Skill{
+			Name: "probe-skill", Customer: probeProject, Markdown: "# probe",
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
 	"CreateCustomImage": func(ctx context.Context, s *Store) error {
 		_, err := s.CreateCustomImage(ctx, &CustomImage{
 			Name: "probe", Customer: probeProject, RegistryHandle: `{"kind":"blob-archive","ref":"probe"}`,

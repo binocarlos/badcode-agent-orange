@@ -181,21 +181,69 @@ func (Artifact) TableName() string { return "agent_artifacts" }
 
 // Skill is a durable, cross-session catalog entry promoted from a hoisted skill
 // bundle. Independent of the session it came from (no FK cascade).
+//
+// Since migration 025 the same table also carries the §14 catalogue: project
+// scoped, labeled, append-only skill records written by CreateSkill and read by
+// ListProjectSkills / GetProjectSkill (skills.go). §14 rows are exactly those
+// with a non-empty Markdown — see the discriminator note at the top of
+// skills.go — and their project namespace is the `customer` column, exactly as
+// for the §13 image catalogue.
 type Skill struct {
-	ID              string  `json:"id" gorm:"primaryKey;type:varchar(36)"`
-	CreatedAt       int64   `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt       int64   `json:"updated_at" gorm:"autoUpdateTime"`
-	Name            string  `json:"name" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:3"`
-	Description     string  `json:"description" gorm:"type:text"`
-	Visibility      string  `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_skills_lookup,priority:1"`
-	Customer        string  `json:"customer" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:2"`
-	OwnerEmail      string  `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_skills_owner"`
-	RequiresBuild   bool    `json:"requires_build" gorm:"default:false"`
-	ContentHash     string  `json:"content_hash" gorm:"type:varchar(64)"`
-	BlobPrefix      string  `json:"blob_prefix" gorm:"type:varchar(1024)"`
-	Manifest        JSONMap `json:"manifest" gorm:"type:jsonb;default:'{}'"`
-	SourceSessionID string  `json:"source_session_id" gorm:"type:varchar(36)"`
-	PromotedBy      string  `json:"promoted_by" gorm:"type:varchar(255);default:''"`
+	ID            string  `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	CreatedAt     int64   `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64   `json:"updated_at" gorm:"autoUpdateTime"`
+	Name          string  `json:"name" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:3"`
+	Description   string  `json:"description" gorm:"type:text"`
+	Visibility    string  `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_skills_lookup,priority:1"`
+	Customer      string  `json:"customer" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:2"`
+	OwnerEmail    string  `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_skills_owner"`
+	RequiresBuild bool    `json:"requires_build" gorm:"default:false"`
+	ContentHash   string  `json:"content_hash" gorm:"type:varchar(64)"`
+	BlobPrefix    string  `json:"blob_prefix" gorm:"type:varchar(1024)"`
+	Manifest      JSONMap `json:"manifest" gorm:"type:jsonb;default:'{}'"`
+	PromotedBy    string  `json:"promoted_by" gorm:"type:varchar(255);default:''"`
+
+	// ── §14 catalogue columns (migration 025) ───────────────────────────────
+	//
+	// As on CustomImage, none of these carries a gorm `default:` tag: GORM omits
+	// a zero-valued field from the INSERT when a default is declared, which
+	// would silently turn "no labels / no install script" into whatever the DDL
+	// says. The migration still carries DEFAULTs, for rows written outside GORM.
+
+	// Revision is the append ordinal of this teaching: a monotonic, gap-free
+	// integer allocated per (project, name) starting at 1 (migration 028).
+	//
+	// §14.1 gives a skill NO version — its identity is its name and resolution
+	// is newest-wins — and this column does not change that: there is no
+	// `name:revision` reference form and nothing resolves by it. It exists
+	// because "newest" needed a deterministic meaning. created_at on this table
+	// is SECONDS and the id is a random uuid, so two revisions recorded in the
+	// same second would otherwise order by coin toss, and `skill_get` could
+	// return the superseded document. Revision order is allocation order.
+	//
+	// Zero marks a pre-§14 row written by the legacy latest-wins UpsertSkill
+	// path, consistent with CustomImage.Version.
+	Revision int `json:"revision"`
+	// Labels say what a skill is for and who should install it (§14.1) — the
+	// same grammar and the same limits as memory labels (labels.go: one
+	// validator, one selector parser for the whole system).
+	Labels LabelSet `json:"labels" gorm:"type:jsonb"`
+	// Markdown is the Claude-Code-style skill document: what the capability is,
+	// when to reach for it, how to use it (§14.1). It is also the §14
+	// DISCRIMINATOR — a row with empty markdown is a pre-§14 host-built
+	// catalogue row and is never listed, resolved or installed.
+	Markdown string `json:"markdown" gorm:"type:text"`
+	// InstallSh is the optional shell script that installs the skill's software
+	// dependencies. Empty means "knowledge only, nothing to install".
+	InstallSh string `json:"install_sh" gorm:"type:text"`
+	// CreatedByWorker names the worker that recorded this revision (§14.1).
+	CreatedByWorker string `json:"created_by_worker,omitempty" gorm:"type:text"`
+	// CreatedBySession names the session it was recorded from — permalinkable
+	// like a memory hit (§7.3). Like CustomImage.CreatedBySession it maps onto
+	// the pre-existing `source_session_id` column (migration 013), which already
+	// meant exactly "session this skill came from": a second column with the
+	// same meaning is drift waiting to happen.
+	CreatedBySession string `json:"created_by_session,omitempty" gorm:"column:source_session_id;type:varchar(36)"`
 }
 
 func (Skill) TableName() string { return "agent_skills" }

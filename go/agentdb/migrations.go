@@ -468,6 +468,32 @@ var agentMigrations = []migration{
 				ON agent_custom_images(customer, expires_at) WHERE version > 0 AND reaped_at = 0;
 		`,
 	},
+	{
+		// I3. Migration 025 gave agent_skills its §14 columns; this adds the one
+		// column those columns turned out to need, and the catalogue index.
+		//
+		// `revision` is the append ordinal per (project, name). §14.1 gives a
+		// skill no version and this does not add one — nothing resolves by
+		// revision and there is no `name:revision` reference form. It exists
+		// because "newest wins" needed a deterministic meaning: created_at on
+		// this table is SECONDS and id is a random uuid, so two teachings of one
+		// skill inside a second would otherwise order by coin toss and
+		// `skill_get` could hand back the superseded document.
+		//
+		// The unique index — not the read of MAX(revision) — is what makes
+		// allocation correct under concurrency; a racing writer loses the insert
+		// and retries, exactly as image-version allocation does. Both indexes
+		// are partial on the §14 discriminator (markdown <> ''), so the legacy
+		// host-built population neither collides with them nor bloats them.
+		Name: "028_skill_revisions",
+		SQL: `
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS revision INT NOT NULL DEFAULT 0;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_revision
+				ON agent_skills(customer, name, revision) WHERE markdown <> '';
+			CREATE INDEX IF NOT EXISTS idx_agent_skills_catalogue
+				ON agent_skills(customer, created_at DESC, name) WHERE markdown <> '';
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
