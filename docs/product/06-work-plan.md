@@ -65,7 +65,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 - [x] **B3.** UI: project settings page (image field, prompt textarea, MCP JSON editor).
       (`web/src/`) — depends B1
       **Validation:** `cd web && npm test`
-- [ ] **B4.** `[learnings]` Snapshot TTL metadata + reaper: every snapshot carries
+- [x] **B4.** `[learnings]` Snapshot TTL metadata + reaper: every snapshot carries
       `{source session, created_at, expiry, last_resumed_at}`; a reaper deletes snapshot images
       whose expiry has passed, reading `snapshot_ttl_days` (§5; 0 = never).
       (`go/runner.go` idle-archive loop, `go/imageregistry/`, `go/agentdb/customimages.go`)
@@ -290,7 +290,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       Nothing on the hot path reads this table: the ordinary tables stay the projections.
       (`go/agentdb/config_events.go`, `go/agentdb/migrations.go`, `go/agentdb/store.go`)
       **Validation:** `go test ./agentdb/... -run 'TestConfigEvents|TestMutationsAreLogged' -count=1`
-- [ ] **J2.** `[walkthrough]` Replay + restore semantics (§15.6, §15.7): a `FoldTo(project, T)`
+- [x] **J2.** `[walkthrough]` Replay + restore semantics (§15.6, §15.7): a `FoldTo(project, T)`
       function reconstructing the projection state at instant T (iterate in `created_at`/`id`
       order, newest payload wins per `(entity kind, entity key)`, delete actions are tombstones),
       and the restore path expressed **only** as forward compensating mutations — no destructive
@@ -317,7 +317,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `go test ./cmd/agentd/... -run 'TestConfigChangedEvent|TestConfigHistory' -count=1`
       (cases: rolled-back transaction emits nothing; retry after crash does not double-emit;
       a worker-made change carries the acting session's envelope at depth+1)
-- [ ] **J4.** `[walkthrough]` Changelog UI (may fold into Track F alongside F1): the config log
+- [x] **J4.** `[walkthrough]` Changelog UI (may fold into Track F alongside F1): the config log
       rendered chronologically — prompt rewrites with diffs computed **at read time** between
       consecutive events for the same key, rationales shown as the commit messages they are,
       workers hired/disabled, schedules retuned, images published — every entry deep-linking to
@@ -325,7 +325,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `cd web && npm test`
 
 ### Track F — UI polish `[web]`
-- [ ] **F1.** Events view: recent events, deliveries, resulting jobs (read-only observability —
+- [x] **F1.** Events view: recent events, deliveries, resulting jobs (read-only observability —
       this replaces the deleted watchapi cockpit). `[learnings]` Job history shows event,
       worker, duration, status (incl. `awaiting_human`), tokens, and session link (L29); plus
       event replay and subscription test — paste/replay an event and see which subscriptions
@@ -440,6 +440,56 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(J2, 2026-07-25)` **The fold needed a monotonic sequence — migration 027 adds
+  `config_events.seq`, and §15.6 needs amending.** `created_at` is ms and `id` is a random uuid, so
+  two writes to one key inside a millisecond fold arbitrarily and the fold could contradict the
+  projection it exists to reproduce. `seq` is allocated **inside** the config-event transaction from
+  the committed high-water mark (so seq order **is** commit order), unique-indexed per project, and
+  backfilled deterministically. `ListConfigEvents` now orders by `seq DESC` — **J3/J4 pagination
+  should key on `seq`, not on a timestamp.** Proposed §15.6 wording is in the J2 executor report;
+  apply it when the spec is next edited.
+- `(J2, 2026-07-25)` **Payload timestamps are not authoritative** — `WithConfigEvent` marshals the
+  payload *before* the transaction, so a create event's `payload.updated_at` is 0 and an update
+  event's is the *previous* value. **The changelog must use `config_events.created_at`.**
+- `(J2, 2026-07-25)` The fold **refuses** an action it cannot key rather than silently dropping an
+  entity kind; `TestConfigFold_EveryActionIsFoldable` is the tripwire for any track adding a §15.3
+  verb.
+- `(B4, 2026-07-25)` **Scope limit: the reaper sweeps the §13 catalogue only.** Session snapshot
+  handles (`agent_sessions.snapshot_handle`, written by the archive loop) are not catalogue rows,
+  carry no TTL metadata, and **still accumulate forever**. Covering them means TTL columns on
+  `agent_sessions` plus a second sweep, or giving archive snapshots catalogue rows — and clearing a
+  handle kills the session's resumability, which no spec section sanctions. **Needs a decision by
+  whoever owns session lifecycle.**
+- `(B4, 2026-07-25)` `expires_at` is stamped at burn time from the project's TTL and is the promise
+  the reaper honours; the current TTL only decides how far back to look. Consequence: **raising
+  `snapshot_ttl_days` defers reaping of already-stale rows** (conservative — bytes are kept, never
+  wrongly deleted). Rows burned before this landed have `expires_at = 0` = never.
+- `(B4, 2026-07-25)` **`MarkCustomImageResumed` is the third guarded-table write outside the seam**
+  (after `DeleteCustomImage` and `MarkCustomImageReaped`) — exactly the case I1 predicted would mean
+  the guard needs an explicit **GC/runtime-write escape rather than more exemptions**. Exempted with
+  a reason for now (pinned list 8 → 9); the escape is an orchestrator decision, not a mid-wave
+  refactor of another agent's conformance test.
+- `(B4, 2026-07-25)` **Nothing calls `MarkCustomImageResumed` yet** — I4 must call it when it binds
+  the §13 worker image pointer, or `last_resumed_at` stays permanently 0.
+- `(F1, 2026-07-25)` **F1 owns J4** (the plan's "one implementation, not two" rule): the changelog
+  view landed here, built against an injected fetcher because **`GET /agent/config-events` does not
+  exist**. The store method `ListConfigEvents` is already there; only the handler is missing. Exact
+  route + JSON shape are pinned in `web/src/configLog.ts` and by `configLog.test.ts`; wiring it is
+  deleting one prop. Until then the UI says "written but not served" rather than showing an empty
+  history that would read as "nothing has changed".
+- `(F1, 2026-07-25)` **No token data reaches the browser cheaply:** `event_deliveries` has no token
+  column and `GetSessionTokenSummary` has no route, so the jobs table sums per-session query-events
+  — one request per row (only the first 10 auto-load). **A `tokens` field on the delivery row, or a
+  token-summary route, deletes that hook entirely.**
+- `(F1, 2026-07-25)` **The subscription matcher is now a second implementation of a rule the engine
+  owns** (Go's `validateSubscription` + E3's router). Confined to §8.3's two predicates so there is
+  no third pattern to drift on — but **if §8.3 grows a pattern, `web/src/events.ts` and the Go
+  validator must move together.**
+- `(F1, 2026-07-25)` `project_prompt_write`'s payload shape is unspecified in §15.3; the UI accepts
+  `system_prompt`/`prompt`/`value` rather than guessing. **E4/H1 should write `system_prompt`** to
+  match the worker and settings rows.
+- `(F1, 2026-07-25)` The ms-vs-seconds split is a live trap in the UI too — two formatters now
+  exist and mixing them is silently off by 1000x. Pinned by test.
 - `(uiwire, 2026-07-25)` **ENGINE DEFECT — interrupted turns are never persisted (P8 violation).**
   Reloading the page mid-answer loses the whole turn **including the human's own message**:
   `GET /agent/session/{id}/messages` returns `count:0` and the session row is stuck at
