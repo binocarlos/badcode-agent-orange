@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/binocarlos/badcode-agent-orange/modelproxy"
 )
@@ -20,22 +22,75 @@ type modelProvider struct {
 	apiKey   string
 }
 
-func (p modelProvider) Endpoint() string                { return p.endpoint }
-func (p modelProvider) APIKey() string                  { return p.apiKey }
-func (p modelProvider) RewriteModel(name string) string { return name }
+func (p modelProvider) Endpoint() string                     { return p.endpoint }
+func (p modelProvider) APIKey() string                       { return p.apiKey }
+func (p modelProvider) RewriteModel(name string) string      { return name }
 func (p modelProvider) TargetPath(inboundPath string) string { return inboundPath }
 
 // newModelProxyHandler chooses the model path at startup: real Anthropic when
-// ANTHROPIC_API_KEY is set in agentd's env, canned mock SSE otherwise.
+// ANTHROPIC_API_KEY is set in agentd's env, mock SSE otherwise.
+//
+// The mock is scriptable (see modelproxy/script.go): with
+// AGENTKIT_MOCK_MODEL_SCRIPT (inline JSON) or AGENTKIT_MOCK_MODEL_SCRIPT_FILE
+// (a path) set, the mock serves scripted turns — including `tool_use` blocks,
+// which the canned stream can never produce. That is what makes an offline test
+// able to drive a worker into calling an MCP tool. Neither set → the canned
+// stream, unchanged.
 func newModelProxyHandler() http.Handler {
 	key := os.Getenv("ANTHROPIC_API_KEY")
 	if key == "" {
-		log.Printf("[agentd] ANTHROPIC_API_KEY unset → MOCK model proxy (set it for a real agent)")
-		return modelproxy.MockHandler()
+		table, err := loadMockModelScript()
+		if err != nil {
+			// A misconfigured script must not boot: a silently-ignored one turns
+			// into a mysterious test failure a long way from the typo.
+			log.Fatalf("[agentd] %v", err)
+		}
+		if table == nil {
+			log.Printf("[agentd] ANTHROPIC_API_KEY unset → MOCK model proxy (set it for a real agent)")
+			return modelproxy.MockHandler()
+		}
+		log.Printf("[agentd] ANTHROPIC_API_KEY unset → SCRIPTED mock model proxy (%d rule(s))", len(table.Rules))
+		return modelproxy.ScriptedMockHandler(table)
 	}
 	endpoint := envOr("ANTHROPIC_UPSTREAM_URL", "https://api.anthropic.com")
 	log.Printf("[agentd] real model proxy → %s", endpoint)
 	return modelproxy.Handler(modelProvider{endpoint: endpoint, apiKey: key})
+}
+
+// mockScriptEnv / mockScriptFileEnv name the two ways a stack supplies a mock
+// model script. Inline wins when both are set (a `.env` override beating a
+// baked-in file is the least surprising precedence).
+const (
+	mockScriptEnv     = "AGENTKIT_MOCK_MODEL_SCRIPT"
+	mockScriptFileEnv = "AGENTKIT_MOCK_MODEL_SCRIPT_FILE"
+)
+
+// loadMockModelScript reads the configured script table, or (nil, nil) when
+// neither environment variable is set.
+func loadMockModelScript() (*modelproxy.ScriptTable, error) {
+	if inline := strings.TrimSpace(os.Getenv(mockScriptEnv)); inline != "" {
+		t, err := modelproxy.ParseScriptTable(inline)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", mockScriptEnv, err)
+		}
+		return t, nil
+	}
+	path := strings.TrimSpace(os.Getenv(mockScriptFileEnv))
+	if path == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", mockScriptFileEnv, err)
+	}
+	t, err := modelproxy.ParseScriptTable(string(b))
+	if err != nil {
+		return nil, fmt.Errorf("%s (%s): %w", mockScriptFileEnv, path, err)
+	}
+	if t == nil {
+		return nil, fmt.Errorf("%s (%s): file is empty", mockScriptFileEnv, path)
+	}
+	return t, nil
 }
 
 // sandboxSessionEnv is injected into every session container. It points the

@@ -362,6 +362,12 @@ type ConfigEventQuery struct {
 	Since       int64 // inclusive, unix ms; 0 = unbounded
 	Until       int64 // inclusive, unix ms; 0 = unbounded
 	Limit       int   // 0 = no limit
+	// BeforeSeq is the page cursor: return only records with seq < BeforeSeq
+	// (0 = the newest page). It keys on seq rather than on created_at because
+	// only seq is a total order — two writes can share a millisecond, so a
+	// timestamp cursor would either skip or repeat records at a page boundary.
+	// A caller pages by passing the seq of the last record it received.
+	BeforeSeq int64
 }
 
 // ListConfigEvents returns matching records newest first. This is history,
@@ -386,6 +392,9 @@ func (s *Store) ListConfigEvents(ctx context.Context, q ConfigEventQuery) ([]*Co
 	}
 	if q.Until > 0 {
 		db = db.Where("created_at <= ?", q.Until)
+	}
+	if q.BeforeSeq > 0 {
+		db = db.Where("seq < ?", q.BeforeSeq)
 	}
 	if q.Limit > 0 {
 		db = db.Limit(q.Limit)

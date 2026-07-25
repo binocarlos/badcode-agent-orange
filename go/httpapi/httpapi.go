@@ -60,6 +60,12 @@ type Config struct {
 	// Schedules backs the /agent/schedules CRUD routes (§8.6). Same defaulting
 	// rule as Workers: auto-filled from AgentDB, 501 without one.
 	Schedules ScheduleStore
+
+	// ConfigLog backs GET /agent/config-events, the §15.10 changelog's read
+	// path. Same defaulting rule as Workers: auto-filled from AgentDB, 501
+	// without one. There is no write counterpart by design — config events are
+	// written only as the shadow of a real mutation (§15.4).
+	ConfigLog ConfigLogStore
 }
 
 // Tenancy contract
@@ -108,6 +114,9 @@ func New(cfg Config) (*Handlers, error) {
 	}
 	if cfg.Schedules == nil && cfg.AgentDB != nil {
 		cfg.Schedules = cfg.AgentDB
+	}
+	if cfg.ConfigLog == nil && cfg.AgentDB != nil {
+		cfg.ConfigLog = cfg.AgentDB
 	}
 	// The event routes ride on the same database as the rich read paths unless
 	// a host deliberately supplies its own store.
@@ -173,6 +182,8 @@ type Endpoints struct {
 	// Schedules (§8.6). Both are multi-method: the handler switches on r.Method.
 	Schedules string // "/agent/schedules"      (GET list, POST create)
 	Schedule  string // "/agent/schedules/{id}" (GET, PUT, DELETE)
+	// The config log (§15.10) — read-only; the project comes from the JWT.
+	ConfigEvents string // "GET /agent/config-events"
 	// TODO: an artifact download route (GET by artifact ID, backed by
 	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
 	ListWorkers  string // "GET /agent/workers"
@@ -216,6 +227,7 @@ var DefaultEndpoints = Endpoints{
 	ProjectToken:       "POST /agent/project-token",
 	Schedules:          "/agent/schedules",
 	Schedule:           "/agent/schedules/{id}",
+	ConfigEvents:       "GET /agent/config-events",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -282,6 +294,7 @@ func (h *Handlers) Mux() *http.ServeMux {
 		e.ProjectToken:  h.ProjectToken,
 		e.Schedules:     h.Schedules,
 		e.Schedule:      h.Schedule,
+		e.ConfigEvents:  h.ListConfigEvents,
 	} {
 		if pattern != "" {
 			m.HandleFunc(pattern, handler)
