@@ -106,7 +106,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       picker (§13), a `max_instances` field, and a briefing-selector list (§6.5).
       (`web/src/`) — depends C1
       **Validation:** `cd web && npm test`
-- [ ] **C4.** `[walkthrough]` Briefing-section injection (generalises the rolling summary): the
+- [x] **C4.** `[walkthrough]` Briefing-section injection (generalises the rolling summary): the
       built-in default selector (`kind=rolling-summary, worker=<name>`) **plus each selector in
       `worker.briefing`**; the newest match of each is injected as its own headed section
       (§6.2 step 2.4, §7.4). `[learnings]` Each section is independently truncated at
@@ -130,7 +130,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 - [x] **D2.** Embedding provider seam + deterministic mock embedder; NULL-degradation path.
       (`go/extension/embedding/`) — depends D1
       **Validation:** `go test ./extension/... -run TestEmbedding -count=1`
-- [ ] **D3.** Memory MCP tool server in agentd (session-token auth → project scope);
+- [x] **D3.** Memory MCP tool server in agentd (session-token auth → project scope);
       `memory_create/search/get` only; results carry provenance + session permalinks (§7.3).
       `[walkthrough]` Plus `memory_current(name)` — sugar for `memory_search("name=<name>",
       limit=1)` returning full content like `memory_get` (§7.3); the surface is therefore
@@ -440,6 +440,39 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(D3, 2026-07-25)` **There was no MCP server in the repo at all** (no Go MCP library in `go.mod`,
+  and adding one would touch the liftability story), so D3 also wrote the transport:
+  `go/cmd/agentd/mcpserver.go` — JSON-RPC over POST at `/mcp`, mounted outside the JWT middleware
+  because it authenticates by session token. **I2/I3/E4/J3 add one file each** exporting a
+  `[]*mcpTool` constructor plus one `srv.register(...)` line in `main.go`; `mcpserver.go` is never
+  edited to add a tool, and `register` panics on a duplicate tool name so two tracks cannot silently
+  shadow each other. **Do not write a second MCP server.**
+- `(D3, 2026-07-25)` Session-token → project mapping: `customer` claim is the project (hard scope,
+  in code — **no tool takes a project parameter**), `sid` is the session, `sessions.worker` the
+  worker. Verified against the secret the Runner *mints* with, deliberately **not** the possibly-empty
+  API secret — the API's dev-open mode must not open a project's memories. A token whose project
+  contradicts its session row is refused.
+- `(D3, 2026-07-25)` **Session tokens expire after 1h but jobs do not.** Compromise implemented: a
+  signature-valid but *expired* token is accepted only while its session row still exists and
+  matches the project (the row is the live authority, checked every call); an expired token for an
+  unknown session is 401. **The real fix is token re-issue on the session, which is nobody's item
+  yet.**
+- `(D3, 2026-07-25)` Core MCP server name is `core`, so tools reach the model as
+  `mcp__core__memory_search`. `coreMCPServers(selfURL)` is built and tested but **nothing wires it
+  into a launched session yet** — E3 owns that last mile. Until then the tools are served and
+  reachable but no session is told they exist.
+- `(D3, 2026-07-25)` agentd now reads `AGENTKIT_EMBEDDING_BACKEND` (`none` default | `mock`), **not
+  yet documented in `.env.example`/`docker-compose.yml`** — G1/G2 will want `mock` set or offline
+  memory search is keyword-only. The core MCP server is also wired only when `DATABASE_URL` is set.
+- `(C4, 2026-07-25)` **`SearchMemories` returns 500-byte snippets**, so a `limit:1` briefing lookup
+  would have silently truncated every section at 500 bytes instead of `briefing_max_bytes`. Added
+  `Store.NewestMemory(project, selector)`, shared by `memory_current` and the briefing builder, so
+  both use exactly one query.
+- `(C4, 2026-07-25)` §7.4 names the default section's heading but not the extra ones; convention
+  pinned by test: `Your memory briefing: <selector>`. Cheap to change only before E3 lands.
+- `(C4, 2026-07-25)` `BuildBriefingSections` returns **no error** by design — every failure costs
+  one section and is logged, because a worker with a stale briefing works and one that cannot start
+  does not. A hard failure for a misconfigured `briefing` row would be a spec decision.
 - `(E2, 2026-07-25)` **Depth had no source of truth.** Nothing on the session row recorded the
   triggering event, and holding it in memory would mean an agentd restart mid-job silently emits
   depth 1 instead of depth N+1 — quietly defeating the §8.4 loop floor. Added
