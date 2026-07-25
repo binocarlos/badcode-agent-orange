@@ -1,4 +1,6 @@
 node_modules/
 playwright-report/
+playwright-report-stack/
 test-results/
 .pids
+.stack-e2e-mode
