@@ -25,12 +25,12 @@ type IdentityFunc func(*http.Request) (Identity, error)
 
 // Config constructs the handler set.
 type Config struct {
-	Runner    agentkit.Runner
-	Store     agentkit.RunnerStore
-	Artifacts artifacts.ArtifactStore // optional; artifact routes 501 if nil
-	Identity  IdentityFunc
-	Endpoints Endpoints          // zero value -> DefaultEndpoints
-	AgentDB   *agentdb.Store     // optional; when set, ListSessions/Messages/QueryEvents/SearchMessages use real DB queries
+	Runner     agentkit.Runner
+	Store      agentkit.RunnerStore
+	Artifacts  artifacts.ArtifactStore // optional; artifact routes 501 if nil
+	Identity   IdentityFunc
+	Endpoints  Endpoints           // zero value -> DefaultEndpoints
+	AgentDB    *agentdb.Store      // optional; when set, ListSessions/Messages/QueryEvents/SearchMessages use real DB queries
 	ChatClient agentkit.ChatClient // optional; enables titlebot
 
 	// ImageResolver, when set, maps a host "installation" name
@@ -38,6 +38,11 @@ type Config struct {
 	// reference, set as CreateSessionRequest.Image.
 	// Optional: nil preserves the existing CustomImageID/Policy.BaseImage behavior.
 	ImageResolver func(installation string) (imageRef string, err error)
+
+	// Workers backs the /agent/workers CRUD routes. Left nil it is auto-filled
+	// from AgentDB in New(); nil with no AgentDB (the SQLite fallback) makes the
+	// routes 501. Set it explicitly to substitute a host store.
+	Workers WorkersStore
 }
 
 // Tenancy contract
@@ -75,6 +80,12 @@ func New(cfg Config) (*Handlers, error) {
 	if cfg.Endpoints == (Endpoints{}) {
 		cfg.Endpoints = DefaultEndpoints
 	}
+	// Optional stores default to the AgentDB when the host supplied one. The
+	// explicit nil check matters: assigning a nil *agentdb.Store would produce a
+	// non-nil interface and defeat the 501 guard.
+	if cfg.Workers == nil && cfg.AgentDB != nil {
+		cfg.Workers = cfg.AgentDB
+	}
 	return &Handlers{cfg: cfg}, nil
 }
 
@@ -111,6 +122,10 @@ type Endpoints struct {
 	Archive        string // "POST /agent/session/{id}/archive"
 	// TODO: an artifact download route (GET by artifact ID, backed by
 	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
+	ListWorkers  string // "GET /agent/workers"
+	GetWorker    string // "GET /agent/workers/{name}"
+	PutWorker    string // "PUT /agent/workers/{name}"
+	DeleteWorker string // "DELETE /agent/workers/{name}"
 }
 
 // DefaultEndpoints is the canonical route layout.
@@ -133,6 +148,10 @@ var DefaultEndpoints = Endpoints{
 	Upload:         "POST /agent/session/{id}/upload",
 	Snapshot:       "POST /agent/session/{id}/snapshot",
 	Archive:        "POST /agent/session/{id}/archive",
+	ListWorkers:    "GET /agent/workers",
+	GetWorker:      "GET /agent/workers/{name}",
+	PutWorker:      "PUT /agent/workers/{name}",
+	DeleteWorker:   "DELETE /agent/workers/{name}",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -166,6 +185,21 @@ func (h *Handlers) Mux() *http.ServeMux {
 	}
 	if e.Archive != "" {
 		m.HandleFunc(e.Archive, h.Archive)
+	}
+	// Workers (spec 02-workers §6.5). Guarded like Snapshot/Archive so a host
+	// that overrides Endpoints without these fields does not panic on an empty
+	// route pattern.
+	if e.ListWorkers != "" {
+		m.HandleFunc(e.ListWorkers, h.ListWorkers)
+	}
+	if e.GetWorker != "" {
+		m.HandleFunc(e.GetWorker, h.GetWorker)
+	}
+	if e.PutWorker != "" {
+		m.HandleFunc(e.PutWorker, h.PutWorker)
+	}
+	if e.DeleteWorker != "" {
+		m.HandleFunc(e.DeleteWorker, h.DeleteWorker)
 	}
 	return m
 }

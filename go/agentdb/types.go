@@ -101,10 +101,23 @@ type Session struct {
 	WorkerID          string  `json:"worker_id,omitempty" gorm:"type:varchar(100);default:''"`
 	Installation      string  `json:"installation,omitempty" gorm:"type:text;default:''"`
 	CustomImageID     string  `json:"custom_image_id,omitempty" gorm:"type:text;default:''"`
-	ArtifactCount     int     `json:"artifact_count" gorm:"->;<-:false"`
-	MessageCount      int     `json:"message_count" gorm:"->;<-:false"`
-	ToolCallCount     int     `json:"tool_call_count" gorm:"->;<-:false"`
-	ContainerState    string  `json:"container_state" gorm:"-"`
+	// Worker is the product-level worker (persona) whose job this session is —
+	// spec 02-workers §6.5. Empty for plain vanilla sessions. NOT the same thing
+	// as WorkerID above, which is the fleet-placement binding (which host runs
+	// the container).
+	Worker string `json:"worker,omitempty" gorm:"type:text;default:''"`
+	// ComposedPrompt is the full system prompt ComposeJob produced for this
+	// session, written once at composition time so every transcript is tied to
+	// the exact prompt that produced it (§6.2). Provenance, not a version store.
+	ComposedPrompt string `json:"composed_prompt,omitempty" gorm:"type:text;default:''"`
+	// LeaseExpiresAt is the unix-seconds deadline of the router's session lease;
+	// the reaper fails jobs whose lease lapsed (04-events-and-schedules §8.4).
+	// 0 = no lease held.
+	LeaseExpiresAt int64  `json:"lease_expires_at,omitempty" gorm:"default:0"`
+	ArtifactCount  int    `json:"artifact_count" gorm:"->;<-:false"`
+	MessageCount   int    `json:"message_count" gorm:"->;<-:false"`
+	ToolCallCount  int    `json:"tool_call_count" gorm:"->;<-:false"`
+	ContainerState string `json:"container_state" gorm:"-"`
 }
 
 func (Session) TableName() string { return "agent_sessions" }
@@ -189,22 +202,22 @@ func (Skill) TableName() string { return "agent_skills" }
 // Like Skill, it is a first-class catalog entity (not session-scoped) and uses
 // the same strict customer-scoping visibility rules — except it is never public.
 type CustomImage struct {
-	ID             string `json:"id" gorm:"primaryKey;type:varchar(36)"`
-	CreatedAt      int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
-	Name           string `json:"name" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:3"`
-	Description    string `json:"description" gorm:"type:text"`
-	Visibility     string `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_custom_images_lookup,priority:1"`
-	Customer       string `json:"customer" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:2"`
-	OwnerEmail     string `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_custom_images_owner"`
-	ContentHash    string `json:"content_hash" gorm:"type:varchar(64)"`
-	RegistryHandle string `json:"registry_handle" gorm:"type:text"`   // JSON-encoded imageregistry.Handle
-	SkillSet       string `json:"skill_set" gorm:"type:text"`          // JSON-encoded ordered [{skillId,name,content_hash}]
-	RequiresBuild  bool   `json:"requires_build" gorm:"default:false"` // true iff any included skill had install.sh
-	BaseImageID    string `json:"base_image_id" gorm:"type:varchar(36);index:idx_agent_custom_images_base"` // lineage: custom image this was built on ("" = built on platform base)
-	BaseInstallation string `json:"base_installation,omitempty" gorm:"type:text;default:''"` // installation name when built directly on a platform installation
-	SourceSessionID  string `json:"source_session_id,omitempty" gorm:"type:varchar(36);default:''"` // session this image was burned from
-	Focus            string `json:"focus,omitempty" gorm:"type:text;default:''"` // CLAUDE.md focus applied in this layer
+	ID               string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt        int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	Name             string `json:"name" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:3"`
+	Description      string `json:"description" gorm:"type:text"`
+	Visibility       string `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_custom_images_lookup,priority:1"`
+	Customer         string `json:"customer" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:2"`
+	OwnerEmail       string `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_custom_images_owner"`
+	ContentHash      string `json:"content_hash" gorm:"type:varchar(64)"`
+	RegistryHandle   string `json:"registry_handle" gorm:"type:text"`                                         // JSON-encoded imageregistry.Handle
+	SkillSet         string `json:"skill_set" gorm:"type:text"`                                               // JSON-encoded ordered [{skillId,name,content_hash}]
+	RequiresBuild    bool   `json:"requires_build" gorm:"default:false"`                                      // true iff any included skill had install.sh
+	BaseImageID      string `json:"base_image_id" gorm:"type:varchar(36);index:idx_agent_custom_images_base"` // lineage: custom image this was built on ("" = built on platform base)
+	BaseInstallation string `json:"base_installation,omitempty" gorm:"type:text;default:''"`                  // installation name when built directly on a platform installation
+	SourceSessionID  string `json:"source_session_id,omitempty" gorm:"type:varchar(36);default:''"`           // session this image was burned from
+	Focus            string `json:"focus,omitempty" gorm:"type:text;default:''"`                              // CLAUDE.md focus applied in this layer
 }
 
 func (CustomImage) TableName() string { return "agent_custom_images" }
