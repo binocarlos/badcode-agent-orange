@@ -30,6 +30,13 @@ log recorded that" means anything.
 Modes are `mock` (deterministic, offline — the CI signal), `api-key`, and `subscription`. Docker is
 required; the stack runs one session container per session inside DinD.
 
+> **`run-stack-e2e.sh clean` wedges a running agentd.** Removing session containers out from under
+> it leaves agentd unable to provision *any* new session — every create then fails with "no running
+> instance and no snapshot", including brand-new sessions. Restarting agentd
+> (`docker compose -p agent-orange-stack-e2e restart agentd`) recovers it. Prefer deleting sessions
+> through the API (`client.cleanup()`); reach for `clean` only when the stack is already down or you
+> intend to restart agentd straight after.
+
 To iterate on a single spec against an already-running stack:
 
 ```sh
@@ -47,6 +54,7 @@ e2e/
   helpers/ui.ts              browser fixtures: login, fresh project, view switch, send-and-settle
   helpers/configlog.ts       reads config_events out of the stack's postgres
   helpers/stackdb.ts         raw psql — the only reach past the HTTP API; each use marks a missing route
+  helpers/mcp.ts             drives agentd's core MCP server with a minted session token
   run-stack-e2e.sh           stack lifecycle
 ```
 
@@ -103,6 +111,16 @@ removed and the failure persisted.
 From `helpers/configlog.ts`: `configEvents(project)`, `configActions(project)`,
 `waitForConfigEvents(project, n)`.
 
+From `helpers/mcp.ts`: `sessionMCP(project, sessionId)`, `projectOnlyMCP(project)`, `mintSessionToken()`.
+These drive agentd's core MCP server (`POST /mcp`) — the tools a *worker* calls. Two things make it
+unlike an ordinary request, and both are facts about the deployment: the endpoint is not proxied by
+nginx and agentd's port is not published, so calls go through `docker compose exec dind wget`; and it
+authenticates by **session** token, so the helper mints one (HS256 over `customer` + `sid`, signed
+with the overlay's known test secret). `projectOnlyMCP` mints the same token *without* `sid`, which
+is how the "must be called from inside a session" refusals are tested. A tool that fails returns
+`isError: true` with its report in `text` — that is not a transport error, and `call` does not throw;
+`callOK` does.
+
 From `helpers/stackdb.ts`: `psql()`, `seedSessionMCPServers()`, `storedSessionMCPServers()`. This
 is the **only** place the suite reaches past the HTTP API, and every use marks a missing route: the
 config log has no read route, and a session's `mcp_servers` has no write path at all. When those
@@ -114,6 +132,11 @@ Two conventions worth keeping:
   they need no cleanup and repeated runs against one long-lived stack never collide.
 - **Never assert a mapped project is empty.** `apples-oranges` and `pears-plums` are shared with the
   browser spec and with previous runs.
+- **Delete the sessions you create.** A session holds a *running container* inside DinD until it is
+  deleted, and nothing reaps them on a timer. Call `client.cleanup()` from `afterEach` (or a
+  `finally`) in any spec that creates sessions. A suite that skips this fills the daemon — at 100
+  live containers `image_create` starts failing with "no running instance", which looks exactly like
+  a product bug and is not one.
 
 ## Coverage
 
@@ -134,6 +157,7 @@ Two conventions worth keeping:
 | Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
 | Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
 | G1 seeding §8.7/§8.8 | `features/acceptance-loop.spec.ts` | the §8.7 org (answerer, reviewer, archivist + three filtered subscriptions) seeds cleanly and every hire lands in the config log; an inbound email enters with a core-stamped envelope and logs nothing configuration-shaped; the §8.8 bootstrap — one manager plus two schedules — is one worker and two `schedule_create` records |
+| Images §13 / skills §14 | `features/images-and-skills.stack.spec.ts` | curate-then-burn end to end: `skill_create` → `skill_install` lands the document and runs its script; **a failing script is a loud failure** carrying exit status, stderr and "do not proceed"; `image_create` allocates versions 1 then 2, gap-free, listed newest-first with worker/session/`session_url` provenance; an older version survives a newer burn unchanged; the catalogue exposes **no update or delete verb**; `image_create`/`skill_create` are logged with the acting session while `skill_install` logs nothing (§14.2); both lists cap at 200 with `truncated`; and a token with no `sid` is refused by both |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
 ### No known failures

@@ -56,6 +56,11 @@ test.describe('session MCP servers', () => {
     client = await newProjectClient(request, 'e2e-mcp')
   })
 
+  // Sessions hold running containers until deleted — see ProjectClient.cleanup.
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
   // The control: proves the observable itself works, so the red test below is
   // red for the right reason. The in-image `ui` server is always present.
   test('the in-image MCP server connects and its tools reach the model', async () => {

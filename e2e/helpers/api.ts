@@ -396,10 +396,29 @@ export class ProjectClient {
 
   // ── Sessions ──────────────────────────────────────────────────────────────
 
+  /** Sessions this client created, for cleanup. */
+  private readonly created: string[] = []
+
   /** Creates a session and returns its id. */
   async createSession(body: { job?: string; persona?: string; systemPrompt?: string } = {}): Promise<string> {
     const { id } = await this.json<{ id: string }>('POST', '/agent/session', body)
+    this.created.push(id)
     return id
+  }
+
+  /**
+   * Deletes every session this client created.
+   *
+   * Not optional housekeeping: a session holds a *running container* inside
+   * DinD until it is deleted, and nothing reaps them on a timer. A suite that
+   * creates sessions and walks away fills the daemon until `image_create` fails
+   * with "no running instance" — which looks like a product bug and is not one.
+   * Call it from afterEach in any spec that creates sessions.
+   */
+  async cleanup(): Promise<void> {
+    for (const id of this.created.splice(0)) {
+      await this.raw('DELETE', `/agent/session/${encodeURIComponent(id)}`).catch(() => {})
+    }
   }
 
   /**
