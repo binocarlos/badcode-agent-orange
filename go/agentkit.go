@@ -126,8 +126,8 @@ type Policy struct {
 	// never); this is only how often we look. Hours, not minutes — reaping is
 	// storage housekeeping, and a pass that finds nothing still costs queries.
 	SnapshotReapInterval time.Duration
-	MaxConcurrent  int
-	AgentPort      int // in-image agent port (default 3010)
+	MaxConcurrent        int
+	AgentPort            int // in-image agent port (default 3010)
 
 	// SessionEnv is a static set of environment variables injected into every
 	// session container the Runner provisions (merged in sessionEnv; per-session
