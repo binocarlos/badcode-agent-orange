@@ -189,6 +189,20 @@ func main() {
 	}
 	logSessionContextWiring(sessionCtx != nil)
 
+	// ── Image pointer resolution (§13.3, I4) ─────────────────────────────────────
+	// ONE resolver, handed to both the Runner (Deps.Images — the launch chain)
+	// and the dispatcher (Images — composition step 1), so a worker job and a
+	// chat with the same worker cannot launch from different environments. Like
+	// everything else product-layer it needs Postgres; without it a worker's
+	// `image` column is unreadable anyway, because the catalogue lives there.
+	// Declared as the interface, never as the concrete type: a typed-nil
+	// *catalogueImageResolver in an interface field is non-nil, and the whole
+	// point of nil here is "this host has no catalogue" (see agentkit.Deps).
+	var imageResolver agentkit.ImageResolver
+	if agentDB != nil {
+		imageResolver = newCatalogueImageResolver(agentDB, registry, log.Printf)
+	}
+
 	// ── Runner ───────────────────────────────────────────────────────────────────
 	// The §8.2 internal emitters (worker.finished / worker.failed) append to the
 	// event spine, which only the Postgres store has. Left nil on the sqlite
@@ -206,6 +220,11 @@ func main() {
 		Claims:         claims,
 		SessionContext: sessionCtx,
 		WorkerEvents:   workerEvents,
+		// The §13 pointer at the front of the launch chain (§13.5, §13.6): a
+		// session whose resolved context carries a worker image resolves it
+		// here, and a failure fails the launch rather than substituting the
+		// base image.
+		Images: imageResolver,
 		Policy: agentkit.Policy{
 			BaseImage:                  baseImage,
 			AgentPort:                  3010,
@@ -269,7 +288,10 @@ func main() {
 				Store:  agentDB,
 				Notify: softBudgetNotifier(os.Getenv, log.Printf),
 			}),
-			// Images is bound to the §13 catalogue's Resolve by I4.
+			// Composition step 1 (§6.2, §13.5): `worker.image > project
+			// base_image > global`. The SAME resolver the Runner holds, so the
+			// composed image and a launch-time resolution cannot disagree.
+			Images: imageResolver,
 		})
 
 		rt := newRouter(routerConfig{

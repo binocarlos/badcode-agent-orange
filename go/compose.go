@@ -76,10 +76,13 @@ func sectionHeading(name string) string { return "--- " + name + " ---" }
 // environment and quietly got a different one is exactly the drift §13 exists
 // to prevent.
 //
-// This is a seam. C2 ships it with stub implementations in tests; the real
-// implementation is the `customimages` store's Resolve (work-plan I1), bound in
-// by I4 — the method name matches so the store can satisfy this interface
-// directly.
+// This is a seam. C2 ships it with stub implementations in tests; the
+// production implementation is agentd's catalogueImageResolver
+// (cmd/agentd/imageresolver.go), which is I1's `ResolveCustomImage` plus the
+// registry materialisation and the §5 `last_resumed_at` stamp. The SAME object
+// is handed to agentkit.Deps.Images, so the image a job is composed with and
+// the image an interactive session on that worker launches from cannot
+// disagree.
 type ImageResolver interface {
 	Resolve(ctx context.Context, project, ref string) (string, error)
 }

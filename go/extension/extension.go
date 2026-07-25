@@ -26,7 +26,29 @@ type ContextScope struct {
 // resuming a session.
 type SessionContext struct {
 	SystemPrompt string
-	BaseImage    string
+	// BaseImage is the host's resolved image chain (docs/product §5:
+	// worker image > project base_image > the host's own global default). The
+	// Runner ranks it above Policy.BaseImage and below an explicit request
+	// image — see runner.go:resolveLaunchImage.
+	//
+	// It may hold an UNRESOLVED §13 pointer when the winning layer was a
+	// worker's `image` column; WorkerImage below says so, and is what the
+	// Runner actually resolves. A host with no image catalogue simply never
+	// sets WorkerImage, and BaseImage is used verbatim as it always was.
+	BaseImage string
+
+	// WorkerImage is the worker's §13 image pointer — a bare `name` (floating:
+	// the latest version in the project) or `name:version` (pinned) — carried
+	// UNRESOLVED, because §13.3 resolution belongs to the image catalogue and
+	// not to this seam. Empty when the worker sets no pointer, which is the
+	// only case a host without images ever produces.
+	//
+	// When it is set the Runner resolves it through Deps.Images and launches
+	// from the result. A resolution failure (unknown name, reaped version,
+	// nothing to materialise) FAILS THE LAUNCH: a worker that was pointed at an
+	// environment and quietly got a different one is exactly the drift §13
+	// exists to prevent (docs/product/08-images-and-skills.md §13.3, §13.5).
+	WorkerImage string
 
 	// MCPServers is the project ∪ worker MCP configuration the host resolved for
 	// this session (docs/product/01-session-config.md §4.1, §5). Without this

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -171,12 +172,17 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		}
 	}()
 
+	// The host's per-session defaults (§5), resolved ONCE: both the MCP union
+	// below and the launch image read it, and asking twice would double every
+	// query the provider makes on the hot path of every create.
+	sctx, err := r.resolveSessionContext(ctx, req)
+	if err != nil {
+		return nil, err
+	}
 	// Fold the host-resolved project ∪ worker MCP defaults under the
 	// request-supplied servers, so the union a SessionContextProvider computes
 	// actually reaches the container (§4.1, §5).
-	if req.MCPServers, err = r.sessionMCPServers(ctx, req); err != nil {
-		return nil, err
-	}
+	req.MCPServers = mergeSessionMCPServers(sctx, req.MCPServers)
 	// Record session-scoped MCP config on the session row before anything is
 	// provisioned, so resume / re-provision can re-supply it (§4.5) and so a
 	// malformed config fails the create loudly instead of reaching the harness.
@@ -189,7 +195,7 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		return nil, err
 	}
 
-	img, err := r.resolveLaunchImage(ctx, req.Image, req.CustomImageID, req.UserEmail, req.Customer)
+	img, err := r.resolveLaunchImage(ctx, req.Image, req.CustomImageID, req.UserEmail, req.Customer, sctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve launch image: %w", err)
 	}
@@ -234,19 +240,16 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 	return &SessionHandle{SessionID: req.SessionID, Address: inst.Address, State: string(inst.State)}, nil
 }
 
-// sessionMCPServers resolves the effective MCP configuration for a create:
-// the host's project ∪ worker defaults (extension.SessionContext.MCPServers)
-// with the request-supplied servers layered on top, so a request entry wins a
-// name collision (§5 — the resolved context is "the defaults which the request
-// may extend").
+// resolveSessionContext asks the host for this session's defaults (§5: system
+// prompt, image chain, MCP servers). nil, nil when no provider is wired — the
+// pre-provider path, unchanged.
 //
-// Returns req.MCPServers unchanged when no provider is wired or it contributes
-// nothing, which keeps every pre-existing caller on exactly the old path. A
-// provider error fails the create: a session that silently launched without the
-// project's tools is the failure this seam exists to prevent.
-func (r *runnerImpl) sessionMCPServers(ctx context.Context, req CreateSessionRequest) (map[string]MCPServerConfig, error) {
+// A provider error fails the create: a session that silently launched without
+// the project's tools, or from a different environment than the one it was
+// pointed at, is the failure this seam exists to prevent.
+func (r *runnerImpl) resolveSessionContext(ctx context.Context, req CreateSessionRequest) (*extension.SessionContext, error) {
 	if r.deps.SessionContext == nil {
-		return req.MCPServers, nil
+		return nil, nil
 	}
 	scope := extension.ContextScope{
 		Customer: req.Customer, Job: req.Job, Persona: req.Persona, UserEmail: req.UserEmail,
@@ -255,17 +258,29 @@ func (r *runnerImpl) sessionMCPServers(ctx context.Context, req CreateSessionReq
 	if err != nil {
 		return nil, fmt.Errorf("resolve session context: %w", err)
 	}
+	return sc, nil
+}
+
+// mergeSessionMCPServers is the effective MCP configuration for a create: the
+// host's project ∪ worker defaults (extension.SessionContext.MCPServers) with
+// the request-supplied servers layered on top, so a request entry wins a name
+// collision (§5 — the resolved context is "the defaults which the request may
+// extend").
+//
+// Returns reqServers unchanged when the context is absent or contributes
+// nothing, which keeps every pre-existing caller on exactly the old path.
+func mergeSessionMCPServers(sc *extension.SessionContext, reqServers map[string]MCPServerConfig) map[string]MCPServerConfig {
 	if sc == nil || len(sc.MCPServers) == 0 {
-		return req.MCPServers, nil
+		return reqServers
 	}
-	merged := make(agentdb.MCPServers, len(sc.MCPServers)+len(req.MCPServers))
+	merged := make(agentdb.MCPServers, len(sc.MCPServers)+len(reqServers))
 	for name, cfg := range sc.MCPServers {
 		merged[name] = cfg
 	}
-	for name, cfg := range req.MCPServers {
+	for name, cfg := range reqServers {
 		merged[name] = cfg
 	}
-	return merged, nil
+	return merged
 }
 
 // persistMCPServers validates and writes the session's MCP config onto its
@@ -1903,16 +1918,48 @@ func (r *runnerImpl) snapshotPersistCache(ctx context.Context, worker fleet.Work
 	return h, nil
 }
 
-// resolveLaunchImage implements the launch-image priority:
+// ErrLaunchImageUnresolvable is returned by resolveLaunchImage when a session's
+// WORKER IMAGE POINTER (§13) cannot be turned into a launch image. It is a
+// sentinel so the caller — agentd's dispatcher, or an HTTP handler — can answer
+// "this job cannot run" rather than string-matching, and so the one case §13.3
+// forbids falling back on is distinguishable from an infrastructure hiccup.
+var ErrLaunchImageUnresolvable = errors.New("launch image unresolvable")
+
+// resolveLaunchImage implements the launch-image priority
+// (docs/product/08-images-and-skills.md §13.5, §13.6):
 //
-//	explicit Image  >  custom image id  >  Policy.BaseImage
+//	explicit Image  >  worker image pointer  >  custom image id  >
+//	SessionContext.BaseImage  >  Policy.BaseImage
 //
-// A custom image is resolved via Deps.CustomImages and materialized; any
-// resolve/materialize failure logs and falls through to the base image so a
-// session still starts.
-func (r *runnerImpl) resolveLaunchImage(ctx context.Context, explicitImage, customImageID, callerEmail, callerCustomer string) (execenv.ImageRef, error) {
+// Read from the product layer's side that is exactly §13.5's composition step 1,
+// `worker.image > project base_image > global`: a worker JOB arrives with the
+// composed image already in explicitImage (ComposeJob resolved the pointer
+// through the same seam), and every other session on a worker arrives with the
+// pointer unresolved on the session context, where this function resolves it.
+// The two layers below it — the project's `base_image` and the host's global —
+// travel together on SessionContext.BaseImage, which the Runner used to ignore
+// entirely, so a project's configured image applied to worker jobs and to
+// nothing else.
+//
+// The two middle links fail in DELIBERATELY OPPOSITE ways:
+//
+//   - the worker pointer fails the launch, loudly. §13.3: "resolution failure
+//     fails the job loudly rather than silently falling back to the project
+//     default — a worker that was pointed at an environment and quietly got a
+//     different one is exactly the drift §13 exists to prevent";
+//   - a custom image id logs and falls through to the base image, as it always
+//     has. That is the legacy user-image path, whose whole contract is that a
+//     session still starts.
+func (r *runnerImpl) resolveLaunchImage(ctx context.Context, explicitImage, customImageID, callerEmail, callerCustomer string, sctx *extension.SessionContext) (execenv.ImageRef, error) {
 	if explicitImage != "" {
 		return execenv.ImageRef(explicitImage), nil
+	}
+	if ref := workerImagePointer(sctx); ref != "" {
+		image, err := r.resolveWorkerImage(ctx, callerCustomer, ref)
+		if err != nil {
+			return "", err
+		}
+		return image, nil
 	}
 	if customImageID != "" && r.deps.CustomImages != nil {
 		h, ok, err := r.deps.CustomImages.Resolve(ctx, customImageID, callerEmail, callerCustomer)
@@ -1929,7 +1976,43 @@ func (r *runnerImpl) resolveLaunchImage(ctx context.Context, explicitImage, cust
 			log.Printf("agentkit: custom image %s materialize failed, falling back: %v", customImageID, mErr)
 		}
 	}
+	if sctx != nil {
+		if img := strings.TrimSpace(sctx.BaseImage); img != "" {
+			return execenv.ImageRef(img), nil
+		}
+	}
 	return execenv.ImageRef(r.deps.Policy.BaseImage), nil
+}
+
+// workerImagePointer is the session context's §13 pointer, or "" — including
+// when there is no context at all, which is every host that wires no provider.
+func workerImagePointer(sctx *extension.SessionContext) string {
+	if sctx == nil {
+		return ""
+	}
+	return strings.TrimSpace(sctx.WorkerImage)
+}
+
+// resolveWorkerImage turns a §13 pointer into a launch image through
+// Deps.Images. Every failure is an ErrLaunchImageUnresolvable — including a
+// missing resolver, because a host whose sessions carry image pointers and
+// whose Runner cannot resolve them is misconfigured, and launching such a
+// session from the base image would be the silent substitution §13.3 forbids.
+func (r *runnerImpl) resolveWorkerImage(ctx context.Context, project, ref string) (execenv.ImageRef, error) {
+	if r.deps.Images == nil {
+		return "", fmt.Errorf("%w: session points at worker image %q but no Deps.Images resolver is wired",
+			ErrLaunchImageUnresolvable, ref)
+	}
+	image, err := r.deps.Images.Resolve(ctx, project, ref)
+	if err != nil {
+		return "", fmt.Errorf("%w: worker image %q in project %q: %w",
+			ErrLaunchImageUnresolvable, ref, project, err)
+	}
+	if strings.TrimSpace(image) == "" {
+		return "", fmt.Errorf("%w: worker image %q in project %q resolved to nothing",
+			ErrLaunchImageUnresolvable, ref, project)
+	}
+	return execenv.ImageRef(strings.TrimSpace(image)), nil
 }
 
 // copyArtifactToInstance copies a single artifact ref into the throwaway instance.

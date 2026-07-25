@@ -63,7 +63,15 @@ func newSessionContextProvider(store projectConfigStore, globalBaseImage string)
 type resolvedContext struct {
 	SystemPrompt string
 	BaseImage    string
-	MCPServers   agentdb.MCPServers
+	// WorkerImage is the worker's §13 pointer, carried UNRESOLVED and separately
+	// from BaseImage (which also holds it, as the winner of the §5 chain).
+	// Resolution — bare name → latest, `name:version` → pinned — belongs to the
+	// catalogue, and happens once, at launch: runner.go:resolveLaunchImage
+	// through Deps.Images (imageresolver.go). Doing it here instead would
+	// materialise an image for every create, including the worker jobs that
+	// arrive with a composed image already chosen.
+	WorkerImage string
+	MCPServers  agentdb.MCPServers
 }
 
 // Resolve implements extension.SessionContextProvider: the system prompt, the
@@ -81,6 +89,7 @@ func (p *sessionContextProvider) Resolve(ctx context.Context, scope extension.Co
 	return &extension.SessionContext{
 		SystemPrompt: rc.SystemPrompt,
 		BaseImage:    rc.BaseImage,
+		WorkerImage:  rc.WorkerImage,
 		MCPServers:   rc.MCPServers,
 	}, nil
 }
@@ -140,8 +149,13 @@ func (p *sessionContextProvider) resolve(ctx context.Context, scope extension.Co
 			if w.Image != "" {
 				// Passed through verbatim: §13's bare-name → latest /
 				// name:version → pinned resolution belongs to the image
-				// catalogue, not to this seam.
+				// catalogue, not to this seam. WorkerImage is what says
+				// "this string is a §13 pointer, not an image ref" — without
+				// it the Runner could only guess, and guessing wrong means
+				// either refusing a legitimate docker ref or silently
+				// launching a worker somewhere it was not pointed (§13.3).
 				rc.BaseImage = w.Image
+				rc.WorkerImage = w.Image
 			}
 			// Union, worker wins on collision — never a filter of project tools.
 			rc.MCPServers = MergeMCPServers(rc.MCPServers, workerMCP)
