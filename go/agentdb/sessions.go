@@ -2,15 +2,142 @@ package agentdb
 
 import (
 	"context"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// MCPServerConfig describes one Model Context Protocol server made available to
+// a session's in-image harness for the lifetime of the session
+// (docs/product/01-session-config.md §4).
+//
+// Exactly one transport is configured per server: stdio (Command/Args/Env) or
+// http/sse (URL/Headers). Values in Env and Headers may be whole-value ${VAR}
+// references — the *name* of an environment variable of the session container,
+// resolved at MCP-process spawn time. They are never secret values, which is
+// precisely what makes persisting and displaying this config safe by
+// construction (§4.4).
+//
+// The canonical definition lives here rather than in the root agentkit package
+// because agentkit imports agentdb (the reverse would be an import cycle);
+// agentkit re-exports it as an alias so the Go surface reads as the spec writes
+// it.
+type MCPServerConfig struct {
+	// Command is the stdio transport: an executable inside the container.
+	Command string `json:"command,omitempty"`
+	// Args are the stdio command's arguments.
+	Args []string `json:"args,omitempty"`
+	// Env is the environment for the stdio process. Values may be ${VAR} references.
+	Env map[string]string `json:"env,omitempty"`
+	// URL is the http/sse transport, reachable FROM INSIDE the container.
+	URL string `json:"url,omitempty"`
+	// Headers are sent with http/sse requests. Values may be ${VAR} references.
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// MCPServers is a name-keyed set of MCP server configs, stored as JSONB.
+type MCPServers map[string]MCPServerConfig
+
+// mcpServerNamePattern constrains server names: the sandbox derives tool names
+// (mcp__<name>__*) from them, so anything exotic would produce untypeable tools.
+var mcpServerNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
+
+// envRefPattern is the one supported substitution form: a whole-value ${VAR}
+// reference. No partial interpolation, no defaults, no nesting (§4.1).
+var envRefPattern = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// Validate reports whether the config names exactly one transport and uses only
+// whole-value ${VAR} references. A partially interpolated value (e.g.
+// "Bearer ${TOKEN}") is rejected rather than silently persisted: the sandbox
+// resolves whole values only, so such a value would reach the MCP server as the
+// literal string — the silent-credential failure §4.1 forbids.
+func (c MCPServerConfig) Validate() error {
+	switch {
+	case c.Command == "" && c.URL == "":
+		return errors.New("exactly one transport required: set Command (stdio) or URL (http)")
+	case c.Command != "" && c.URL != "":
+		return errors.New("exactly one transport allowed: Command (stdio) and URL (http) are mutually exclusive")
+	}
+	if c.Command == "" {
+		if len(c.Args) > 0 {
+			return errors.New("args require the stdio transport (Command)")
+		}
+		if len(c.Env) > 0 {
+			return errors.New("env requires the stdio transport (Command)")
+		}
+	}
+	if c.URL == "" && len(c.Headers) > 0 {
+		return errors.New("headers require the http transport (URL)")
+	}
+	for _, field := range []struct {
+		name   string
+		values map[string]string
+	}{{"env", c.Env}, {"headers", c.Headers}} {
+		for k, v := range field.values {
+			if k == "" {
+				return fmt.Errorf("%s: empty key", field.name)
+			}
+			if strings.Contains(v, "${") && !envRefPattern.MatchString(v) {
+				return fmt.Errorf("%s %q: %q is not a whole-value ${VAR} reference (no partial interpolation)", field.name, k, v)
+			}
+		}
+	}
+	return nil
+}
+
+// Validate checks every server name and config.
+func (m MCPServers) Validate() error {
+	for name, cfg := range m {
+		if !mcpServerNamePattern.MatchString(name) {
+			return fmt.Errorf("mcp server name %q: must match %s", name, mcpServerNamePattern)
+		}
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("mcp server %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// Value implements driver.Valuer (JSONB).
+func (m MCPServers) Value() (driver.Value, error) {
+	if m == nil {
+		return "{}", nil
+	}
+	return json.Marshal(m)
+}
+
+// Scan implements sql.Scanner (JSONB).
+func (m *MCPServers) Scan(value any) error {
+	if value == nil {
+		*m = MCPServers{}
+		return nil
+	}
+	var raw []byte
+	switch v := value.(type) {
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		return fmt.Errorf("unsupported type %T for MCPServers", value)
+	}
+	var decoded MCPServers
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return fmt.Errorf("failed to unmarshal MCPServers: %w", err)
+	}
+	if decoded == nil {
+		decoded = MCPServers{}
+	}
+	*m = decoded
+	return nil
+}
 
 func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, error) {
 	if session.ID == "" {
@@ -251,6 +378,40 @@ func (s *Store) SetSnapshotHandle(ctx context.Context, sessionID string, h image
 		return err
 	}
 	row.SnapshotHandle = string(b)
+	_, err = s.UpdateSession(ctx, row)
+	return err
+}
+
+// GetSessionMCPServers returns the MCP server config persisted on a session
+// row. A session that never had any returns an empty (non-nil) map, so callers
+// can merge into it without a nil check.
+func (s *Store) GetSessionMCPServers(ctx context.Context, sessionID string) (MCPServers, error) {
+	row, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if row.MCPServers == nil {
+		return MCPServers{}, nil
+	}
+	return row.MCPServers, nil
+}
+
+// SetSessionMCPServers validates and replaces the MCP server config on a
+// session row. The write is wholesale — no patch semantics — matching how the
+// rest of the config surface behaves; passing an empty map clears it.
+// Validation is loud: a malformed config is never persisted.
+func (s *Store) SetSessionMCPServers(ctx context.Context, sessionID string, servers MCPServers) error {
+	if err := servers.Validate(); err != nil {
+		return err
+	}
+	row, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if servers == nil {
+		servers = MCPServers{}
+	}
+	row.MCPServers = servers
 	_, err = s.UpdateSession(ctx, row)
 	return err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -64,6 +65,66 @@ func TestLivePG_MigrationsApplyAndAreIdempotent(t *testing.T) {
 	url := os.Getenv("AGENTKIT_TEST_POSTGRES_URL")
 	if _, err := Open(url); err != nil {
 		t.Fatalf("second open must be idempotent: %v", err)
+	}
+}
+
+// TestLivePG_SessionMCPServers exercises migration 019's real jsonb column:
+// sqlite tolerates almost any column type, so only Postgres proves the value
+// actually stores and reads back as jsonb (and that the NOT NULL DEFAULT '{}'
+// applies to rows created before the write).
+func TestLivePG_SessionMCPServers(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	customer := "cust-" + uuid.New().String()
+	sess := newLiveSession(t, s, customer, "u@x.com")
+
+	// Pre-existing rows get the column default, never NULL.
+	got, err := s.GetSessionMCPServers(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get before write: %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("column default must be an empty map, got %#v", got)
+	}
+
+	want := MCPServers{
+		"gmail":  {Command: "npx", Args: []string{"-y", "server-gmail"}, Env: map[string]string{"GMAIL_API_KEY": "${GMAIL_API_KEY}"}},
+		"notion": {URL: "http://notion-mcp:8080/sse", Headers: map[string]string{"Authorization": "${NOTION_AUTH}"}},
+	}
+	if err := s.SetSessionMCPServers(ctx, sess.ID, want); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	got, err = s.GetSessionMCPServers(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round-trip:\n got %#v\nwant %#v", got, want)
+	}
+
+	// It really is jsonb: the server can index into it.
+	var command string
+	if err := s.DB().Raw(
+		"SELECT mcp_servers->'gmail'->>'command' FROM agent_sessions WHERE id = ?", sess.ID,
+	).Scan(&command).Error; err != nil {
+		t.Fatalf("jsonb query: %v", err)
+	}
+	if command != "npx" {
+		t.Fatalf("jsonb ->> extraction: got %q", command)
+	}
+
+	// An empty write clears it back to the default shape.
+	if err := s.SetSessionMCPServers(ctx, sess.ID, MCPServers{}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	var isNull bool
+	if err := s.DB().Raw(
+		"SELECT mcp_servers IS NULL FROM agent_sessions WHERE id = ?", sess.ID,
+	).Scan(&isNull).Error; err != nil {
+		t.Fatalf("null check: %v", err)
+	}
+	if isNull {
+		t.Fatalf("mcp_servers must never be NULL (column is NOT NULL)")
 	}
 }
 

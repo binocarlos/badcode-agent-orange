@@ -222,6 +222,10 @@ var agentMigrations = []migration{
 		`,
 	},
 	{
+		Name: "019_agent_sessions_mcp_servers",
+		SQL:  `ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS mcp_servers JSONB NOT NULL DEFAULT '{}';`,
+	},
+	{
 		Name: "020_project_settings",
 		SQL: `
 			CREATE TABLE IF NOT EXISTS project_settings (
