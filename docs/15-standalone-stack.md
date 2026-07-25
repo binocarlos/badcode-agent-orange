@@ -56,6 +56,31 @@ register against `@agentkit/chat-ui`'s render-plugin seam in the app's frontend.
 > `BASE_IMAGE` (stack-wide) or the `Image`/`CustomImageID` fields on the create-session
 > request.
 
+## The store — and why memory needs Postgres
+
+`agentd` picks its store from `DATABASE_URL`: set → Postgres (`agentdb`, self-migrating);
+unset → a local sqlite file, kept for zero-dependency demos. The compose stack always
+sets it, and the image is `pgvector/pgvector:pg16` so `CREATE EXTENSION vector` works
+without an image swap.
+
+**The memory system (spec §7) requires Postgres.** On sqlite, `CreateMemory` /
+`GetMemory` / `SearchMemories` all fail with `ErrMemoryRequiresPostgres` — memory
+leans on jsonb label selectors, `tsvector` ranking and (optionally) pgvector, and a
+keyword-ish sqlite imitation would answer searches with plausible but incomplete
+results. A store that silently forgets is worse than no store, so the sqlite fallback
+refuses loudly instead. If you want memory, keep `DATABASE_URL` set.
+
+Inside Postgres, two things *do* degrade quietly, and both keep the result shape
+identical (§7.6.5):
+
+- **No pgvector** — migration 022 adds `content_embedding` + its hnsw index only when
+  the extension is available; without it search drops the semantic leg and ranks on
+  keyword + recency.
+- **No embedding provider** — `AGENTKIT_EMBEDDING_BACKEND` is `none` by default, so
+  memories are stored with a NULL embedding and search is keyword + recency. Set it to
+  `mock` for the deterministic offline embedder (mock mode / e2e); a real embedder is
+  host code implementing `extension/embedding.Provider`.
+
 ## Storage backends (local default, or Google Cloud)
 
 `agentd` selects its blob and image-registry backends from env (see
