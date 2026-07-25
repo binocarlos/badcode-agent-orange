@@ -25,13 +25,17 @@ type IdentityFunc func(*http.Request) (Identity, error)
 
 // Config constructs the handler set.
 type Config struct {
-	Runner    agentkit.Runner
-	Store     agentkit.RunnerStore
-	Artifacts artifacts.ArtifactStore // optional; artifact routes 501 if nil
-	Identity  IdentityFunc
-	Endpoints Endpoints          // zero value -> DefaultEndpoints
-	AgentDB   *agentdb.Store     // optional; when set, ListSessions/Messages/QueryEvents/SearchMessages use real DB queries
+	Runner     agentkit.Runner
+	Store      agentkit.RunnerStore
+	Artifacts  artifacts.ArtifactStore // optional; artifact routes 501 if nil
+	Identity   IdentityFunc
+	Endpoints  Endpoints           // zero value -> DefaultEndpoints
+	AgentDB    *agentdb.Store      // optional; when set, ListSessions/Messages/QueryEvents/SearchMessages use real DB queries
 	ChatClient agentkit.ChatClient // optional; enables titlebot
+
+	// ProjectSettings backs GET/PUT /agent/project-settings. Left nil it is
+	// filled from AgentDB by New(); with neither set those routes answer 501.
+	ProjectSettings ProjectSettingsStore
 
 	// ImageResolver, when set, maps a host "installation" name
 	// (createSessionBody.Installation, "" = host default) to a launch image
@@ -75,6 +79,9 @@ func New(cfg Config) (*Handlers, error) {
 	if cfg.Endpoints == (Endpoints{}) {
 		cfg.Endpoints = DefaultEndpoints
 	}
+	if cfg.ProjectSettings == nil && cfg.AgentDB != nil {
+		cfg.ProjectSettings = cfg.AgentDB
+	}
 	return &Handlers{cfg: cfg}, nil
 }
 
@@ -109,6 +116,9 @@ type Endpoints struct {
 	Upload         string // "POST /agent/session/{id}/upload"
 	Snapshot       string // "POST /agent/session/{id}/snapshot"
 	Archive        string // "POST /agent/session/{id}/archive"
+	// Project settings (§5) — project inferred from the JWT, never the path.
+	GetProjectSettings string // "GET /agent/project-settings"
+	PutProjectSettings string // "PUT /agent/project-settings"
 	// TODO: an artifact download route (GET by artifact ID, backed by
 	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
 }
@@ -133,6 +143,9 @@ var DefaultEndpoints = Endpoints{
 	Upload:         "POST /agent/session/{id}/upload",
 	Snapshot:       "POST /agent/session/{id}/snapshot",
 	Archive:        "POST /agent/session/{id}/archive",
+
+	GetProjectSettings: "GET /agent/project-settings",
+	PutProjectSettings: "PUT /agent/project-settings",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -166,6 +179,13 @@ func (h *Handlers) Mux() *http.ServeMux {
 	}
 	if e.Archive != "" {
 		m.HandleFunc(e.Archive, h.Archive)
+	}
+	// Project settings
+	if e.GetProjectSettings != "" {
+		m.HandleFunc(e.GetProjectSettings, h.GetProjectSettings)
+	}
+	if e.PutProjectSettings != "" {
+		m.HandleFunc(e.PutProjectSettings, h.PutProjectSettings)
 	}
 	return m
 }

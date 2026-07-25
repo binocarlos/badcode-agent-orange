@@ -221,6 +221,24 @@ var agentMigrations = []migration{
 			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS focus TEXT DEFAULT '';
 		`,
 	},
+	{
+		Name: "020_project_settings",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS project_settings (
+				project VARCHAR(255) PRIMARY KEY,
+				base_image TEXT NOT NULL DEFAULT '',
+				system_prompt TEXT NOT NULL DEFAULT '',
+				mcp_config JSONB NOT NULL DEFAULT '{}',
+				attention_channel JSONB NOT NULL DEFAULT '{}',
+				max_concurrent_jobs INT NOT NULL DEFAULT 4,
+				daily_tokens_soft BIGINT NOT NULL DEFAULT 0,
+				daily_tokens_hard BIGINT NOT NULL DEFAULT 0,
+				briefing_max_bytes INT NOT NULL DEFAULT 2048,
+				snapshot_ttl_days INT NOT NULL DEFAULT 30,
+				updated_at BIGINT NOT NULL DEFAULT 0
+			);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.
