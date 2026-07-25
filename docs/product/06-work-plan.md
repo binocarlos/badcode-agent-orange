@@ -359,7 +359,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       (corrected 2026-07-25: the product-layer e2e runs against the compose stack under
       `e2e/features/`, not the legacy `e2e/tests/` Vite+mock-server rig — see the Discovered
       Issues Log)
-- [ ] **G2.** Docs: update `README-stack.md` + `docs/15-standalone-stack.md`; write
+- [x] **G2.** Docs: update `README-stack.md` + `docs/15-standalone-stack.md`; write
       `docs/18-workers-memory-events.md` user guide distilled from this spec; update CLAUDE.md
       repo map. — depends G1
       **Validation:** inherited default
@@ -481,6 +481,25 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(G2, 2026-07-25)` **The I4 gap was worse than "not wired" — it was a footgun.** `composeImage`
+  **errors the job** when a worker carries an `image` and no resolver is bound (`compose.go:348`),
+  and C3 had already shipped an image picker in the worker editor — so filling in that field broke
+  every job for that worker. Found while documenting. I4 was launched immediately on discovery.
+- `(G2, 2026-07-25)` **`AGENTKIT_EMBEDDING_BACKEND` was never forwarded by `docker-compose.yml`**,
+  so the shipped stack always ran with no embedder and memory search stayed keyword+recency
+  whatever `.env` said. **Fixed** (compose + `.env.example`), and the docs no longer imply otherwise.
+- `(G2, 2026-07-25)` **CLAUDE.md and MIGRATION.md contradicted each other on GCP** — one said the
+  live end-to-end was "still pending", the other records it verified 2026-06-25 with specific
+  evidence. Aligned CLAUDE.md to the dated record; **if the migration record is the wrong one,
+  CLAUDE.md now inherits that error** — worth a human confirming which is true.
+- `(G2, 2026-07-25)` **A green `go test ./...` does not cover the pgvector or jsonb-selector paths**
+  — every live-Postgres case skips unless `AGENTKIT_TEST_POSTGRES_URL` is set. Now stated in
+  CLAUDE.md's build section, because the default green is easy to over-read.
+- `(G2, 2026-07-25)` Other stale claims corrected: `sandbox`/`web` "not yet npm-built" (both green —
+  157 and 543 tests), the liftability CI described as still to be ported (it exists and runs),
+  `docs/15`'s "agent profiles are a separate upcoming feature" (that feature is the product layer),
+  postgres described as merely "ready for" the memory system, and `web/` described as the chat UI
+  when it is a component library whose shell is `examples/web/`.
 - `(J3, 2026-07-25)` **The integration bullet's prescription was declined, deliberately — treat it as
   closed.** Threading the committed `*ConfigEvent` back out of what had grown to **sixteen** adopted
   store methods would have made emission one more thing every future mutation path can forget — the
