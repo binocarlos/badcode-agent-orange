@@ -136,6 +136,11 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 	if err = r.persistMCPServers(ctx, req.SessionID, req.MCPServers); err != nil {
 		return nil, err
 	}
+	// Record the composition of a worker job (§6.2): which worker, and the
+	// exact prompt it launched with.
+	if err = r.persistComposition(ctx, req); err != nil {
+		return nil, err
+	}
 
 	img, err := r.resolveLaunchImage(ctx, req.Image, req.CustomImageID, req.UserEmail, req.Customer)
 	if err != nil {
@@ -203,6 +208,35 @@ func (r *runnerImpl) persistMCPServers(ctx context.Context, sessionID string, se
 	sess.MCPServers = cfg
 	if _, err := r.deps.Store.UpdateSession(ctx, sess); err != nil {
 		return fmt.Errorf("persist mcp servers: %w", err)
+	}
+	return nil
+}
+
+// persistComposition writes the provenance of a composed worker job onto the
+// session row (docs/product/02-workers.md §6.2, §6.5): the worker whose job
+// this is, and `composed_prompt` — the exact system prompt ComposeJob produced,
+// recorded at composition time so every transcript is tied to the prompt that
+// produced it.
+//
+// The prompt written is req.SystemPrompt, i.e. the very string handed to the
+// harness, rather than a second copy the caller could let drift.
+//
+// A no-op for plain vanilla sessions (no worker), which keeps every
+// pre-existing caller on exactly the old path. For a worker job the row is
+// required — losing the provenance link silently is the failure this whole
+// column exists to prevent.
+func (r *runnerImpl) persistComposition(ctx context.Context, req CreateSessionRequest) error {
+	if req.Worker == "" {
+		return nil
+	}
+	sess, err := r.deps.Store.GetSession(ctx, req.SessionID)
+	if err != nil {
+		return fmt.Errorf("persist composition: load session row: %w", err)
+	}
+	sess.Worker = req.Worker
+	sess.ComposedPrompt = req.SystemPrompt
+	if _, err := r.deps.Store.UpdateSession(ctx, sess); err != nil {
+		return fmt.Errorf("persist composition: %w", err)
 	}
 	return nil
 }
