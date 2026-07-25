@@ -401,6 +401,25 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		}
 		return s.DeleteWorker(ctx, probeProject, "probe", ConfigWrite{Worker: "prober", Session: "s-probe"})
 	},
+	"SetWorkerPrompt": func(ctx context.Context, s *Store) error {
+		if err := seedProbeWorker(ctx, s); err != nil {
+			return err
+		}
+		// The rationale is not decoration here: the seam refuses this action
+		// without one (§15.5), so a probe that omitted it would fail rather than
+		// prove anything.
+		_, _, err := s.SetWorkerPrompt(ctx, probeProject, "probe", "You answer email briefly.",
+			ConfigWrite{Worker: "prober", Session: "s-probe", Rationale: "a hundred curt threads"})
+		return err
+	},
+	"SetProjectPrompt": func(ctx context.Context, s *Store) error {
+		// No seeding: §5's settings row is created lazily, and the lazy create
+		// happens INSIDE the same config-event transaction — so this still writes
+		// exactly one event.
+		_, _, err := s.SetProjectPrompt(ctx, probeProject, "House style: plain English.",
+			ConfigWrite{Worker: "prober", Session: "s-probe", Rationale: "house style agreed"})
+		return err
+	},
 	"CreateSubscription": func(ctx context.Context, s *Store) error {
 		_, err := s.CreateSubscription(ctx, &Subscription{
 			Project: probeProject, EventType: "email.received", Worker: "probe", Enabled: true,

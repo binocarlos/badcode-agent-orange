@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -115,6 +116,19 @@ func NewWorker(project, name string) *Worker {
 // (e.g. email-answerer, email-review-consultant).
 var workerNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
+// ValidateWorkerName is the identity rule, exported so a caller can refuse a bad
+// name BEFORE it starts writing (§9: validate first, never half-write). It is
+// the same rule validateWorker applies — one regexp, not two.
+func ValidateWorkerName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: name is required", ErrWorkerInvalid)
+	}
+	if !workerNameRe.MatchString(name) {
+		return fmt.Errorf("%w: name %q is not kebab-case (lowercase letters, digits and single hyphens)", ErrWorkerInvalid, name)
+	}
+	return nil
+}
+
 // validateWorker checks tenancy + identity and applies the max_instances
 // default. It mutates w so the row written and the row echoed back agree.
 func validateWorker(w *Worker) error {
@@ -124,11 +138,8 @@ func validateWorker(w *Worker) error {
 	if w.Project == "" {
 		return fmt.Errorf("%w: project is required", ErrWorkerInvalid)
 	}
-	if w.Name == "" {
-		return fmt.Errorf("%w: name is required", ErrWorkerInvalid)
-	}
-	if !workerNameRe.MatchString(w.Name) {
-		return fmt.Errorf("%w: name %q is not kebab-case (lowercase letters, digits and single hyphens)", ErrWorkerInvalid, w.Name)
+	if err := ValidateWorkerName(w.Name); err != nil {
+		return err
 	}
 	if w.MaxInstances == 0 {
 		w.MaxInstances = DefaultMaxInstances
@@ -242,6 +253,85 @@ func (s *Store) UpsertWorker(ctx context.Context, w *Worker, cw ConfigWrite) (*W
 		return nil, fmt.Errorf("failed to create worker: %w", err)
 	}
 	return w, nil
+}
+
+// SetWorkerPrompt replaces a worker's system prompt wholesale (P4) and appends
+// a `worker_prompt_write` config event carrying the whole worker row (§15.3).
+// It is the ONLY path that writes that action.
+//
+// Why a narrow write rather than a read-modify-write through UpsertWorker:
+//
+//   - UpsertWorker deliberately never writes `worker_prompt_write` — that action
+//     requires a rationale (§15.5), and a PUT that happens to carry a different
+//     prompt is an ordinary update.
+//   - A whole-object save would let a prompt rewrite clobber a description or an
+//     image pointer edited a moment earlier. The one mutation that must have no
+//     side effects is the one a worker performs on ANOTHER worker (§8.7).
+//
+// The superseded prompt is returned alongside the stored row because §9 requires
+// the caller to put it in the automatic `kind=prompt-revision` memory. Reading it
+// here — inside the same call that replaced it — is the only way to be certain
+// the text recorded as "previous" is the text this write actually superseded.
+//
+// rationale is REQUIRED: the seam refuses this action without one (§15.5), so a
+// caller that forgets writes neither row.
+func (s *Store) SetWorkerPrompt(ctx context.Context, project, name, prompt string, cw ConfigWrite) (*Worker, string, error) {
+	if project == "" {
+		return nil, "", fmt.Errorf("%w: project is required", ErrWorkerInvalid)
+	}
+	if name == "" {
+		return nil, "", fmt.Errorf("%w: name is required", ErrWorkerInvalid)
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return nil, "", fmt.Errorf("%w: system_prompt must not be blank (§9 validates a non-empty prompt)", ErrWorkerInvalid)
+	}
+	existing, err := s.GetWorker(ctx, project, name)
+	if err != nil {
+		return nil, "", err
+	}
+	previous := existing.SystemPrompt
+
+	// The payload is the whole row as it will stand (§15.2/§15.3) so the fold and
+	// the changelog see the same worker the projection table holds — including
+	// updated_at, which the narrow UPDATE below sets explicitly rather than
+	// leaving to gorm's autoUpdateTime.
+	now := time.Now().Unix()
+	next := *existing
+	next.SystemPrompt = prompt
+	next.UpdatedAt = now
+
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: project,
+		Action:  ActionWorkerPromptWrite,
+		Payload: &next,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		res := tx.Model(&Worker{}).
+			Where("project = ? AND name = ?", project, name).
+			Updates(map[string]any{"system_prompt": prompt, "updated_at": now})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Lost a race with a concurrent delete: roll back rather than log a
+			// rewrite of a worker that no longer exists.
+			return fmt.Errorf("%w: %s/%s", ErrWorkerNotFound, project, name)
+		}
+		return nil
+	}); err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			return nil, "", err
+		}
+		return nil, "", fmt.Errorf("failed to write worker prompt: %w", err)
+	}
+
+	// §9 read-back: what the database holds is what the caller is shown, never
+	// the struct that was handed to it.
+	stored, err := s.GetWorker(ctx, project, name)
+	if err != nil {
+		return nil, previous, err
+	}
+	return stored, previous, nil
 }
 
 // GetWorker fetches one worker by (project, name). The project predicate is

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -179,5 +181,82 @@ func (s *Store) PutProjectSettings(ctx context.Context, ps *ProjectSettings, cw 
 		return &next, nil
 	default:
 		return nil, fmt.Errorf("failed to read project settings: %w", err)
+	}
+}
+
+// SetProjectPrompt replaces the project-level system prompt wholesale (P4) and
+// appends a `project_prompt_write` config event. It is the ONLY path that writes
+// that action.
+//
+// It is a NARROW write rather than a read-modify-write through
+// PutProjectSettings for the same reason SetWorkerPrompt is: PutProjectSettings
+// is whole-object (§5), so rewriting the prompt through it would silently
+// rewrite the budgets and the attention channel with whatever the caller last
+// read — and a prompt rewrite is precisely the mutation that must change nothing
+// else. It also lets the two actions stay distinct in the log: `project_prompt_write`
+// carries a rationale (§15.5) and folds as its own entity (§15.6).
+//
+// The payload is `{project, system_prompt}` — NOT the whole settings row. That
+// shape is pinned in three places already (the fold's EntityProjectPrompt
+// singleton, its tests, and the changelog UI, which accepts `system_prompt`
+// first — the F1 finding of 2026-07-25), and it is what §15.3 asks for: "the new
+// project system prompt".
+//
+// The superseded prompt is returned alongside the stored row for the automatic
+// `kind=prompt-revision` memory (§9).
+func (s *Store) SetProjectPrompt(ctx context.Context, project, prompt string, cw ConfigWrite) (*ProjectSettings, string, error) {
+	if strings.TrimSpace(project) == "" {
+		return nil, "", fmt.Errorf("%w: project is required", ErrInvalidProjectSettings)
+	}
+	if strings.TrimSpace(prompt) == "" {
+		return nil, "", fmt.Errorf("%w: system_prompt must not be blank (§9 validates a non-empty prompt)", ErrInvalidProjectSettings)
+	}
+
+	change := ConfigChange{
+		Project: project,
+		Action:  ActionProjectPromptWrite,
+		Payload: JSONMap{"project": project, "system_prompt": prompt},
+		Write:   cw,
+	}
+
+	var existing ProjectSettings
+	err := s.gdb.WithContext(ctx).Where("project = ?", project).First(&existing).Error
+	switch {
+	case err == nil:
+		previous := existing.SystemPrompt
+		now := time.Now().Unix()
+		if _, err := s.WithConfigEvent(ctx, change, func(tx *gorm.DB) error {
+			return tx.Model(&ProjectSettings{}).
+				Where("project = ?", project).
+				Updates(map[string]any{"system_prompt": prompt, "updated_at": now}).Error
+		}); err != nil {
+			return nil, "", fmt.Errorf("failed to write project prompt: %w", err)
+		}
+		stored, err := s.GetProjectSettings(ctx, project)
+		if err != nil {
+			return nil, previous, err
+		}
+		return stored, previous, nil
+
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		// The settings row is created lazily on first write (§5), so the first
+		// project_prompt_write for a project creates it — with the spec defaults,
+		// not with zeroes, because a row of zeroes would read as "concurrency 0".
+		next := DefaultProjectSettings(project)
+		next.SystemPrompt = prompt
+		if _, err := s.WithConfigEvent(ctx, change, func(tx *gorm.DB) error {
+			return tx.Create(next).Error
+		}); err != nil {
+			return nil, "", fmt.Errorf("failed to create project settings: %w", err)
+		}
+		stored, err := s.GetProjectSettings(ctx, project)
+		if err != nil {
+			return nil, "", err
+		}
+		// Nothing was superseded: this project had never had a prompt.
+		return stored, "", nil
+
+	default:
+		return nil, "", fmt.Errorf("failed to read project settings: %w", err)
 	}
 }
