@@ -25,20 +25,27 @@ never new engine machinery.
 1. **Session** — run an agentic session in a container; snapshot it (filesystem included) and
    resume it later.
 2. **Tools** — configure a session with MCP servers.
-3. **Images** — build custom base images to launch sessions from (install software per project).
+3. **Images** — named, versioned, labeled records of an environment (`name:version`), which agents
+   create from *inside* a session with `image_create`; sessions launch from them
+   (§13, [`08-images-and-skills.md`](08-images-and-skills.md)).
 4. **Projects** — log in, switch projects; a project is a namespace for everything.
 5. **Project defaults** — each project carries the defaults for new sessions: base image,
    system prompt, MCP configuration.
 
 ### 1.2 The three per-worker quantities
 
-Once inside a project, everything a worker *is* reduces to exactly three things:
+Once inside a project, every *opinion* a worker holds reduces to exactly three things:
 
 | Quantity | Where opinion lives |
 | --- | --- |
 | **System prompt** | Plain big string. Composed project-level + worker-level. |
 | **MCP tools** | Merged project-level ∪ worker-level. |
 | **Memory** | A core substrate (labeled KV + search); *how* it is used lives entirely in prompts. |
+
+A worker row additionally carries a little plumbing — an image pointer
+(§13, [`08-images-and-skills.md`](08-images-and-skills.md)), `max_instances`, and `briefing`
+label selectors (§7.4, [`03-memory.md`](03-memory.md)) — but none of it holds opinion; it is
+wiring, and every behavioural question is still answered by one of the three quantities above.
 
 ### 1.3 Design principles (binding)
 
@@ -75,6 +82,14 @@ one of them, the feature loses.
 - **P7 — Engine invariants hold.** The `go/` module imports nothing from host apps;
   `go build ./...` stays green; installation Dockerfiles never set CMD/ENTRYPOINT; heavy test
   coverage in the existing table-test style accompanies every change.
+- **P8 — Append-only everywhere.** Nothing in Agent Orange is ever destructively updated;
+  current state is always a *view* over an append-only history. Memories are immutable rows
+  (§7.1), sessions are immutable transcripts, images and skills gain versions rather than
+  losing them (§13–§14), and configuration itself — every worker hire, prompt rewrite,
+  subscription, schedule and image adoption — is a fold over the `config_events` log
+  (§15, [`09-config-log.md`](09-config-log.md)), of which the ordinary tables are projections.
+  Undo is therefore a *forward* operation: "restore to last Tuesday" appends compensating
+  events (git revert, never git reset), so the history of undoing things is itself history.
 
 ---
 
@@ -111,8 +126,8 @@ per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([`01-se
 - **Worker** — a named row in a project: `{name, system_prompt, mcp_config, enabled}`. Not a
   process. A worker "exists" whether or not anything is running.
 - **Job** — one session run on behalf of a worker, triggered by an event or a human. A worker
-  may have many jobs over time; each job is a fresh session (fresh container from the project
-  base image) unless resuming.
+  may have many jobs over time; each job is a fresh session — a fresh container from the image
+  the worker points at, else the project default (§13) — unless resuming.
 - **Event** — a named **text** payload delivered into a project: `{type, text}` and nothing
   else the sender controls (core stamps an envelope — §8.1). Either **external** (arrived via
   the ingestion API — an email, a webhook) or **internal** (emitted by the runtime — most
@@ -124,6 +139,15 @@ per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([`01-se
 - **Subscription** — a row saying "when an event matching *this* arrives in *this project*,
   start a job for *this worker*".
 - **Memory** — one row in the project's memory store: content + labels (+ optional embedding).
+- **Image** — a named, versioned, labeled environment record (`name:version`), created from
+  inside a session by `image_create`. A bare `name` resolves to the newest version at launch;
+  `name:version` pins. Versions are append-only (§13).
+- **Skill** — a project-scoped, labeled, append-only record pairing a Claude-Code-style skill
+  markdown document with an `install_sh` that installs its software dependencies;
+  `skill_install` applies both inside a running session (§14).
+- **Config event** — one append-only row in `config_events` recording a management mutation:
+  `{actor, action, payload, rationale, created_at}`. The log is authoritative; workers,
+  subscriptions and schedules are projections of it (§15).
 
 ---
 
@@ -135,12 +159,14 @@ per-session with a nil `SessionContextProvider` in agentd. Fixed by §5 ([`01-se
 | --- | --- | --- |
 | [`00-overview.md`](00-overview.md) | — | **Start here for the quick shape**: one-page map of the system, the decided calls, the build waves, and where the research/plan trail lives. |
 | [`01-session-config.md`](01-session-config.md) | §4–§5 | Session MCP plumbing (G1): Go surface, wire protocol, harness merge, `${VAR}` credential references, snapshot interaction. Project settings (G2): `project_settings` table, precedence, HTTP/UI. |
-| [`02-workers.md`](02-workers.md) | §6 | Worker data model, deterministic job composition (pre-prompt manipulation), the core preamble, interactive chat, HTTP/UI. |
+| [`02-workers.md`](02-workers.md) | §6 | Worker data model — including the `image` pointer (§13), `max_instances` and `briefing` selectors — deterministic job composition (pre-prompt manipulation), the core preamble, interactive chat, HTTP/UI. |
 | [`03-memory.md`](03-memory.md) | §7 | Append-only immutable memory: labels + K8s selectors, the `memory_*` MCP tools with provenance, rolling-summary convention, embeddings, the §7.6 relevance contract (hybrid RRF), the build-on-Postgres decision. |
 | [`04-events-and-schedules.md`](04-events-and-schedules.md) | §8 | Event shape (text + core envelope), the four internal events (`worker.finished`/`worker.failed`/`human.attention.timeout`/`subscription.throttled`), subscriptions, the router + loop floors, external ingestion, schedules (cron + input text), the acceptance scenario (§8.7) and the BadCode marketing-manager reference use case (§8.8). |
 | [`05-management-tools.md`](05-management-tools.md) | §9 | Core management MCP tools (`worker_*`, `project_prompt_*`, prompt-revision memories) and `request_human_attention`. |
 | [`06-work-plan.md`](06-work-plan.md) | §11–§12 | The parallelisable checklist (tracks A–H, waves) and the verification strategy. |
-| [`07-reference-prompts.md`](07-reference-prompts.md) | — | Optional reference prompts — archivist, consultant, manager, failure notifier; conventions, never mechanisms. |
+| [`07-reference-prompts.md`](07-reference-prompts.md) | — | Optional reference prompts — archivist, consultant, manager, failure notifier, chronicler; conventions, never mechanisms. |
+| [`08-images-and-skills.md`](08-images-and-skills.md) | §13–§14 | Images as named/versioned/labeled append-only records (`image_create`/`image_list`, latest-vs-pinned resolution, the worker pointer, snapshot GC) and skills as markdown + `install_sh` (`skill_create`/`skill_list`/`skill_get`/`skill_install`, the curate-then-burn workflow). |
+| [`09-config-log.md`](09-config-log.md) | §15 | The config log / time machine: the `config_events` table, which mutations log, dual-write with tables as projections, point-in-time replay, restore as compensating events, required `rationale`, the routable `config.changed` event, `config_history`. |
 
 Sections §1–§3 and §10 live in this file.
 
@@ -149,7 +175,19 @@ Sections §1–§3 and §10 live in this file.
 ## 10. Explicit non-goals (deleted concepts stay deleted)
 
 - No pipelines / DAGs / workflow definitions (P3).
-- No prompt fragments, templates, or composition beyond §6.2's concatenation (P4).
+- No prompt fragments, templates, or composition beyond §6.2's concatenation (P4). This was
+  re-examined on 2026-07-25 with named memories in hand and **rejected again**: in-prompt
+  interpolation (`{{customer-greeting}}` resolving against a memory) makes a prompt unreadable
+  without running the resolver and breaks wholesale-rewrite self-improvement. The sanctioned
+  routes to the same effect are runtime lookup (`memory_current`, §7.3) and `briefing`
+  label selectors injected at composition time (§7.4, §6.2).
+- No ambient durable workshops. A rejected design (2026-07-25) gave each worker one long-lived
+  container kept warm by a TTL "kernel", snapshotted on eviction, accumulating filesystem state
+  as a side effect; it loses because ambient state means filesystem contention between
+  concurrent jobs and unauditable drift. Environment continuity is instead **deliberate**:
+  nothing persists unless an agent snapshots it with `image_create` and labels saying why
+  (§13). Invisible warm-container reuse remains available as an engine-internal optimisation,
+  never as a semantic feature.
 - No roles/staff tables, per-worker model-tier routing, per-worker spend meters, tickets,
   kanban, approval gates, goal boxes, or manager tick loops. Each was built once and removed;
   the replacement for every one of them is "a worker with the right prompt". (The per-project daily

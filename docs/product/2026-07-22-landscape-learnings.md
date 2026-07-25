@@ -42,6 +42,9 @@ per-item disposition tags in §3 and the summary in §5. The fold-in plan is
     review patterns are per-project prompt constructions and workers may legitimately edit
     reviewers' prompts. Recorded in `17-product-spec.md` §10.
 - **Deferred unchanged (no spec change):** L19, L22, L31, L32.
+- **Superseded same day:** L9's per-subscription `concurrency` column (and the `drop`/`dropped`
+  semantics) were replaced by worker-level `max_instances` in the design-walkthrough amendments
+  (D4; plan: `2026-07-25-fold-walkthrough-amendments.md`). L6's `max_firings_per_hour` stands.
 
 ---
 

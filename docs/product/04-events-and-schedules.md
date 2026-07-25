@@ -40,8 +40,9 @@ another worker's transcript — arrives through the same shape. Stored append-on
 
 ### 8.2 Internal events (emitted by core)
 
-Exactly four (the original two, plus two added via the 2026-07-25 landscape-learnings plan —
-the design conversation this list's growth requires):
+Exactly five (the original two, plus two added via the 2026-07-25 landscape-learnings plan,
+plus `config.changed` added via the 2026-07-25 walkthrough-amendments plan — each addition made
+through the design conversation this list's growth requires):
 
 - **`worker.finished`** — a job's query completed and the session went idle (the runtime
   already knows this moment: the `query_complete` event / idle-archive path in `runner.go`).
@@ -63,6 +64,11 @@ the design conversation this list's growth requires):
 - **`subscription.throttled`** — emitted when `max_firings_per_hour` (§8.3) drops deliveries
   for a subscription; at most one per subscription per rolling-60-minute window. Envelope:
   `source: "core"`, `depth: 0` — carries neither `worker` nor `session_id`.
+- **`config.changed`** — emitted alongside every config-log append (§15): a management
+  mutation happened. `text` = a human-readable description of the change, including the
+  rationale. Envelope from the acting session — `source: "worker"` (with `worker` and
+  `session_id`) when a worker made the change, `source: "external"` for human/API edits.
+  Workers can subscribe: org-awareness is wiring, not a feature.
 
 Note `worker.finished` fires only for *worker* jobs, not plain vanilla sessions.
 
@@ -77,9 +83,12 @@ Table `subscriptions`:
 | `event_type` | text | exact match or trailing-`*` prefix match (`email.*`); no other patterns |
 | `filter` | jsonb | optional equality match on **envelope** fields (`{"worker":"email-answerer"}`) — enough to express "when *the email worker* finishes"; anything smarter belongs in the reacting worker's prompt ("if this doesn't concern you, finish immediately") |
 | `worker` | text | the worker to start a job for |
-| `concurrency` | text | `parallel` (default — current behaviour), `serialize` (the router does not start a new job for this subscription while one it started is still running; deliveries queue in `event_deliveries` as `pending`), or `drop` (concurrent-arriving deliveries are recorded `dropped`, never run) |
 | `max_firings_per_hour` | int | 0 = unlimited; excess deliveries are recorded `rate_limited`, with one `subscription.throttled` event (§8.2) per rolling-60-minute window |
 | `enabled` | boolean | |
+
+A per-subscription `concurrency` column (`parallel`/`serialize`/`drop`) was removed 2026-07-25,
+superseded by the worker-level `max_instances` column (§6.1): deliveries for a worker at
+capacity queue as `pending` (§8.4). `max_firings_per_hour` is unaffected.
 
 Managed via HTTP (`/agent/subscriptions` CRUD), the UI, and the management MCP tool (§7 core
 tools include `subscription_list/create/delete`) — a consultant must be able to rewire the org.
@@ -95,7 +104,7 @@ purpose):
    session → send the rendered event as the first message. Marks delivered per subscription in
    `event_deliveries` (event_id, subscription_id, session_id, status, started_at, ended_at) —
    at-least-once with an idempotency guard on (event_id, subscription_id). `status` takes
-   `pending|running|ok|failed|awaiting_human|rate_limited|dropped`; with the `started_at`/
+   `pending|running|ok|failed|awaiting_human|rate_limited`; with the `started_at`/
    `ended_at` timestamps (bigint) this tuple is the job-history spine the UI renders.
 3. **Loop safety (the one hard floor, P1-compatible because it's resource safety, not
    opinion):** each event carries `depth` (triggering job's depth + 1, external = 0); the
@@ -114,6 +123,11 @@ purpose):
    hard-budget-stopped, matching event deliveries queue as `pending` and are delivered after
    midnight; schedule firings during the stop are **skipped**, consistent with §8.6's
    skip-missed semantics.
+7. **Per-worker instance gating:** a delivery is dispatched only while the worker's number of
+   active jobs is below its `max_instances` (§6.1, default 1); excess deliveries stay
+   `pending` and are dispatched FIFO as instances free. This applies uniformly to router and
+   scheduler dispatch — schedule firings queue like any other delivery. §8.6's skip-missed
+   semantics remain only about firings missed while agentd was *down*, unchanged.
 
 ### 8.5 External ingestion
 

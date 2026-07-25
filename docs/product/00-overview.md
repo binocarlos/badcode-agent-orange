@@ -6,10 +6,11 @@ lives in this one folder, `docs/product/`:
 
 | File | What |
 | --- | --- |
-| [`17-product-spec.md`](17-product-spec.md) | The entry point — goal, atoms, binding principles P1–P7, vocabulary, non-goals (§10). |
-| `01`–`07` (component specs) | The designs, §4–§9 (table below), plus **the engineering tickets** ([`06-work-plan.md`](06-work-plan.md)). |
+| [`17-product-spec.md`](17-product-spec.md) | The entry point — goal, atoms, binding principles P1–P8, vocabulary, non-goals (§10). |
+| `01`–`09` (component specs) | The designs, §4–§9 and §13–§15 (table below), plus **the engineering tickets** ([`06-work-plan.md`](06-work-plan.md)). |
 | [`2026-07-22-landscape-learnings.md`](2026-07-22-landscape-learnings.md) | The research trail: the landscape verdict (nobody has built this shape) and the 33 mechanisms mined from other projects, with final dispositions. |
 | [`2026-07-25-fold-landscape-learnings.md`](2026-07-25-fold-landscape-learnings.md) | The executed record of how those learnings were interviewed, decided, and folded into this spec. |
+| [`2026-07-25-fold-walkthrough-amendments.md`](2026-07-25-fold-walkthrough-amendments.md) | The design-walkthrough amendments (images, skills, the config log, named memories) and their execution record. |
 
 The engine the product layer builds on (architecture, containers, images, events, harness,
 stack) is documented in `../01`–`../15` — reference, not work.
@@ -26,25 +27,35 @@ self-improving arrangements of workers can be composed with prompts alone.**
   ┌────────────────────────────────────────────────────────────────────────┐
   │  defaults: base image · project prompt · MCP config · budgets   (§5)   │
   │                                                                        │
-  │  WORKERS = rows of {name, system_prompt, mcp_config, enabled}   (§6)   │
+  │  WORKERS = rows of {name, system_prompt, mcp_config, enabled,          │
+  │                     image, max_instances, briefing}             (§6)   │
   │      │                                                                 │
   │      │  a trigger arrives…                                             │
-  │      │    events (external POST / worker.finished / …)  (§8.1–8.3)     │
+  │      │    events (external POST / worker.finished / config.changed)    │
+  │      │                                                  (§8.1–8.3)     │
   │      │    schedules (cron + instruction text)           (§8.6)         │
   │      │    a human opens a chat                          (§6.4)         │
   │      ▼                                                                 │
   │  ROUTER matches subscriptions → ComposeJob → JOB                (§8.4) │
-  │      │        preamble + project prompt + worker prompt +              │
-  │      │        memory briefing; event text as first message     (§6.2)  │
+  │      │    preamble + project prompt + worker prompt + briefing         │
+  │      │    sections; event text as first message               (§6.2)   │
+  │      │    image: worker pointer > project > global           (§13)     │
+  │      │    dispatch gated by max_instances; excess queues FIFO (§8.4)   │
   │      ▼                                                                 │
   │  SESSION in its own container (snapshot/resume, engine layer 0)        │
   │      │   tools: worker's MCP servers  +  core tools:                   │
-  │      │     memory_* (§7) · worker_*/schedule_*/subscription_* (§9)     │
+  │      │     memory_* (§7) · image_*/skill_* (§13–14)                    │
+  │      │     worker_*/schedule_*/subscription_* · config_history (§9,15) │
   │      │     request_human_attention → webhook + ordinary chat (§9)      │
   │      ▼                                                                 │
   │  finishes → worker.finished event (full transcript)  ──► other workers │
   │             wake: reviewers rewrite prompts, archivists file           │
-  │             MEMORY (append-only, labeled, hybrid search)   (§7)        │
+  │                                                                        │
+  │  FOUR SUBSTRATES — append-only, labeled, provenance-carrying (P8):     │
+  │    MEMORIES (§7) · IMAGES (§13) · SKILLS (§14) · CONFIG LOG (§15)      │
+  │  time machine: every management mutation appends a config event and    │
+  │    emits config.changed; tables are projections; restore is a forward  │
+  │    operation (compensating events), so history is never truncated      │
   └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,38 +68,53 @@ describes the whole workforce, reconciling it into existence on a schedule.
 
 ## What's decided (the load-bearing calls)
 
-- **Mechanism, not policy** — core ships substrates; all opinion lives in prompts (P1–P7 in
+- **Mechanism, not policy** — core ships substrates; all opinion lives in prompts (P1–P8 in
   [`17-product-spec.md`](17-product-spec.md)). No DAGs, no roles-as-code, no approval queues.
+- **Append-only everywhere (P8)** — memories, sessions, images, skills *and configuration* are
+  histories; current state is a view over them. Undo appends compensating events (git revert,
+  never git reset) — [`09-config-log.md`](09-config-log.md).
+- **Environments are deliberate, not ambient** — a session's filesystem survives only if an agent
+  calls `image_create`; images are `name:version` records a worker points at, and capability travels
+  as skills (markdown + `install_sh`). Long-lived "workshop" containers accumulating state were
+  rejected (§10, [`08-images-and-skills.md`](08-images-and-skills.md)).
+- **Named memories, no templates** — `name=<x>` labels give singleton/KV semantics over the
+  append-only log (`memory_current`), and workers pull extra context via `briefing` selectors.
+  In-prompt `{{interpolation}}` stays rejected (P4).
+- **Every change carries a why** — prompt rewrites require a `rationale`; it lands in the config
+  event, the prompt-revision memory, and the changelog UI, and a chronicler worker can narrate it.
 - **Loop safety is minimal by choice** — depth ≤ 8, per-project concurrency, per-project daily
-  token budget. No stuck detectors or recursion guards in v1: prompt vigilance + root-only
-  prompt editing (decided 2026-07-25; §10 records the reasoning and the revisit condition).
+  token budget, plus per-worker `max_instances`. No stuck detectors or recursion guards in v1:
+  prompt vigilance + root-only prompt editing (§10 records the reasoning and the revisit condition).
 - **Review topology is fully fluid** — core never protects one worker's prompt from another;
   patterns live in [`07-reference-prompts.md`](07-reference-prompts.md) as suggestions only.
-- **Not reinventing the wheel** — the landscape research proved no existing project covers this
-  combination; 18 mechanisms were adopted from the closest ones (see the research trail above).
+- **Not reinventing the wheel** — no existing project covers this combination; 18 mechanisms were
+  adopted from the closest ones (research trail above).
 
 ## The component specs (§ detail)
 
 | Spec | § | Covers |
 | --- | --- | --- |
 | [`01-session-config.md`](01-session-config.md) | §4–5 | Per-session MCP plumbing, `${VAR}` credentials, project settings + budgets |
-| [`02-workers.md`](02-workers.md) | §6 | Worker rows, deterministic job composition, the core preamble |
-| [`03-memory.md`](03-memory.md) | §7 | Append-only labeled memory, K8s selectors, hybrid RRF search, rolling summaries |
-| [`04-events-and-schedules.md`](04-events-and-schedules.md) | §8 | Events, subscriptions, router, schedules, loop floors, the worked examples |
+| [`02-workers.md`](02-workers.md) | §6 | Worker rows (incl. `image` pointer, `max_instances`, `briefing`), deterministic job composition, the core preamble |
+| [`03-memory.md`](03-memory.md) | §7 | Append-only labeled memory, K8s selectors, hybrid RRF search, `name=` singletons + `memory_current`, briefing sections |
+| [`04-events-and-schedules.md`](04-events-and-schedules.md) | §8 | Events (incl. `config.changed`), subscriptions, router + instance gating, schedules, loop floors, the worked examples |
 | [`05-management-tools.md`](05-management-tools.md) | §9 | `worker_*`/`schedule_*`/`subscription_*` tools, `request_human_attention` |
-| [`07-reference-prompts.md`](07-reference-prompts.md) | — | Optional archivist / consultant / manager / failure-notifier prompts |
+| [`08-images-and-skills.md`](08-images-and-skills.md) | §13–14 | Named/versioned/labeled images (`image_create`/`image_list`, latest-vs-pinned), skills as markdown + install (`skill_install`), curate-then-burn |
+| [`09-config-log.md`](09-config-log.md) | §15 | The config log / time machine: `config_events`, tables as projections, replay, restore-as-forward, `config_history` |
+| [`07-reference-prompts.md`](07-reference-prompts.md) | — | Optional archivist / consultant / manager / failure-notifier / chronicler prompts |
 
 ## The build (tickets live in [`06-work-plan.md`](06-work-plan.md))
 
 Engine layer 0 (sessions, snapshots, containers, events, persistence, UI, stack) is **already
 built** — see §2 of the entry point. What remains is the product layer, in parallelisable
-tracks; items tagged `[learnings]` came from the research fold-in:
+tracks; items tagged `[learnings]` came from the research fold-in, `[walkthrough]` from the
+design walkthrough:
 
 | Wave | Tracks | Delivers |
 | --- | --- | --- |
-| 1 | A1 · B1 · C1 · D1 · E1 · F3 | Foundations: MCP types on sessions, settings/workers/memories/events tables, session permalinks |
-| 2 | A2–A5 · B2–B4 · C2–C4 · D2–D3 · E2–E4 · H1–H2 | The machinery: composition, router, scheduler, emitters, core tools, budgets, lease reaper |
-| 3 | F1–F2 · G1–G3 | Observability UI, then acceptance: the §8.7 loop closes offline (G1), docs (G2), live BadCode manager (G3) |
+| 1 | A1 · B1 · C1 · D1 · E1 · F3 · I1 · J1 | Foundations: MCP types on sessions, settings/workers/memories/events tables, image+skill store, `config_events`, session permalinks |
+| 2 | A2–A5 · B2–B4 · C2–C4 · D2–D3 · E2–E4 · H1–H2 · I2–I4 · J2–J3 | The machinery: composition, router, scheduler, emitters, core tools (incl. `image_*`/`skill_*`/`config_history`), budgets, lease reaper |
+| 3 | F1–F2 · J4 · G1–G3 | Observability UI incl. the changelog, then acceptance: the §8.7 loop closes offline (G1), docs (G2), live BadCode manager (G3) |
 
 **G1 is the bar**: the self-improvement loop demonstrably closes with the mock model. G3 is the
 first production use.

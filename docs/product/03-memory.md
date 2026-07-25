@@ -39,6 +39,16 @@ research lesson — curate the vocabulary to avoid tag-soup — is implemented a
 a project convention memory, maintained by whichever worker the project appoints, that other
 workers are prompted to consult. Mechanism/policy again.)
 
+**The `name=` convention (singleton semantics).** A memory labeled `name=<x>` is a version of
+"the current value of `<x>`": the current value is the **newest** match of `name=<x>`, and
+updating it means appending a newer memory with the same `name` label. Append-only plus
+newest-first read *is* a KV store — the same move as an LSM tree or a git ref (a stable name
+pointing at the head of an immutable history). The archive lens is the same selector without a
+limit: the full history of the value. Like any label convention this belongs in the project's
+label-registry convention memory. In-prompt interpolation of memories is rejected (P4, §10);
+the sanctioned routes to named-memory content are the `memory_current` tool (§7.3) and
+briefing selectors (§7.4).
+
 ### 7.2 Label selectors
 
 Adopt Kubernetes selector semantics exactly (they are well understood and already documented):
@@ -67,8 +77,11 @@ auth; project scope comes from the token, so a session physically cannot cross p
     put the human one click from the full original thread.
 - `memory_get(id)` → full content + labels + provenance (search returns snippets; get returns
   everything)
+- `memory_current(name)` → the newest memory matching `name=<name>`, with full content +
+  labels + provenance — sugar for `memory_search("name=<name>", limit=1)` with `memory_get`
+  semantics (the `name=` convention, §7.1). It makes the KV read one obvious word in a prompt.
 
-That is the whole surface: create, search, get. Deliberately absent (per §7.1 immutability):
+That is the whole surface: create, search, get, current. Deliberately absent (per §7.1 immutability):
 `memory_update_content`, `memory_update_labels`, and `memory_delete`. Anything that looks like
 "changing" a memory is expressed by appending a newer one — readers that want "current" take
 the most recent match, and the history stays honest.
@@ -76,12 +89,15 @@ the most recent match, and the history stays honest.
 ### 7.4 Rolling summaries (convention, not mechanism)
 
 Each worker *should* have a standing briefing injected into its prompt (§6.2 step 2.4). The
-mechanism: at job-composition time, core runs one fixed query —
-`labels: kind=rolling-summary, worker=<name>` (most recent match) — and injects its content
-verbatim under a "Your memory briefing" heading. That is the *only* memory read core ever
-performs. Core truncates the injected briefing at `project_settings.briefing_max_bytes`
-(default 2048) and appends a truncation marker when it does — a runaway summary degrades one
-worker's briefing, never the composition path.
+rolling summary is the *default* briefing selector: at job-composition time, core looks up the
+newest match of `kind=rolling-summary, worker=<name>` and injects its content verbatim under a
+"Your memory briefing" heading. Workers may add further selectors via their `briefing` column
+(§6.2) — each selector's newest match is injected as its own headed section. The only memory
+reads core performs are the briefing lookups — one fixed newest-match query per selector,
+nothing else, ever. Core truncates each injected section independently at
+`project_settings.briefing_max_bytes` (default 2048) and appends a truncation marker when it
+does — a runaway summary degrades one section of one worker's briefing, never the composition
+path.
 
 Producing and maintaining that summary is a *worker's* job: the canonical arrangement is an
 archivist worker subscribed to `worker.finished` whose prompt says "read the transcript, store

@@ -102,14 +102,18 @@ first write (projects themselves remain "a name that exists once something carri
 | `max_concurrent_jobs` | int | router/scheduler concurrency cap for the project (default 4 — §8.4) |
 | `daily_tokens_soft` | bigint | soft daily token budget; crossing it sends one attention-channel notification (0 = off; checked by the router/scheduler — §8.4) |
 | `daily_tokens_hard` | bigint | hard daily token budget; crossing it stops non-interactive job creation until midnight (0 = off; checked by the router/scheduler — §8.4) |
-| `briefing_max_bytes` | int | byte cap on the injected rolling summary at composition time (default 2048 — §7.4) |
+| `briefing_max_bytes` | int | byte cap **per injected briefing section** at composition time — the rolling summary and each `briefing` selector's section independently (default 2048 — §7.4) |
 | `snapshot_ttl_days` | int | days before the snapshot reaper deletes a snapshot image (default 30; 0 = never) |
 | `updated_at` | bigint | |
 
 - **agentd wiring:** implement a real `SessionContextProvider` that reads `project_settings`
   for the session's project and applies base image + system prompt + MCP config as the
   *defaults* which the request may extend (request-supplied values are additive for MCP,
-  concatenative for prompt, and overriding for image — same precedence the Runner already has).
+  concatenative for prompt). Image precedence: `worker.image`
+  (resolved per §13: bare name → latest, `name:version` → pinned) >
+  `project_settings.base_image` > global `Policy.BaseImage` — the engine seam is the existing
+  launch-image chain in `runner.go:resolveLaunchImage`, which gains the worker pointer at the
+  front.
 - **HTTP:** `GET/PUT /agent/project-settings` (project inferred from the JWT). PUT is
   whole-object; no patch semantics (P4 thinking: plain values, wholesale writes).
 - **UI:** a project settings page — base image field, big system-prompt textarea, MCP config

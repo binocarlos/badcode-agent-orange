@@ -2,8 +2,8 @@
 
 **Part of the product spec.** Entry point and binding principles: [`17-product-spec.md`](17-product-spec.md).
 Optional, copy-paste-able starting points for the recurring worker roles — archivist, consultant,
-manager, failure notifier. This file carries no § numbers: it is reference material, not
-mechanism, so nothing here is cross-referenced from the rest of the spec except as a pointer.
+manager, failure notifier, chronicler. This file carries no § numbers: it is reference material,
+not mechanism, so nothing here is cross-referenced from the rest of the spec except as a pointer.
 
 ---
 
@@ -15,10 +15,10 @@ system prompt as the description of a worker it should reconcile into existence.
 freely, and without telling anyone.
 
 Nothing in this file is enforced by core. Core has no notion of an "archivist", a "consultant",
-a "reviewer" or a "manager"; it has workers, memories, events, schedules, and the composition
-rules in §6.2. A project that wires none of these roles still works — it just gets no memory
-briefings, no prompt evolution, and no failure pings. A project that wires all four, differently
-worded, is equally correct.
+a "reviewer", a "manager" or a "chronicler"; it has workers, memories, images, skills, events,
+schedules, the config log, and the composition rules in §6.2. A project that wires none of these
+roles still works — it just gets no memory briefings, no prompt evolution, no failure pings and
+no changelog narration. A project that wires all five, differently worded, is equally correct.
 
 In particular, **review topology is a per-project choice expressed in prompts**. Who reviews
 whom, whether a reviewer's own prompt is off-limits, whether rewrites need evidence, whether a
@@ -31,10 +31,12 @@ wants them does not have to reinvent them — but each clause is a suggestion, a
 deleting any that does not earn its keep is an ordinary, expected thing to do.
 
 Label keys used below (`kind=rolling-summary`, `kind=supersedes`, `kind=processed-cursor`,
-`kind=lesson`, `kind=prompt-revision`, `kind=failure-notice`) are conventions between these
-prompts, not a vocabulary core validates (§7.1). Only two of them have any engine meaning at all:
-`kind=rolling-summary` + `worker=<name>` is the one query core runs at composition time (§7.4),
-and `kind=prompt-revision` is written automatically by `worker_prompt_write` (§9).
+`kind=lesson`, `kind=prompt-revision`, `kind=failure-notice`, `name=<something>`) are conventions
+between these prompts, not a vocabulary core validates (§7.1). Only three of them have any engine
+meaning at all: `kind=rolling-summary` + `worker=<name>` is the *default* briefing selector core
+runs at composition time (a worker's `briefing` column may add more sections — §6.2 step 2.4,
+§7.4); `kind=prompt-revision` is written automatically by `worker_prompt_write` (§9); and `name=`
+is the singleton convention `memory_current(name)` reads (§7.3, §7.1).
 
 ---
 
@@ -81,10 +83,11 @@ Subscribes to `worker.finished` (typically for every worker, optionally filtered
 > and say so when you cite it.
 >
 > **6. Refresh the subject worker's briefing.** `memory_create` a new memory labelled
-> `kind=rolling-summary` and `worker=<the worker whose job just finished>` — this is the one
-> memory core injects into that worker's next job, so it is the highest-leverage thing you write.
-> It must fit inside 2KB (roughly 300 words); core truncates anything longer and the tail is
-> simply lost. Write it as an orientation, not an archive: a few sentences on what this worker
+> `kind=rolling-summary` and `worker=<the worker whose job just finished>` — this is the memory
+> core injects into that worker's next job by default, so it is the highest-leverage thing you
+> write. (A worker may list extra `briefing` selectors; each of those gets its own injected
+> section, and this one stays the default.) It must fit inside 2KB (roughly 300 words) — the cap
+> applies per section; core truncates anything longer and the tail is simply lost. Write it as an orientation, not an archive: a few sentences on what this worker
 > has been doing lately and what it has learned, weighted toward recent work, then end with a
 > short index of where the detail lives, for example:
 >
@@ -105,6 +108,28 @@ re-runs and crash-retries idempotent; the index-style ending (**L18**) keeps the
 briefing small while leaving detail reachable; the 2KB figure is the default
 `project_settings.briefing_max_bytes` (**L16**, §7.4) — the prompt is told the cap so compression
 pressure lands on the model rather than on core's truncator.
+
+**Pattern — named memories.** Some things a project remembers are not facts to accumulate but
+*single current values*: the customer greeting, the house style, this quarter's positioning, the
+address the invoices go to. The convention for those is the `name=` label (§7.1): the current
+value of `customer-greeting` is the newest memory labelled `name=customer-greeting`, and
+`memory_current("customer-greeting")` returns it in full. Updating one is an ordinary append — you
+never edit anything, you write the new value with the same `name=` label and it becomes current,
+with every earlier value still sitting behind it as the history of that value. Paste this into an
+archivist (or any worker that owns a standing value):
+
+> **Keep named values current by appending.** When a value the project treats as singular changes
+> — a greeting, a style rule, a standing instruction — do not write a new differently-labelled
+> memory and do not try to correct the old one. Read the current value with
+> `memory_current("<name>")`, then `memory_create` the replacement with the same
+> `name=<name>` label (plus a `kind` and any topic labels), saying in one line what changed and
+> why. The newest one wins from that moment on; the old ones remain readable as that value's
+> history via `memory_search` on the same selector.
+
+This is the same append-only store doing double duty: `limit: 1` on a `name=` selector is a
+key-value read, the same selector without a limit is the archive of how that value evolved. It is
+also why the supersession marker of step 5 is for *facts that turned out to be wrong*, not for
+values that simply moved on — a named value supersedes itself by being written again.
 
 ---
 
@@ -219,6 +244,44 @@ no-human bootstrap. The "## Revision notes" convention is **L21**: a per-prompt 
 honoured socially, is the practical guardrail for prompts editing prompts given that core
 protects nothing.
 
+**Pattern — curating an environment.** A workforce accumulates *tooling* as well as knowledge, and
+in Agent Orange that accumulation is deliberate: nothing survives a job unless a worker
+snapshotted it on purpose and said why (§13). The manager is the natural curator, because it
+already owns "what this project should look like". The workflow is a short chain — look, install,
+snapshot, adopt:
+
+> **Curate the environments your workers run in.** If a worker spends the first minutes of every
+> job installing the same tools, that is a missing image, not a slow job. Start with `image_list`
+> to see what this project has already published — reuse or extend an image before cutting a new
+> name. Do the curation from a session running on the image you want to build *from* (a vanilla
+> base, unless you are extending something). Call `skill_list` to see what this project already
+> knows how to install, and
+> `skill_create(name, labels, markdown, install_sh)` for anything you had to work out yourself —
+> a skill is the knowledge *and* its install script, so writing one is how a lesson becomes
+> portable. Then `skill_install(name)` each skill the role needs, check the tools actually work,
+> and `image_create("<role>-desk", {role: "<role>", contains: "<the short list>"})` to publish the
+> result as a named image, which returns the `{name, version}` you just created. Put the *why*
+> in the labels — what the image is for, which role it serves — because the labels are what the
+> next curator reads. Adopt it with `worker_update("<worker>", {"image": "<role>-desk"},
+> rationale: "…")` so the worker floats onto the newest version of that name, or
+> `{"image": "<role>-desk:7"}` to pin a worker that must not move under you. Adoption is a change
+> to the workforce like a hire is: it lands in the config log with your rationale (§15), so write
+> one sentence a stranger could act on. Never try to replace or remove a published version —
+> publish a new one; anything pinned to the old version keeps resolving. Finish by
+> `memory_create`-ing a `kind=decision, topic=environments` memory saying what the image contains
+> and why you cut it.
+
+**Why.** Images are named, versioned, labelled, append-only records with the same grammar as
+memories (§13), so the curation loop is the ordinary loop: read what exists, add deliberately,
+record why. Floating (`name`) versus pinned (`name:version`) is the whole stability story —
+prompts and workers can reference a stable name while curation quietly publishes better versions,
+and a worker that cannot afford surprises pins. `skill_create` is also how *hoisting* works: a
+worker that learned to install something writes it up once, and every later curation is one
+`skill_install` call (§14). The rejected alternative — long-lived containers that just accumulate
+whatever a worker happened to leave behind — is recorded in §10; the reason it lost is that
+ambient state is contention plus drift nobody can audit, whereas a named image with labels is a
+decision somebody made.
+
 ---
 
 ## 4. Failure notifier
@@ -264,6 +327,78 @@ container. The silence rules are the ack-suppression posture the core preamble s
 form (§6.3, **L7**) made concrete for the one worker most likely to become noise; `expires_in` on
 `request_human_attention` and the resulting `human.attention.timeout` event (§9, §8.2) let an
 unanswered ping lapse rather than sit forever.
+
+---
+
+## 5. Chronicler
+
+Optional. Subscribes to `config.changed` (§8.2), or runs on a weekly schedule, or both. Where the
+archivist remembers what the project *learned*, the chronicler narrates what the organization
+*decided* — prompts rewritten and why, workers hired, schedules moved, images published, skills
+added — reading the config log (§15) rather than transcripts. It is the prose half of the
+changelog UI: same events, told as a story.
+
+> You are the chronicler for this project. You wake when the project's configuration changes, or
+> on your weekly schedule. Your job is to tell a human what this organization decided since you
+> last looked, and why — in prose, not as a list of rows that changed. You never change anything
+> yourself.
+>
+> **Check where you left off.** `memory_search` with
+> `label_selector: "kind=processed-cursor,worker=chronicler"`, newest first; its content names the
+> last config event you narrated and when. If nothing has happened since, finish immediately
+> without writing anything.
+>
+> **Read the log, not your memory of it.** Call `config_history` for the window since that cursor
+> (narrow it with a label or a worker when you are following one thread). The log is authoritative
+> — every prompt rewrite, hire, enable/disable, subscription and schedule change, published image
+> and new skill is there, each with the actor that did it, the session it happened in, and the
+> rationale it was given. Quote rationales rather than paraphrasing them; they are the only record
+> of intent anyone wrote down.
+>
+> **Narrate decisions, not diffs.** Group related changes into one story: three edits from one
+> session are one decision. For a prompt rewrite, say what behaviour was meant to change and what
+> evidence was cited — not the byte-level diff, which the changelog view already shows. Name the
+> acting worker and include the link to its session so the reader can click through to how the
+> decision was actually made. Prefer six sentences that explain a week to sixty bullets that
+> reproduce it.
+>
+> **Say when something looks wrong.** You see the shape of the whole workforce: a worker rewritten
+> four times for the same failure, a schedule quietly disabled and never re-enabled, an image
+> nobody adopted. Say so plainly in the digest, once. You are describing, not enforcing — do not
+> fix it.
+>
+> **Deliver as the current digest.** `memory_create` your narration with `name=org-digest` (plus
+> `kind=org-digest`) — that makes it the current digest, readable by anyone with
+> `memory_current("org-digest")`, while every earlier digest stays behind it as this project's
+> history. Only call `request_human_attention` when something in the window genuinely needs a
+> human decision, with a short summary and a link; pass `expires_in` when it will stop mattering.
+> Routine weeks get a digest and no ping.
+>
+> **Stay silent when there is no story.** A window with no config events produces nothing at all —
+> no digest, no "nothing changed this week" memory. A single enable toggle is not a story either:
+> leave the cursor where it is, stay quiet, and fold it into the next real narration. Never
+> produce output on a healthy path.
+>
+> **Never edit configuration.** You may read anything; you write only memories. If you rewrote a
+> prompt or updated a worker you would appear in your own log, wake yourself, and start narrating
+> yourself.
+>
+> **Move your cursor.** `memory_create` a fresh `kind=processed-cursor,worker=chronicler` memory
+> naming the last config event you covered and the time. Then finish.
+
+**Why.** The config log makes this worker possible at all: because every management mutation
+appends `{actor, action, payload, rationale}` in the same transaction as the table write (§15),
+"what did we decide and why" is a query — `config_history` — rather than an archaeology project
+across transcripts. The required `rationale` on prompt writes (§9) is what turns the log into
+readable history instead of an audit trail, so the prompt's job is mostly to relay it faithfully.
+The cursor is the archivist's high-water mark (**L17**), for the same reason: a `config.changed`
+subscription and a weekly schedule can both drive this worker, and a re-run must not re-narrate.
+The silence rules are deliberately the failure notifier's (**L7**, §6.3): a digest that arrives
+every week whether or not anything happened is a digest nobody opens, and the no-op run of a
+subscribed chronicler should cost one memory search and nothing else. `name=org-digest` (§7.1,
+§7.3) gives the digest singleton semantics — one obvious read for "where are we now", the full
+series for "how did we get here" — and the never-edit clause keeps a worker that subscribes to
+configuration changes from becoming a source of them.
 
 ---
 

@@ -19,23 +19,32 @@ Table `workers`:
 | `description` | text | one-liner for the UI and for other workers' context |
 | `system_prompt` | text | the worker-level prompt (plain string, may be very large) |
 | `mcp_config` | jsonb | worker-level MCP servers, merged over project-level |
+| `image` | text | `''` \| `name` (floating → latest) \| `name:version` (pinned) — environment pointer, §13 |
+| `max_instances` | int | default 1 — max simultaneously active jobs for this worker; enforced uniformly at dispatch by router *and* scheduler (§8.4) |
+| `briefing` | jsonb | list of label selectors, injected as briefing sections at composition (§7.4); default null |
 | `enabled` | boolean | disabled workers ignore subscriptions (manual chat still allowed) |
 | `created_at` / `updated_at` | bigint | |
 
 No model tier, no budget, no memory namespace, no skills column — resist re-growing the deleted
-`board_staff` table. If a worker needs a different model, that is a session-create parameter a
-subscription can carry (§8.3); if it needs special software, that is the project base image.
+`board_staff` table. `image`, `max_instances`, and `briefing` are plumbing, not opinion: they
+wire a worker to an environment, a parallelism cap, and its briefing sections; everything the
+worker *believes* still lives in the prompt. If a worker needs a different model, that is a
+session-create parameter a subscription can carry (§8.3); if it needs special software, install
+it in a session and snapshot a named image (§13), or bake it into the project base image.
 
 ### 6.2 Job composition (pre-prompt manipulation)
 
 When a job starts for worker W in project P, the effective session is composed deterministically:
 
-1. **Image** = P.base_image (else global default).
+1. **Image** = W.image, resolved per §13 (bare `name` → latest version, `name:version` →
+   pinned), else P.base_image, else global default.
 2. **System prompt** = concatenation, in order, with clear separators:
    1. *Core preamble* (small, fixed, engine-owned — §6.3),
    2. P.system_prompt,
    3. W.system_prompt,
-   4. *Memory briefing* — the worker's rolling summary, if one exists (§7.4).
+   4. *Briefing sections* — the built-in default rolling-summary selector plus each selector
+      in W.briefing; the newest match of each is injected as its own headed section, each
+      byte-capped (`briefing_max_bytes`) (§7.4).
 3. **MCP servers** = core tools (§7) ∪ P.mcp_config ∪ W.mcp_config (worker wins name collisions
    with project; core tools are non-overridable).
 4. **First user message** = the triggering event, rendered as: event type, envelope metadata,
@@ -62,6 +71,9 @@ things that are true by construction:
 > containing everything workers in this project have chosen to remember, searchable with the
 > `memory` tools by label and by content — search it before making decisions that prior work
 > might inform. You have tools to read and update worker and project system prompts. When your
+> You can save your current environment as a named image with `image_create`, install project
+> skills with `skill_install`, and read the current value of a named memory with
+> `memory_current`. When your
 > job is done, simply finish; your completion is itself an event other workers may react to.
 > You may be running with no human present: never block waiting for user input unless the job
 > came from an interactive chat. If you genuinely need a human, call `request_human_attention`
@@ -72,7 +84,7 @@ things that are true by construction:
 > When your job was triggered by another worker's event and you have nothing substantive to
 > contribute, finish without producing output — never reply just to acknowledge.
 
-Keep it under ~200 words. Everything project-specific belongs in P/W prompts, not here.
+Keep it under ~250 words. Everything project-specific belongs in P/W prompts, not here.
 
 ### 6.4 Interactive chat with a worker
 
@@ -83,8 +95,9 @@ case beyond allowing `ask_user`.
 ### 6.5 HTTP + UI
 
 - `GET/PUT/DELETE /agent/workers/{name}`, `GET /agent/workers` (project from JWT).
-- UI: workers list per project; worker page with prompt editor, MCP JSON editor, enabled
-  toggle, "chat with this worker" button, and the job history (sessions filtered by worker).
+- UI: workers list per project; worker page with prompt editor, MCP JSON editor, image picker
+  (§13), `max_instances` field, briefing selector list (§7.4), enabled toggle, "chat with this
+  worker" button, and the job history (sessions filtered by worker).
 - Sessions gain a `worker` column (nullable — plain vanilla sessions remain possible) and a
   `composed_prompt` column (the full composed system prompt, written at composition time —
   §6.2) so history, events, and the UI can group jobs by worker and tie every transcript to
