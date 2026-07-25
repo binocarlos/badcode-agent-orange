@@ -37,6 +37,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"time"
 
 	agentkit "github.com/binocarlos/badcode-agent-orange"
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
@@ -64,6 +65,28 @@ type startJobInput struct {
 	Worker  *agentdb.Worker
 	Event   *agentdb.ProjectEvent
 	Job     *agentkit.ComposedJob
+
+	// OnSessionCreated is called with the new session id AS SOON AS the session
+	// row exists and BEFORE the first message is sent. That ordering is
+	// load-bearing twice over:
+	//
+	//  1. Depth (§8.4). E2 derives a job's depth by walking
+	//     event_deliveries.session_id → project_events. The first turn emits
+	//     worker.finished/worker.failed while it is still running, so a
+	//     session_id stamped only after the turn returns would make every event
+	//     a job emits read as depth 0 — silently disabling the loop floor, which
+	//     is the only runaway protection the spec kept.
+	//  2. Capacity (§8.4 steps 3 and 7). A delivery that only becomes `running`
+	//     once its turn ends is invisible to the concurrency counts for exactly
+	//     as long as it is actually consuming a slot.
+	//
+	// Returning an error aborts the job before the model is ever called.
+	// Optional: a starter with no hook simply does not call it.
+	OnSessionCreated func(ctx context.Context, sessionID string) error
+	// OnSessionEnded is called once the turn has settled, with whatever
+	// SendMessage returned. It is where the delivery reaches a terminal status
+	// and the session lease is released.
+	OnSessionEnded func(ctx context.Context, sessionID string, err error)
 }
 
 // sessionStarter turns a composed job into a running session and returns its id.
@@ -96,15 +119,32 @@ type dispatcher struct {
 	starter sessionStarter
 
 	// Composition inputs (§6.2). CoreMCP is the engine's own tool servers
-	// (memory/management/image tools — D3, E4, I2 fill it); DefaultImage is the
-	// global Policy.BaseImage; Images resolves a worker's image pointer and stays
-	// nil until I4 binds the §13 catalogue's Resolve. Briefing sections are C4's
-	// and are not injected yet.
+	// (memory tools today — E4/I2 add theirs to the same server); DefaultImage is
+	// the global Policy.BaseImage; Images resolves a worker's image pointer and
+	// stays nil until I4 binds the §13 catalogue's Resolve; Memories is C4's
+	// briefing read seam (nil ⇒ no briefing sections, which is the SQLite
+	// fallback where memory is unavailable by decision).
 	coreMCP      agentdb.MCPServers
 	defaultImage string
 	images       agentkit.ImageResolver
+	memories     agentkit.BriefingMemorySource
+
+	// budget is the §8.4 step 6 / §5 daily-token check. nil = unmetered.
+	budget budgetGate
 
 	logf func(format string, v ...any)
+}
+
+// budgetGate answers §8.4 step 6: may a NON-INTERACTIVE job be created for this
+// project right now? A false answer leaves the delivery `pending`, which is
+// exactly what "matching event deliveries queue as pending and are delivered
+// after midnight" means (§8.4 step 6).
+//
+// It is an interface so the gate stays testable without a token ledger, and so
+// there is one budget check serving both the router and the scheduler — the
+// same reason the capacity checks live here and nowhere else.
+type budgetGate interface {
+	Allow(ctx context.Context, project string, settings *agentdb.ProjectSettings) (bool, error)
 }
 
 // dispatcherConfig is what main() supplies.
@@ -114,6 +154,8 @@ type dispatcherConfig struct {
 	CoreMCP      agentdb.MCPServers
 	DefaultImage string
 	Images       agentkit.ImageResolver
+	Memories     agentkit.BriefingMemorySource
+	Budget       budgetGate
 	Logf         func(format string, v ...any)
 }
 
@@ -128,6 +170,8 @@ func newDispatcher(cfg dispatcherConfig) *dispatcher {
 		coreMCP:      cfg.CoreMCP,
 		defaultImage: cfg.DefaultImage,
 		images:       cfg.Images,
+		memories:     cfg.Memories,
+		budget:       cfg.Budget,
 		logf:         logf,
 	}
 }
@@ -170,9 +214,26 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 		return dispatchSkipped, fmt.Errorf("dispatch: project settings: %w", err)
 	}
 
+	// §8.4 step 6 — the daily token budget (§5). H1 left this slot so there is
+	// ONE budget check on both dispatch paths. Everything that reaches here is
+	// non-interactive by construction: interactive chat never becomes a
+	// delivery (see the file header), which is also §8.4 step 5's exemption.
+	//
+	// A budget the gate cannot evaluate does not stop the world: the failure is
+	// logged loudly and the job runs. Spending slightly over a soft ceiling
+	// because Postgres hiccuped is a smaller harm than a project whose whole
+	// workforce silently stops.
+	if d.budget != nil {
+		allowed, err := d.budget.Allow(ctx, delivery.Project, settings)
+		if err != nil {
+			d.logf("[dispatch] %s: budget check failed, allowing the job: %v", delivery.Project, err)
+		} else if !allowed {
+			return dispatchQueued, nil
+		}
+	}
+
 	// §8.4 step 3 — the per-project concurrency cap, shared by router and
-	// scheduler. (E3 adds the §8.4 step 6 daily-token budget check right here:
-	// one more reason to leave the delivery `pending`, in this one place.)
+	// scheduler.
 	active, err := d.store.CountActiveDeliveries(ctx, delivery.Project)
 	if err != nil {
 		return dispatchSkipped, fmt.Errorf("dispatch: count active: %w", err)
@@ -206,11 +267,15 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 		}
 	}
 	job, err := agentkit.ComposeJob(ctx, agentkit.ComposeJobInput{
-		Project:       delivery.Project,
-		Worker:        worker,
-		Settings:      settings,
-		Event:         event,
-		CoreMCP:       d.coreMCP,
+		Project:  delivery.Project,
+		Worker:   worker,
+		Settings: settings,
+		Event:    event,
+		CoreMCP:  d.coreMCP,
+		// §6.2 step 2.4 — the rolling summary and each `briefing` selector.
+		// BuildBriefingSections returns no error by design: a worker with a
+		// stale briefing works, one that cannot start does not (C4).
+		Briefing:      agentkit.BuildBriefingSections(ctx, d.memories, delivery.Project, worker, settings),
 		DefaultImage:  d.defaultImage,
 		ImageResolver: d.images,
 	})
@@ -224,22 +289,53 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 	if d.starter == nil {
 		return dispatchSkipped, fmt.Errorf("dispatch: no session starter configured")
 	}
+	project, deliveryID := delivery.Project, delivery.ID
+	stamped := false
 	sessionID, err := d.starter.StartJob(ctx, startJobInput{
 		Project: delivery.Project,
 		Worker:  worker,
 		Event:   event,
 		Job:     job,
+		OnSessionCreated: func(ctx context.Context, sessionID string) error {
+			stamped = true
+			_, err := d.store.UpdateDeliveryStatus(ctx, project, deliveryID, agentdb.DeliveryStatusUpdate{
+				Status:    agentdb.DeliveryRunning,
+				SessionID: sessionID,
+			})
+			return err
+		},
+		OnSessionEnded: func(ctx context.Context, sessionID string, runErr error) {
+			status := agentdb.DeliveryOK
+			if runErr != nil {
+				status = agentdb.DeliveryFailed
+				d.logf("[dispatch] delivery %s (%s/%s) session %s ended badly: %v",
+					deliveryID, project, worker.Name, sessionID, runErr)
+			}
+			if _, err := d.store.UpdateDeliveryStatus(ctx, project, deliveryID, agentdb.DeliveryStatusUpdate{
+				Status:    status,
+				SessionID: sessionID,
+			}); err != nil {
+				// A delivery stuck at `running` holds a max_instances slot for
+				// ever, so this is loud: the lease reaper is the backstop.
+				d.logf("[dispatch] delivery %s: could not close as %s: %v", deliveryID, status, err)
+			}
+		},
 	})
 	if err != nil {
 		d.fail(ctx, delivery, fmt.Sprintf("start job: %v", err))
 		return dispatchFailed, nil
 	}
 
-	if _, err := d.store.UpdateDeliveryStatus(ctx, delivery.Project, delivery.ID, agentdb.DeliveryStatusUpdate{
-		Status:    agentdb.DeliveryRunning,
-		SessionID: sessionID,
-	}); err != nil {
-		return dispatchStarted, fmt.Errorf("dispatch: mark running: %w", err)
+	// A starter that ignores OnSessionCreated still gets its delivery stamped —
+	// but only then. Re-stamping unconditionally would race an already-settled
+	// turn back from `ok` to `running` and strand the slot.
+	if !stamped {
+		if _, err := d.store.UpdateDeliveryStatus(ctx, delivery.Project, delivery.ID, agentdb.DeliveryStatusUpdate{
+			Status:    agentdb.DeliveryRunning,
+			SessionID: sessionID,
+		}); err != nil {
+			return dispatchStarted, fmt.Errorf("dispatch: mark running: %w", err)
+		}
 	}
 	return dispatchStarted, nil
 }
@@ -317,17 +413,70 @@ func (d *dispatcher) fail(ctx context.Context, delivery *agentdb.EventDelivery, 
 
 // runnerSessionStarter creates the session row, provisions it through the
 // Runner, and sends the composed first message. It is the production
-// sessionStarter; E3 should reuse it rather than growing a second one.
+// sessionStarter; E3 reuses it rather than growing a second one.
+//
+// # Why the turn runs in a goroutine
+//
+// `SendMessage` blocks for the whole model turn. Running it inline would make
+// every capacity rule in §8.4 a fiction: with the loop parked on one turn, a
+// project could never reach `max_concurrent_jobs`, a worker could never reach
+// `max_instances`, and one slow job would stall all routing behind it. So the
+// gate's decision stays synchronous (its checks are three cheap counts) and only
+// the turn itself is detached. The delivery is stamped `running` BEFORE the
+// goroutine starts, so the counts the gate reads are true the whole time.
 type runnerSessionStarter struct {
 	runner agentkit.Runner
 	store  agentkit.RunnerStore
+	// leases is the §8.4 step 4 lease surface. Optional: with no lease store a
+	// job simply holds no lease and is never reaped (the SQLite fallback).
+	leases leaseStore
 	// newID mints session ids; overridable in tests.
 	newID func() string
-	logf  func(format string, v ...any)
+	// run executes the detached turn. Swapped in tests so a job can be driven
+	// synchronously; nil means "go".
+	run  func(func())
+	now  func() time.Time
+	logf func(format string, v ...any)
 }
+
+// leaseStore is the narrow slice of *agentdb.Store the lease needs.
+type leaseStore interface {
+	RenewSessionLease(ctx context.Context, sessionID string, until int64) error
+	ReleaseSessionLease(ctx context.Context, sessionID string) error
+}
+
+var _ leaseStore = (*agentdb.Store)(nil)
+
+const (
+	// sessionLeaseTTL is how long a lease outlives its last renewal.
+	//
+	// Deliberately generous. A job renews while the sandbox streams, but a long
+	// silent step inside the container (a build, a big test run) produces no
+	// stream traffic at all, and reaping a live job would wake every subscriber
+	// with a `worker.failed` that is simply false. The failures the reaper
+	// actually exists for — agentd killed mid-turn, container gone — are
+	// permanent, so noticing them fifteen minutes late costs nothing.
+	sessionLeaseTTL = 15 * time.Minute
+	// sessionLeaseRenewInterval throttles renewals: one UPDATE a minute per
+	// running job, not one per streamed token.
+	sessionLeaseRenewInterval = time.Minute
+)
 
 func newRunnerSessionStarter(runner agentkit.Runner, store agentkit.RunnerStore) *runnerSessionStarter {
 	return &runnerSessionStarter{runner: runner, store: store, logf: log.Printf}
+}
+
+// withLeases returns the starter with the §8.4 lease surface bound.
+func (r *runnerSessionStarter) withLeases(leases leaseStore) *runnerSessionStarter {
+	r.leases = leases
+	return r
+}
+
+func (r *runnerSessionStarter) clock() time.Time {
+	if r.now != nil {
+		return r.now()
+	}
+	return time.Now()
 }
 
 func (r *runnerSessionStarter) StartJob(ctx context.Context, in startJobInput) (string, error) {
@@ -344,6 +493,8 @@ func (r *runnerSessionStarter) StartJob(ctx context.Context, in startJobInput) (
 	// The Runner's contract: the host persists the row BEFORE provisioning. The
 	// worker and the composed prompt land here, at composition time, so every
 	// transcript is tied to the exact prompt that produced it (§6.2, §6.5).
+	// The lease is taken in the same write: from this moment on, a crash leaves
+	// something the reaper can find (§8.4 step 4).
 	if _, err := r.store.UpdateSession(ctx, &agentdb.Session{
 		ID:             sessionID,
 		Customer:       in.Project,
@@ -351,6 +502,7 @@ func (r *runnerSessionStarter) StartJob(ctx context.Context, in startJobInput) (
 		Status:         "creating",
 		Worker:         in.Worker.Name,
 		ComposedPrompt: in.Job.SystemPrompt,
+		LeaseExpiresAt: r.clock().Add(sessionLeaseTTL).Unix(),
 	}); err != nil {
 		return "", fmt.Errorf("persist session row: %w", err)
 	}
@@ -363,10 +515,7 @@ func (r *runnerSessionStarter) StartJob(ctx context.Context, in startJobInput) (
 		MCPServers:   in.Job.MCPServers,
 		Worker:       in.Worker.Name,
 	}); err != nil {
-		if sess, getErr := r.store.GetSession(ctx, sessionID); getErr == nil && sess != nil {
-			sess.Status = "error"
-			_, _ = r.store.UpdateSession(ctx, sess)
-		}
+		r.abandon(ctx, sessionID)
 		return "", fmt.Errorf("create session: %w", err)
 	}
 	if sess, err := r.store.GetSession(ctx, sessionID); err == nil && sess != nil {
@@ -374,19 +523,115 @@ func (r *runnerSessionStarter) StartJob(ctx context.Context, in startJobInput) (
 		_, _ = r.store.UpdateSession(ctx, sess)
 	}
 
-	// The rendered event is the job's first user message (§6.2 step 4). A job
-	// with no event (a bare "run this worker") simply starts idle.
-	if in.Job.FirstMessage != "" {
-		if err := r.runner.SendMessage(ctx, agentkit.SessionRef{SessionID: sessionID}, agentkit.SendMessageRequest{
-			Content:  in.Job.FirstMessage,
-			Customer: in.Project,
-		}, io.Discard); err != nil {
-			// The session exists and the delivery is running; a failed first turn
-			// is the job failing, which E2's worker.failed emitter reports.
-			return sessionID, fmt.Errorf("send first message: %w", err)
+	// The delivery learns its session id here — before the first message, so the
+	// depth walk and the concurrency counts both see this job while it runs.
+	if in.OnSessionCreated != nil {
+		if err := in.OnSessionCreated(ctx, sessionID); err != nil {
+			r.abandon(ctx, sessionID)
+			return "", fmt.Errorf("claim delivery: %w", err)
 		}
 	}
+
+	// A job with no event (a bare "run this worker") has nothing to say and
+	// settles immediately rather than sitting idle holding a slot.
+	if in.Job.FirstMessage == "" {
+		r.settle(ctx, sessionID, nil, in.OnSessionEnded)
+		return sessionID, nil
+	}
+
+	// Detach: the poll that dispatched this job must not be able to cancel the
+	// turn, and the turn outlives the request that started it.
+	turnCtx := context.WithoutCancel(ctx)
+	project := in.Project
+	onEnded := in.OnSessionEnded
+	r.spawn(func() {
+		err := r.runner.SendMessage(turnCtx, agentkit.SessionRef{SessionID: sessionID}, agentkit.SendMessageRequest{
+			Content:  in.Job.FirstMessage,
+			Customer: project,
+		}, r.leaseWriter(turnCtx, sessionID))
+		if err != nil {
+			err = fmt.Errorf("send first message: %w", err)
+		}
+		r.settle(turnCtx, sessionID, err, onEnded)
+	})
 	return sessionID, nil
+}
+
+func (r *runnerSessionStarter) spawn(fn func()) {
+	if r.run != nil {
+		r.run(fn)
+		return
+	}
+	go fn()
+}
+
+// settle closes out a turn: the lease goes first, so the reaper can never
+// double-report a job whose outcome is already known, and a turn a human
+// cancelled (which emits no event at all, by E2's decision) is simply a job
+// that released its lease without failing.
+func (r *runnerSessionStarter) settle(ctx context.Context, sessionID string, err error, onEnded func(context.Context, string, error)) {
+	r.releaseLease(ctx, sessionID)
+	if onEnded != nil {
+		onEnded(ctx, sessionID, err)
+	}
+}
+
+// abandon undoes a half-started job: the lease is dropped so the reaper does not
+// later report a session that never ran as lost, and the row is marked errored.
+func (r *runnerSessionStarter) abandon(ctx context.Context, sessionID string) {
+	r.releaseLease(ctx, sessionID)
+	if sess, err := r.store.GetSession(ctx, sessionID); err == nil && sess != nil {
+		sess.Status = "error"
+		sess.LeaseExpiresAt = agentdb.SessionLeaseUnset
+		_, _ = r.store.UpdateSession(ctx, sess)
+	}
+}
+
+func (r *runnerSessionStarter) releaseLease(ctx context.Context, sessionID string) {
+	if r.leases == nil {
+		return
+	}
+	if err := r.leases.ReleaseSessionLease(ctx, sessionID); err != nil {
+		r.logf("[dispatch] session %s: could not release lease: %v", sessionID, err)
+	}
+}
+
+// leaseWriter is the sink SendMessage streams into: agentd discards the bytes
+// (the pipeline persists the turn) but every flush is proof the sandbox is
+// alive, which is exactly what §8.4 step 4 renews the lease on.
+func (r *runnerSessionStarter) leaseWriter(ctx context.Context, sessionID string) io.Writer {
+	if r.leases == nil {
+		return io.Discard
+	}
+	return &leaseRenewingWriter{
+		ctx:       ctx,
+		leases:    r.leases,
+		sessionID: sessionID,
+		now:       r.clock,
+		logf:      r.logf,
+	}
+}
+
+type leaseRenewingWriter struct {
+	ctx       context.Context
+	leases    leaseStore
+	sessionID string
+	now       func() time.Time
+	last      time.Time
+	logf      func(format string, v ...any)
+}
+
+func (w *leaseRenewingWriter) Write(p []byte) (int, error) {
+	now := w.now()
+	if now.Sub(w.last) >= sessionLeaseRenewInterval {
+		w.last = now
+		if err := w.leases.RenewSessionLease(w.ctx, w.sessionID, now.Add(sessionLeaseTTL).Unix()); err != nil {
+			// Not fatal to the turn: the worst case is the reaper deciding a live
+			// job is lost, which is why the TTL is generous.
+			w.logf("[dispatch] session %s: could not renew lease: %v", w.sessionID, err)
+		}
+	}
+	return len(p), nil
 }
 
 // newSessionID mints a session id. A job session must be indistinguishable from

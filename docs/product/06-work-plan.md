@@ -165,7 +165,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       paths *only for worker jobs*. (`go/runner.go` hooks — use the existing MarkerHook seam,
       do not fork the pipeline) — depends C1+E1
       **Validation:** `go test ./... -run 'TestWorkerFinishedEvent|TestWorkerFailedEvent' -count=1`
-- [ ] **E3.** Router loop in agentd: poll → match (type prefix + envelope filter) → ComposeJob →
+- [x] **E3.** Router loop in agentd: poll → match (type prefix + envelope filter) → ComposeJob →
       create session → deliver; at-least-once with idempotency; depth floor + per-project
       concurrency cap. `[learnings]` Also: session lease renewal + reaper emitting
       `worker.failed` with `reason:"lost"` (§8.4); interactive jobs bypass
@@ -442,6 +442,45 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(E3, 2026-07-25)` **The depth trap was real, and had a second half nobody had named.**
+  `StartJob` was synchronous: `SendMessage` blocks for the whole turn and `emitJobOutcome` fires
+  inside it, so the delivery's `session_id` was stamped *after* the job's own `worker.finished` had
+  already been written — every event would have read depth 0 and the §8.4 loop floor, our only
+  runaway protection, would have been dead code. Fixed with an `OnSessionCreated` hook called before
+  the first message. **Any future job starter must call it**; `Dispatch`'s fallback stamp is now
+  conditional, because an unconditional one races a fast turn back from `ok` to `running`.
+- `(E3, 2026-07-25)` **The turn now runs detached (`go SendMessage`).** Run inline, every §8.4
+  capacity rule was fiction: with the loop parked on one turn a project could never reach
+  `max_concurrent_jobs` nor a worker `max_instances`. Changes the scheduler identically.
+- `(E3, 2026-07-25)` **E3 also owns closing deliveries, which no item states** — without it a
+  `running` delivery holds a `max_instances` slot for ever and the gate deadlocks. A **cancelled turn
+  records `ok`**: §8.4's status vocabulary is closed and has nothing better, and the property that
+  matters (no spurious `worker.failed{lost}`) holds because the lease is released. If `cancelled`
+  deserves a status, that is a §8.4 amendment.
+- `(E3, 2026-07-25)` **Residual admission race, logged not built:** router and scheduler can both
+  read capacity counts before either writes `running`, briefly over-admitting. The window is now
+  microseconds; a real fix needs an atomic `UPDATE … WHERE status='pending'` claim plus a
+  transactional count.
+- `(E3, 2026-07-25)` The lease reaper keys on **the lease, never on session status**, so an
+  interrupted-but-resumable turn (which releases its lease and stays `running`) is invisible to the
+  sweep. Renewal uses `UpdateColumn` so it never bumps `updated_at`, which the idle-archive loop
+  reads.
+- `(E3, 2026-07-25)` **Two long-flagged last miles are closed here:** `coreMCPServers(selfURL)` is
+  wired into the dispatcher, so a routed job is finally *told* the core tools exist (D3's note); and
+  `BuildBriefingSections` now has a production caller (C4's `NewestMemory` had none). Both nil-safe.
+- `(E3, 2026-07-25)` **A budget the store cannot evaluate fails OPEN** (logged loudly, job runs) —
+  stopping a whole workforce because Postgres hiccuped is the larger harm. The soft budget's
+  "one notification per day" is in-memory, so a restart can re-notify once, and it posts with an
+  **empty `session_url`** because a budget notice is about the project, not a session.
+- `(E3, 2026-07-25)` §8.4 step 5's interactive exemption is **structural, not a branch**:
+  interactive sessions never become deliveries, so they are invisible to every gate including the
+  budget.
+- `(E3, 2026-07-25)` `subscription.throttled` is derived from `rate_limited` delivery rows rather
+  than an in-memory counter, so the once-per-hour guarantee survives a restart — at the cost that a
+  *continuously* throttled subscription announces once then stays quiet until an hour passes with no
+  refusal.
+- `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
+  adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
 - `(G1, 2026-07-25)` **BLOCKER, now assigned: the stack's mock proxy cannot emit `tool_use`.** It
   serves a fixed canned SSE script, so **no mock-mode test can make the model invoke any MCP tool** —
   which means G1's headline assertion (a reviewer rewriting a worker's prompt via
