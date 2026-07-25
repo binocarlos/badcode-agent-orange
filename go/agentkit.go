@@ -104,6 +104,13 @@ type Deps struct {
 	// for a host embedding the engine without the product event layer.
 	// *agentdb.Store satisfies it.
 	WorkerEvents WorkerEventStore
+	// Snapshots is the §13 image catalogue the snapshot TTL reaper sweeps (B4,
+	// §5/§13.7). nil -> no reaping, whatever Policy.SnapshotReapInterval says.
+	// It must be a store WITHOUT agentdb.InstallConfigEventGuard armed: the
+	// reaper tombstones a guarded projection table outside the config-event seam
+	// on purpose (storage GC is not a configuration decision — see
+	// snapshot_reaper.go).
+	Snapshots SnapshotCatalog
 
 	Policy Policy
 }
@@ -113,6 +120,12 @@ type Deps struct {
 type Policy struct {
 	BaseImage      string
 	ArchiveTimeout time.Duration // 0 disables the archive loop (idle snapshot + destroy)
+	// SnapshotReapInterval is how often the snapshot TTL reaper sweeps the image
+	// catalogue for versions whose expiry has passed (§5). 0 disables it. The
+	// expiry itself is per project (project_settings.snapshot_ttl_days, 0 =
+	// never); this is only how often we look. Hours, not minutes — reaping is
+	// storage housekeeping, and a pass that finds nothing still costs queries.
+	SnapshotReapInterval time.Duration
 	MaxConcurrent  int
 	AgentPort      int // in-image agent port (default 3010)
 

@@ -257,6 +257,25 @@ type CustomImage struct {
 	// bytes so the catalogue stays honest — resolving a reaped version fails
 	// loudly with ErrCustomImageReaped rather than pointing at nothing (§13.7).
 	ReapedAt int64 `json:"reaped_at,omitempty"`
+
+	// ── §5 snapshot TTL metadata (migration 027, B4) ────────────────────────
+	//
+	// §5 requires every snapshot to carry {source session, created_at, expiry,
+	// last_resumed_at}. Source session is CreatedBySession and created_at is
+	// CreatedAt, so these two complete the tuple. Both are unix SECONDS, like
+	// CreatedAt and ReapedAt on this table.
+
+	// ExpiresAt is the instant the reaper may delete this version's bytes. It is
+	// stamped at burn time from the project's snapshot_ttl_days and is a promise
+	// the reaper honours even if the setting changes afterwards. 0 = never —
+	// both "the project set snapshot_ttl_days: 0" and rows burned before B4,
+	// which carry no promise and are therefore kept.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
+	// LastResumedAt is the last time a session launched from this version.
+	// Informational: §5 sets the expiry at snapshot time, so resuming does NOT
+	// extend it — this is what tells an operator whether a soon-to-expire image
+	// is still in use.
+	LastResumedAt int64 `json:"last_resumed_at,omitempty"`
 }
 
 func (CustomImage) TableName() string { return "agent_custom_images" }

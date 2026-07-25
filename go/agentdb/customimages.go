@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -310,7 +311,15 @@ func (s *Store) CreateCustomImage(ctx context.Context, ci *CustomImage, cw Confi
 	if err := ValidateLabels(ci.Labels); err != nil {
 		return nil, fmt.Errorf("%w: labels: %w", ErrCustomImageInvalid, err)
 	}
-	normalizeCatalogueImage(ci, cw)
+	// §5: the expiry is stamped at snapshot time from the project's TTL, and it
+	// is a promise — later changes to snapshot_ttl_days do not retroactively
+	// shorten or extend what was already burned. Reading the setting here rather
+	// than trusting the caller is what makes that true for every burn path.
+	ps, err := s.GetProjectSettings(ctx, ci.Customer)
+	if err != nil {
+		return nil, fmt.Errorf("agentdb: read snapshot TTL for project %q: %w", ci.Customer, err)
+	}
+	normalizeCatalogueImage(ci, cw, ps.SnapshotTTLDays)
 
 	var lastErr error
 	for attempt := 0; attempt < imageVersionAllocAttempts; attempt++ {
@@ -341,11 +350,28 @@ func (s *Store) CreateCustomImage(ctx context.Context, ci *CustomImage, cw Confi
 		ci.Name, imageVersionAllocAttempts, lastErr)
 }
 
+// SecondsPerDay is the TTL unit of snapshot_ttl_days (§5).
+const SecondsPerDay = 24 * 60 * 60
+
+// SnapshotExpiry is the §5 expiry rule in one place: a snapshot burned at
+// createdAt under a TTL of ttlDays expires ttlDays later, and a TTL of 0 means
+// never — the snapshot is kept forever.
+//
+// It is a pure function on purpose. The reaper and the burn path must agree on
+// what "expired" means, and the only way to guarantee that is for both to ask
+// the same function.
+func SnapshotExpiry(createdAt int64, ttlDays int) int64 {
+	if ttlDays <= 0 || createdAt <= 0 {
+		return 0 // never
+	}
+	return createdAt + int64(ttlDays)*SecondsPerDay
+}
+
 // normalizeCatalogueImage applies the catalogue's defaults. It lives in code
 // rather than in gorm `default:` tags because GORM omits zero-valued fields
 // from the INSERT when a default is declared — the DDL defaults in migration
 // 025 exist only for rows written outside this store.
-func normalizeCatalogueImage(ci *CustomImage, cw ConfigWrite) {
+func normalizeCatalogueImage(ci *CustomImage, cw ConfigWrite, ttlDays int) {
 	if ci.Labels == nil {
 		ci.Labels = LabelSet{}
 	}
@@ -365,6 +391,11 @@ func normalizeCatalogueImage(ci *CustomImage, cw ConfigWrite) {
 		ci.CreatedAt = time.Now().Unix()
 	}
 	ci.ReapedAt = 0
+	// The §5 metadata tuple. The expiry is computed here and never taken from
+	// the caller: a tool that could choose its own expiry could opt out of the
+	// operator's storage policy.
+	ci.ExpiresAt = SnapshotExpiry(ci.CreatedAt, ttlDays)
+	ci.LastResumedAt = 0
 }
 
 // nextCustomImageVersion reads the high-water mark for (project, name). It runs
@@ -604,4 +635,59 @@ func (s *Store) MarkCustomImageReaped(ctx context.Context, project, name string,
 		}
 	}
 	return nil
+}
+
+// MarkCustomImageResumed stamps `last_resumed_at` on a catalogue version — the
+// last member of §5's snapshot metadata tuple.
+//
+// It does NOT extend the expiry: §5 sets the expiry at snapshot time, and a
+// resume that quietly bought another 30 days would make the operator's storage
+// bill a function of traffic rather than of policy. What the stamp buys is the
+// ability to see that a version due for reaping is still in daily use — a fact
+// for a human or a curation worker to act on, by burning a fresh version.
+//
+// Like MarkCustomImageReaped this is a runtime write outside the config-event
+// seam (launching a session is not a configuration decision and §15.3's closed
+// vocabulary has no verb for it), so it too must not run with the write guard
+// installed. Best-effort by design: a failed stamp must never fail a launch.
+func (s *Store) MarkCustomImageResumed(ctx context.Context, project, name string, version int, at int64) error {
+	if strings.TrimSpace(project) == "" {
+		return fmt.Errorf("%w: project is required (P5)", ErrCustomImageInvalid)
+	}
+	if err := validateImageName(name); err != nil {
+		return err
+	}
+	if version < 1 {
+		return fmt.Errorf("%w: versions start at 1 (got %d)", ErrCustomImageInvalid, version)
+	}
+	if at <= 0 {
+		at = time.Now().Unix()
+	}
+	res := s.gdb.WithContext(ctx).Model(&CustomImage{}).
+		Where("customer = ? AND name = ? AND version = ?", project, name, version).
+		Update("last_resumed_at", at)
+	if res.Error != nil {
+		return fmt.Errorf("agentdb: mark image resumed: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		if _, err := s.GetCustomImageVersion(ctx, project, name, version); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListCatalogueProjects returns every project that owns at least one live §13
+// catalogue version, so the snapshot reaper (B4) can sweep without being told
+// which projects exist. Tombstoned versions do not keep a project on the list —
+// there is nothing left to reap in it.
+func (s *Store) ListCatalogueProjects(ctx context.Context) ([]string, error) {
+	var projects []string
+	if err := s.gdb.WithContext(ctx).Model(&CustomImage{}).
+		Where("version > 0 AND reaped_at = 0").
+		Distinct().Pluck("customer", &projects).Error; err != nil {
+		return nil, fmt.Errorf("agentdb: list catalogue projects: %w", err)
+	}
+	sort.Strings(projects)
+	return projects, nil
 }

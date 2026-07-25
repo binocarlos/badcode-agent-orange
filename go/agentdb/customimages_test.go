@@ -12,7 +12,9 @@ func newCustomImageTestStore(t *testing.T) *Store {
 	// UpsertCustomImage is a configuration mutation: it dual-writes the catalog
 	// row and a config_events record in one transaction (§15.4), so the log
 	// table must exist too.
-	if err := s.gdb.AutoMigrate(&CustomImage{}, &ConfigEvent{}); err != nil {
+	// ProjectSettings too: CreateCustomImage reads snapshot_ttl_days to stamp the
+	// §5 expiry at burn time (B4).
+	if err := s.gdb.AutoMigrate(&CustomImage{}, &ConfigEvent{}, &ProjectSettings{}); err != nil {
 		t.Fatalf("automigrate CustomImage: %v", err)
 	}
 	return s

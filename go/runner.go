@@ -752,6 +752,11 @@ func (r *runnerImpl) Start(ctx context.Context) error {
 	if r.deps.Policy.ArchiveTimeout > 0 {
 		go r.archiveLoop()
 	}
+	// The other half of the snapshot lifecycle: archiveLoop creates snapshots on
+	// idle, snapshotReapLoop retires the ones whose TTL has expired (§5, B4).
+	if r.deps.Policy.SnapshotReapInterval > 0 && r.deps.Snapshots != nil {
+		go r.snapshotReapLoop()
+	}
 	return nil
 }
 

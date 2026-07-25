@@ -516,12 +516,16 @@ func TestMutationsAreLogged(t *testing.T) {
 		// rule 3 keeps the event spine out of the config log — project_events is
 		// already its own append-only log and the delivered flag is the router's
 		// runtime watermark, not a setting.
+		// Grown once more on 2026-07-25 by B4: MarkCustomImageResumed stamps §5's
+		// last_resumed_at when a session launches from a catalogue version —
+		// runtime telemetry, not a decision anyone made.
 		want := []string{
 			"ClearWorkerBinding",
 			"CreateProjectEvent",
 			"DeleteCustomImage",
 			"DeleteSkill",
 			"MarkCustomImageReaped",
+			"MarkCustomImageResumed",
 			"MarkProjectEventDelivered",
 			"SetSkillVisibility",
 			"SetWorkerBinding",
