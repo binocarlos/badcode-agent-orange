@@ -230,6 +230,30 @@ func main() {
 	// API mux (authenticated) + an outer root mux for unauthenticated routes.
 	apiMux := api.Mux()
 
+	// ── Scheduler + human attention (product layer) ──────────────────────────────
+	// Both need the product-layer tables, so both are wired only on the Postgres
+	// store; on the SQLite fallback schedules never fire and the attention route
+	// is not mounted (404). See scheduler.go / attention.go, and
+	// dispatch.go for the gate the scheduler shares with the router.
+	if agentDB != nil {
+		gate := newDispatcher(dispatcherConfig{
+			Store:        agentDB,
+			Starter:      newRunnerSessionStarter(runner, store),
+			DefaultImage: baseImage,
+			// CoreMCP (the memory/management/image tool servers) is filled by D3/E4/I2;
+			// Images is bound to the §13 catalogue's Resolve by I4.
+		})
+		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate})
+		go sched.Run(ctx)
+
+		attention := newAttentionService(agentDB, permalinks)
+		apiMux.HandleFunc("POST /agent/attention", attentionHandler(attention))
+		go newAttentionSweeper(agentDB).Run(ctx)
+		log.Printf("[agentd] scheduler + attention sweep running (zone=%s)", time.Local)
+	} else {
+		log.Printf("[agentd] no DATABASE_URL — schedules and request_human_attention are unavailable")
+	}
+
 	// ── Login modes ──────────────────────────────────────────────────────────────
 	// google (GOOGLE_CLIENT_ID) and/or password (AGENTKIT_TEST_LOGIN) mint real
 	// project-scoped JWTs, so both require a verifying secret and a project map.

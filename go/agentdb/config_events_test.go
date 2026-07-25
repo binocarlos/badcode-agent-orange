@@ -20,7 +20,7 @@ func newConfigLogTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t) // sqlite + AutoMigrate(&Artifact{})
 	if err := s.gdb.AutoMigrate(&ConfigEvent{}, &Skill{}, &CustomImage{},
-		&ProjectSettings{}, &Worker{}, &Subscription{}); err != nil {
+		&ProjectSettings{}, &Worker{}, &Subscription{}, &Schedule{}); err != nil {
 		t.Fatalf("automigrate config log + projections: %v", err)
 	}
 	return s
@@ -416,9 +416,40 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		}
 		return s.DeleteSubscription(ctx, probeProject, probeSubscriptionID, ConfigWrite{Worker: "prober", Session: "s-probe"})
 	},
+	"CreateSchedule": func(ctx context.Context, s *Store) error {
+		_, err := s.CreateSchedule(ctx, NewSchedule(probeProject, "probe", "0 10 * * *", "write the morning tweet"),
+			ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
+	"UpdateSchedule": func(ctx context.Context, s *Store) error {
+		if err := seedProbeSchedule(ctx, s); err != nil {
+			return err
+		}
+		_, err := s.UpdateSchedule(ctx, &Schedule{
+			ID: probeScheduleID, Project: probeProject, Worker: "probe",
+			Cron: "0 17 * * *", Input: "write the evening tweet", Enabled: true,
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
+	"DisableSchedule": func(ctx context.Context, s *Store) error {
+		if err := seedProbeSchedule(ctx, s); err != nil {
+			return err
+		}
+		_, err := s.DisableSchedule(ctx, probeProject, probeScheduleID,
+			ConfigWrite{Worker: "prober", Session: "s-probe", Rationale: "worker no longer exists"})
+		return err
+	},
+	"DeleteSchedule": func(ctx context.Context, s *Store) error {
+		if err := seedProbeSchedule(ctx, s); err != nil {
+			return err
+		}
+		return s.DeleteSchedule(ctx, probeProject, probeScheduleID, ConfigWrite{Worker: "prober", Session: "s-probe"})
+	},
 }
 
 const probeSubscriptionID = "sub-probe"
+
+const probeScheduleID = "sched-probe"
 
 // The update and delete probes need a row to act on, and they must produce
 // exactly ONE config event — so the precondition cannot be seeded through the
@@ -439,6 +470,13 @@ func seedProbeSubscription(ctx context.Context, s *Store) error {
 		                            enabled, created_at, updated_at)
 		 VALUES (?, ?, 'email.received', '{}', 'probe', 0, 1, 0, 0)`,
 		probeSubscriptionID, probeProject).Error
+}
+
+func seedProbeSchedule(ctx context.Context, s *Store) error {
+	return s.gdb.WithContext(ctx).Exec(
+		`INSERT INTO schedules (id, project, worker, cron, input, enabled, created_at, updated_at)
+		 VALUES (?, ?, 'probe', '0 10 * * *', 'reconcile the workforce', 1, 0, 0)`,
+		probeScheduleID, probeProject).Error
 }
 
 const probeProject = "probe-project"
@@ -662,7 +700,7 @@ func TestMutationsAreLogged(t *testing.T) {
 	//    mutation guards its table without a second list to maintain.
 	t.Run("guarded_tables_are_derived_from_the_registry", func(t *testing.T) {
 		got := ConfigGuardedTables()
-		want := []string{"agent_custom_images", "agent_skills", "project_settings", "subscriptions", "workers"}
+		want := []string{"agent_custom_images", "agent_skills", "project_settings", "schedules", "subscriptions", "workers"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("guarded tables: want %v, got %v", want, got)
 		}

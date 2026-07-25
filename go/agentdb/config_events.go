@@ -476,6 +476,29 @@ var ConfigMutations = []ConfigMutation{
 		Tables:  []string{"subscriptions"},
 	},
 	{
+		Method:  "CreateSchedule",
+		Actions: []string{ActionScheduleCreate},
+		Tables:  []string{"schedules"},
+	},
+	{
+		// §15.3 gives schedules no enable/disable verbs, so pausing one is an
+		// ordinary update — including the scheduler's own DisableSchedule, whose
+		// rationale records that the worker had gone.
+		Method:  "UpdateSchedule",
+		Actions: []string{ActionScheduleUpdate},
+		Tables:  []string{"schedules"},
+	},
+	{
+		Method:  "DisableSchedule",
+		Actions: []string{ActionScheduleUpdate},
+		Tables:  []string{"schedules"},
+	},
+	{
+		Method:  "DeleteSchedule",
+		Actions: []string{ActionScheduleDelete},
+		Tables:  []string{"schedules"},
+	},
+	{
 		// The §13 catalogue write (I1). Publishing an environment is part of the
 		// organisation's history, so burning a version appends `image_create`
 		// with the burning worker/session as the actor (§13.4).

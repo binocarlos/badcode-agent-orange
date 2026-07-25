@@ -363,6 +363,89 @@ var agentMigrations = []migration{
 		`,
 	},
 	{
+		// Schedules (§8.6), their firing ledger, the shared dispatch gate's
+		// columns, and the durable half of request_human_attention (§9).
+		//
+		// `schedules` is configuration and joins the config log (§15.3):
+		// schedule_create / schedule_update / schedule_delete.
+		//
+		// `schedule_firings` is NOT configuration — it is the occurrence ledger
+		// that makes firing idempotent. The UNIQUE (schedule_id, scheduled_for)
+		// index is the whole mechanism: a crash/retry re-claims the same
+		// occurrence and loses, so it cannot double-fire (§8.6). scheduled_for is
+		// the LOCAL WALL-CLOCK minute, which is also the DST answer — see the
+		// ScheduleFiring doc comment.
+		//
+		// event_deliveries gains `worker` and `schedule_id`. `worker` is
+		// denormalised deliberately: the §8.4 step 7 per-worker gate has to count
+		// and queue deliveries for a worker, and a schedule firing has no
+		// subscription row to join through. The alternative — a synthetic
+		// subscription per schedule — would put rows in the user's routing table
+		// that no human created. `schedule_id` records which schedule a firing
+		// came from; it is empty for event-matched deliveries. Schedule-fired
+		// deliveries put the schedule id in `subscription_id` too, so the existing
+		// UNIQUE (event_id, subscription_id) idempotency index keeps working
+		// unchanged for both dispatch paths.
+		//
+		// agent_sessions gains `attention_requested` — the §9 stamp that §8.2
+		// copies onto the worker.finished envelope; `attention_requests` carries
+		// the optional expiry the sweep turns into human.attention.timeout.
+		Name: "024_schedules_and_attention",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS schedules (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				worker VARCHAR(255) NOT NULL,
+				cron VARCHAR(255) NOT NULL,
+				input TEXT NOT NULL DEFAULT '',
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_schedules_project ON schedules(project);
+			CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+
+			CREATE TABLE IF NOT EXISTS schedule_firings (
+				id VARCHAR(36) PRIMARY KEY,
+				schedule_id VARCHAR(36) NOT NULL,
+				scheduled_for VARCHAR(20) NOT NULL,
+				project VARCHAR(255) NOT NULL,
+				event_id VARCHAR(36) NOT NULL DEFAULT '',
+				fired_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_firings_occurrence
+				ON schedule_firings(schedule_id, scheduled_for);
+			CREATE INDEX IF NOT EXISTS idx_schedule_firings_project ON schedule_firings(project);
+
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS worker VARCHAR(255) NOT NULL DEFAULT '';
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS schedule_id VARCHAR(36) NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_worker
+				ON event_deliveries(project, worker, status);
+
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS attention_requested BOOLEAN NOT NULL DEFAULT FALSE;
+
+			CREATE TABLE IF NOT EXISTS attention_requests (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				session_id VARCHAR(36) NOT NULL,
+				worker VARCHAR(255) NOT NULL DEFAULT '',
+				message TEXT NOT NULL DEFAULT '',
+				session_url TEXT NOT NULL DEFAULT '',
+				channel VARCHAR(30) NOT NULL DEFAULT '',
+				delivered BOOLEAN NOT NULL DEFAULT FALSE,
+				expires_at BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				answered_at BIGINT NOT NULL DEFAULT 0,
+				timed_out_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_attention_requests_project ON attention_requests(project);
+			CREATE INDEX IF NOT EXISTS idx_attention_requests_session ON attention_requests(session_id);
+			CREATE INDEX IF NOT EXISTS idx_attention_requests_open
+				ON attention_requests(expires_at)
+				WHERE answered_at = 0 AND timed_out_at = 0;
+		`,
+	},
+	{
 		// Named, versioned, labeled images (§13) and the columns §14's skills
 		// need (I3 builds the skill store and tools on top of them).
 		//
