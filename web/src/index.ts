@@ -115,6 +115,100 @@ export type {
   WorkerJobsApi,
 } from './useWorkers.js'
 
+// Events & observability (F1) — the `/agent/events` + `/agent/deliveries` read
+// surface: pure helpers, the overview hook, and the dry-run subscription
+// matcher. Read-only; F2 owns the subscription/schedule editors.
+export {
+  EVENT_ENDPOINTS,
+  EVENT_SOURCES,
+  EVENT_QUERY_PARAM,
+  EVENT_DRAFT_TEMPLATE,
+  DELIVERY_STATUSES,
+  ENVELOPE_FILTER_KEYS,
+  FAILURE_REASONS,
+  coerceEnvelope,
+  coerceProjectEvent,
+  coerceDelivery,
+  coerceSubscription,
+  isDeliveryStatus,
+  isTerminalDeliveryStatus,
+  describeDeliveryStatus,
+  deliveryStatusSeverity,
+  deliveryDurationSeconds,
+  formatDuration,
+  buildJobRows,
+  validateEventTypePattern,
+  eventTypeMatches,
+  envelopeFilterMatches,
+  matchSubscriptions,
+  blankEnvelope,
+  parseEventDraft,
+  eventToDraftText,
+  eventFromSearch,
+  buildEventSearch,
+  sumTokens,
+  formatTokens,
+} from './events.js'
+export type {
+  EventEnvelope,
+  EventSource,
+  ProjectEvent,
+  EventDelivery,
+  DeliveryStatus,
+  Subscription,
+  JobRow,
+  SubscriptionMatch,
+  MatchableEvent,
+  EventDraftParse,
+  TokenTotals,
+} from './events.js'
+export {
+  default as useEventsOverview,
+  useSessionTokens,
+  DEFAULT_EVENT_PAGE,
+} from './useEvents.js'
+export type {
+  UseEventsOverviewOptions,
+  EventsOverviewApi,
+  UseSessionTokensOptions,
+  SessionTokensApi,
+} from './useEvents.js'
+
+// The config log / changelog (F1, owning J4) — §15.10. NOTE: the read route
+// `GET /agent/config-events` does not exist yet (J2/J3 owns it); until it does,
+// pass `fetchConfigEvents`. The exact contract is in configLog.ts's header.
+export {
+  CONFIG_LOG_ENDPOINT,
+  CONFIG_ACTIONS,
+  DIFF_LINE_BUDGET,
+  coerceConfigEvent,
+  configEntity,
+  describeConfigAction,
+  changelogTitle,
+  configPromptText,
+  diffLines,
+  buildChangelog,
+  actionMatches,
+  filterChangelog,
+  changelogQueryParams,
+  formatConfigTimestamp,
+  extractConfigEvents,
+} from './configLog.js'
+export type {
+  ConfigAction,
+  ConfigEvent,
+  ConfigEntity,
+  ConfigEntityKind,
+  ConfigEventFetcher,
+  ChangelogEntry,
+  ChangelogDiff,
+  ChangelogQuery,
+  DiffLine,
+  BuildChangelogOptions,
+} from './configLog.js'
+export { default as useConfigLog } from './useConfigLog.js'
+export type { UseConfigLogOptions, ConfigLogApi } from './useConfigLog.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
@@ -173,6 +267,20 @@ export { default as WorkerJobHistory } from './components/WorkerJobHistory.js'
 export type { WorkerJobHistoryProps } from './components/WorkerJobHistory.js'
 export { default as WorkerChatPanel } from './components/WorkerChatPanel.js'
 export type { WorkerChatPanelProps } from './components/WorkerChatPanel.js'
+
+// Observability + changelog components (F1, owning J4)
+export { default as EventsPage } from './components/EventsPage.js'
+export type { EventsPageProps } from './components/EventsPage.js'
+export { default as EventList } from './components/EventList.js'
+export type { EventListProps } from './components/EventList.js'
+export { default as EventDetail } from './components/EventDetail.js'
+export type { EventDetailProps } from './components/EventDetail.js'
+export { default as EventJobHistory, statusChipColor } from './components/EventJobHistory.js'
+export type { EventJobHistoryProps } from './components/EventJobHistory.js'
+export { default as EventReplayPanel } from './components/EventReplayPanel.js'
+export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
+export { default as ChangelogView, ACTION_FILTERS } from './components/ChangelogView.js'
+export type { ChangelogViewProps } from './components/ChangelogView.js'
 
 // Artifact utilities
 export { buildArtifactTree } from './artifactTree.js'
