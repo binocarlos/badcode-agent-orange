@@ -140,34 +140,22 @@ test.describe('session MCP servers', () => {
   })
 })
 
-// ── KNOWN FAILURE ───────────────────────────────────────────────────────────
+// Regression guard for a real defect this test found and that commit 7170bed
+// fixed. It was red from 2026-07-25 until then.
 //
-// Left red deliberately: the product is wrong, not the test.
+// A project's tools resolved correctly and reached no container at all:
+// agentd's `Resolve` returned `&extension.SessionContext{SystemPrompt,
+// BaseImage}` and never set the `MCPServers` field A2 added to that struct and
+// the Runner merges in `sessionMCPServers`. Three tracks each built their half
+// and nothing joined them — B2 predicted it, A2 added the field and the merge,
+// and the one line that fills it in was written by neither.
 //
-// There is **no way to configure an MCP server for a session through any API**:
-//
-//   1. `POST /agent/session` has no `mcp_servers` field (go/httpapi/session.go's
-//      createSessionBody), so A1's per-request config is unreachable over HTTP.
-//   2. Project and worker `mcp_config` — which IS settable, via
-//      `PUT /agent/project-settings` — is resolved correctly by agentd's
-//      sessionContextProvider and then **dropped**: its `Resolve` returns
-//      `&extension.SessionContext{SystemPrompt, BaseImage}` and never sets the
-//      `MCPServers` field that A2 added to that struct and that the runner
-//      merges in `sessionMCPServers`. Nothing in the repo populates it.
-//
-// So the tools a project configures never reach any container. B2 predicted
-// exactly this ("without that wiring, project/worker MCP defaults resolve but
-// never reach a container") and assigned it to A2; A2 added the field and the
-// runner merge but not the one line in agentd that fills it in.
-//
-// This test asserts the product-level claim of §5: a server configured for the
-// project is granted to every session in it.
-test.describe('session MCP servers — known failures', () => {
+// This asserts §5's product-level claim: a server configured for the project is
+// granted to every session in it, on the row and in the container.
+test.describe('session MCP servers — project defaults', () => {
   test.setTimeout(240_000)
 
-  test("a project's mcp_config reaches its sessions (KNOWN FAILURE: SessionContext.MCPServers is never populated)", async ({
-    request,
-  }) => {
+  test("a project's mcp_config reaches its sessions", async ({ request }) => {
     const client = await newProjectClient(request, 'e2e-mcp-proj')
     await client.putSettings({ mcp_config: PROBE_SERVER })
     expect(await client.getSettings()).toMatchObject({ mcp_config: { probe: { url: MCP_URL } } })

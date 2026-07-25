@@ -117,32 +117,20 @@ test.describe('product UI', () => {
   })
 })
 
-// Kept in its own describe so its (deliberate) failure does not skip the
-// serial tests above.
-test.describe('product UI — known failures', () => {
-  // ── KNOWN FAILURE ─────────────────────────────────────────────────────────
-  //
-  // Left red deliberately: the product is wrong, not the test.
-  //
-  // Reload the page while the agent is mid-answer and the whole turn is lost —
-  // including the human's own message. The server persists nothing for that
-  // session (`GET /agent/session/{id}/messages` → `{"count":0,...}`) and the
-  // session row is left stuck at `status: "running"` indefinitely (still
-  // running 60s later, with no container doing anything). Re-opening the
-  // session by permalink or from the sidebar shows an empty transcript for
-  // ever; it never recovers.
-  //
-  // That contradicts P8 — a transcript is meant to be an immutable record of
-  // what happened — and it is the one way a human can silently lose their own
-  // words. A settled turn replays perfectly (the test above), so this is
-  // specifically about a turn interrupted before it ends.
-  //
-  // Asserting the SERVER, not the DOM, on purpose: the UI cannot replay what
-  // was never written, so the fix belongs behind the API.
-  test('an interrupted turn is still persisted (KNOWN FAILURE: reload mid-answer loses the whole turn)', async ({
-    page,
-    request,
-  }) => {
+// Regression guard for a real defect this suite found and that commit 8faaa95
+// fixed. It was red from 2026-07-25 until that fix landed.
+//
+// Reloading the page mid-answer used to lose the whole turn, the human's own
+// message included: `persist()` wrote under the caller's context, which the
+// reload had just cancelled, so every collected event was dropped and the
+// session was left stuck at `status: "running"` for ever. Nothing recovered it.
+//
+// It asserts the SERVER, not the DOM, on purpose: the UI can only replay what
+// was written, so this is a question about persistence, not rendering. Keep it
+// that way — a DOM assertion here would pass on a UI that renders an optimistic
+// echo of a message the server never stored.
+test.describe('product UI — interruption', () => {
+  test('a turn interrupted by a reload is still persisted', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-ui-mid')
     await page.getByTestId('new-session').click()
 

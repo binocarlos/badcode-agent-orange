@@ -133,30 +133,25 @@ Two conventions worth keeping:
 | Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
-### Known failures — deliberately red
+### No known failures
 
-`features/session-mcp.stack.spec.ts` › *a project's mcp_config reaches its sessions*.
-
-**No API can configure an MCP server for a session.** `POST /agent/session` has no `mcp_servers`
-field, and the project/worker `mcp_config` that *is* settable (`PUT /agent/project-settings`) is
-resolved correctly by agentd's `sessionContextProvider` and then dropped: its `Resolve` returns
-`&extension.SessionContext{SystemPrompt, BaseImage}` and never sets the `MCPServers` field A2 added
-to that struct and that the runner merges. Nothing in the repo populates it, so a project's tools
-never reach any container. Everything *downstream* of the session row works — proved by the green
-tests beside it, which seed the row directly via `helpers/stackdb.ts` because nothing else can.
+Both defects this suite found have been fixed and are now guarded — see below. When you add a red
+test, list it here with its evidence so nobody mistakes it for flakiness.
 
 
-`features/product-ui.stack.spec.ts` › *an interrupted turn is still persisted*.
+### Fixed, and now guarded
 
-**Reload the page while the agent is answering and the entire turn is lost, including the human's
-own message.** `GET /agent/session/{id}/messages` returns `{"count":0,...}` for that session, and
-the session row is left stuck at `status: "running"` indefinitely. Re-opening it — by permalink or
-from the sidebar — shows a blank transcript that never recovers (verified over 60s). A turn allowed
-to finish replays perfectly, so this is specifically about interruption.
+Two defects were found by writing the test first, leaving it red, and reporting it. Both are fixed;
+the tests stay as regression guards.
 
-It is left failing rather than adjusted, because the product is wrong: P8 says a transcript is an
-immutable record of what happened, and this is the one way a human can silently lose their own
-words. The assertion is against the API, not the DOM — the UI cannot replay what was never written.
+- *a turn interrupted by a reload is still persisted* (`product-ui`) — red until `8faaa95`.
+  Reloading mid-answer lost the whole turn, the human's own message included: `persist()` wrote
+  under the caller's context, which the reload had just cancelled, leaving the session stuck at
+  `status: "running"` for ever. Leave it asserting the API rather than the DOM — a DOM assertion
+  would pass on a UI that renders an optimistic echo of a message the server never stored.
+- *a project's mcp_config reaches its sessions* (`session-mcp`) — red until `7170bed`. A project's
+  tools resolved correctly and reached no container: agentd's `Resolve` never set the `MCPServers`
+  field the Runner merges. Three tracks each built their half and nothing joined them.
 
 ### The queue — not covered, and why
 
