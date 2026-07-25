@@ -159,6 +159,12 @@ export interface AgentSessionListItem {
   current_node: string
   title: string
   artifact_count: number
+  /**
+   * The product-level worker (persona) whose job this session is — spec
+   * 02-workers §6.5. Empty/absent for plain vanilla sessions. Distinct from
+   * `persona`, which is the older prompt-preset concept.
+   */
+  worker?: string
   container_state?: string
   snapshot_state?: '' | 'pending' | 'archived' | 'failed' | 'persistence_failed' | 'extraction_failed'
   snapshot_progress?: OpProgress
@@ -188,6 +194,15 @@ export interface CreateAgentSessionRequest {
   systemPrompt?: string
   tools?: string[]
   maxTurns?: number
+  /**
+   * Start this session as a job for the named worker (spec 02-workers §6.4):
+   * the server composes the system prompt from the core preamble + project
+   * prompt + worker prompt and stamps `worker` on the session row. The UI never
+   * composes the prompt itself — that would let a browser decide what a worker
+   * believes. Servers that predate job composition ignore the field, which is
+   * exactly the graceful degradation we want: an ordinary session, not a wrong one.
+   */
+  worker?: string
 }
 
 export interface CreateAgentSessionResponse {

@@ -61,6 +61,60 @@ export type { SessionRoute } from './permalink.js'
 export { default as useSessionPermalink, projectIdFromLocation } from './useSessionPermalink.js'
 export type { UseSessionPermalinkOptions, SessionPermalinkApi } from './useSessionPermalink.js'
 
+// Project settings (B3) — the /agent/project-settings surface: pure helpers,
+// the load/edit/save hook, and the page.
+export {
+  PROJECT_SETTINGS_ENDPOINT,
+  PROJECT_SETTING_NUMERICS,
+  DEFAULT_MAX_CONCURRENT_JOBS,
+  DEFAULT_BRIEFING_MAX_BYTES,
+  DEFAULT_SNAPSHOT_TTL_DAYS,
+  defaultProjectSettings,
+  coerceProjectSettings,
+  parseJsonObject,
+  formatJsonObject,
+  describeNumericSetting,
+  validateProjectSettings,
+  projectSettingsBody,
+} from './projectSettings.js'
+export type {
+  ProjectSettings,
+  JsonParseResult,
+  NumericSettingSpec,
+  ZeroSemantics,
+  FieldErrors,
+} from './projectSettings.js'
+export { default as useProjectSettings } from './useProjectSettings.js'
+export type { UseProjectSettingsOptions, ProjectSettingsApi } from './useProjectSettings.js'
+
+// Workers (C3) — the /agent/workers surface: pure helpers, the CRUD and
+// job-history hooks, and the components.
+export {
+  WORKER_ENDPOINTS,
+  WORKER_NAME_PATTERN,
+  WORKER_QUERY_PARAM,
+  DEFAULT_MAX_INSTANCES,
+  newWorkerDraft,
+  coerceWorker,
+  validateWorkerName,
+  parseImageRef,
+  validateImageRef,
+  describeImageRef,
+  validateSelector,
+  validateWorker,
+  workerBody,
+  workerFromSearch,
+  buildWorkerSearch,
+} from './workers.js'
+export type { Worker, WorkerDraft, ImageRef, WorkerFieldErrors } from './workers.js'
+export { default as useWorkers, useWorkerJobs } from './useWorkers.js'
+export type {
+  UseWorkersOptions,
+  WorkersApi,
+  UseWorkerJobsOptions,
+  WorkerJobsApi,
+} from './useWorkers.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
@@ -103,6 +157,22 @@ export {
   isImageReadToolCall,
   isScreenshotToolCall,
 } from './components/ToolCallGroup.js'
+
+// Configuration components (B3 + C3)
+export { default as ProjectSettingsPage } from './components/ProjectSettingsPage.js'
+export type { ProjectSettingsPageProps } from './components/ProjectSettingsPage.js'
+export { default as JsonObjectEditor } from './components/JsonObjectEditor.js'
+export type { JsonObjectEditorProps } from './components/JsonObjectEditor.js'
+export { default as WorkersPage } from './components/WorkersPage.js'
+export type { WorkersPageProps } from './components/WorkersPage.js'
+export { default as WorkerList } from './components/WorkerList.js'
+export type { WorkerListProps } from './components/WorkerList.js'
+export { default as WorkerEditor } from './components/WorkerEditor.js'
+export type { WorkerEditorProps } from './components/WorkerEditor.js'
+export { default as WorkerJobHistory } from './components/WorkerJobHistory.js'
+export type { WorkerJobHistoryProps } from './components/WorkerJobHistory.js'
+export { default as WorkerChatPanel } from './components/WorkerChatPanel.js'
+export type { WorkerChatPanelProps } from './components/WorkerChatPanel.js'
 
 // Artifact utilities
 export { buildArtifactTree } from './artifactTree.js'
