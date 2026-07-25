@@ -62,7 +62,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 - [x] **B2.** `SessionContextProvider` implementation in agentd applying base image / prompt /
       MCP defaults with the precedence rules of §5. (`go/cmd/agentd/`) — depends B1, A1
       **Validation:** `go test ./cmd/agentd/... -run TestSessionContextProvider -count=1`
-- [ ] **B3.** UI: project settings page (image field, prompt textarea, MCP JSON editor).
+- [x] **B3.** UI: project settings page (image field, prompt textarea, MCP JSON editor).
       (`web/src/`) — depends B1
       **Validation:** `cd web && npm test`
 - [ ] **B4.** `[learnings]` Snapshot TTL metadata + reaper: every snapshot carries
@@ -101,7 +101,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       (`go/compose.go`, `go/runner.go`, `go/agentdb/sessions.go`) — depends
       B1+C1 (+A1 for MCP types)
       **Validation:** `go test ./... -run 'TestComposeJob' -count=1`
-- [ ] **C3.** UI: worker list/editor, chat-with-worker (reuses existing chat against a
+- [x] **C3.** UI: worker list/editor, chat-with-worker (reuses existing chat against a
       worker-composed session), job history per worker. `[walkthrough]` The editor gains an image
       picker (§13), a `max_instances` field, and a briefing-selector list (§6.5).
       (`web/src/`) — depends C1
@@ -437,6 +437,27 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   `examples/web/src/App.tsx` belongs to F1/F2/J4.
 - `(F3, 2026-07-25)` `npm audit`: 2 high-severity advisories in web/ dev-only transitive deps;
   not touched.
+- `(C3, 2026-07-25)` **`createSessionBody` has no `worker` field**, so "chat with this worker"
+  cannot yet produce a composed session — `go/httpapi/session.go` and `agentkit.CreateSessionRequest`
+  both lack it (C2 added `Worker` to the request struct; the HTTP body still needs it). The UI sends
+  `worker` regardless and Go ignores unknown fields, so today it degrades to a plain session (missing
+  worker prompt, never a forged one) and starts working the moment the create path composes.
+- `(C3, 2026-07-25)` **No server-side worker filter on `GET /agent/sessions`** — `SessionQuery` has
+  no `Worker` field and the handler reads no `?worker=`, though the column and its index exist. Job
+  history is therefore filtered client-side over one 200-row page, with an explicit
+  "older jobs may not be listed" banner. Fix is small and server-side.
+- `(C3, 2026-07-25)` **No `GET /agent/images` route**, so the worker editor's image picker cannot
+  offer a real list — it degrades to validated free text plus an `imageOptions` prop. Once Track I
+  exposes a catalogue route, wire it; no component change needed.
+- `(C3, 2026-07-25)` §13.2 gives no lexical rule for an image **name**. The UI enforces a permissive
+  single-segment pattern (rejecting the mistake that actually happens: pasting a registry URL). If
+  Track I lands a server-side rule, `IMAGE_NAME_PATTERN` in `web/src/workers.ts` must follow it.
+- `(B3, 2026-07-25)` `attention_channel` ships in migration 020 but B3's item text named only
+  image/prompt/MCP; it would otherwise be unreachable from the UI, so the page includes a JSON
+  editor for it with the §9 webhook shape as helper text. Flagging in case it was meant for H2.
+- `(B3, 2026-07-25)` `web/`'s `npm run build` is `tsc --noEmit` — it typechecks and produces no
+  `dist/`, despite `package.json` declaring `main`/`types` under `dist/`. Any host consuming the
+  package as a built artifact rather than from source finds nothing there.
 - `(I1, 2026-07-25)` **§13.7 TTL reconciliation decided: tombstone, not exemption.** Exempting
   referenced versions would make the reaper a no-op (every catalogue row is referenced by
   construction). Migration 025 adds `reaped_at`; **B4 must delete the bytes first, then call
