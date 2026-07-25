@@ -5,6 +5,10 @@
 stack. Run it when you want agent sessions over HTTP without writing a host or
 managing Docker.
 
+`agentd` also hosts the **product layer** — projects, workers, memory, subscriptions,
+schedules, images, skills and the config log. This document covers running the stack;
+`docs/18-workers-memory-events.md` covers operating what runs on it.
+
 ## Library vs standalone — pick ONE
 
 | | Library integration | Standalone stack |
@@ -51,17 +55,43 @@ The Runner launches `BASE_IMAGE` per session. Build your own on top of
 `/workspace/CLAUDE.md`) — see `docs/14-host-adapters.md`. Per-app **UI** plugins
 register against `@agentkit/chat-ui`'s render-plugin seam in the app's frontend.
 
-> Agent *profiles* (named base-image + prompt + tool bundles referenced at session
-> start) are a separate upcoming feature (Spec 2). Today, select the image via
-> `BASE_IMAGE` (stack-wide) or the `Image`/`CustomImageID` fields on the create-session
-> request.
+Selection order, as the Runner applies it: `Image` > `CustomImageID` on the create-session
+request > `BASE_IMAGE` (stack-wide, reaching `agentd` as `AGENTKIT_IMAGE`). Worker jobs
+additionally compose an image from `project_settings.base_image` and pass it as the explicit
+`Image`, so a project can override the stack default for its workers without touching `.env`.
 
-## The store — and why memory needs Postgres
+> The named-image layer of the product spec (§13 — `image_create`, `name:version`, a worker's
+> `image` pointer) is built at the store and tool level but **not yet bound at launch**: a
+> worker with `image` set fails its job loudly rather than launching from that image
+> (work-plan item I4). Use `project_settings.base_image` until it lands. See
+> `docs/18-workers-memory-events.md` § "Known limitations".
+
+## The store — and why the product layer needs Postgres
 
 `agentd` picks its store from `DATABASE_URL`: set → Postgres (`agentdb`, self-migrating);
 unset → a local sqlite file, kept for zero-dependency demos. The compose stack always
 sets it, and the image is `pgvector/pgvector:pg16` so `CREATE EXTENSION vector` works
 without an image swap.
+
+**`DATABASE_URL` is the switch for the entire product layer**, not just for memory.
+Everything in `docs/18-workers-memory-events.md` lives in the product-layer tables, so on
+the sqlite fallback `agentd` wires none of it:
+
+| Component | Without `DATABASE_URL` |
+| --- | --- |
+| Event router | not started — events are never routed, subscriptions never fire |
+| Scheduler | not started — schedules never fire |
+| Core MCP server (`memory_*`, `worker_*`, `image_*`, `skill_*`, management, `config_history`) | **not mounted at all** |
+| `SessionContextProvider` | not installed — project base image, project prompt and project/worker MCP defaults silently do not apply |
+| `worker.finished` / `worker.failed` emitters | left nil — no internal events |
+| `POST /agent/attention` | not mounted (404) |
+
+`agentd` logs each of these at boot (`no DATABASE_URL — event routing, schedules and
+request_human_attention are unavailable`; `core mcp DISABLED (no DATABASE_URL)`), but nothing
+fails at *use* time — a stack accidentally on sqlite looks healthy and quietly does nothing.
+The sqlite store also drops the product columns on the sessions table (`mcp_servers` is
+carried, `worker` and `composed_prompt` are not), which is the mechanical reason the fallback
+is not a supported product-layer configuration.
 
 **The memory system (spec §7) requires Postgres.** On sqlite, `CreateMemory` /
 `GetMemory` / `SearchMemories` all fail with `ErrMemoryRequiresPostgres` — memory
@@ -77,9 +107,55 @@ identical (§7.6.5):
   the extension is available; without it search drops the semantic leg and ranks on
   keyword + recency.
 - **No embedding provider** — `AGENTKIT_EMBEDDING_BACKEND` is `none` by default, so
-  memories are stored with a NULL embedding and search is keyword + recency. Set it to
-  `mock` for the deterministic offline embedder (mock mode / e2e); a real embedder is
-  host code implementing `extension/embedding.Provider`.
+  memories are stored with a NULL embedding and search is keyword + recency. `mock` selects
+  the deterministic offline embedder; a real embedder is host code implementing
+  `extension/embedding.Provider`. A typo in the value is a boot error, never a silent fall
+  back to `none`. **`docker-compose.yml` does not currently forward this variable**, so the
+  shipped stack always runs `none` — setting it means adding one `environment:` line to the
+  `agentd` service.
+
+## Session containers are not reaped on a timer
+
+A session holds a running container inside DinD until the **session is deleted**. Nothing
+expires them, so they accumulate: roughly a hundred was enough, during one e2e run, to make
+`agentd` stop being able to provision anything, with `image_create` reporting "session has no
+running instance and no snapshot". That reads exactly like a product bug and is not one.
+
+Delete sessions you have finished with (`DELETE /agent/session/{id}`; the e2e suite does this
+in teardown). `./e2e/run-stack-e2e.sh clean` clears leftovers, and **restarts `agentd`**
+afterwards — that restart is not optional. Removing containers out from under a running
+`agentd` leaves its placement state naming instances that no longer exist, and it then
+refuses to provision *any* new session, including brand-new ones, until restarted. The script
+does the restart for you; if you clear containers by hand, do it yourself.
+
+Whether long-lived idle sessions should reap their containers is an open product question.
+
+## Session permalinks
+
+`AGENTKIT_PUBLIC_BASE_URL` is the externally reachable base of the **web UI** — not
+`AGENTKIT_SELF_URL`, which is a DinD bridge address only containers can reach. Permalinks are
+minted as `<base>/p/<project>/s/<session>` and travel a long way from the browser: into memory
+search results, config-log entries, image and skill provenance, and
+`request_human_attention` webhooks. It must be a URL the recipient can actually open. Default
+`http://localhost:8080`; it must be an absolute http(s) URL with no query or fragment, or
+`agentd` refuses to boot.
+
+## MCP credentials into sessions
+
+MCP configuration stored in the database only ever *names* a variable
+(`{"env": {"GMAIL_API_KEY": "${GMAIL_API_KEY}"}}`), so nothing secret is ever persisted or
+displayed. `AGENTKIT_MCP_ENV` is the comma-separated **allowlist of variable names** `agentd`
+forwards into every session container, where the sandbox resolves the references at MCP-server
+spawn time. It is an allowlist by design: naming one of `agentd`'s own secrets
+(`AGENTKIT_JWT_SECRET`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, …) is refused at boot. A listed
+name that is unset is warned about and not forwarded — the MCP server referencing it then
+fails loudly at spawn rather than authenticating with an empty credential.
+
+Compose cannot forward a dynamic set of names, so each credential needs **two** entries: its
+name in `AGENTKIT_MCP_ENV`, and its own `environment:` line on the `agentd` service.
+
+One exception to "no `agentd` secret reaches a session": in subscription mode
+`CLAUDE_CODE_OAUTH_TOKEN` legitimately does, because the in-image CLI authenticates with it.
 
 ## Storage backends (local default, or Google Cloud)
 
