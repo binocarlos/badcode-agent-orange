@@ -304,40 +304,26 @@ Two conventions worth keeping:
 | **Schedules that cannot provision §8.6** | `features/schedule-resilience.stack.spec.ts` | the mechanism that stops the incident this suite caused: a `* * * * *` schedule on a **disabled** worker is refused at the dispatch gate every minute, and after five consecutive firings that start no job the scheduler **switches the schedule off**, with the reason in the config log — one record for the decision, none for the five observations. The disable resets the streak (re-enabling gets a full budget), and nothing is provisioned along the way, so the test for the anti-storm mechanism cannot itself start a storm. Slowest test in the suite (~6 min): a firing is one wall-clock minute and there is no catch-up |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
-### One known failure
+### No known failures
 
-Every defect this suite has found is fixed and guarded except one — the orphaned container below,
-which is red on purpose. When you add a red test, list it there with its evidence so nobody mistakes
-it for flakiness.
+Every defect this suite has found is fixed and guarded. When you add a red test, list it in "Known
+gaps" below with its evidence, so nobody mistakes it for flakiness.
 
 
 ### Known gaps — deliberately red
 
-`features/port-pool.stack.spec.ts` › *deleting a session mid-create does not leave an orphaned
-container*.
+None at present. Three lived here and are all fixed and guarded below: the composed prompt never
+reaching the model, `request_human_attention` not parking the job, and the orphaned container.
 
-**A session deleted while its create is still provisioning leaves a container that nothing reaps.**
-`POST /agent/session` answers 200 with status `creating` and provisions in the background. Delete
-before that finishes and the row is removed; the container arrives afterwards, belonging to nothing.
-Reproduced by hand on 2026-07-26 — create, `DELETE` 0ms later (204), container up and healthy 14s
-after that, no session row, still running and holding port 30001 several minutes later. Not the
-archive loop's problem (it knows about sessions), not `cleanup()`'s (no row to sweep), and invisible
-to every count that trusts the database.
+### Two gaps the orphan fix left open, on purpose
 
-**This is the best available explanation for how this stack kept filling up.** The suite's own
-`cleanup()` deletes sessions the moment a test ends — including tests that fail in milliseconds,
-before anything has provisioned — so the harness has been manufacturing orphans for as long as it
-has existed, one per fast-failing session. It now waits for `creating` to clear first
-(`waitForCreatesToSettle`), which stops the suite *causing* it, and teardown settles before its
-final count so a late arrival is charged to the run that caused it. Neither is a fix: the race is
-the product's.
+Not red tests — nothing here asserts them — but do not assume they are closed:
 
-The test removes its own orphan in a `finally`. A deliberately-red test that also leaked would fail
-every subsequent run's leak check for a container it left itself.
-
-
-That is the only one left. The other two that lived here — the composed prompt never reaching the
-model, and `request_human_attention` not parking the job — are both fixed and are listed below.
+- **A container orphaned by a previous agentd process is still not reaped.** The fix cancels an
+  in-flight create using in-process state, so it cannot know about containers made by a run that has
+  since exited. `./e2e/run-stack-e2e.sh clean` remains the tool for those.
+- **A host that deletes a session row without calling `Runner.Destroy` still leaks.** The HTTP API
+  always calls it, so the stack is covered; a host embedding the library as a package might not be.
 
 ### Fixed, and now guarded
 
@@ -376,8 +362,29 @@ tests stay as regression guards.
   so the UI shows an open-ended duration and a human can answer hours later. From the outside a job
   awaiting sign-off was indistinguishable from one that had finished its work.
 
-All three of the last group were verified green on 2026-07-26: the full suite at 50 passed / 0
-failed, and the scripted acceptance-loop run at 17 passed.
+- *deleting a session mid-create leaves no orphaned container* (`port-pool`) — red until `b34c366`,
+  and the defect that explains the slow drain nobody could account for. `POST /agent/session` answers
+  `creating` and provisions in a background goroutine; a delete inside that window found no container
+  to destroy, so one arrived seconds later owned by nothing — no row, no tracked instance, invisible
+  to every reaper and every count that starts from the database, holding a port until a human ran
+  `docker ps`. The suite's own `cleanup()` deletes sessions the instant a test ends, so the harness
+  manufactured one per fast-failing session for as long as it existed.
+
+  The fix is **cancellation, not sweeping**, and the distinction is the interesting part: the
+  predicate is "a delete for *this* session arrived while *this* create was in flight", never "a
+  container whose session row is missing". That second predicate also describes a restore, a
+  re-provision, another host's container and — indistinguishably, because the production store wraps
+  every error including not-found in one message — a database having a bad thirty seconds. A sweep on
+  it would destroy live work. This is why the leak detector *reports* containers rather than deleting
+  them, and it is worth remembering the next time a cleanup routine looks obviously safe.
+
+  The test's wait is the load-bearing part: checking for absence immediately would pass against the
+  very bug, because at t=0 the container does not exist yet.
+
+The first three were verified green on 2026-07-26: the full suite at 50 passed / 0 failed, and the
+scripted acceptance-loop run at 17 passed. **The orphan one is written against `b34c366` but has not
+yet been run** — the stack was in use for the G3 live smoke when it was flipped. Run it before
+trusting this entry.
 
 ### The queue — not covered, and why
 

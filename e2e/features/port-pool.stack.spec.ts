@@ -147,42 +147,58 @@ test.describe('a deleted session leaves nothing behind', () => {
     await client?.cleanup()
   })
 
-  test('deleting a session mid-create does not leave an orphaned container (KNOWN GAP: it does)', async () => {
-    test.setTimeout(2 * 60_000)
+  test('deleting a session mid-create leaves no orphaned container', async () => {
+    test.setTimeout(3 * 60_000)
 
-    // `POST /agent/session` answers 200 with status "creating" and provisions
-    // in the background. Delete before that finishes and the row goes; the
-    // container arrives afterwards, belonging to nothing.
+    // `POST /agent/session` answers 200 with status "creating" and provisions in
+    // a background goroutine. Deleting inside that window used to find no
+    // container to destroy — it did not exist yet — so it arrived seconds later
+    // owned by nobody: no session row, no tracked instance, invisible to every
+    // reaper and every count that starts from the database, holding one of the
+    // host's ports until a human ran `docker ps`. One delete made one orphan,
+    // and a test that failed in milliseconds made one per run. Red here until
+    // `b34c366`.
+    //
+    // The fix is cancellation, not sweeping: `Destroy` marks the in-flight
+    // create and returns at once (a delete must never block behind a slow image
+    // pull), and the create tears down whatever it has built at its next
+    // checkpoint. So the container may legitimately exist for a moment — what
+    // must not happen is that it is still there once the create has run its
+    // course.
     const id = await client.createSession({})
     await client.deleteSession(id)
 
-    // Long enough for the background create to land — measured at ~14s.
+    // **The wait is the test.** Checking for absence straight away would pass
+    // against the very bug this guards: at t=0 the container has not been
+    // created yet, so "no container" is true and meaningless. The orphan was
+    // measured arriving ~14s after the delete, so wait well past that and let
+    // the create reach its checkpoints.
     await new Promise((r) => setTimeout(r, 45_000))
 
     // The session is gone from the API's point of view…
     const rows = await client.listAllSessions()
     expect(rows.find((s) => s.id === id), 'the session row should be gone').toBeUndefined()
 
-    // …and its container should be gone with it. It is not: it comes up healthy
-    // after the delete, holds one of the host's session ports, and nothing ever
-    // reaps it — not the archive loop, which only knows about sessions, and not
-    // `clean`, until a human runs it. Every such orphan permanently costs the
-    // host one concurrent session, which is a far better explanation of how
-    // this stack kept filling up than anything previously written down.
-    //
-    // Leave this red until a delete cancels or joins its in-flight create.
-    //
-    // The `finally` is not tidiness — it is what stops this test being the very
-    // thing it documents. An orphan has no session row, so `cleanup()` cannot
-    // reach it and it would survive every run, and the leak check would then
-    // fail every later run for a container this test left. Removing it needs
-    // the reach past the API that `removeSandboxContainer` exists for.
+    // …and the container is gone with it. Asserted twice, fifteen seconds
+    // apart, for the same reason the leak detector takes two readings: a single
+    // look cannot tell "never created" from "not created yet", and the failure
+    // mode being guarded is precisely a container that turns up late.
     try {
       expect(
         await sandboxContainerExists(id),
         `container sandbox-${id} outlived the session it belonged to`,
       ).toBe(false)
+
+      await new Promise((r) => setTimeout(r, 15_000))
+      expect(
+        await sandboxContainerExists(id),
+        `container sandbox-${id} appeared after the session was deleted — a late orphan`,
+      ).toBe(false)
     } finally {
+      // Kept now that the test is green: if this ever regresses it fails AND
+      // leaves nothing behind. An orphan has no session row, so `cleanup()`
+      // cannot reach it, and without this the leak check would fail every later
+      // run for a container this test left.
       await removeSandboxContainer(id)
     }
   })
