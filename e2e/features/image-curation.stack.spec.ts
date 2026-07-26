@@ -283,22 +283,12 @@ test.describe('I4 §13 — a worker launches from the image it was pointed at', 
     expect(delivery.session_id).toBe('')
   })
 
-  // KNOWN GAP — left red deliberately, because the product is incomplete.
-  //
-  // §13.5's chain is `worker.image > project base_image > global`. I4 wired the
-  // first link: a worker's pointer is carried as a §13 pointer and resolved
-  // through the catalogue. The middle link is not wired — a project's
-  // `base_image` is passed through as a LITERAL docker reference, so setting it
-  // to a curated image name produces sessions that cannot start at all:
-  //
-  //   base_image = "agentkit-sandbox:dev"        → launches (a real docker ref)
-  //   base_image = "definitely-not-an-image:v9"  → no running instance
-  //   base_image = "toolbox:1"  (a burned image) → no running instance
-  //
-  // The last line is the bug: that is exactly what §5 and §13.3 tell an operator
-  // to write. The failure is silent at configuration time and total at run time
-  // — every session in the project stops launching, and nothing says why.
-  test("a project's base_image accepts a curated image name (KNOWN GAP: §13 pointers are not resolved there)", async () => {
+  // §13.5's middle link: `worker.image > project base_image > global`. Both ends
+  // were covered; this one was not, and it was broken — a project's base_image
+  // was passed through as a literal docker reference, so naming a curated image
+  // (exactly what §5 and §13.3 tell an operator to write) stopped every session
+  // in the project launching. Red until the pointer fix; a regression guard now.
+  test("a project's base_image accepts a curated image name", async () => {
     const version = await curateAndBurn(client, 'project-default')
     // Set AFTER curating: from here on, a "vanilla" session is not vanilla.
     await client.putSettings({ base_image: `${IMAGE}:${version}` })
@@ -318,6 +308,51 @@ test.describe('I4 §13 — a worker launches from the image it was pointed at', 
     ).toBe('alive')
     // …and it is the curated image, which the container itself confirms.
     expect(await marker(id)).toBe('project-default')
+  })
+
+  // KNOWN GAP — left red deliberately.
+  //
+  // The pointer fix built an excellent diagnostic:
+  //
+  //   project_settings.base_image = "x" (project "p") names no image in the §13
+  //   catalogue, so it was used as a literal registry reference and that
+  //   reference failed: …
+  //
+  // It names the setting, the value, the project, and WHICH of the two meanings
+  // the string was given — the question the old message refused to answer, and
+  // the reason three people misdiagnosed this class of failure in one day.
+  //
+  // It does not reach anyone. Measured on the running stack with a base_image
+  // that cannot launch:
+  //   * the caller receives, over SSE, only
+  //       session "<id>" has no running instance and no snapshot — session must
+  //       be re-created
+  //     which describes a lost session and invites re-creation, when the truth
+  //     is a setting naming an image that does not exist;
+  //   * agentd logs NOTHING for that session — the rich line appears on the
+  //     SUCCESS path ("resolved through the image catalogue to sha256:…") but
+  //     not on the failure it was written for.
+  //
+  // So the diagnostic is real and unreachable. This test asserts that an
+  // operator can find out what they got wrong.
+  test('a base_image that cannot launch tells the caller which setting and which interpretation (KNOWN GAP: the good message never reaches them)', async () => {
+    await client.putSettings({ base_image: 'definitely-not-an-image:v9' })
+
+    const id = await client.createSession({ job: 'plain' })
+    const outcome = await client
+      .sendMessage(id, 'hello')
+      .then((body) => String(body))
+      .catch((err) => String(err))
+
+    // The setting, its value, and the project — enough to fix it without
+    // reading the code.
+    expect(outcome).toContain('base_image')
+    expect(outcome).toContain('definitely-not-an-image:v9')
+    expect(outcome).toContain(client.project)
+    // …and which of the two meanings the string was given, since that is the
+    // question an operator actually has (§13.5: catalogue pointer or literal
+    // registry reference).
+    expect(outcome).toMatch(/literal registry reference|§13 catalogue/)
   })
 
   test('a worker with no pointer still launches on the project default', async () => {
