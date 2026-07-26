@@ -49,6 +49,32 @@
           ]
         }
       ]
+    },
+    {
+      "match": "G1-MARKER-INPROMPT",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_create",
+              "input": {
+                "name": "prompt-delivery-witness",
+                "description": "created only if the worker's own prompt reached the model",
+                "system_prompt": "I exist because a marker in my creator's system prompt reached the model."
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "My own prompt reached the model."
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -193,7 +193,28 @@ Both defects this suite found have been fixed and are now guarded — see below.
 test, list it here with its evidence so nobody mistakes it for flakiness.
 
 
-### Known gap — deliberately red
+### Known gaps — deliberately red
+
+`features/acceptance-loop.spec.ts` › *a worker's own prompt reaches the model, not just the session
+row*.
+
+**The composed prompt never reaches the model.** `dispatch.go` creates the session with `Worker` set
+and the full composed prompt written to `composed_prompt`, but never sets `Persona`; `SendMessage`
+then re-resolves the system prompt every turn through the provider, which — with an empty `Persona`
+— contributes no worker layer; and nothing sends the stored `composed_prompt` on the query. So the
+core preamble, the worker prompt and the memory briefings are composed deterministically, written to
+the database, and discarded. The model sees the project prompt and nothing else.
+
+This test is built so the row cannot fool it: the marker lives **only** in the worker's system
+prompt, the triggering event text carries none, and the scripted model calls a tool only if it
+actually saw the marker. The witness worker exists if and only if the prompt was delivered.
+
+**Read this before trusting any other prompt assertion here.** Every other one reads
+`composed_prompt` off the session row, which is what composition *stored* — including the §7.4
+memory-briefing test. Those were all passing throughout the period the model was receiving none of
+it. They are not wrong, but they are assertions about composition, not delivery, and their comments
+now say so.
+
 
 `features/acceptance-loop.spec.ts` › *asking for attention pauses the job*.
 

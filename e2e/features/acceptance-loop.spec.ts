@@ -184,7 +184,12 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
       timeoutMs: 120_000,
     })
 
-    // The job ran as the answerer, and the prompt it ran with is on the record.
+    // The job ran as the answerer, and ComposeJob's output is on the record.
+    //
+    // Note what this does NOT say: `composed_prompt` is the string composition
+    // produced and stored, not proof the model received it. Delivery to the
+    // model is asserted separately, by the prompt-delivery test below — a
+    // distinction that turned out to matter (see that test).
     const [delivery] = await client.listDeliveries({ event_id: event.id })
     const session = await client.getSession(delivery.session_id)
     expect(session.worker).toBe(ANSWERER)
@@ -269,11 +274,53 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     const next = await client.getSession(delivery.session_id)
     expect(next.worker).toBe(ANSWERER)
 
-    // …and that job's prompt carries the archivist's summary, under the heading
-    // its briefing selector asked for. This is §7.4 closing: a lesson learned in
-    // one job is in front of the next one, with no human in between.
+    // …and that job's composed prompt carries the archivist's summary, under
+    // the heading its briefing selector asked for — §7.4's fold, done.
+    //
+    // Scope, stated honestly: this proves the memory reached COMPOSITION. That
+    // the composed prompt then reaches the model is a separate claim, and for a
+    // while it was not true; the prompt-delivery test below is what pins it.
     expect(next.composed_prompt).toContain('--- Your memory briefing: kind=rolling-summary ---')
     expect(next.composed_prompt).toContain(summary)
+  })
+
+  // The test that would have caught the composed prompt never reaching the
+  // model — and the one that will keep it caught.
+  //
+  // Every other prompt assertion in this file reads `composed_prompt` off the
+  // session row, which is what composition *stored*. For a period all of those
+  // passed while the model was receiving none of it: dispatch created the
+  // session without a Persona, SendMessage re-resolved the prompt every turn
+  // and so contributed no worker layer, and nothing sent the stored
+  // composed_prompt on the query. Core preamble, worker prompt and briefings
+  // were composed, written to the database, and discarded.
+  //
+  // This asserts delivery from the outside and cannot be fooled by the row: the
+  // marker lives ONLY in the worker's system prompt, and the scripted model
+  // calls a tool only if it actually saw that marker. The witness worker exists
+  // if and only if the prompt reached the model.
+  test("a worker's own prompt reaches the model, not just the session row", async () => {
+    test.skip(
+      !process.env.STACK_MOCK_SCRIPT,
+      'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',
+    )
+    await client.putWorker('prompt-carrier', {
+      description: 'carries a marker in its prompt and nowhere else',
+      system_prompt: 'You are the prompt carrier. [G1-MARKER-INPROMPT] Do your job.',
+    })
+    await client.createSubscription({ event_type: 'carry.requested', worker: 'prompt-carrier' })
+
+    // The trigger text deliberately carries NO marker: if the job acts, it can
+    // only be because the prompt reached the model.
+    await client.postEvent({ type: 'carry.requested', text: 'ordinary work, nothing special in this text' })
+
+    const witnessed = await poll(
+      () => client.listWorkers(),
+      (rows) => rows.some((w) => w.name === 'prompt-delivery-witness'),
+      180_000,
+      "the worker's own system prompt to reach the model",
+    )
+    expect(witnessed.map((w) => w.name)).toContain('prompt-delivery-witness')
   })
 
   // ── The rewrite: a worker editing a worker ────────────────────────────────
