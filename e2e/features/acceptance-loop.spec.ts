@@ -757,7 +757,56 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
   // one line in emitJobOutcome". The flag still is not there, so from the
   // outside a job that asked for sign-off is indistinguishable from one that
   // finished its work.
-  test('asking for attention pauses the job (KNOWN GAP: the delivery still completes)', async () => {
+  // Pins what happens NEXT, which is nothing — on purpose, for now.
+  //
+  // The parking fix landed with a documented gap: nothing moves a delivery out
+  // of `awaiting_human`. A human can read the draft and reply in the ordinary
+  // chat UI, and the delivery stays parked. §9 deliberately declines to invent
+  // approval machinery, so "what un-parks it" is a product decision nobody has
+  // taken — which means the current behaviour is a *choice*, not a defect.
+  //
+  // This test exists so that choice is visible in the suite. If someone later
+  // builds resumption, this is the test that should fail and be rewritten —
+  // rather than the gap being rediscovered as a bug and patched in a hurry.
+  test('a human reply does not un-park the delivery — nothing resumes it yet (§9)', async () => {
+    test.skip(
+      !process.env.STACK_MOCK_SCRIPT,
+      'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',
+    )
+    await client.putWorker('tweet-author', {
+      description: 'writes the daily tweet',
+      system_prompt: 'You write BadCode tweets. Ask for sign-off before posting.',
+    })
+    await client.createSubscription({ event_type: 'content.requested', worker: 'tweet-author' })
+    const event = await client.postEvent({
+      type: 'content.requested',
+      text: '[G1-MARKER-SIGNOFF] today: ship something small',
+    })
+
+    const parked = await client.waitForDeliveries(
+      (rows) => rows.some((d) => d.status === 'awaiting_human'),
+      { event_id: event.id, timeoutMs: 180_000 },
+    )
+    const waiting = parked.find((d) => d.status === 'awaiting_human')!
+
+    // The human does exactly what the attention channel invites: opens the
+    // session and answers.
+    await client.sendMessage(waiting.session_id, 'post it')
+
+    // The conversation moves — the reply is a real turn on a live session…
+    const messages = await client.listMessages(waiting.session_id)
+    expect(messages.some((m) => m.role === 'user' && m.content.includes('post it'))).toBe(true)
+
+    // …and the delivery does not. It is still parked, still open-ended.
+    const after = (await client.listDeliveries({ event_id: event.id })).find((d) => d.id === waiting.id)!
+    expect(
+      after.status,
+      'documented gap: replying does not resume a parked job — see §9 on why no approval machinery exists',
+    ).toBe('awaiting_human')
+    expect(after.ended_at).toBe(0)
+  })
+
+  test('asking for attention parks the job instead of finishing it', async () => {
     test.skip(
       !process.env.STACK_MOCK_SCRIPT,
       'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',

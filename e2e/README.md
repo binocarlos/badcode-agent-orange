@@ -39,11 +39,18 @@ log recorded that" means anything.
 ends — deliberately per-run, because the script is agentd-wide and read once at boot. See
 [`mock-scripts/README.md`](mock-scripts/README.md).
 
-> **Runs longer than a few minutes are currently unreliable, and it is not the tests.** DinD stops
-> accepting new containers at ~100, and a full suite creates more sessions than the per-test cleanup
-> drains — so whatever runs last fails with "no running instance and no snapshot" or a 502. Run a
-> single spec while iterating, and `clean` between full runs. The real fix is engine-side (idle
-> session reaping); see the coverage notes below.
+> **The ceiling is a 100-PORT POOL, not a container limit.** agentd hands each session container a
+> port from `PortRangeStart: 30001 … PortRangeEnd: 30100` (`go/cmd/agentd/main.go`), so the 101st
+> live session fails with `dind provision: port pool exhausted` — surfaced to a caller as the far
+> less helpful "session has no running instance and no snapshot". Whatever runs last in a long suite
+> fails, and it looks exactly like a product bug.
+>
+> **A leftover schedule will exhaust it on its own.** A `* * * * *` schedule keeps firing for as long
+> as its row exists, whether or not the test that created it is still alive — 53 of them, left by
+> earlier runs of this suite, were enough to consume the whole pool every minute indefinitely.
+> `client.cleanup()` deletes a project's schedules and subscriptions before its sessions for exactly
+> this reason; a test that dies before `afterEach` still leaks one. If the stack starts failing to
+> provision, check `select count(*) from schedules where enabled` before blaming the code.
 
 Modes are `mock` (deterministic, offline — the CI signal), `api-key`, and `subscription`. Docker is
 required; the stack runs one session container per session inside DinD.
