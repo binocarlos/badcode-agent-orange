@@ -323,6 +323,62 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     expect(witnessed.map((w) => w.name)).toContain('prompt-delivery-witness')
   })
 
+  // `enabled` is the only way to retire a worker — E4 chose it deliberately
+  // instead of a `worker_delete` tool — and until now nothing asserted it does
+  // anything. The CRUD test elsewhere proves the flag round-trips and that the
+  // config log calls it `worker_disable`; neither would notice a disabled
+  // worker that kept answering its subscriptions.
+  //
+  // The two live rounds either side of the disabled one are what make the
+  // silence in the middle mean something: without them a stalled router would
+  // pass this test.
+  //
+  // What the disabled round actually produces is worth knowing: a delivery row
+  // with status `failed`, no session, `started_at` 0 — and no cascade, so
+  // nothing downstream reacts. This test asserts the substantive guarantee (no
+  // job runs, nothing follows). Whether `failed` is the right status for "the
+  // worker is retired" is a spec question, not something a test should decide:
+  // it reads in the job history exactly like a job that broke, and §8.4 already
+  // has `rate_limited` as precedent for "refused, not failed".
+  test('a disabled worker runs no job and starts no cascade, and re-enabling brings it back', async () => {
+    await client.putWorker(ANSWERER, { description: 'answers email', system_prompt: ANSWERER_PROMPT })
+    await client.createSubscription({ event_type: 'email.received', worker: ANSWERER })
+
+    // Round 1, enabled: it reacts, and a job really runs.
+    const first = await client.postEvent({ type: 'email.received', text: 'while enabled' })
+    const [ran] = await client.waitForDeliveries(
+      (rows) => rows.length > 0 && rows.every((d) => d.session_id !== ''),
+      { event_id: first.id, timeoutMs: 120_000 },
+    )
+    expect(ran.session_id).not.toBe('')
+
+    // Round 2, disabled: no job. A negative needs a window, not a poll; round 1
+    // shows what reacting costs.
+    await client.toggleWorkerEnabled(ANSWERER, false)
+    const second = await client.postEvent({ type: 'email.received', text: 'while disabled' })
+    await new Promise((resolve) => setTimeout(resolve, 25_000))
+    for (const d of await client.listDeliveries({ event_id: second.id })) {
+      expect(d.session_id, 'a disabled worker must not be given a job to run').toBe('')
+      expect(d.started_at).toBe(0)
+    }
+    // …and nothing downstream hears about it: retiring a worker must not fill
+    // the project with worker.failed events for every trigger that arrives.
+    expect((await client.listEvents({ type: 'worker.failed' })).length).toBe(0)
+    expect((await client.listEvents({ type: 'worker.finished' })).length).toBeLessThanOrEqual(1)
+    // The trigger itself is still on the record: disabling silences a reaction,
+    // it does not discard the event (§8.1's log is append-only).
+    expect((await client.listEvents({ type: 'email.received' })).map((e) => e.id)).toContain(second.id)
+
+    // Round 3, enabled again: it reacts once more, which proves the silence in
+    // round 2 was the flag and not a stalled router.
+    await client.toggleWorkerEnabled(ANSWERER, true)
+    const third = await client.postEvent({ type: 'email.received', text: 'after re-enabling' })
+    await client.waitForDeliveries(
+      (rows) => rows.length > 0 && rows.every((d) => d.session_id !== ''),
+      { event_id: third.id, timeoutMs: 120_000 },
+    )
+  })
+
   // ── The rewrite: a worker editing a worker ────────────────────────────────
 
   // §8.7's definition of done for the entire spec. Everything else in this file

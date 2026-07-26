@@ -283,6 +283,43 @@ test.describe('I4 §13 — a worker launches from the image it was pointed at', 
     expect(delivery.session_id).toBe('')
   })
 
+  // KNOWN GAP — left red deliberately, because the product is incomplete.
+  //
+  // §13.5's chain is `worker.image > project base_image > global`. I4 wired the
+  // first link: a worker's pointer is carried as a §13 pointer and resolved
+  // through the catalogue. The middle link is not wired — a project's
+  // `base_image` is passed through as a LITERAL docker reference, so setting it
+  // to a curated image name produces sessions that cannot start at all:
+  //
+  //   base_image = "agentkit-sandbox:dev"        → launches (a real docker ref)
+  //   base_image = "definitely-not-an-image:v9"  → no running instance
+  //   base_image = "toolbox:1"  (a burned image) → no running instance
+  //
+  // The last line is the bug: that is exactly what §5 and §13.3 tell an operator
+  // to write. The failure is silent at configuration time and total at run time
+  // — every session in the project stops launching, and nothing says why.
+  test("a project's base_image accepts a curated image name (KNOWN GAP: §13 pointers are not resolved there)", async () => {
+    const version = await curateAndBurn(client, 'project-default')
+    // Set AFTER curating: from here on, a "vanilla" session is not vanilla.
+    await client.putSettings({ base_image: `${IMAGE}:${version}` })
+
+    const id = await client.createSession({ job: 'plain' })
+    await client.sendMessage(id, 'hello').catch(() => {
+      /* the launch failure surfaces as a stream error; assert on the container */
+    })
+
+    // Assert the container EXISTS before reading the marker: `marker()` returns
+    // '' both for a vanilla image and for no container at all, so reading it
+    // alone would report this bug as "launched on the wrong image" rather than
+    // "never launched".
+    expect(
+      await inContainer(id, ['true']).then(() => inContainer(id, ['sh', '-c', 'echo alive'])),
+      'the session must have a running container — a curated base_image must not stop sessions launching',
+    ).toBe('alive')
+    // …and it is the curated image, which the container itself confirms.
+    expect(await marker(id)).toBe('project-default')
+  })
+
   test('a worker with no pointer still launches on the project default', async () => {
     // The other half of §13.5's chain: `worker.image > project base_image >
     // global`. Binding the pointer must not disturb the workers that have none.
