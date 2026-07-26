@@ -16,10 +16,14 @@ import { describe, measure, PORT_POOL_SIZE, type Occupancy } from './helpers/occ
 /**
  * Below this many free ports, a full suite cannot finish; refuse to start.
  *
- * Deliberately a guess, not a measurement: 25 of 100 is comfortably above what
- * a full run peaks at in normal operation, and the cost of being wrong is a
- * false refusal — loud, and a one-line fix. Deriving it from a single observed
- * peak would give it a false air of precision.
+ * Deliberately a guess, not a measurement: the cost of being wrong is a false
+ * refusal — loud, and a one-line fix — whereas a number derived from one
+ * observed peak would invite people to trust it as derived.
+ *
+ * Data, not the source of the number: sampling every 10s through a full
+ * 11.5-minute run on 2026-07-26 saw a peak of **7** concurrent sessions. So 25
+ * is roughly three times the observed high-water mark, which is the kind of
+ * margin a guess should have.
  */
 const MINIMUM_FREE_PORTS = 25
 

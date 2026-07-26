@@ -162,21 +162,30 @@ test.describe('session MCP servers — project defaults', () => {
 
   test("a project's mcp_config reaches its sessions", async ({ request }) => {
     const client = await newProjectClient(request, 'e2e-mcp-proj')
-    await client.putSettings({ mcp_config: PROBE_SERVER })
-    expect(await client.getSettings()).toMatchObject({ mcp_config: { probe: { url: MCP_URL } } })
+    // This describe owns one test and builds its own client, so its cleanup is
+    // a finally rather than an afterEach. Without it the session survives the
+    // run holding one of agentd's 100 ports — which is exactly the leak the
+    // teardown check caught, one container per full run, and the reason a
+    // safety net has to be tested against the suite that wrote it.
+    try {
+      await client.putSettings({ mcp_config: PROBE_SERVER })
+      expect(await client.getSettings()).toMatchObject({ mcp_config: { probe: { url: MCP_URL } } })
 
-    const session = await client.createSession({ job: 'mcp-project' })
+      const session = await client.createSession({ job: 'mcp-project' })
 
-    // The row is the first place the project's config should appear: the runner
-    // resolves project ∪ worker defaults and persists them on create.
-    expect(
-      await storedSessionMCPServers(session),
-      "the project's mcp_config should have been resolved onto the new session's row",
-    ).toMatchObject({ probe: { url: MCP_URL } })
+      // The row is the first place the project's config should appear: the runner
+      // resolves project ∪ worker defaults and persists them on create.
+      expect(
+        await storedSessionMCPServers(session),
+        "the project's mcp_config should have been resolved onto the new session's row",
+      ).toMatchObject({ probe: { url: MCP_URL } })
 
-    // …and then reach the container.
-    await client.sendMessage(session, 'hello')
-    const infos = await client.waitForSessionInfo(session, (i) => i.length > 0)
-    expect(serversIn(infos).map((s) => s.name)).toContain('probe')
+      // …and then reach the container.
+      await client.sendMessage(session, 'hello')
+      const infos = await client.waitForSessionInfo(session, (i) => i.length > 0)
+      expect(serversIn(infos).map((s) => s.name)).toContain('probe')
+    } finally {
+      await client.cleanup()
+    }
   })
 })
