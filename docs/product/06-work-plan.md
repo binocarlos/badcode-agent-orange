@@ -355,7 +355,10 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       envelope and pauses cleanly. `[walkthrough]` Assert too that the prompt rewrite left a
       `config_events` record with its rationale and produced a `config.changed` event (§15).
       (`e2e/tests/`) — depends everything
-      **Validation:** `cd e2e && npx playwright test --config playwright.stack.config.ts features/acceptance-loop.spec.ts`
+      **Validation:** `./e2e/run-stack-e2e.sh up mock && ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json`
+      (corrected 2026-07-26: the `--mock-script` flag is what lets the **model** choose the tool
+      calls, which is what makes §8.8's half of this item a real assertion rather than a scripted
+      one. Without the flag the §8.8 pair skips and every other spec runs unchanged.)
       (corrected 2026-07-25: the product-layer e2e runs against the compose stack under
       `e2e/features/`, not the legacy `e2e/tests/` Vite+mock-server rig — see the Discovered
       Issues Log)
@@ -481,6 +484,24 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(G1, 2026-07-26)` **The §8.8 half closes: the model itself chooses the tool call.** A due
+  schedule fires, the manager job calls `worker_create`, and a worker its own prompt described —
+  created by no human and no bootstrap code path — exists, logged with the manager as actor and its
+  job as the acting session. A content worker calls `request_human_attention` and gets back a
+  permalink to its own conversation. Offline and deterministic. Validation command:
+  `./e2e/run-stack-e2e.sh up mock && ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json`
+  — **without** the flag the §8.8 pair skips and every other spec runs unchanged, so a scriptless
+  run is byte-identical to before.
+- `(G1, 2026-07-26)` **Two earlier e2e findings were retracted by their own author, correctly.**
+  "A scripted `worker_create` reaches the model and creates nothing" was a **plain chat session
+  having no core MCP server** — routed jobs get the core tools, a chat does not, and the probe
+  generalised from the wrong session type. The rest was the container ceiling; on a clean stack the
+  reconcile passes in 14s. Worth remembering as a pattern: an early probe on the wrong surface
+  produced a confident, wrong bug report, and only re-testing on the real surface caught it.
+- `(G1, 2026-07-26)` **The composed-prompt finding survived that retraction and is confirmed
+  independently** — see the fix-prompt entries. Two lines of evidence agree: an empirical
+  three-way marker test (system prompt never matches, event text always does, direct POST with
+  `system` matches) and a code trace of `SendMessage` → `sessionContext` → provider.
 - `(I4, 2026-07-26)` **C2's promise that the store could satisfy the resolver seam directly was not
   true.** `ImageResolver.Resolve` returns `(string, error)`; `ResolveCustomImage` returns
   `(*CustomImage, error)` and stops at the catalogue row — binding is resolve → decode the
