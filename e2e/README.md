@@ -271,6 +271,26 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
 
+## The run refuses to leak
+
+`stack-setup.ts` and `stack-teardown.ts` wrap every run:
+
+- **Before**: prints what the host is carrying (`N/100 session ports in use, M enabled schedules`),
+  warns unmissably if e2e schedules are still firing, and **refuses to start** with fewer than 25
+  free ports — because a run started on a full host fails with "session has no running instance and
+  no snapshot", which reads exactly like a product bug and has cost this project several debugging
+  rounds.
+- **After**: compares against that baseline and **fails the run** if it leaked — sessions it did not
+  release, or e2e schedules still enabled. A run that leaks does not get to report success; the leak
+  *is* the failure, even when every assertion passed. Schedules are deleted as well as reported (so
+  the next person is not poisoned); containers are only reported, since on a shared stack one may
+  belong to somebody else's run.
+
+The reason this lives outside the tests: `afterEach` cannot clean up after a test that died before
+`afterEach`, and those are precisely the runs that leak. For the same reason, a test that creates a
+`* * * * *` schedule releases it in a **`finally`** — see the §8.8 reconcile test. One abandoned
+schedule provisions a session every minute for ever and will drain the pool on its own.
+
 ## Writing an assertion that is worth having
 
 One bug hid behind green tests for a day: the composed prompt was written to the session row and

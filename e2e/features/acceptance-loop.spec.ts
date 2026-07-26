@@ -664,13 +664,28 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
     // Every minute, so the scheduler's next sweep picks it up. The daily cron of
     // the test above is the realistic one; this is the same mechanism on a
     // timescale a test can wait for.
-    await client.createSchedule({
+    const schedule = await client.createSchedule({
       worker: MANAGER,
       cron: '* * * * *',
       input: RECONCILE,
       rationale: 'reconcile the workforce (§8.8)',
     })
 
+    // A '* * * * *' schedule is a machine that runs for ever: it provisions a
+    // session every minute for as long as its row exists, whatever becomes of
+    // this test. Deleting it in a `finally` rather than an `afterEach` is the
+    // difference that matters, because the runs that leak are the ones that die
+    // before afterEach — 53 rows left this way once drained the whole port pool
+    // and poisoned an unrelated run for an hour.
+    try {
+      await runReconcileAssertions()
+    } finally {
+      await client.raw('DELETE', `/agent/schedules/${encodeURIComponent(schedule.id)}`).catch(() => {})
+    }
+  })
+
+  /** The body of the reconcile test, so its schedule can be released in a finally. */
+  async function runReconcileAssertions(): Promise<void> {
     // The schedule fires, the router dispatches a manager job, and the manager
     // calls worker_create — nothing here creates the worker but the worker.
     const hired = await poll(
@@ -695,7 +710,7 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
     // …and the job that did it was started by the schedule, not by a human.
     const session = await client.getSession(byManager.actor_session)
     expect(session.worker).toBe(MANAGER)
-  })
+  }
 
   // Staged autonomy (§8.8 step 3): a content worker drafts, then asks a human
   // before acting. The pause is a real state the delivery sits in, not a

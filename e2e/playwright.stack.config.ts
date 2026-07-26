@@ -12,6 +12,13 @@ const BASE_URL = process.env.STACK_BASE_URL || 'http://localhost:8080'
 
 export default defineConfig({
   testDir: '.',
+  // A run that leaks stack state fails, even if every assertion passed: setup
+  // refuses to start on a host with no room left, teardown reports (and for
+  // schedules, clears) whatever this run left behind. Both exist because
+  // afterEach cannot help with the runs that die before afterEach — which are
+  // exactly the runs that leak. See helpers/occupancy.ts.
+  globalSetup: './stack-setup.ts',
+  globalTeardown: './stack-teardown.ts',
   testMatch: ['stack.spec.ts', 'features/*.spec.ts'],
   timeout: 240_000,
   expect: { timeout: 30_000 },
