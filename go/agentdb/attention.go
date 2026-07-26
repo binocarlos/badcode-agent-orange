@@ -232,6 +232,31 @@ func (s *Store) CountUserMessagesSince(ctx context.Context, sessionID string, si
 	return n, nil
 }
 
+// SessionAwaitsHuman reports whether a session still has an open attention
+// request — i.e. whether a human owes it an answer.
+//
+// This is DELIBERATELY not `agent_sessions.attention_requested`. That column is
+// the per-TURN carrier §8.2 copies onto the `worker.finished` envelope and the
+// emitter clears the moment it has copied it, so by the time a job settles it
+// says nothing about whether anyone replied. The open rows in
+// `attention_requests` are the durable fact, and they are what the dispatch gate
+// parks a delivery at `awaiting_human` on (§8.4).
+//
+// No approval state: "open" means created and neither answered nor timed out,
+// and a human simply typing the next message is what closes it (§9).
+func (s *Store) SessionAwaitsHuman(ctx context.Context, project, sessionID string) (bool, error) {
+	if project == "" || sessionID == "" {
+		return false, fmt.Errorf("project and session id are required")
+	}
+	var n int64
+	if err := s.gdb.WithContext(ctx).Model(&AttentionRequest{}).
+		Where("project = ? AND session_id = ? AND answered_at = 0 AND timed_out_at = 0", project, sessionID).
+		Count(&n).Error; err != nil {
+		return false, fmt.Errorf("failed to count open attention requests: %w", err)
+	}
+	return n > 0, nil
+}
+
 // SetSessionAttentionRequested writes the session stamp directly. The tool path
 // does not need it (CreateAttentionRequest stamps transactionally) — it exists
 // for E2's emitter, which clears the per-turn flag after copying it onto the

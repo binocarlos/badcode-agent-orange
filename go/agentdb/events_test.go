@@ -618,3 +618,51 @@ func TestDeliveriesProjectIsolation(t *testing.T) {
 		t.Fatalf("an unscoped delivery list must be refused")
 	}
 }
+
+// TestAwaitingHumanHoldsNoCapacitySlot is the deadlock guard for §8.4's pause.
+// A delivery parked at `awaiting_human` must not count against
+// `max_concurrent_jobs` or `max_instances` — otherwise a worker with
+// `max_instances: 1` whose job is waiting on a human who never replies would
+// never run again, and parking the job would be an outage rather than a fix.
+// "Active" means `running`, and only `running`.
+func TestAwaitingHumanHoldsNoCapacitySlot(t *testing.T) {
+	s := newEventStore(t)
+	ctx := context.Background()
+	ev := seedEvent(t, s, "acme", "tweet.due", "time for a tweet")
+	sub := seedSubscription(t, s, "acme", "tweet.due", "tweet-author")
+	d, _, err := s.EnsureDelivery(ctx, &EventDelivery{
+		Project: "acme", EventID: ev.ID, SubscriptionID: sub.ID, Worker: "tweet-author",
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if _, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID,
+		DeliveryStatusUpdate{Status: DeliveryRunning, SessionID: "sess-1"}); err != nil {
+		t.Fatalf("running: %v", err)
+	}
+	// While it runs it holds a slot — the control for the assertions below.
+	if n, err := s.CountActiveDeliveriesForWorker(ctx, "acme", "tweet-author"); err != nil || n != 1 {
+		t.Fatalf("a running delivery must hold a slot: %d err=%v", n, err)
+	}
+
+	parked, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID,
+		DeliveryStatusUpdate{Status: DeliveryAwaitingHuman})
+	if err != nil {
+		t.Fatalf("park: %v", err)
+	}
+	if parked.EndedAt != 0 {
+		t.Fatalf("a paused delivery is not an ended one: %+v", parked)
+	}
+	if n, err := s.CountActiveDeliveries(ctx, "acme"); err != nil || n != 0 {
+		t.Fatalf("a parked delivery must not hold a max_concurrent_jobs slot: %d err=%v", n, err)
+	}
+	if n, err := s.CountActiveDeliveriesForWorker(ctx, "acme", "tweet-author"); err != nil || n != 0 {
+		t.Fatalf("a parked delivery must not hold a max_instances slot: %d err=%v", n, err)
+	}
+	// Nor is it queued work: it has already run, and re-dispatching it would
+	// start a second session for the same event.
+	pending, err := s.ListPendingDeliveries(ctx, "acme", "", 0)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("a parked delivery must not re-enter the pending queue: %+v err=%v", pending, err)
+	}
+}

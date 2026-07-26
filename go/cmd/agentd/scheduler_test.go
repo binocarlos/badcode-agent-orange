@@ -28,6 +28,9 @@ type fakeDispatchStore struct {
 	// deliveries keeps insertion order so FIFO assertions are meaningful.
 	deliveries []*agentdb.EventDelivery
 	firings    map[string]bool // schedule_id + "@" + occurrence
+	// awaitingHuman stands in for the open rows of `attention_requests`, keyed by
+	// session id. See dispatch_attention_test.go.
+	awaitingHuman map[string]bool
 
 	disabled    map[string]string // schedule id → rationale
 	createdRows int
@@ -42,6 +45,8 @@ func newFakeDispatchStore() *fakeDispatchStore {
 		events:    map[string]*agentdb.ProjectEvent{},
 		firings:   map[string]bool{},
 		disabled:  map[string]string{},
+
+		awaitingHuman: map[string]bool{},
 	}
 }
 

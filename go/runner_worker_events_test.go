@@ -208,7 +208,7 @@ func TestWorkerFinishedEvent(t *testing.T) {
 				t.Errorf("interactive = %v, want %v", env.Interactive, tt.wantInteractive)
 			}
 			if env.AttentionRequested {
-				t.Error("attention_requested must be false until H2 sets it")
+				t.Error("attention_requested must be false for a turn that asked for nothing")
 			}
 			if env.Reason != "" {
 				t.Errorf("reason = %q, want empty (only worker.failed carries one)", env.Reason)

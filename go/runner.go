@@ -1165,9 +1165,22 @@ func deltaText(delta any) string {
 // nil-dependency shape: a host that has not wired the event spine simply emits
 // no internal events, and every pre-existing caller stays on the old path.
 type WorkerEventStore interface {
+	WorkerJobStore
+	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
+	// SetSessionAttentionRequested clears (or sets) the per-turn §9 stamp. The
+	// emitter clears it once it has copied it onto the envelope — see
+	// emitJobOutcome for why "that turn" has to mean that turn.
+	SetSessionAttentionRequested(ctx context.Context, sessionID string, requested bool) error
+}
+
+// WorkerJobStore is the READ half — everything ResolveWorkerJob needs and
+// nothing more. It is split out because two callers only ever resolve an
+// envelope and never append or stamp anything (agentd's config.changed emitter
+// and its lease reaper), and a fat interface would have made them declare
+// methods they do not use.
+type WorkerJobStore interface {
 	GetSession(ctx context.Context, id string) (*agentdb.Session, error)
 	SessionTriggerEvent(ctx context.Context, sessionID string) (*agentdb.ProjectEvent, error)
-	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
 }
 
 // WorkerJob is the §8.1 envelope identity of a running worker job — everything
@@ -1187,6 +1200,10 @@ type WorkerJob struct {
 	// Interactive marks a job a human started by chatting, so subscriptions that
 	// should not react to chats can filter it out.
 	Interactive bool
+	// AttentionRequested is the §9 stamp read off the session row: this turn
+	// called `request_human_attention`. §8.2 copies it onto `worker.finished` so
+	// reviewers can skip work that is deliberately half-done.
+	AttentionRequested bool
 }
 
 // ResolveWorkerJob loads the envelope facts for a session's job.
@@ -1201,7 +1218,7 @@ type WorkerJob struct {
 //
 // Exported because E3 (the router) reuses it for the lease reaper, which must
 // stamp the same envelope for a session it never streamed.
-func ResolveWorkerJob(ctx context.Context, store WorkerEventStore, sessionID string) (WorkerJob, bool, error) {
+func ResolveWorkerJob(ctx context.Context, store WorkerJobStore, sessionID string) (WorkerJob, bool, error) {
 	if store == nil {
 		return WorkerJob{}, false, fmt.Errorf("resolve worker job: store is required")
 	}
@@ -1216,10 +1233,11 @@ func ResolveWorkerJob(ctx context.Context, store WorkerEventStore, sessionID str
 		return WorkerJob{}, false, nil
 	}
 	job := WorkerJob{
-		Project:     sess.Customer,
-		Worker:      sess.Worker,
-		SessionID:   sessionID,
-		Interactive: true,
+		Project:            sess.Customer,
+		Worker:             sess.Worker,
+		SessionID:          sessionID,
+		Interactive:        true,
+		AttentionRequested: sess.AttentionRequested,
 	}
 	trigger, err := store.SessionTriggerEvent(ctx, sessionID)
 	if err != nil {
@@ -1366,6 +1384,29 @@ func (r *runnerImpl) emitJobOutcome(ctx context.Context, sessionID, queryID stri
 		return // vanilla session — §8.2: fires only for worker jobs
 	}
 
+	// §8.2's `attention_requested` describes THAT TURN, so the stamp
+	// `request_human_attention` left on the session row is consumed here and
+	// cleared: leaving it set would make every later turn of the same session
+	// look like it too had asked for sign-off, which is its own bug (a reviewer
+	// subscription filtering on the flag would fire for ever).
+	//
+	// Clearing loses nothing. What a human is actually owed survives in the two
+	// places that are supposed to hold it: the open `attention_requests` row
+	// (which the sweep resolves, §8.2) and the delivery parked at
+	// `awaiting_human` (§8.4).
+	//
+	// It happens BEFORE the failed/finished split on purpose. `worker.failed`
+	// carries no attention_requested field, so the alternative — keep the stamp
+	// after a failed turn so the next one reports it — would emit a
+	// `worker.finished` claiming a turn asked for a human when it did not.
+	// A cancelled turn returns above and keeps its stamp: nothing settled, and
+	// the human who pressed stop is by definition already in the thread.
+	if job.AttentionRequested {
+		if err := r.deps.WorkerEvents.SetSessionAttentionRequested(ctx, sessionID, false); err != nil {
+			log.Printf("agentkit: clear attention_requested %s: %v", sessionID, err)
+		}
+	}
+
 	if failed {
 		if errText == "" {
 			if runErr != nil {
@@ -1379,9 +1420,7 @@ func (r *runnerImpl) emitJobOutcome(ctx context.Context, sessionID, queryID stri
 		}
 		return
 	}
-	// H2 owns populating attention_requested; until it lands no job has called
-	// request_human_attention, so false is the truth rather than a placeholder.
-	if _, err := EmitWorkerFinished(ctx, r.deps.WorkerEvents, job, r.renderTranscript(ctx, sessionID), false); err != nil {
+	if _, err := EmitWorkerFinished(ctx, r.deps.WorkerEvents, job, r.renderTranscript(ctx, sessionID), job.AttentionRequested); err != nil {
 		log.Printf("agentkit: emit worker.finished %s: %v", sessionID, err)
 	}
 }

@@ -64,6 +64,20 @@ func (s *MemStore) UpdateSession(ctx context.Context, sess *agentdb.Session) (*a
 	return &cp, nil
 }
 
+// SetSessionAttentionRequested writes the §9 per-turn stamp on a session row —
+// the one-column update agentkit's §8.2 emitter uses to clear the flag once it
+// has copied it onto a `worker.finished` envelope.
+func (s *MemStore) SetSessionAttentionRequested(ctx context.Context, sessionID string, requested bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("memstore: session %q not found", sessionID)
+	}
+	sess.AttentionRequested = requested
+	return nil
+}
+
 func (s *MemStore) PersistQueryEventsFlat(ctx context.Context, sessionID, queryID string, evs []events.Envelope, searchText string) error {
 	s.mu.Lock()
 	cp := make([]events.Envelope, len(evs))

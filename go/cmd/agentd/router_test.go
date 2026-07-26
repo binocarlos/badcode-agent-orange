@@ -307,6 +307,9 @@ type fakeJobStarter struct {
 	// hold leaves the job running (no OnSessionEnded), so capacity tests have
 	// something actually occupying a slot.
 	hold bool
+	// endErr is what the settled turn reports — a turn that ran and then blew up,
+	// as opposed to `err`, which is a job that never started.
+	endErr error
 	// duringTurn runs while the job is live — where a test emits the events a
 	// real worker would emit.
 	duringTurn func(sessionID string)
@@ -343,7 +346,7 @@ func (s *fakeJobStarter) StartJob(ctx context.Context, in startJobInput) (string
 	}
 	s.store.sessions[id].LeaseExpiresAt = agentdb.SessionLeaseUnset
 	if in.OnSessionEnded != nil {
-		in.OnSessionEnded(ctx, id, nil)
+		in.OnSessionEnded(ctx, id, s.endErr)
 	}
 	return id, nil
 }
