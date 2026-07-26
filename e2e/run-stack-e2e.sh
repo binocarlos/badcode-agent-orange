@@ -204,6 +204,22 @@ cmd_clean() {
   "${COMPOSE[@]}" exec -T dind sh -c \
     'docker ps -aq --filter name=sandbox- | xargs -r docker rm -f' || true
 
+  # Wait for the removals to actually finish before restarting anything.
+  # `docker rm -f` returns before the daemon is done, and agentd FATALS on boot
+  # if it tries to reclaim a container that is mid-removal:
+  #   recover (worker w1): dind recover: reclaim stopped container <id>:
+  #   Error response from daemon: removal of container <id> is already in progress
+  # Restarting straight after the rm is therefore a reliable way to kill agentd.
+  local waited=0
+  while [ "$waited" -lt 60 ]; do
+    local left
+    left="$("${COMPOSE[@]}" exec -T dind sh -c \
+      'docker ps -aq --filter name=sandbox- | wc -l' 2>/dev/null | tr -d '[:space:]')"
+    [ "${left:-0}" = "0" ] && break
+    sleep 2
+    waited=$((waited + 2))
+  done
+
   # Only worth restarting something that is actually up.
   if "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx agentd; then
     echo "── stack e2e: restarting agentd (its placement state now names dead containers) ──"
