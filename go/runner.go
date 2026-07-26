@@ -637,6 +637,7 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 	// session record. This keeps the resolved system prompt's Session Context block
 	// accurate for the dataset the session is actually bound to.
 	scope := extension.ContextScope{Customer: msg.Customer, Job: msg.Job, Persona: msg.Persona}
+	pinned := ""
 	if r.deps.Store != nil {
 		if sess, gerr := r.deps.Store.GetSession(ctx, ref.SessionID); gerr == nil {
 			if scope.Customer == "" {
@@ -649,9 +650,10 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 				scope.Persona = sess.Persona
 			}
 			scope.UserEmail = sess.UserEmail
+			pinned = sess.ComposedPrompt
 		}
 	}
-	sys, err := r.sessionContext(ctx, scope)
+	sys, err := r.turnSystemPrompt(ctx, pinned, scope)
 	if err != nil {
 		return err
 	}
@@ -1466,6 +1468,38 @@ func (r *runnerImpl) issueToken(ctx context.Context, scope extension.ContextScop
 		return "", nil
 	}
 	return r.deps.Claims.Issue(ctx, scope, sessionID)
+}
+
+// turnSystemPrompt decides which system prompt a turn runs with. There is
+// exactly one rule, and exactly one authority for each of its two cases:
+//
+//  1. The session row carries a `composed_prompt` (it was created from a
+//     composed job, docs/product/02-workers.md §6.2). That string IS the
+//     session's system prompt, verbatim, for the whole of its life. It was
+//     composed once and deterministically at dispatch — core preamble, project
+//     prompt, worker prompt, memory briefing — and written to the row precisely
+//     so "every transcript is tied to the exact prompt that produced it". A
+//     transcript whose prompt was re-derived per turn ties to nothing.
+//
+//  2. The row carries none (a plain interactive session). The host's
+//     SessionContextProvider resolves the prompt per turn, exactly as before.
+//     That is the right behaviour here: a chat session's prompt legitimately
+//     follows the live project/worker configuration.
+//
+// The composed prompt is never *combined* with the provider's resolution. It
+// already contains the project layer (ComposeJob step 2 prepends it), so adding
+// the provider's would duplicate the project prompt and, worse, would let a
+// mid-job `worker_prompt_write` leak into a running session — the one thing
+// §6.2 says composition-at-start exists to prevent. One prompt, one writer.
+//
+// Reading it off the row rather than caching it in memory is what makes resume
+// safe: a restored, re-provisioned or agentd-restarted session re-reads the same
+// durable string, so it cannot silently change prompt mid-life.
+func (r *runnerImpl) turnSystemPrompt(ctx context.Context, composed string, scope extension.ContextScope) (string, error) {
+	if composed != "" {
+		return composed, nil
+	}
+	return r.sessionContext(ctx, scope)
 }
 
 func (r *runnerImpl) sessionContext(ctx context.Context, scope extension.ContextScope) (string, error) {

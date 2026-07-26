@@ -111,7 +111,13 @@ type Session struct {
 	Worker string `json:"worker,omitempty" gorm:"type:text;default:''"`
 	// ComposedPrompt is the full system prompt ComposeJob produced for this
 	// session, written once at composition time so every transcript is tied to
-	// the exact prompt that produced it (§6.2). Provenance, not a version store.
+	// the exact prompt that produced it (§6.2). Not a version store.
+	//
+	// It is also LIVE, not merely provenance: when set it is the system prompt
+	// every turn of this session runs with (runner.turnSystemPrompt), re-read
+	// off this row on each turn so a restore or an agentd restart cannot change
+	// a running job's prompt mid-life. Empty ⇒ the host's SessionContextProvider
+	// resolves the prompt per turn, which is the plain interactive-chat path.
 	ComposedPrompt string `json:"composed_prompt,omitempty" gorm:"type:text;default:''"`
 	// LeaseExpiresAt is the unix-seconds deadline of the router's session lease;
 	// the reaper fails jobs whose lease lapsed (04-events-and-schedules §8.4).

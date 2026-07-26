@@ -253,12 +253,21 @@ type SessionRef struct {
 
 // CreateSessionRequest carries the config to provision a session instance.
 type CreateSessionRequest struct {
-	SessionID    string
-	Persona      string
-	Customer     string
-	Job          string
-	UserEmail    string
-	Model        string
+	SessionID string
+	Persona   string
+	Customer  string
+	Job       string
+	UserEmail string
+	Model     string
+	// SystemPrompt is the composed system prompt of a worker job. It is
+	// load-bearing ONLY together with Worker (below): the pair is what makes the
+	// runner persist `composed_prompt` on the session row, and that column is
+	// what every turn of the session is then run with (runner.turnSystemPrompt).
+	//
+	// Without Worker it is currently ignored — a session with no composed prompt
+	// resolves its prompt per turn from Deps.SessionContext instead. Do not read
+	// this field as "a system prompt for any session"; wiring that up would need
+	// the persistence rule in persistComposition widened to match.
 	SystemPrompt string
 	MaxTurns     int
 	// Image is an explicit base-image override (takes highest precedence; E2E use).
