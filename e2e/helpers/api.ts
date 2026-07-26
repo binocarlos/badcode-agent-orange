@@ -174,6 +174,18 @@ export interface SessionRow {
    * how a test sees what a job actually ran with, rather than what it assumes.
    */
   composed_prompt?: string
+  /**
+   * Why the background create failed, stored on the row so a later reader can
+   * still find out (`GET /agent/session/{id}`).
+   *
+   * Empty for a CAPACITY failure, deliberately: a full host is true for one
+   * instant and stops being true the moment somebody deletes a session, so
+   * storing it would plant a reason guaranteed to go stale. Capacity is asked
+   * of the environment live instead, and a stored configuration reason is never
+   * overwritten by one — a session with a bad `base_image` on a saturated host
+   * reports saturation now and `base_image` once a port frees.
+   */
+  create_error?: string
 }
 
 /** One record in the config log (§15.2), as `GET /agent/config-events` returns it. */

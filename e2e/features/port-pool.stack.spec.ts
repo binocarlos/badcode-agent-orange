@@ -110,6 +110,17 @@ test.describe('a full host says it is full (§ port pool)', () => {
     // session on a host where every create fails the same way.
     expect(failure).not.toContain('session must be re-created')
 
+    // Capacity is asked of the host live and never written to the row — because
+    // "the host is full" is true for one instant and stops being true the
+    // moment somebody deletes a session, so storing it would plant a reason
+    // guaranteed to go stale. An empty `create_error` here is that decision,
+    // and it is the half a reader would otherwise never see: every other
+    // failure DOES store its reason, so a future refactor that "helpfully"
+    // stored this one too would look like an improvement.
+    const failed = (await client.listAllSessions()).find((s) => s.status !== 'running')
+    expect(failed?.id, 'the session that could not start should still be listed').toBeTruthy()
+    expect((await client.getSession(failed!.id!)).create_error ?? '').toBe('')
+
     // Releasing one port makes the host usable again — which is what "capacity
     // limit" claims and what "lost session" would have denied. Without this the
     // test would prove only that a full pool produces nice prose.

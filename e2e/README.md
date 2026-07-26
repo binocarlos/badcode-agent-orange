@@ -69,6 +69,24 @@ thing on 2026-07-26, twice confidently, and each time it cost hours. Read the fa
 The rule of thumb: **connection-shaped errors mean re-run, assertion-shaped errors mean
 investigate.** A test that fails on an `expect` has told you something true about the product.
 
+### Why a failing session can tell you two different things
+
+A session that would not start answers in a fixed order, and knowing it saves a wrong conclusion:
+
+1. **live capacity first, and it wins** — the host is asked whether it could provision anything at
+   all right now, and a full host says so;
+2. **the stored reason second** — `create_error` on the session row, written when the background
+   create failed (`GET /agent/session/{id}` returns it beside `status`, which is a cheaper
+   assertion than driving a message);
+3. **"must be re-created" only when there is nothing else to say.**
+
+A capacity failure is deliberately *never stored*: it is true for one instant and stops being true
+the moment somebody deletes a session, so storing it would plant a reason guaranteed to go stale.
+The practical consequence is worth holding onto — **a session with a broken `base_image` on a
+saturated host reports saturation, and reports `base_image` the moment a port frees.** Both answers
+are correct and neither replaces the other, so a failure that changes its story between two runs is
+not flaky; it is the host recovering while the configuration stays wrong.
+
 ### The port pool is 100, and the error now says so
 
 agentd hands each session container a port from `PortRangeStart: 30001 … PortRangeEnd: 30100`
@@ -116,6 +134,14 @@ job**, recording the decision and its reason in the config log — so a schedule
 provision stops hammering its neighbours within minutes instead of indefinitely
 (`features/schedule-resilience.stack.spec.ts` proves this end to end). And the suite fails itself
 when it leaks (see "The run refuses to leak").
+
+**It has a residual, and it is the mirror image of the bug it fixes.** The rule cannot tell an
+abandoned schedule from a healthy one on an unhealthy host, because both look identical from where
+it stands: five firings that started nothing. So a genuine host-wide crunch lasting five minutes
+disables *every* firing schedule in the stack, not only the abandoned ones. That is a deliberate
+trade — the disable is logged with its reason and re-enabling is one edit, whereas the alternative
+was an unbounded storm — but if you ever find a project's schedules mysteriously switched off, look
+for a capacity incident five minutes earlier before assuming anyone abandoned anything.
 
 Applied to the original incident, the rule would have stopped the bleeding without healing the
 wound. The fifty-three schedules could provision at first — that is *how* they filled the pool — and
