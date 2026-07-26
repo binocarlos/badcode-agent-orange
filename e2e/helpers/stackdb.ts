@@ -84,3 +84,37 @@ export async function storedSessionMCPServers(sessionId: string): Promise<Record
   ).trim()
   return out === '' || out === 'null' ? null : (JSON.parse(out) as Record<string, unknown>)
 }
+
+/**
+ * Reads a file out of a session's container, through DinD.
+ *
+ * The point is to check what a tool DID rather than what it reported. A tool
+ * that returns `{file_written: "/path", bytes_written: 21}` having written
+ * nothing passes any assertion made against its own response; only the
+ * container can say otherwise.
+ *
+ * Returns null when the file (or the container) is not there.
+ */
+export async function readFileInSessionContainer(
+  sessionId: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec('docker', [
+      'compose',
+      '-p',
+      COMPOSE_PROJECT,
+      'exec',
+      '-T',
+      'dind',
+      'docker',
+      'exec',
+      `sandbox-${sessionId}`,
+      'cat',
+      path,
+    ])
+    return stdout
+  } catch {
+    return null
+  }
+}

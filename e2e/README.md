@@ -264,6 +264,31 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
 
+## Writing an assertion that is worth having
+
+One bug hid behind green tests for a day: the composed prompt was written to the session row and
+never sent to the model, while every prompt assertion here read that row and passed. The habit that
+prevents a repeat is a single question — **am I reading back a value the system just wrote?**
+
+If yes, the test proves storage. Storage is worth asserting, but say so, and find the boundary the
+feature actually crosses:
+
+| The feature must reach… | Assert at | Not at |
+| --- | --- | --- |
+| the model | a scripted tool call that only fires if the text arrived (`mock-scripts/`) | `composed_prompt` on the session row |
+| a container | the file, read back through DinD (`readFileInSessionContainer`) | the tool's own `{file_written, bytes_written}` |
+| the router | a delivery row and the session it created | the subscription you just POSTed |
+| another project | a 404 from the other project's token | your own project's read |
+
+Two more that catch a lot:
+
+- **Could this pass if everything downstream of the write were disconnected?** `PUT /agent/project-settings`
+  followed by `GET` passes whether or not a single session ever uses those settings. That exact gap
+  was a real bug (project `mcp_config` resolved and dropped before reaching any container).
+- **Does the name promise more than the assertions deliver?** A test called "installs into a session"
+  that only checks the installer's return value retires the question without answering it, which is
+  worse than not having it.
+
 ## Notes for whoever extends this
 
 - **A failing test that names a real gap is worth more than a passing one that dodges it.** If a

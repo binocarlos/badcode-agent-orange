@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import { newProjectClient, sessionPermalink, type ProjectClient } from '../helpers/api'
 import { configEvents } from '../helpers/configlog'
 import { MCPClient, projectOnlyMCP, sessionMCP } from '../helpers/mcp'
-import { psql, lit } from '../helpers/stackdb'
+import { psql, lit, readFileInSessionContainer } from '../helpers/stackdb'
 
 // §13/§14 — curate then burn.
 //
@@ -80,8 +80,20 @@ test.describe('§14 — skills', () => {
       file_written: `${SKILLS_DIR}/render-social-video/SKILL.md`,
     })
     expect(installed.bytes_written).toBeGreaterThan(0)
-    // …and the install script ran, with its exit status reported rather than assumed.
+
+    // …and the document is REALLY there. Everything above is the tool's own
+    // report: a skill_install that wrote nothing and returned this JSON would
+    // satisfy every assertion so far. The container is the only witness that
+    // cannot be fooled by the tool describing itself.
+    const onDisk = await readFileInSessionContainer(session, `${SKILLS_DIR}/render-social-video/SKILL.md`)
+    expect(onDisk, 'the skill document must exist in the container, not merely be reported').not.toBeNull()
+    expect(onDisk).toContain('Use ffmpeg with the house preset.')
+
+    // The install script ran, with its exit status reported rather than
+    // assumed — and it left its own mark, so "ran: true" is corroborated by
+    // something the tool did not write.
     expect(installed.script).toMatchObject({ ran: true, exit_code: 0 })
+    expect(await readFileInSessionContainer(session, '/tmp/render-social-video.log')).toContain('installing')
     // The document is only *loaded* on the next turn — a fact the tool states
     // rather than leaving the model to discover.
     expect(String(installed.note)).toContain('NEXT turn')
