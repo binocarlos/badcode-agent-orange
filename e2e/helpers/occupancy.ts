@@ -1,3 +1,4 @@
+import { E2E_PROJECT_PREFIX } from './api'
 import { psql } from './stackdb'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -29,13 +30,15 @@ const COMPOSE_PROJECT = process.env.STACK_COMPOSE_PROJECT || 'agent-orange-stack
 export const PORT_POOL_SIZE = 100
 
 /**
- * Projects this suite creates. Every fixture mints ids with these prefixes, so
- * anything matching is ours and anything else is a human's and must be left
- * alone — the stack is shared.
+ * Projects this suite creates, derived from the constant the fixtures mint with
+ * rather than restated here. That is deliberate: a list maintained in two
+ * places drifts, and a fixture inventing its own prefix would escape the check
+ * without anyone noticing. `uniqueProject()` guarantees the prefix, so the
+ * only way to escape is to bypass the fixture entirely.
+ *
+ * Anything else on the stack is treated as a human's and left alone.
  */
-const E2E_PROJECT_PATTERNS = ["e2e-%", "%probe%", "mcpprobe%", "mcpseed%", "diag%", "g1probe%"]
-
-const projectFilter = E2E_PROJECT_PATTERNS.map((p) => `project LIKE '${p}'`).join(' OR ')
+const projectFilter = `project LIKE '${E2E_PROJECT_PREFIX}%'`
 
 export interface Occupancy {
   /** Live session containers — one port each, out of PORT_POOL_SIZE. */

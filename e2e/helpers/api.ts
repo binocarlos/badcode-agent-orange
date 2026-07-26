@@ -221,13 +221,29 @@ export async function mintProjectToken(
 }
 
 /**
- * A run-scoped project id. Project ids must be kebab-case and <= 64 chars
- * (authProjectTokenHandler validates), and a unique one per test keeps repeated
- * runs against one long-lived stack from colliding.
+ * The marker every project this suite creates carries.
+ *
+ * The leak check (helpers/occupancy.ts) finds this suite's projects by this
+ * prefix, so minting and checking read the same constant and cannot drift: a
+ * fixture that invents its own prefix would otherwise escape the check
+ * silently, which is the one weakness the safety net had by construction.
+ * Anything NOT minted here is treated as a human's and left alone — the stack
+ * is shared.
+ */
+export const E2E_PROJECT_PREFIX = 'e2e-'
+
+/**
+ * A run-scoped project id, always carrying E2E_PROJECT_PREFIX. Project ids must
+ * be kebab-case and <= 64 chars (authProjectTokenHandler validates), and a
+ * unique one per test keeps repeated runs against one long-lived stack from
+ * colliding.
  */
 export function uniqueProject(prefix = 'e2e'): string {
   const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-  return `${prefix}-${stamp}`.toLowerCase()
+  const named = prefix.toLowerCase().startsWith(E2E_PROJECT_PREFIX)
+    ? prefix.toLowerCase()
+    : `${E2E_PROJECT_PREFIX}${prefix.toLowerCase()}`
+  return `${named}-${stamp}`
 }
 
 // ── The project client ──────────────────────────────────────────────────────

@@ -13,7 +13,14 @@ import { describe, measure, PORT_POOL_SIZE, type Occupancy } from './helpers/occ
 // So: say what the host is carrying before a single test runs, and refuse to
 // start when there is not enough room to be worth trying.
 
-/** Below this many free ports, a full suite cannot finish; refuse to start. */
+/**
+ * Below this many free ports, a full suite cannot finish; refuse to start.
+ *
+ * Deliberately a guess, not a measurement: 25 of 100 is comfortably above what
+ * a full run peaks at in normal operation, and the cost of being wrong is a
+ * false refusal — loud, and a one-line fix. Deriving it from a single observed
+ * peak would give it a false air of precision.
+ */
 const MINIMUM_FREE_PORTS = 25
 
 export const BASELINE_FILE = path.join(import.meta.dirname, '.stack-baseline.json')
