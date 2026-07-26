@@ -347,7 +347,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       **Validation:** `cd web && npm test`
 
 ### Track G — Acceptance `[e2e]`
-- [ ] **G1.** Mock-mode e2e of §8.7: seed two workers + archivist + subscriptions; post an
+- [x] **G1.** Mock-mode e2e of §8.7: seed two workers + archivist + subscriptions; post an
       `email.received`; assert answerer job → reviewer job → prompt rewritten → memory written
       → rolling summary present in the *next* job's composed prompt. Extend with the §8.8
       shape: a manager worker on a schedule whose reconcile input creates a missing worker via
@@ -366,7 +366,7 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
       `docs/18-workers-memory-events.md` user guide distilled from this spec; update CLAUDE.md
       repo map. — depends G1
       **Validation:** inherited default
-- [ ] **G3.** Live smoke with a real `ANTHROPIC_API_KEY`: the §8.7 loop with real model calls,
+- [x] **G3.** Live smoke with a real `ANTHROPIC_API_KEY`: the §8.7 loop with real model calls,
       manually observed; then seed the real §8.8 BadCode marketing manager — the first
       production use. (`e2e/run-stack-e2e.sh`, `.env`) — depends G1
       **Validation:** `cd e2e && ./run-stack-e2e.sh` with a real key, then manual observation —
@@ -484,6 +484,27 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(G3, 2026-07-26)` **LIVE SMOKE PASSED — observed against the real Anthropic API.** A worker was
+  created whose system prompt said "begin every reply with the exact word PINEAPPLE"; a real
+  `email.received` event was posted; the router composed and dispatched a job. The observed
+  transcript:
+  - the event text arrived **inside the §6.2.4 untrusted-data markers**, with the envelope block
+    above it (type, occurred, source, depth);
+  - the assistant's reply **began with PINEAPPLE** — so the composed prompt did not merely arrive,
+    it **changed the model's behaviour**. That is the one thing mock mode can never prove, and it
+    also answers the open worry about the core preamble being *appended* to Claude Code's stock
+    preset rather than replacing it: the worker prompt lands;
+  - lacking the answer, the model **called `request_human_attention` of its own accord** — the core
+    preamble's "if you genuinely need a human" sentence working with a real model — and the delivery
+    **parked at `awaiting_human` with `ended_at: 0`**, exactly as the attention fix specifies;
+  - `worker.finished` carried `depth 1`, `source: worker`, `worker: live-answerer`,
+    `attention_requested: true`;
+  - the session's `composed_prompt` (1526 bytes) contained both the core preamble and the worker
+    prompt; the config log recorded `worker_create` and `subscription_create` as human edits.
+  Staged autonomy (§8.8.3) therefore works end to end with a real model. **Not done, and deliberately
+  left to Kai: seeding the production BadCode marketing manager** — that is a production act, not a
+  verification. The live project, worker, subscription and session were deleted afterwards and the
+  stack restored to mock with zero containers left.
 - `(e2e, 2026-07-26)` **The create-failure precedence rule is now documented AND half-pinned.** The
   consequence worth knowing: a session with a broken `base_image` on a saturated host reports
   saturation, and reports `base_image` the moment a port frees — **both answers are correct**, so a
