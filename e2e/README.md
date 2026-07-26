@@ -39,34 +39,58 @@ log recorded that" means anything.
 ends — deliberately per-run, because the script is agentd-wide and read once at boot. See
 [`mock-scripts/README.md`](mock-scripts/README.md).
 
-> **The ceiling is a 100-PORT POOL, not a container limit.** agentd hands each session container a
-> port from `PortRangeStart: 30001 … PortRangeEnd: 30100` (`go/cmd/agentd/main.go`), so the 101st
-> live session fails with `dind provision: port pool exhausted` — surfaced to a caller as the far
-> less helpful "session has no running instance and no snapshot". Whatever runs last in a long suite
-> fails, and it looks exactly like a product bug.
->
-> **A leftover schedule will exhaust it on its own.** A `* * * * *` schedule keeps firing for as long
-> as its row exists, whether or not the test that created it is still alive — 53 of them, left by
-> earlier runs of this suite, were enough to consume the whole pool every minute indefinitely.
-> `client.cleanup()` deletes a project's schedules and subscriptions before its sessions for exactly
-> this reason; a test that dies before `afterEach` still leaks one. If the stack starts failing to
-> provision, check `select count(*) from schedules where enabled` before blaming the code.
 
-Modes are `mock` (deterministic, offline — the CI signal), `api-key`, and `subscription`. Docker is
-required; the stack runs one session container per session inside DinD.
+## When a run fails, triage before you debug
 
-> **`clean` restarts agentd, on purpose.** Removing session containers out from under a running
-> agentd leaves its placement state naming dead instances, and it then refuses to provision *any*
-> new session until restarted. `cmd_clean` now does the restart itself. Prefer deleting sessions
-> through the API anyway — `client.cleanup()` in an `afterEach` — and keep `clean` for containers a
-> previous run abandoned.
+**Most red runs on this suite are the stack, not the code.** Three people misdiagnosed the same
+thing on 2026-07-26, twice confidently, and each time it cost hours. Read the failure text first:
 
-To iterate on a single spec against an already-running stack:
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| `session has no running instance and no snapshot` | almost always the **port pool is full** — see below | `./e2e/run-stack-e2e.sh clean`, re-run |
+| `502 Bad Gateway`, `socket hang up`, `ECONNREFUSED` | agentd restarted mid-run (someone rebuilt, or it crashed) | check `docker compose -p agent-orange-stack-e2e ps`, re-run |
+| `no stack listening at …` | agentd is down, often after a `clean` that raced Docker | bring it back, then re-run |
+| `timed out after Nms waiting for …` | ambiguous — read the "last value" in the message | if it shows `status: "failed"` deliveries, suspect the stack; otherwise investigate |
+| an `expect(…)` assertion diff | **a real failure** | investigate; do not re-run and hope |
+
+The rule of thumb: **connection-shaped errors mean re-run, assertion-shaped errors mean
+investigate.** A test that fails on an `expect` has told you something true about the product.
+
+### The port pool is 100, and its error does not say so
+
+agentd hands each session container a port from `PortRangeStart: 30001 … PortRangeEnd: 30100`
+(`go/cmd/agentd/main.go`), so the 101st live session fails with `dind provision: port pool
+exhausted`. That reaches a caller as *"session has no running instance and no snapshot — session
+must be re-created"*, which describes a lost session and invites you to re-create it, when the truth
+is a saturated host where every create will fail identically. Nothing reaps idle sessions, so the
+pool fills by accumulation, not by concurrency.
+
+**Before believing any provisioning failure, check for runaway schedules:**
 
 ```sh
-cd e2e && STACK_BASE_URL=http://localhost:8080 npx playwright test \
-  --config playwright.stack.config.ts features/config-and-workers.stack.spec.ts
+docker compose -p agent-orange-stack-e2e exec -T postgres \
+  psql -U agentorange -d agentorange -At -c "select count(*) from schedules where enabled;"
 ```
+
+A `* * * * *` schedule keeps firing for as long as its row exists, whatever became of the test that
+created it. Fifty-three of them, left by earlier runs of this suite, provisioned a session every
+minute indefinitely and drained the whole pool — presenting as "the product will not provision", an
+hour later, in somebody else's work. That is why `client.cleanup()` deletes schedules and
+subscriptions *before* sessions, why the §8.8 test releases its schedule in a `finally`, and why the
+suite now fails itself when it leaks (see "The run refuses to leak").
+
+### `clean` restarts agentd, on purpose
+
+Removing session containers out from under a running agentd leaves its placement state naming dead
+instances, and it then refuses to provision anything until restarted. `cmd_clean` does the restart
+for you — and waits for the removals to finish first, because `docker rm -f` returns before the
+daemon is done and agentd **fatals on boot** if it reclaims a container mid-removal
+(`removal of container <id> is already in progress`). An earlier version of this fix skipped that
+wait and reliably killed agentd, which then looked like "the stack is down" rather than "clean did
+it".
+
+Prefer deleting sessions through the API (`client.cleanup()`); reach for `clean` when a previous run
+abandoned containers or schedules.
 
 ## Layout
 
@@ -307,6 +331,37 @@ feature actually crosses:
 | the router | a delivery row and the session it created | the subscription you just POSTed |
 | another project | a 404 from the other project's token | your own project's read |
 
+### The worked example: a test that looked sound and wasn't
+
+`skill_install` writes a document into a session's container and runs an install script. The test
+asserted this:
+
+```ts
+expect(installed).toMatchObject({ installed: true, file_written: `${SKILLS_DIR}/…/SKILL.md` })
+expect(installed.bytes_written).toBeGreaterThan(0)
+expect(installed.script).toMatchObject({ ran: true, exit_code: 0 })
+```
+
+Every one of those fields is written by the tool, **about itself**. A `skill_install` that wrote
+nothing to disk and returned exactly that JSON would have passed. The test was green, it was
+reviewed, it was cited twice as an example of doing this well — and it proved only that the tool is
+internally consistent.
+
+What it says now:
+
+```ts
+const onDisk = await readFileInSessionContainer(session, `${SKILLS_DIR}/…/SKILL.md`)
+expect(onDisk).toContain('Use ffmpeg with the house preset.')
+expect(await readFileInSessionContainer(session, '/tmp/render-social-video.log')).toContain('installing')
+```
+
+The container is a witness the tool cannot coach. The second line is the install script's own side
+effect, so `ran: true` is corroborated by something the tool did not write.
+
+It passed both before and after, so no bug was hiding — this time. The same shape of assertion, one
+file away, hid the composed-prompt bug for a day: every prompt test read `composed_prompt` off the
+session row while the model was receiving none of it.
+
 Two more that catch a lot:
 
 - **Could this pass if everything downstream of the write were disconnected?** `PUT /agent/project-settings`
@@ -318,6 +373,8 @@ Two more that catch a lot:
 
 ## Notes for whoever extends this
 
+- **When you inherit this, read "When a run fails, triage before you debug" first.** The single most
+  expensive habit on this suite is debugging the product because the stack was full.
 - **A failing test that names a real gap is worth more than a passing one that dodges it.** If a
   feature cannot pass because the product is wrong, leave the test failing with a name that says
   what is broken, and log it in the work plan's Discovered Issues. Put it in its own `describe`
