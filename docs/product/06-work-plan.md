@@ -484,6 +484,33 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(fix-baseimage, 2026-07-26)` **FIXED — `project_settings.base_image` now resolves through the §13
+  catalogue.** Writing a curated image name there (exactly what §5 and `docs/18` tell an operator to
+  do) was accepted, read back fine, and then stopped **every** session in the project launching. It
+  goes through I4's existing `catalogueImageResolver` — no second resolution path — and a value the
+  catalogue does not hold stays verbatim. `agentkit-sandbox:dev` is safe **by construction**: the ref
+  parser rejects it before any query, so literal refs cost no DB round trip and a Postgres blip
+  cannot move the standalone stack off its image.
+- `(fix-baseimage, 2026-07-26)` The two columns needed different failure modes, so the seam gained
+  `ErrImageRefNotInCatalogue`: "not one of mine" (→ literal, `base_image` only) versus "mine and
+  unserveable" (→ fail, always). Marking is additive, so the worker path is byte-identical.
+- `(fix-baseimage, 2026-07-26)` **The real cost of the bug was the silence, not the wrong image.**
+  `ensure image present: <docker error>` is true of every launch failure ever recorded. Launch
+  errors now name the setting, the value, the project, and whether the string was catalogue-resolved
+  or pulled literally.
+- `(fix-baseimage, 2026-07-26)` **Write-time validation was proposed by me and correctly declined:**
+  with literal refs legal a validator has nothing it may reject; `worker.image` deliberately accepts
+  unburned pointers (curation may be about to publish); and catalogue membership is not stable
+  across a reap. One authoritative check at launch beats two of which one is advisory.
+- `(fix-baseimage, 2026-07-26)` **Residual, accepted and logged at runtime:** burning a curated image
+  whose name collides with a bare docker short name already in a project's `base_image` changes that
+  setting's meaning. Narrow and project-scoped; every catalogue-resolved launch now logs the
+  substitution so the one place a configured string stops meaning what it literally says is visible.
+- `(fix-baseimage, 2026-07-26)` **Proposed §13.5 amendment** (for Kai, not applied): "Both
+  `worker.image` and `project_settings.base_image` are resolved per §13.3 — the same string must not
+  mean two different things in two columns — with one deliberate asymmetry: a `base_image` naming no
+  catalogue image is a literal registry reference and is used verbatim, whereas one that names a
+  catalogue image which cannot be produced fails the launch, naming the setting and the value."
 - `(infra, 2026-07-26)` **CORRECTED DIAGNOSIS — it was never a Docker container ceiling.** agentd
   allocates each live session a host port from a fixed pool (`30001–30100` in `main.go`) — exactly
   **100**, one per live session, nothing reaps them — and the 101st create fails with
