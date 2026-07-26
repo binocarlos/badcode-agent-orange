@@ -494,9 +494,20 @@ func (r *runnerSessionStarter) StartJob(ctx context.Context, in startJobInput) (
 
 	// The Runner's contract: the host persists the row BEFORE provisioning. The
 	// worker and the composed prompt land here, at composition time, so every
-	// transcript is tied to the exact prompt that produced it (§6.2, §6.5).
+	// transcript is tied to the exact prompt that produced it (§6.2, §6.5) —
+	// and `composed_prompt` is what each of this session's turns is actually run
+	// with (runner.turnSystemPrompt).
 	// The lease is taken in the same write: from this moment on, a crash leaves
 	// something the reaper can find (§8.4 step 4).
+	//
+	// `persona` is deliberately LEFT EMPTY on a routed job. It is the key
+	// sessioncontext.go resolves a worker's prompt/image/MCP layer from, and a
+	// composed job has already had all three composed and pinned. Setting it
+	// would give the session two worker identities that can disagree — `worker`
+	// (what the job IS, what the core MCP server attributes writes to) and
+	// `persona` (a live re-resolution of config that may have changed since
+	// dispatch). One mechanism: `worker` names the worker, `composed_prompt`
+	// carries its prompt, and neither is re-derived while the job runs.
 	if _, err := r.store.UpdateSession(ctx, &agentdb.Session{
 		ID:             sessionID,
 		Customer:       in.Project,
