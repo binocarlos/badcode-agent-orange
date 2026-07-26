@@ -188,17 +188,32 @@ func newDispatcher(cfg dispatcherConfig) *dispatcher {
 // the worker exist, is the project at its cap, is the worker at its cap, and
 // only then compose and start.
 func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelivery) (dispatchOutcome, error) {
+	outcome, _, err := d.DispatchWithReason(ctx, delivery)
+	return outcome, err
+}
+
+// DispatchWithReason is Dispatch plus the human reason behind a `failed`
+// outcome, which is otherwise only ever logged (§8.4's delivery tuple has no
+// reason column). The scheduler needs it: a schedule disabled for repeatedly
+// failing to provision must record WHY, and "the port pool is exhausted" is the
+// difference between a five-minute fix and a day of misdiagnosis.
+//
+// It is a second method rather than a wider Dispatch signature on purpose. The
+// router treats a non-nil error as "the delivery is still ours, the drain will
+// retry it"; folding the reason into that error would turn every unstartable
+// job into a router-level failure. One gate, two readings, no drift.
+func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.EventDelivery) (dispatchOutcome, string, error) {
 	if delivery == nil {
-		return dispatchSkipped, fmt.Errorf("dispatch: delivery is required")
+		return dispatchSkipped, "", fmt.Errorf("dispatch: delivery is required")
 	}
 	if delivery.Status != agentdb.DeliveryPending {
 		// Already claimed by another pass or another process. At-least-once
 		// delivery means a duplicate attempt must be a no-op, not a second job.
-		return dispatchSkipped, nil
+		return dispatchSkipped, "", nil
 	}
 	if delivery.Worker == "" {
-		d.fail(ctx, delivery, "delivery carries no worker")
-		return dispatchFailed, fmt.Errorf("dispatch: delivery %s carries no worker", delivery.ID)
+		reason := d.fail(ctx, delivery, "delivery carries no worker")
+		return dispatchFailed, reason, fmt.Errorf("dispatch: delivery %s carries no worker", delivery.ID)
 	}
 
 	worker, err := d.store.GetWorker(ctx, delivery.Project, delivery.Worker)
@@ -206,17 +221,15 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 		// A worker that has been retired cannot run: fail the delivery loudly
 		// rather than retrying it every poll forever. (For a SCHEDULE firing the
 		// scheduler additionally disables the schedule — §8.6.)
-		d.fail(ctx, delivery, fmt.Sprintf("worker %q: %v", delivery.Worker, err))
-		return dispatchFailed, nil
+		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("worker %q: %v", delivery.Worker, err)), nil
 	}
 	if !worker.Enabled {
-		d.fail(ctx, delivery, fmt.Sprintf("worker %q is disabled", worker.Name))
-		return dispatchFailed, nil
+		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("worker %q is disabled", worker.Name)), nil
 	}
 
 	settings, err := d.store.GetProjectSettings(ctx, delivery.Project)
 	if err != nil {
-		return dispatchSkipped, fmt.Errorf("dispatch: project settings: %w", err)
+		return dispatchSkipped, "", fmt.Errorf("dispatch: project settings: %w", err)
 	}
 
 	// §8.4 step 6 — the daily token budget (§5). H1 left this slot so there is
@@ -233,7 +246,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 		if err != nil {
 			d.logf("[dispatch] %s: budget check failed, allowing the job: %v", delivery.Project, err)
 		} else if !allowed {
-			return dispatchQueued, nil
+			return dispatchQueued, "", nil
 		}
 	}
 
@@ -241,10 +254,10 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 	// scheduler.
 	active, err := d.store.CountActiveDeliveries(ctx, delivery.Project)
 	if err != nil {
-		return dispatchSkipped, fmt.Errorf("dispatch: count active: %w", err)
+		return dispatchSkipped, "", fmt.Errorf("dispatch: count active: %w", err)
 	}
 	if settings.MaxConcurrentJobs > 0 && active >= int64(settings.MaxConcurrentJobs) {
-		return dispatchQueued, nil
+		return dispatchQueued, "", nil
 	}
 
 	// §8.4 step 7 — the per-worker instance gate. Excess deliveries stay pending
@@ -256,10 +269,10 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 	}
 	running, err := d.store.CountActiveDeliveriesForWorker(ctx, delivery.Project, worker.Name)
 	if err != nil {
-		return dispatchSkipped, fmt.Errorf("dispatch: count worker instances: %w", err)
+		return dispatchSkipped, "", fmt.Errorf("dispatch: count worker instances: %w", err)
 	}
 	if running >= int64(max) {
-		return dispatchQueued, nil
+		return dispatchQueued, "", nil
 	}
 
 	// Compose (§6.2) — the identical path for every trigger.
@@ -267,8 +280,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 	if delivery.EventID != "" {
 		event, err = d.store.GetProjectEvent(ctx, delivery.Project, delivery.EventID)
 		if err != nil {
-			d.fail(ctx, delivery, fmt.Sprintf("event %s: %v", delivery.EventID, err))
-			return dispatchFailed, nil
+			return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("event %s: %v", delivery.EventID, err)), nil
 		}
 	}
 	job, err := agentkit.ComposeJob(ctx, agentkit.ComposeJobInput{
@@ -287,12 +299,11 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 	if err != nil {
 		// Composition refuses loudly (an unresolvable image pointer, a malformed
 		// stored MCP config). That is a job failure, never a silent fallback.
-		d.fail(ctx, delivery, fmt.Sprintf("compose: %v", err))
-		return dispatchFailed, nil
+		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("compose: %v", err)), nil
 	}
 
 	if d.starter == nil {
-		return dispatchSkipped, fmt.Errorf("dispatch: no session starter configured")
+		return dispatchSkipped, "", fmt.Errorf("dispatch: no session starter configured")
 	}
 	project, deliveryID := delivery.Project, delivery.ID
 	stamped := false
@@ -344,8 +355,7 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 		},
 	})
 	if err != nil {
-		d.fail(ctx, delivery, fmt.Sprintf("start job: %v", err))
-		return dispatchFailed, nil
+		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("start job: %v", err)), nil
 	}
 
 	// A starter that ignores OnSessionCreated still gets its delivery stamped —
@@ -356,10 +366,10 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 			Status:    agentdb.DeliveryRunning,
 			SessionID: sessionID,
 		}); err != nil {
-			return dispatchStarted, fmt.Errorf("dispatch: mark running: %w", err)
+			return dispatchStarted, "", fmt.Errorf("dispatch: mark running: %w", err)
 		}
 	}
-	return dispatchStarted, nil
+	return dispatchStarted, "", nil
 }
 
 // DrainPending dispatches a project's queued deliveries oldest-first, stopping
@@ -422,13 +432,16 @@ func (d *dispatcher) projectAtCapacity(ctx context.Context, project string) (boo
 // fail marks a delivery failed and logs why. §8.4's delivery tuple records no
 // reason column (an E1 finding), so the log is where the reason lives until one
 // is added.
-func (d *dispatcher) fail(ctx context.Context, delivery *agentdb.EventDelivery, reason string) {
+// It echoes the reason back so DispatchWithReason can hand it to a caller that
+// has to record it (the scheduler) without a second formatting of the same text.
+func (d *dispatcher) fail(ctx context.Context, delivery *agentdb.EventDelivery, reason string) string {
 	d.logf("[dispatch] delivery %s (%s/%s) failed: %s", delivery.ID, delivery.Project, delivery.Worker, reason)
 	if _, err := d.store.UpdateDeliveryStatus(ctx, delivery.Project, delivery.ID, agentdb.DeliveryStatusUpdate{
 		Status: agentdb.DeliveryFailed,
 	}); err != nil {
 		d.logf("[dispatch] delivery %s: could not mark failed: %v", delivery.ID, err)
 	}
+	return reason
 }
 
 // ── The real session starter ────────────────────────────────────────────────

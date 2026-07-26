@@ -537,6 +537,9 @@ func newTestDinD(d *fakeDockerAPI) *DinD {
 	cfg := DinDConfig{
 		GatewayIP: "172.17.0.1",
 		Network:   "bridge",
+		// An 11-port pool is under the low-water mark from its first allocation,
+		// so silence the warning here; TestDinDReportsCapacity asserts on it.
+		Logf: func(string, ...any) {},
 	}
 	e := newDinDWith(cfg, d, ports)
 	// Inject a poller that always returns true immediately (no sleeps).

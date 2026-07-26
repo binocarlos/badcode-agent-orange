@@ -958,6 +958,20 @@ func (r *runnerImpl) ensurePerSessionInstance(ctx context.Context, sessionID str
 	return r.restoreToWorker(ctx, sessionID, worker)
 }
 
+// workerCapacity asks a worker's environment whether it could provision anything
+// at all right now. nil means "yes, or it does not say" — an environment that
+// does not implement execenv.CapacityReporter is never guessed about.
+func workerCapacity(worker *fleet.Worker) error {
+	if worker == nil || worker.Env == nil {
+		return nil
+	}
+	cr, ok := worker.Env.(execenv.CapacityReporter)
+	if !ok {
+		return nil
+	}
+	return cr.Capacity()
+}
+
 // restoreToWorker attempts to restore a session from its snapshot handle onto the
 // given worker. If no snapshot handle exists the session is unrecoverable.
 func (r *runnerImpl) restoreToWorker(ctx context.Context, sessionID string, worker *fleet.Worker) (inst *execenv.Instance, err error) {
@@ -975,6 +989,16 @@ func (r *runnerImpl) restoreToWorker(ctx context.Context, sessionID string, work
 		return nil, err
 	}
 	if !ok {
+		// "Re-create the session" is only sound advice if a session CAN be
+		// created. When the host has no capacity left — every port in the DinD
+		// pool leased to a live session — the create that put us here failed for
+		// a reason that has nothing to do with this session, and so will every
+		// retry. Reporting that as a lost session sent two engineers chasing a
+		// Docker container limit and then an image-resolution bug, neither of
+		// which was happening. So ask the environment before blaming the session.
+		if cerr := workerCapacity(worker); cerr != nil {
+			return nil, fmt.Errorf("cannot start session %q on this host: %w", sessionID, cerr)
+		}
 		return nil, fmt.Errorf("session %q has no running instance and no snapshot — session must be re-created", sessionID)
 	}
 

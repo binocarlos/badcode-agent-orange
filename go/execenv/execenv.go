@@ -8,9 +8,36 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
+
+// ErrNoCapacity means the environment cannot provision another session right
+// now because a finite HOST resource is fully committed — not because anything
+// about the session is wrong. Adapters wrap it (see docker.PortAllocator, whose
+// host-port pool is exactly 100 wide) and callers recognise it with errors.Is.
+//
+// It exists because the two failures read identically from above and are the
+// opposite of each other operationally: "this session is lost, re-create it"
+// invites a retry, while "this host is full" says every retry will fail the same
+// way until something is deleted. Conflating them cost a day of misdiagnosis.
+var ErrNoCapacity = errors.New("execution environment is at capacity")
+
+// CapacityReporter is an OPTIONAL ExecutionEnvironment capability, implemented
+// by environments whose provisioning is bounded by a finite host resource. It
+// lets a caller ask "could you provision anything at all right now?" WITHOUT
+// attempting a provision — which is what turns a misleading "session must be
+// re-created" into the truth about the host.
+//
+// An environment that does not implement it is simply never asked; callers must
+// not infer capacity from its absence.
+type CapacityReporter interface {
+	// Capacity returns nil when another session could be provisioned, and an
+	// error wrapping ErrNoCapacity — carrying the environment's own description
+	// of the limit, in its own vocabulary — when it could not.
+	Capacity() error
+}
 
 // ExecutionEnvironment runs agent sessions inside container images.
 // Implementations decide the mechanism (a fresh Docker container, a DinD

@@ -68,6 +68,49 @@ func TestSchedulesLivePGSchema024(t *testing.T) {
 	}
 }
 
+// TestSchedulesLivePGProvisionFailures is migration 031 against the real DDL:
+// the two streak columns exist, their SQL DEFAULTs apply to a row inserted
+// AROUND the store (the convention is DEFAULTs in the migration, never a gorm
+// `default:` tag), the increment is done in SQL so two agentds cannot lose one,
+// and a reset back to zero is actually writable.
+func TestSchedulesLivePGProvisionFailures(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	project := liveScheduleProject(t, s)
+
+	// A row written around the store gets the column DEFAULTs.
+	id := uuid.New().String()
+	if err := s.DB().WithContext(ctx).Exec(
+		`INSERT INTO schedules (id, project, worker, cron, input, enabled, created_at, updated_at)
+		 VALUES (?, ?, 'tweeter', '* * * * *', 'tweet', true, 0, 0)`, id, project).Error; err != nil {
+		t.Fatalf("raw insert (are the 031 DEFAULTs missing?): %v", err)
+	}
+	sch, err := s.GetSchedule(ctx, project, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if sch.ProvisionFailures != 0 || sch.LastProvisionError != "" {
+		t.Fatalf("031 defaults not applied: %+v", sch)
+	}
+
+	for want := 1; want <= ScheduleMaxProvisionFailures; want++ {
+		n, err := s.NoteScheduleProvisionFailure(ctx, project, id, "port pool exhausted")
+		if err != nil {
+			t.Fatalf("note %d: %v", want, err)
+		}
+		if n != want {
+			t.Fatalf("streak = %d, want %d (the increment must be SQL, not read-modify-write)", n, want)
+		}
+	}
+	if err := s.ClearScheduleProvisionFailures(ctx, project, id); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	sch, _ = s.GetSchedule(ctx, project, id)
+	if sch.ProvisionFailures != 0 || sch.LastProvisionError != "" {
+		t.Fatalf("reset to zero did not persist (a gorm `default:` tag would do exactly this): %+v", sch)
+	}
+}
+
 // TestSchedulesLivePGOccurrenceKeyIsUnique proves the idempotency guard is a
 // DATABASE invariant, not a Go convention: a second insert of the same
 // occurrence is refused by the index, which is what makes two agentd processes
