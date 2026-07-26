@@ -484,6 +484,45 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(infra, 2026-07-26)` **CORRECTED DIAGNOSIS — it was never a Docker container ceiling.** agentd
+  allocates each live session a host port from a fixed pool (`30001–30100` in `main.go`) — exactly
+  **100**, one per live session, nothing reaps them — and the 101st create fails with
+  `port pool exhausted`, which reaches the caller as **"session has no running instance and no
+  snapshot — session must be re-created"**. That message describes a *lost session* and invites
+  re-creation when the truth is a *saturated host* where every subsequent create fails identically.
+  It was misdiagnosed twice by two people, first as a container limit and then as an
+  image-resolution bug. Diagnosability fix assigned.
+- `(infra, 2026-07-26)` **What drained the pool: 53 abandoned `* * * * *` schedules** left by e2e
+  runs that died before their cleanup, each firing every minute for ever, each trying to provision
+  a session. Nothing noticed; the host stayed unusable until a human deleted the rows. **A single
+  abandoned schedule can take out a whole host.** §8.6 already disables a schedule whose worker no
+  longer exists; repeated *provisioning* failure is the same class and is now assigned — with the
+  crucial distinction that a **job that ran and failed must never disable a schedule**, since a
+  worker whose jobs keep failing is exactly what the §8.7 loop exists to fix.
+- `(infra, 2026-07-26)` Operational note now in `e2e/README.md`: check
+  `select count(*) from schedules where enabled` before blaming the code.
+- `(fix-attention, 2026-07-26)` **FIXED.** `worker.finished` now carries `attention_requested` for
+  the turn that asked, and the delivery parks at `awaiting_human` with `ended_at` 0. Two things the
+  earlier predictions got wrong: E2/H2's "one line in `emitJobOutcome`" is right for the *envelope*
+  but cannot work for the *delivery* (the emitter clears the stamp inside `SendMessage`, and the
+  dispatcher's hook runs after `SendMessage` returns) — so parking reads a second durable fact,
+  `SessionAwaitsHuman` over open request rows; and H2's "*may* clear it" is **mandatory**, because a
+  request without `expires_in` is invisible to the sweep, so an uncleared flag is permanent and
+  every later `worker.finished` would claim a sign-off request that never happened.
+- `(fix-attention, 2026-07-26)` **No capacity deadlock, and the check mattered:** "active" was
+  already defined as `status = running` only, so a parked delivery holds no `max_instances` slot and
+  the lease reaper cannot touch it. The deadlock would only appear if someone later "helpfully"
+  widened those counts to include the new pause.
+- `(fix-attention, 2026-07-26)` **Documented gap, deliberately not fixed:** nothing moves a delivery
+  *out* of `awaiting_human` when the human replies — the session resumes as §9 intends, the
+  job-history row stays parked. Building a resume hook would re-grow the approval machinery §9
+  explicitly deleted. Pinned by a test named for the silence rather than as a bug.
+- `(open decision for Kai, 2026-07-26)` **A disabled worker's refused deliveries record `failed`.**
+  Nothing downstream reacts, but in job history it reads like a job that broke — and since
+  `worker_update(enabled:false)` is the *intended* way to retire a worker (E4 deliberately ships no
+  `worker_delete` tool), every trigger arriving afterwards accumulates a failed-looking row for as
+  long as the subscription exists. §8.4 has `rate_limited` as precedent for "refused, not failed",
+  but the vocabulary is closed and pinned by a test, so a seventh value is a spec amendment.
 - `(fix-prompt, 2026-07-26)` **FIXED and externally verified.** For a routed worker job the entire
   model-visible system prompt was the project prompt alone (`got: "House style."`) — no core
   preamble, no worker prompt, no memory briefing. Rule adopted: **a session row with a non-empty
