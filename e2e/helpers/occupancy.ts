@@ -11,14 +11,19 @@ const exec = promisify(execFile)
 // somewhere else entirely:
 //
 //   * **Sessions hold a port.** agentd allocates each session container a port
-//     from 30001–30100 (`go/cmd/agentd/main.go`), so the 101st live session
-//     fails with `dind provision: port pool exhausted` — surfaced to a caller
-//     as "session has no running instance and no snapshot", which describes a
-//     lost session and invites re-creation when the truth is a saturated host.
+//     from a pool 100 wide by default, so the 101st live session cannot start.
+//     It now says so — "the host port pool is exhausted … a host capacity
+//     limit, not a lost or broken session" — but for most of this suite's life
+//     it surfaced as "session has no running instance and no snapshot", which
+//     describes a lost session and invites re-creation when the truth is a
+//     saturated host. A clear error makes the leak diagnosable, not harmless.
 //   * **Schedules outlive their test.** A `* * * * *` row keeps firing for as
 //     long as it exists, whatever happened to the test that made it. Fifty-three
 //     of them, left by earlier runs, consumed the whole pool every minute and
-//     poisoned an unrelated verification run for an hour.
+//     poisoned an unrelated verification run for an hour. §8.6 now retires a
+//     schedule after five firings that start NO job — which does not cover the
+//     leak that matters here, because a schedule filling the pool is one that
+//     provisions successfully every time.
 //
 // `afterEach` cleanup cannot help with either, because the runs that leak are
 // exactly the runs that died before `afterEach`. Hence a check outside the

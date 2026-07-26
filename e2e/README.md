@@ -47,7 +47,8 @@ thing on 2026-07-26, twice confidently, and each time it cost hours. Read the fa
 
 | What you see | What it means | What to do |
 | --- | --- | --- |
-| `session has no running instance and no snapshot` | almost always the **port pool is full** — see below | `./e2e/run-stack-e2e.sh clean`, re-run |
+| `cannot start session …: execution environment is at capacity` | the **host port pool is full** — see below | `./e2e/run-stack-e2e.sh clean`, re-run |
+| `session has no running instance and no snapshot` | since the port-pool fix, **what it says**: that one session is unrecoverable | investigate that session; it is no longer the capacity message in disguise |
 | `502 Bad Gateway`, `socket hang up`, `ECONNREFUSED` | agentd restarted mid-run (someone rebuilt, or it crashed) | check `docker compose -p agent-orange-stack-e2e ps`, re-run |
 | `no stack listening at …` | agentd is down, often after a `clean` that raced Docker | bring it back, then re-run |
 | `timed out after Nms waiting for …` | ambiguous — read the "last value" in the message | if it shows `status: "failed"` deliveries, suspect the stack; otherwise investigate |
@@ -56,28 +57,73 @@ thing on 2026-07-26, twice confidently, and each time it cost hours. Read the fa
 The rule of thumb: **connection-shaped errors mean re-run, assertion-shaped errors mean
 investigate.** A test that fails on an `expect` has told you something true about the product.
 
-### The port pool is 100, and its error does not say so
+### The port pool is 100, and the error now says so
 
 agentd hands each session container a port from `PortRangeStart: 30001 … PortRangeEnd: 30100`
-(`go/cmd/agentd/main.go`), so the 101st live session fails with `dind provision: port pool
-exhausted`. That reaches a caller as *"session has no running instance and no snapshot — session
-must be re-created"*, which describes a lost session and invites you to re-create it, when the truth
-is a saturated host where every create will fail identically. Nothing reaps idle sessions, so the
-pool fills by accumulation, not by concurrency.
+(`go/cmd/agentd/main.go`), so the 101st live session cannot start. Nothing reaps idle sessions, so
+the pool fills by accumulation, not by concurrency — which is why a leak from a *previous* run is
+the usual cause.
 
-**Before believing any provisioning failure, check for runaway schedules:**
+Since `6dc27ac` the caller is told that in full:
+
+```
+cannot start session "<id>" on this host: execution environment is at capacity: the host port pool
+is exhausted — all 100 ports in 30001-30100 are leased to live sessions, and a session holds its
+port until it is deleted, so every further session on this host will fail the same way until one is
+released (a host capacity limit, not a lost or broken session)
+```
+
+The last clause is the one that matters: it tells you not to re-create the session, which is what
+the old text invited. Before that fix the allocator said `port pool exhausted: no available ports in
+the sandbox port pool` and the caller received only *"session has no running instance and no
+snapshot — session must be re-created"* — a description of a lost session, and the sentence that
+cost this project two misdiagnoses and the better part of a day.
+
+**If you see the old message on a provisioning failure, check which binary you are on** — a stack
+built before 2026-07-26 02:33 predates the fix, and this is not academic: the stack handed over
+after that fix merged had been built nine minutes too early.
 
 ```sh
-docker compose -p agent-orange-stack-e2e exec -T postgres \
-  psql -U agentorange -d agentorange -At -c "select count(*) from schedules where enabled;"
+docker compose -p agent-orange-stack-e2e exec -T agentd \
+  sh -c 'strings /usr/local/bin/agentd' | grep -c 'host port pool is exhausted'   # 1 = fix present
 ```
+
+agentd also warns on the approach rather than only at the cliff: `[dind] WARNING: host port pool
+nearly exhausted` on every provision once fewer than ten ports remain. Grep the agentd log for it
+before starting a long run — it is the difference between losing a run and losing an afternoon.
+
+### Runaway schedules — the original cause, now self-limiting
 
 A `* * * * *` schedule keeps firing for as long as its row exists, whatever became of the test that
 created it. Fifty-three of them, left by earlier runs of this suite, provisioned a session every
 minute indefinitely and drained the whole pool — presenting as "the product will not provision", an
-hour later, in somebody else's work. That is why `client.cleanup()` deletes schedules and
-subscriptions *before* sessions, why the §8.8 test releases its schedule in a `finally`, and why the
-suite now fails itself when it leaks (see "The run refuses to leak").
+hour later, in somebody else's work.
+
+Two things changed since. §8.6 now retires a schedule after **five consecutive firings that start no
+job**, recording the decision and its reason in the config log — so a schedule that can never
+provision stops hammering its neighbours within minutes instead of indefinitely
+(`features/schedule-resilience.stack.spec.ts` proves this end to end). And the suite fails itself
+when it leaks (see "The run refuses to leak").
+
+Applied to the original incident, the rule would have stopped the bleeding without healing the
+wound. The fifty-three schedules could provision at first — that is *how* they filled the pool — and
+only began failing once it was full, at which point five minutes of failures would have retired all
+of them. But the sessions they had already leaked go on holding their ports until somebody deletes
+them, so the host stays full either way. The mechanism buys a stable host to debug on, not a fixed
+one.
+
+Which is why it is no substitute for cleaning up. A schedule that *can* provision is not failing, so
+nothing retires it, and it will happily fill the pool at one session per minute. That is why
+`client.cleanup()` deletes schedules and subscriptions *before* sessions, and why the §8.8 test
+releases its schedule in a `finally`.
+
+Still the first thing to check when provisioning fails:
+
+```sh
+docker compose -p agent-orange-stack-e2e exec -T postgres \
+  psql -U agentorange -d agentorange -At \
+  -c "select id, worker, provision_failures, enabled from schedules where enabled;"
+```
 
 ### `clean` restarts agentd, on purpose
 
@@ -216,6 +262,7 @@ Two conventions worth keeping:
 | **G1 §8.8 autonomy** | same, with `--mock-script` | with a scripted model the **model chooses the tool call**: a due schedule fires, the manager job calls `worker_create`, and a worker its prompt described — which no human and no bootstrap code path created — exists, logged with the manager as actor. A content worker calls `request_human_attention` and gets back a permalink to its own conversation, succeeding with `channel: "none"` when none is configured |
 | Images §13 / skills §14 | `features/images-and-skills.stack.spec.ts` | curate-then-burn end to end: `skill_create` → `skill_install` lands the document and runs its script; **a failing script is a loud failure** carrying exit status, stderr and "do not proceed"; `image_create` allocates versions 1 then 2, gap-free, listed newest-first with worker/session/`session_url` provenance; an older version survives a newer burn unchanged; the catalogue exposes **no update or delete verb**; `image_create`/`skill_create` are logged with the acting session while `skill_install` logs nothing (§14.2); both lists cap at 200 with `truncated`; and a token with no `sid` is refused by both |
 | **The worker image pointer §13.3/§13.5 (I4)** | `features/image-curation.stack.spec.ts` | curate-then-burn all the way to a launch: a vanilla session `skill_install`s a probe whose script marks the filesystem, `image_create` burns it, `worker_update` adopts it — and the worker's **next job runs in a container carrying that marker**, read back through DinD, which is the only assertion a "resolved perfectly then launched the base image anyway" regression cannot fake. Plus: a floating `toolbox` follows a second burn while a pinned `toolbox:1` does not; a pointer at a name nobody burned **fails the delivery with no session created** (§13.3 — never a silent fallback); a worker with no pointer is undisturbed; and every launch stamps `last_resumed_at`, which nothing called before I4 |
+| **Schedules that cannot provision §8.6** | `features/schedule-resilience.stack.spec.ts` | the mechanism that stops the incident this suite caused: a `* * * * *` schedule on a **disabled** worker is refused at the dispatch gate every minute, and after five consecutive firings that start no job the scheduler **switches the schedule off**, with the reason in the config log — one record for the decision, none for the five observations. The disable resets the streak (re-enabling gets a full budget), and nothing is provisioned along the way, so the test for the anti-storm mechanism cannot itself start a storm. Slowest test in the suite (~6 min): a firing is one wall-clock minute and there is no catch-up |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
 ### No known failures
@@ -290,7 +337,8 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Prompt rewrite provenance (§15.5) | E4/H1 | `worker_prompt_write` carries a **non-empty rationale** — the one field §15.5 makes mandatory |
 | `config.changed` event (§15.4) | J3 | a config mutation emits the routable event **after commit**, once, idempotent on the config-event id |
 | `config_history` / fold / restore (§15.6–§15.7) | J2/J4 | fold to a timestamp; restore a deleted worker from its `worker_delete` record |
-| Schedules §8.6 | Track H | a due schedule fires a job; a missed window is skipped, not caught up |
+| Schedules §8.6 — the happy path | Track H | a due schedule fires a job; a missed window is skipped, not caught up. (The *failure* path is covered: `features/schedule-resilience.stack.spec.ts`) |
+| Port-pool exhaustion is reported as a host limit | nothing — it is **untestable from here**, on purpose | the capacity error needs 100 live sessions to reach, and `PortRangeStart/End` are hardcoded at `go/cmd/agentd/main.go:132` rather than configurable, so a test could only produce it by filling the host it runs on. Verified instead by reading the string out of the running binary (see the triage section) plus `go/runner_portpool_test.go` and `go/execenv/docker/ports_exhaustion_test.go`. That the message *reaches an HTTP caller* is evidenced by the red `base_image` test, which measures the sibling line of the same function (`runner.go:1007`) arriving verbatim. **Making the range configurable would make this testable** — worth doing if the pool is ever touched again |
 | `request_human_attention` (§9) | H2 | delivery goes `awaiting_human`, the attention channel receives `{message, session_url}` |
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
@@ -301,9 +349,10 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 
 - **Before**: prints what the host is carrying (`N/100 session ports in use, M enabled schedules`),
   warns unmissably if e2e schedules are still firing, and **refuses to start** with fewer than 25
-  free ports — because a run started on a full host fails with "session has no running instance and
-  no snapshot", which reads exactly like a product bug and has cost this project several debugging
-  rounds.
+  free ports — because a run started on a full host fails every session it tries to provision, and
+  a suite that reports fifty failures says nothing about the product. The engine now names that
+  cause in the error (see the triage section); the guard stays because being told clearly at failure
+  fifty is worse than not starting.
 - **After**: compares against that baseline and **fails the run** if it leaked — sessions it did not
   release, or e2e schedules still enabled. A run that leaks does not get to report success; the leak
   *is* the failure, even when every assertion passed. Schedules are deleted as well as reported (so
@@ -313,7 +362,8 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 The reason this lives outside the tests: `afterEach` cannot clean up after a test that died before
 `afterEach`, and those are precisely the runs that leak. For the same reason, a test that creates a
 `* * * * *` schedule releases it in a **`finally`** — see the §8.8 reconcile test. One abandoned
-schedule provisions a session every minute for ever and will drain the pool on its own.
+schedule that can still provision will drain the pool on its own, at a session a minute, and
+nothing retires it: §8.6's five-failure rule catches only schedules that start *no* job.
 
 ## Writing an assertion that is worth having
 

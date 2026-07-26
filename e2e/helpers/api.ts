@@ -140,6 +140,15 @@ export interface Schedule {
   cron: string
   input: string
   enabled: boolean
+  /**
+   * Consecutive firings that started no job. Runtime state, not configuration:
+   * it is reset by the first firing that starts one, and at
+   * `ScheduleMaxProvisionFailures` (5) the scheduler switches the schedule off.
+   * That mechanism is what stops an abandoned `* * * * *` row from holding host
+   * ports forever — see features/schedule-resilience.stack.spec.ts.
+   */
+  provision_failures: number
+  last_provision_error: string
   created_at: number
   updated_at: number
 }
@@ -470,11 +479,13 @@ export class ProjectClient {
    * Sweeping the project is safe because every test gets a fresh, run-scoped
    * project of its own (`newProjectClient`) — there is nothing else in it.
    *
-   * Not optional housekeeping: a session holds a *running container* inside
-   * DinD until it is deleted, nothing reaps them on a timer, and the daemon
-   * stops accepting new ones at around a hundred. Past that, every session
-   * fails to provision with "has no running instance and no snapshot", which
-   * looks exactly like a product bug and is not one.
+   * Not optional housekeeping: a session holds a *running host port* until it
+   * is deleted, nothing reaps them on a timer, and the pool is exactly 100
+   * wide. Past that, every session fails to provision — since the port-pool fix
+   * with an error that names the host limit, and before it with "has no running
+   * instance and no snapshot", which looked exactly like a product bug and was
+   * not one. The clear message makes the leak diagnosable; it does not make it
+   * harmless, and this sweep is still what prevents it.
    */
   async cleanup(): Promise<void> {
     this.created.splice(0)
@@ -489,16 +500,26 @@ export class ProjectClient {
     for (const sched of await this.listSchedules().catch(() => [])) {
       await this.raw('DELETE', `/agent/schedules/${encodeURIComponent(sched.id)}`).catch(() => {})
     }
-    // `user_email=*` is load-bearing: the route defaults to the caller's own
-    // email, and the router creates job sessions under a different one. Without
-    // it, exactly the sessions a test did not create are the ones it leaks.
-    const resp = await this.raw('GET', '/agent/sessions?user_email=*&limit=500').catch(() => null)
-    if (!resp?.ok()) return
-    const listed = (await resp.json().catch(() => [])) as unknown
-    const rows = Array.isArray(listed) ? listed : ((listed as { sessions?: unknown[] })?.sessions ?? [])
-    for (const row of rows as Array<{ id?: string }>) {
+    for (const row of await this.listAllSessions()) {
       if (row?.id) await this.raw('DELETE', `/agent/session/${encodeURIComponent(row.id)}`).catch(() => {})
     }
+  }
+
+  /**
+   * Every session in this project, whoever created it.
+   *
+   * `user_email=*` is load-bearing: the route defaults to the caller's own
+   * email, and the router creates job sessions under a different one. Without
+   * it, exactly the sessions a test did not create are the ones it misses —
+   * which is why `cleanup` and any "nothing was provisioned" assertion have to
+   * share this one reader rather than each writing the query out.
+   */
+  async listAllSessions(): Promise<Array<{ id?: string; status?: string }>> {
+    const resp = await this.raw('GET', '/agent/sessions?user_email=*&limit=500').catch(() => null)
+    if (!resp?.ok()) return []
+    const listed = (await resp.json().catch(() => [])) as unknown
+    const rows = Array.isArray(listed) ? listed : ((listed as { sessions?: unknown[] })?.sessions ?? [])
+    return rows as Array<{ id?: string; status?: string }>
   }
 
   /**
