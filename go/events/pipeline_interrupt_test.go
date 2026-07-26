@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -21,6 +20,31 @@ type ctxSink struct {
 	mu     sync.Mutex
 	events []Envelope
 	errs   int
+}
+
+// seenWriter closes `seen` the first time `want` appears in what the pipeline
+// streams to the client. That write happens only after the frame has been
+// scanned and collected, so it is a *deterministic* "the pipeline has this
+// event now" signal — unlike a sleep, which is a guess about scheduling and
+// loses that bet under -race. Cancelling before this fires would test nothing:
+// an event the pipeline never received is correctly absent from what it
+// persists, so the assertion would be about the test's timing, not the code's
+// behaviour.
+type seenWriter struct {
+	want string
+	once sync.Once
+	seen chan struct{}
+}
+
+func newSeenWriter(want string) *seenWriter {
+	return &seenWriter{want: want, seen: make(chan struct{})}
+}
+
+func (s *seenWriter) Write(p []byte) (int, error) {
+	if strings.Contains(string(p), s.want) {
+		s.once.Do(func() { close(s.seen) })
+	}
+	return len(p), nil
 }
 
 func (c *ctxSink) BeginFlush(_ string) {}
@@ -114,22 +138,20 @@ func TestPipeline_CancelMidOutput_PersistsPartialTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pr, pw := io.Pipe()
-	started := make(chan struct{})
+	client := newSeenWriter("why did the")
 	go func() {
 		_, _ = io.WriteString(pw, "event: assistant\ndata: {\"text\":\"why did the\"}\n\n")
-		close(started)
 		<-ctx.Done()
 		_ = pw.CloseWithError(context.Canceled)
 	}()
 	go func() {
-		<-started
-		time.Sleep(20 * time.Millisecond) // let the frame be scanned first
+		<-client.seen // deterministic: the frame is scanned, so cancelling now is mid-output
 		cancel()
 	}()
 
 	res, _ := p.Run(ctx,
 		QueryContext{SessionID: "s1", QueryID: "q1", LeadingEvents: leadingUser("tell me a joke")},
-		pr, io.Discard)
+		pr, client)
 
 	got := sink.snapshot()
 	if !hasUserMessage(got, "tell me a joke") {
@@ -154,15 +176,17 @@ func TestPipeline_StreamTruncatedWithoutQueryComplete_PersistsAndIsNotComplete(t
 	defer cancel()
 
 	pr, pw := io.Pipe()
+	client := newSeenWriter("chicken")
 	go func() {
 		_, _ = io.WriteString(pw, "event: assistant\ndata: {\"text\":\"why did the chicken\"}\n\n")
+		<-client.seen // the pipeline has scanned it; only now is truncation meaningful
 		cancel()
 		_ = pw.CloseWithError(context.Canceled)
 	}()
 
 	res, _ := p.Run(ctx,
 		QueryContext{SessionID: "s1", QueryID: "q1", LeadingEvents: leadingUser("tell me a joke")},
-		pr, io.Discard)
+		pr, client)
 
 	got := sink.snapshot()
 	if !hasUserMessage(got, "tell me a joke") || !hasAssistantText(got, "chicken") {
