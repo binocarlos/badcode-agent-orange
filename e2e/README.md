@@ -381,10 +381,10 @@ tests stay as regression guards.
   The test's wait is the load-bearing part: checking for absence immediately would pass against the
   very bug, because at t=0 the container does not exist yet.
 
-The first three were verified green on 2026-07-26: the full suite at 50 passed / 0 failed, and the
-scripted acceptance-loop run at 17 passed. **The orphan one is written against `b34c366` but has not
-yet been run** — the stack was in use for the G3 live smoke when it was flipped. Run it before
-trusting this entry.
+All four were verified green on 2026-07-26: the full suite, the scripted acceptance-loop run at 17
+passed, and the orphan guard at 1.0m against `b34c366`. That last one is known to be non-vacuous
+rather than assumed to be: the same assertions, with the same 45-second wait, were red against the
+binary from before the fix.
 
 ### The queue — not covered, and why
 
@@ -446,6 +446,37 @@ feature actually crosses:
 | a container | the file, read back through DinD (`readFileInSessionContainer`) | the tool's own `{file_written, bytes_written}` |
 | the router | a delivery row and the session it created | the subscription you just POSTed |
 | another project | a 404 from the other project's token | your own project's read |
+
+### The other half: *when* to assert
+
+The table above is about **where** to look. There is a second mistake, independent of it, that
+produces exactly the same symptom — a green test that proves nothing — and it caught two of us on
+one day:
+
+> **A test that observes before the thing it is watching for could possibly have happened is
+> asserting its own timing, not the code's behaviour.**
+
+Both instances passed for reasons unrelated to the product. One waited for a *rejected promise* from
+a capacity failure and scored the resulting silence as a pass, when the error was arriving inside a
+stream that had "succeeded". One cancelled a turn before the pipeline had provably scanned the
+frame, so under `-race` the cancel simply won. Neither was looking in the wrong place.
+
+The tell is an assertion whose subject is an **absence**: no error, no container, nothing logged.
+Absence is indistinguishable from *not yet*, so before asserting one, establish a happens-after
+signal — something the system only emits once it has got far enough for the absence to mean
+anything. In this suite that is usually one of:
+
+- a **state the product publishes**: wait for the session to leave `creating`
+  (`waitForCreatesToSettle`) rather than for a fixed number of milliseconds;
+- an **observable side effect** further down the path: the frame streamed to the client, the
+  delivery row appearing;
+- failing both, **two readings separated in time** — what `measureSettled` and the orphan guard do.
+  Cruder, and honest about being cruder, but it distinguishes "never" from "not yet", which one look
+  cannot.
+
+The orphan guard is the worked example: checking for the container immediately after the delete
+would pass against the exact bug it exists to catch, because at t=0 the container has not been
+created yet.
 
 ### The worked example: a test that looked sound and wasn't
 
