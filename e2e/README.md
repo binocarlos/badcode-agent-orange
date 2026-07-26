@@ -26,11 +26,13 @@ log recorded that" means anything.
 ./e2e/run-stack-e2e.sh down         # stop (add --purge to wipe volumes)
 ./e2e/run-stack-e2e.sh run mock     # clean-room: up → test → purge-down (the CI job)
 
-# From cold, the whole product-layer suite:
-./e2e/run-stack-e2e.sh up mock && ./e2e/run-stack-e2e.sh test
+# G1 from cold — everything, including the §8.8 tests that need the model to
+# choose a tool call:
+./e2e/run-stack-e2e.sh up mock && \
+  ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json
 
-# With a scripted model, so the MODEL calls tools (adds the §8.8 tests):
-./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json
+# Without the script, the §8.8 pair skips and everything else runs:
+./e2e/run-stack-e2e.sh test
 ```
 
 `--mock-script` loads the script into agentd, runs, and restores the plain model however the run
@@ -180,6 +182,7 @@ Two conventions worth keeping:
 | Session permalink (F3) | same | the open session is already permalinked (state→URL); pasting that link back resumes the transcript (URL→state); a link naming another project switches to it |
 | Session MCP §4 (**A4**) | `features/session-mcp.stack.spec.ts` | a session-supplied MCP server connects (`session_info` reports `status: connected`), its tools reach the model as `mcp__<server>__*`, and all of it **survives snapshot→resume** — the A2 regression. Plus: an unresolvable `${VAR}` fails the turn with an `AGENT_ERROR` naming the variable, instead of connecting without the credential |
 | **The acceptance loop §8.7/§8.8** | `features/acceptance-loop.spec.ts` | the org seeds and every hire is logged; an inbound email enters with a core-stamped envelope; **the router starts an answerer job** and the composed prompt it ran with carries the worker's prompt; **the answerer finishing fans out to reviewer and archivist** at depth 1, and the reviewer does *not* react to its own finish; **a memory written by one job appears verbatim in the next job's composed prompt** under the heading its briefing selector asked for (§7.4 — the loop's substrate); **the reviewer rewrites the answerer's prompt through `worker_prompt_write`**, logged with its rationale and the acting worker+session — §8.7's definition of done for the whole spec; a blank rationale is refused and changes nothing, and `worker_update` refuses to touch a prompt at all, naming the tool that can (§15.5, the boundary that keeps rewrites auditable); the rewrite emits a routable **`config.changed`** naming its config-event id, stamped `worker` with a non-zero depth so the loop floor still bites; and the §8.8 bootstrap is one manager plus two schedules |
+| **G1 §8.8 autonomy** | same, with `--mock-script` | with a scripted model the **model chooses the tool call**: a due schedule fires, the manager job calls `worker_create`, and a worker its prompt described — which no human and no bootstrap code path created — exists, logged with the manager as actor. A content worker calls `request_human_attention` and gets back a permalink to its own conversation, succeeding with `channel: "none"` when none is configured |
 | Images §13 / skills §14 | `features/images-and-skills.stack.spec.ts` | curate-then-burn end to end: `skill_create` → `skill_install` lands the document and runs its script; **a failing script is a loud failure** carrying exit status, stderr and "do not proceed"; `image_create` allocates versions 1 then 2, gap-free, listed newest-first with worker/session/`session_url` provenance; an older version survives a newer burn unchanged; the catalogue exposes **no update or delete verb**; `image_create`/`skill_create` are logged with the acting session while `skill_install` logs nothing (§14.2); both lists cap at 200 with `truncated`; and a token with no `sid` is refused by both |
 | **The worker image pointer §13.3/§13.5 (I4)** | `features/image-curation.stack.spec.ts` | curate-then-burn all the way to a launch: a vanilla session `skill_install`s a probe whose script marks the filesystem, `image_create` burns it, `worker_update` adopts it — and the worker's **next job runs in a container carrying that marker**, read back through DinD, which is the only assertion a "resolved perfectly then launched the base image anyway" regression cannot fake. Plus: a floating `toolbox` follows a second burn while a pinned `toolbox:1` does not; a pointer at a name nobody burned **fails the delivery with no session created** (§13.3 — never a silent fallback); a worker with no pointer is undisturbed; and every launch stamps `last_resumed_at`, which nothing called before I4 |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
@@ -189,6 +192,19 @@ Two conventions worth keeping:
 Both defects this suite found have been fixed and are now guarded — see below. When you add a red
 test, list it here with its evidence so nobody mistakes it for flakiness.
 
+
+### Known gap — deliberately red
+
+`features/acceptance-loop.spec.ts` › *asking for attention pauses the job*.
+
+**Asking for human attention does not pause the job.** The tool records the request and returns
+cleanly — the test above it proves that — but the delivery runs to `ok` with an `ended_at`, and the
+`worker.finished` envelope carries `attention_requested: false`. §8.4 wants the delivery parked at
+`awaiting_human` with no `ended_at`: a pause, not a finish, so the UI shows an open-ended duration
+and a human can answer hours later. This is exactly the gap E2 flagged when it wrote
+`attention_requested` as a parameter the Runner passes `false` — "H2 must add a session-level flag
+and one line in `emitJobOutcome`". From the outside, a job that asked for sign-off is currently
+indistinguishable from one that finished its work.
 
 ### Fixed, and now guarded
 
@@ -225,7 +241,6 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | Schedules §8.6 | Track H | a due schedule fires a job; a missed window is skipped, not caught up |
 | `request_human_attention` (§9) | H2 | delivery goes `awaiting_human`, the attention channel receives `{message, session_url}` |
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
-| **G1: the §8.7 acceptance loop** | a mock script | **live** in `features/acceptance-loop.spec.ts` — see Covered. Two pending, both §8.8: they need a *job* to call a tool, which wants `AGENTKIT_MOCK_MODEL_SCRIPT` wired through the run script. Do not delete one to make the file green |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |
 
 ## Notes for whoever extends this

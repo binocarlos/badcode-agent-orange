@@ -597,11 +597,9 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
   // Staged autonomy (§8.8 step 3): a content worker drafts, then asks a human
   // before acting. The pause is a real state the delivery sits in, not a
   // convention — which is what lets a human answer hours later.
-  //
-  // STATUS 2026-07-26: same shape as the reconcile test above — runs only with
-  // --mock-script, and blocked behind the same unexplained gap between "the
-  // model called the tool" and "the tool took effect".
-  test('a content worker pauses cleanly for human sign-off', async () => {
+  // Staged autonomy (§8.8 step 3): a content worker drafts, then asks a human
+  // before acting. What works today is the asking.
+  test('a content worker asks a human for sign-off, and gets a link back to itself', async () => {
     test.skip(
       !process.env.STACK_MOCK_SCRIPT,
       'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',
@@ -613,21 +611,75 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
         'sign-off before posting.',
     })
     await client.createSubscription({ event_type: 'content.requested', worker: 'tweet-author' })
-
-    // Marker in the event text, for the same reason the reconcile input carries one.
     const event = await client.postEvent({
       type: 'content.requested',
       text: '[G1-MARKER-SIGNOFF] today: ship something small',
     })
 
-    // The job parks awaiting a human, with no ended_at: awaiting is a pause, not
-    // a finish, so the UI shows an open-ended duration rather than a closed job.
-    const parked = await client.waitForDeliveries(
-      (rows) => rows.some((d) => d.status === 'awaiting_human'),
+    const [delivery] = await client.waitForDeliveries(
+      (rows) => rows.length > 0 && rows.every((d) => d.session_id !== ''),
       { event_id: event.id, timeoutMs: 180_000 },
     )
+    const calls = await poll(
+      async () => (await client.queryEvents(delivery.session_id)).filter((e) => e.type === 'tool_use_end'),
+      (rows) => rows.length > 0,
+      120_000,
+      'the content worker to ask for attention',
+    )
+    // The MODEL chose to call it — this is the autonomous half of §8.8.
+    const result = JSON.parse(String(calls[0].data.output))
+    expect(calls[0].data.isError).toBe(false)
+    // The human is handed a link back to the conversation, so answering means
+    // reading the draft in context rather than in a notification.
+    expect(result.session_url).toBe(client.permalink(delivery.session_id))
+    expect(String(result.message)).toContain('sign-off')
+    // With no attention channel configured the tool still succeeds and says so,
+    // rather than failing a job over a missing webhook (§9).
+    expect(result.channel).toBe('none')
+    expect(result.delivered).toBe(false)
+    expect(result.request_id).toBeTruthy()
+  })
+
+  // KNOWN GAP — left failing deliberately, because the product is incomplete.
+  //
+  // Asking for attention does not pause the job. The tool records the request
+  // and returns cleanly (the test above), but the delivery runs to `ok` with an
+  // `ended_at`, and the `worker.finished` envelope carries
+  // `attention_requested: false`. §8.4 wants the delivery parked at
+  // `awaiting_human` with no `ended_at` — a pause, not a finish — so the UI can
+  // show an open-ended duration and a human can answer hours later.
+  //
+  // This is the gap E2 flagged when it wrote `attention_requested` as a
+  // parameter the Runner passes `false`: "H2 must add a session-level flag and
+  // one line in emitJobOutcome". The flag still is not there, so from the
+  // outside a job that asked for sign-off is indistinguishable from one that
+  // finished its work.
+  test('asking for attention pauses the job (KNOWN GAP: the delivery still completes)', async () => {
+    test.skip(
+      !process.env.STACK_MOCK_SCRIPT,
+      'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',
+    )
+    await client.putWorker('tweet-author', {
+      description: 'writes the daily tweet',
+      system_prompt: 'You write BadCode tweets. Ask for sign-off before posting.',
+    })
+    await client.createSubscription({ event_type: 'content.requested', worker: 'tweet-author' })
+    const event = await client.postEvent({
+      type: 'content.requested',
+      text: '[G1-MARKER-SIGNOFF] today: ship something small',
+    })
+
+    const parked = await client.waitForDeliveries(
+      (rows) => rows.some((d) => d.status === 'awaiting_human'),
+      { event_id: event.id, timeoutMs: 120_000 },
+    )
     const waiting = parked.find((d) => d.status === 'awaiting_human')!
+    // Awaiting a human is a pause, not an end.
     expect(waiting.ended_at).toBe(0)
-    expect(waiting.started_at).toBeGreaterThan(0)
+
+    // …and the envelope says so, so a reviewer can skip work that is knowingly
+    // half-done rather than judging it as finished.
+    const finished = await client.waitForEvents((rows) => rows.length > 0, { type: 'worker.finished' })
+    expect(finished[0].envelope.attention_requested).toBe(true)
   })
 })
