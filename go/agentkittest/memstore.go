@@ -64,6 +64,15 @@ func (s *MemStore) UpdateSession(ctx context.Context, sess *agentdb.Session) (*a
 	return &cp, nil
 }
 
+// DeleteSession removes a session row, mirroring the optional DeleteSession
+// seam httpapi.DeleteSession probes for on the host's store. Idempotent.
+func (s *MemStore) DeleteSession(ctx context.Context, id string) error {
+	s.mu.Lock()
+	delete(s.sessions, id)
+	s.mu.Unlock()
+	return nil
+}
+
 // SetSessionAttentionRequested writes the §9 per-turn stamp on a session row —
 // the one-column update agentkit's §8.2 emitter uses to clear the flag once it
 // has copied it onto a `worker.finished` envelope.

@@ -398,6 +398,13 @@ Stated plainly because each one will otherwise be discovered the hard way.
   sessions. That used to read as "session has no running instance and no snapshot", which looks
   exactly like a product bug and is not one; it now says the host is at capacity and names the
   port pool. Delete sessions you are finished with — see `docs/15-standalone-stack.md`.
+- **Deleting a session mid-create is now safe, but stale orphans are still not swept.** A delete
+  that lands while the create is still pulling or provisioning used to leave the container
+  behind holding a port, invisible to everything that starts from the database; the create now
+  cancels itself and tears down what it built. What is *still* not reaped is a container orphaned
+  by a previous `agentd` process, because the only safe predicate is in-process ("this delete
+  cancelled this create") — see `docs/15-standalone-stack.md` § "Deleting a session mid-create no
+  longer leaks its port" for why the row-is-missing predicate was rejected.
 - **A session that fails to start now says why.** The reason is recorded on the session row
   (`agent_sessions.create_error`), logged by `agentd`, returned as `create_error` from
   `GET /agent/session/{id}`, and prefixed onto the next message's error — so a mis-typed
