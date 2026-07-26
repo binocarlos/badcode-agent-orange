@@ -117,9 +117,26 @@ identical (§7.6.5):
 ## Session containers are not reaped on a timer
 
 A session holds a running container inside DinD until the **session is deleted**. Nothing
-expires them, so they accumulate: roughly a hundred was enough, during one e2e run, to make
-`agentd` stop being able to provision anything, with `image_create` reporting "session has no
-running instance and no snapshot". That reads exactly like a product bug and is not one.
+expires them, so they accumulate. The ceiling is exact: `agentd` leases each live session one
+host port from `30001-30100` (`cmd/agentd/main.go`), so the **101st concurrent session cannot
+start**, and neither can any after it until one is released.
+
+That ceiling is a legitimate limit; failing to recognise it is not. It used to surface as
+"session has no running instance and no snapshot — session must be re-created", which describes
+a *lost session* and invites a re-create that fails identically — it was misdiagnosed twice, once
+as a Docker container limit and once as an image-resolution bug. It now says what is actually
+true:
+
+```
+execution environment is at capacity: the host port pool is exhausted — all 100 ports in
+30001-30100 are leased to live sessions, and a session holds its port until it is deleted, so
+every further session on this host will fail the same way until one is released (a host capacity
+limit, not a lost or broken session)
+```
+
+The error wraps `execenv.ErrNoCapacity`, so a host can map it to a 503 with `errors.Is` rather
+than string-matching. `agentd` also logs `[dind] WARNING: host port pool nearly exhausted` on
+every provision once fewer than ten ports remain — watch for that before the cliff.
 
 Delete sessions you have finished with (`DELETE /agent/session/{id}`; the e2e suite does this
 in teardown). `./e2e/run-stack-e2e.sh clean` clears leftovers, and **restarts `agentd`**

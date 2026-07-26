@@ -22,6 +22,21 @@ package main
 //     — and the per-project concurrency cap applies to firings too.
 //  4. A MISSING WORKER DISABLES THE SCHEDULE, loudly, with the reason in the
 //     config log (§8.6). Never a silent retry every minute forever.
+//  5. AND NEITHER DOES ANYTHING ELSE THAT CANNOT POSSIBLY SUCCEED. Rule 4 was
+//     written for one cause; the harm is the pattern. 53 abandoned `* * * * *`
+//     rows, none of which could provision, held every host port between them
+//     and made the whole stack unable to start anything until a human deleted
+//     them. So a schedule whose firings repeatedly fail TO START A JOB is
+//     disabled too, after ScheduleMaxProvisionFailures consecutive attempts,
+//     by the same call and into the same log.
+//
+//     The line that rule must not cross: a job that RAN and failed is a
+//     legitimate outcome and resets nothing and counts nothing here. A worker
+//     whose jobs keep failing is exactly what §8.7's self-improvement loop
+//     exists to repair, and retiring its schedule would silence the loop. The
+//     distinction is structural, not a judgement call: the scheduler only ever
+//     sees whether the GATE started a session, and the turn itself runs
+//     detached long after Dispatch has returned (see dispatch.go).
 //
 // Timezone: the whole stack evaluates in one location (TZ on agentd, default
 // UTC — §8.6). DST needs no special case because occurrences are keyed on the
@@ -29,6 +44,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -41,6 +57,10 @@ type schedulerStore interface {
 	ListEnabledSchedules(ctx context.Context) ([]*agentdb.Schedule, error)
 	GetWorker(ctx context.Context, project, name string) (*agentdb.Worker, error)
 	DisableSchedule(ctx context.Context, project, id string, cw agentdb.ConfigWrite) (*agentdb.Schedule, error)
+	// The consecutive-provision-failure streak. Runtime state, deliberately not
+	// a config event — see the note above these methods in agentdb/schedules.go.
+	NoteScheduleProvisionFailure(ctx context.Context, project, id, reason string) (int, error)
+	ClearScheduleProvisionFailures(ctx context.Context, project, id string) error
 	ClaimFiring(ctx context.Context, f *agentdb.ScheduleFiring) (*agentdb.ScheduleFiring, bool, error)
 	StampFiringEvent(ctx context.Context, firingID, eventID string) error
 	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
@@ -54,7 +74,12 @@ var _ schedulerStore = (*agentdb.Store)(nil)
 // firing was handed to the gate" without a Runner. The router (E3) uses the same
 // concrete *dispatcher.
 type jobDispatcher interface {
+	// Dispatch is what the router calls: it wants the outcome and nothing else.
 	Dispatch(ctx context.Context, delivery *agentdb.EventDelivery) (dispatchOutcome, error)
+	// DispatchWithReason is what the SCHEDULER calls: a schedule about to be
+	// retired for never starting must record WHY, and the reason is otherwise
+	// only ever logged (§8.4's delivery tuple has no reason column).
+	DispatchWithReason(ctx context.Context, delivery *agentdb.EventDelivery) (dispatchOutcome, string, error)
 	DrainPending(ctx context.Context, project string) (int, error)
 }
 
@@ -234,12 +259,71 @@ func (s *scheduler) fire(ctx context.Context, sch *agentdb.Schedule, minute time
 
 	// …and it goes through the SAME gate as an event-matched delivery, so a
 	// worker already at max_instances queues rather than doubling up.
-	outcome, err := s.dispatcher.Dispatch(ctx, delivery)
+	outcome, reason, err := s.dispatcher.DispatchWithReason(ctx, delivery)
 	if err != nil {
+		// An infrastructure error from the gate (a failed count, unreadable
+		// settings). Deliberately NOT counted: it says the database hiccuped,
+		// not that this schedule is broken, and the streak must only ever be
+		// grown by evidence about the schedule itself.
 		return err
 	}
 	s.logf("[scheduler] %s/%s fired %s → %s", sch.Project, sch.ID, agentdb.OccurrenceKey(minute), outcome)
+	switch outcome {
+	case dispatchStarted:
+		// A session exists. That — and only that — is this schedule working.
+		// The turn runs detached from here, so whether the JOB succeeds or
+		// fails is invisible to the streak by construction (§8.7).
+		s.clearProvisionFailures(ctx, sch)
+	case dispatchFailed:
+		// The gate could not start a job at all: the worker is gone or
+		// disabled, composition refused, or the session would not provision.
+		s.noteProvisionFailure(ctx, sch, reason)
+	case dispatchQueued, dispatchSkipped:
+		// Queued is the capacity gate working as designed and skipped is
+		// somebody else's firing — neither is a failure, and neither is proof
+		// of health. Leave the streak alone.
+	}
 	return nil
+}
+
+// noteProvisionFailure grows the streak and, at the ceiling, retires the
+// schedule the way §8.6 retires one whose worker is gone.
+func (s *scheduler) noteProvisionFailure(ctx context.Context, sch *agentdb.Schedule, reason string) {
+	if reason == "" {
+		reason = "the job could not be started"
+	}
+	n, err := s.store.NoteScheduleProvisionFailure(ctx, sch.Project, sch.ID, reason)
+	if err != nil {
+		s.logf("[scheduler] schedule %s/%s: could not record a provision failure: %v",
+			sch.Project, sch.ID, err)
+		return
+	}
+	if n < agentdb.ScheduleMaxProvisionFailures {
+		// Loud on the way up, not only at the end: an operator watching the log
+		// sees the streak building and can act before anything is switched off.
+		s.logf("[scheduler] schedule %s/%s could not provision a job (%d/%d consecutive): %s",
+			sch.Project, sch.ID, n, agentdb.ScheduleMaxProvisionFailures, reason)
+		return
+	}
+	s.logf("[scheduler] schedule %s/%s failed to provision %d times running: DISABLING it so it stops "+
+		"retrying every %s and starving its neighbours. Last reason: %s",
+		sch.Project, sch.ID, n, sch.Cron, reason)
+	s.disable(ctx, sch, fmt.Sprintf("%d consecutive firings could not start a job; last reason: %s", n, reason))
+}
+
+// clearProvisionFailures resets the streak, and only writes when there is one to
+// reset — the healthy path is by far the common one and must stay a pure read.
+func (s *scheduler) clearProvisionFailures(ctx context.Context, sch *agentdb.Schedule) {
+	if sch.ProvisionFailures == 0 {
+		return
+	}
+	if err := s.store.ClearScheduleProvisionFailures(ctx, sch.Project, sch.ID); err != nil {
+		s.logf("[scheduler] schedule %s/%s: could not clear the provision-failure streak: %v",
+			sch.Project, sch.ID, err)
+		return
+	}
+	s.logf("[scheduler] schedule %s/%s started a job again — provision-failure streak reset (was %d)",
+		sch.Project, sch.ID, sch.ProvisionFailures)
 }
 
 // disable switches a schedule off, recording the reason in the config log.

@@ -621,6 +621,30 @@ var agentMigrations = []migration{
 				ON config_events(created_at) WHERE emitted_at = 0;
 		`,
 	},
+	{
+		// The provision-failure streak (§8.6). 53 abandoned `* * * * *` rows,
+		// each failing to provision every minute, between them held every host
+		// port and made the whole stack unable to start anything — for as long
+		// as it took a human to notice and delete the rows.
+		//
+		// §8.6 already disables a schedule whose worker is gone. A schedule that
+		// can never provision is the same class of problem, so it gets the same
+		// answer, with a counter to make it bounded rather than clever.
+		//
+		// Both columns are RUNTIME STATE on a configuration row, like
+		// project_events.delivered: they record an observation, not a decision.
+		// The decision they eventually cause — the disable — goes through
+		// DisableSchedule and lands in the config log with its rationale.
+		//
+		// DEFAULT here rather than a gorm `default:` tag, per the store
+		// convention: GORM substitutes a declared default for a zero value on
+		// write, which would make a reset-to-0 unwritable.
+		Name: "031_schedule_provision_failures",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS provision_failures INT NOT NULL DEFAULT 0;
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_provision_error TEXT NOT NULL DEFAULT '';
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

@@ -755,6 +755,16 @@ var ConfigMutationExempt = map[string]string{
 	"SetConfigEventHook": "J3's post-commit seam: it installs the in-process callback that turns a committed " +
 		"record into the routable `config.changed` event (§15.8). It touches no table at all — it is process " +
 		"wiring, called once at boot, and the classifier only flags it because \"Config\" is a configuration noun",
+	"NoteScheduleProvisionFailure": "§15.3 rule 3: a counter of CONSECUTIVE firings that could not be turned " +
+		"into a job is an observation, not a decision — the same kind of runtime state as " +
+		"MarkProjectEventDelivered's watermark. It is also self-defeatingly noisy as a config event: the " +
+		"schedules this counts are failing every minute, so logging each one would bury the changelog it is " +
+		"meant to make readable. The DECISION it eventually causes IS logged — DisableSchedule writes " +
+		"schedule_update with the reason in its rationale (§8.6). Writes a guarded table outside the seam, " +
+		"like the two custom-image escapes, so the scheduler must not run against a store with the write " +
+		"guard installed (it never does: the guard is a test fixture)",
+	"ClearScheduleProvisionFailures": "the reset half of NoteScheduleProvisionFailure; same runtime-state " +
+		"reasoning, and a config event on every SUCCESSFUL firing would be worse still",
 	"MarkCustomImageReaped": "storage GC, not curation: the snapshot_ttl_days reaper (§5, B4) deleted the bytes " +
 		"and stamps the catalogue row so resolution fails loudly instead of pointing at nothing (§13.7). " +
 		"No agent decided it and §15.3's closed vocabulary has no verb for it. Like DeleteCustomImage it " +

@@ -589,7 +589,13 @@ func TestMutationsAreLogged(t *testing.T) {
 		// SetConfigEventHook writes no table at all — it installs the post-commit
 		// callback at boot. Logging a config event about announcing a config
 		// event would be a loop with no bottom.
+		// Grown twice more on 2026-07-26 by the schedule-storm fix: the
+		// consecutive-provision-failure counter and its reset. §15.3 rule 3
+		// again — an observation, not a decision. The decision it leads to (the
+		// disable) still goes through DisableSchedule and IS logged, so §8.6's
+		// "disabled and logged" is unweakened.
 		want := []string{
+			"ClearScheduleProvisionFailures",
 			"ClearWorkerBinding",
 			"CreateProjectEvent",
 			"DeleteCustomImage",
@@ -598,6 +604,7 @@ func TestMutationsAreLogged(t *testing.T) {
 			"MarkCustomImageReaped",
 			"MarkCustomImageResumed",
 			"MarkProjectEventDelivered",
+			"NoteScheduleProvisionFailure",
 			"SetConfigEventHook",
 			"SetSkillVisibility",
 			"SetWorkerBinding",

@@ -92,8 +92,32 @@ func (f *fakeDispatchStore) DisableSchedule(_ context.Context, project, id strin
 		return nil, fmt.Errorf("%w: %s", agentdb.ErrScheduleNotFound, id)
 	}
 	s.Enabled = false
+	// The real store spends the streak with the disable, so a re-enable gets a
+	// fresh budget rather than retiring on its next firing.
+	s.ProvisionFailures = 0
+	s.LastProvisionError = ""
 	f.disabled[id] = cw.Rationale
 	return s, nil
+}
+
+func (f *fakeDispatchStore) NoteScheduleProvisionFailure(_ context.Context, project, id, reason string) (int, error) {
+	s, ok := f.schedules[id]
+	if !ok || s.Project != project {
+		return 0, fmt.Errorf("%w: %s", agentdb.ErrScheduleNotFound, id)
+	}
+	s.ProvisionFailures++
+	s.LastProvisionError = reason
+	return s.ProvisionFailures, nil
+}
+
+func (f *fakeDispatchStore) ClearScheduleProvisionFailures(_ context.Context, project, id string) error {
+	s, ok := f.schedules[id]
+	if !ok || s.Project != project {
+		return fmt.Errorf("%w: %s", agentdb.ErrScheduleNotFound, id)
+	}
+	s.ProvisionFailures = 0
+	s.LastProvisionError = ""
+	return nil
 }
 
 func (f *fakeDispatchStore) ClaimFiring(_ context.Context, fi *agentdb.ScheduleFiring) (*agentdb.ScheduleFiring, bool, error) {

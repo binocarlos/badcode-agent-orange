@@ -72,10 +72,18 @@ type Schedule struct {
 	// expression is refused, never stored to fail silently at 03:00.
 	Cron string `json:"cron" gorm:"type:varchar(255);not null"`
 	// Input is the instruction this trigger delivers — it becomes the event text.
-	Input     string `json:"input" gorm:"type:text"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	Input   string `json:"input" gorm:"type:text"`
+	Enabled bool   `json:"enabled"`
+	// ProvisionFailures counts CONSECUTIVE firings that could not be turned into
+	// a running job. It is reset by the first firing that starts one — and only
+	// by that: what the job then DOES is none of this counter's business (see
+	// ScheduleMaxProvisionFailures). Runtime state, not configuration.
+	ProvisionFailures int `json:"provision_failures"`
+	// LastProvisionError is why the most recent one failed, kept so an operator
+	// looking at a schedule with a streak does not have to go log-diving.
+	LastProvisionError string `json:"last_provision_error" gorm:"type:text"`
+	CreatedAt          int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt          int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (Schedule) TableName() string { return "schedules" }
@@ -269,6 +277,11 @@ func (s *Store) DisableSchedule(ctx context.Context, project, id string, cw Conf
 		return existing, nil
 	}
 	existing.Enabled = false
+	// The streak is spent with the disable. A human who re-enables the schedule
+	// after fixing the host must get a fresh budget, not a row that retires again
+	// on its very next firing.
+	existing.ProvisionFailures = 0
+	existing.LastProvisionError = ""
 	if _, err := s.WithConfigEvent(ctx, ConfigChange{
 		Project: existing.Project,
 		Action:  ActionScheduleUpdate,
@@ -317,6 +330,92 @@ func (s *Store) DeleteSchedule(ctx context.Context, project, id string, cw Confi
 		return fmt.Errorf("failed to delete schedule: %w", err)
 	}
 	return nil
+}
+
+// ── The provision-failure streak (runtime state, §8.6) ──────────────────────
+//
+// Both methods below write a `schedules` row and BOTH are deliberately exempt
+// from the config log (ConfigMutationExempt). §15.3 rule 3's line is decision vs
+// observation, not table vs table: MarkProjectEventDelivered writes the router's
+// watermark and MarkCustomImageResumed writes launch telemetry, and neither is
+// something a person chose. A failure counter is the same kind of thing — nobody
+// decided it, and appending a config event every minute for a schedule that is
+// failing every minute would bury the log it is supposed to make readable.
+//
+// The DECISION these observations lead to — switching the schedule off — is a
+// config event, written by DisableSchedule with the reason in its rationale.
+// That is the §8.6 precedent for a missing worker, and it is what a human reads
+// in the changelog and undoes.
+
+// ScheduleMaxProvisionFailures is how many CONSECUTIVE firings may fail to start
+// a job before the schedule is disabled (§8.6).
+//
+// Five, deliberately unclever. It has to be high enough that nothing transient
+// retires a schedule a human wanted — an agentd restart, a slow image pull, a
+// Postgres blip, a momentary capacity crunch — and low enough that a `* * * * *`
+// row which can never succeed stops hammering its neighbours within minutes
+// rather than for a working day. Five consecutive total failures is not a blip
+// by any reading, and the cost of being wrong is bounded and reversible: the
+// disable is in the config log with its reason, and re-enabling is one edit.
+const ScheduleMaxProvisionFailures = 5
+
+// NoteScheduleProvisionFailure records that one firing could not be turned into
+// a running job, and returns the new consecutive count.
+//
+// It is NOT for a job that ran and failed. A worker whose jobs keep failing is
+// precisely what §8.7's self-improvement loop exists to repair; retiring its
+// schedule would silence the loop. The caller (scheduler.go) only ever reaches
+// here when no session was started at all.
+func (s *Store) NoteScheduleProvisionFailure(ctx context.Context, project, id, reason string) (int, error) {
+	if project == "" || id == "" {
+		return 0, fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	res := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ? AND id = ?", project, id).
+		Updates(map[string]any{
+			// Incremented in SQL, not read-modify-written, so two agentds
+			// counting the same broken schedule cannot lose an increment.
+			"provision_failures":   gorm.Expr("provision_failures + 1"),
+			"last_provision_error": truncateReason(reason),
+			"updated_at":           eventsNow(),
+		})
+	if res.Error != nil {
+		return 0, fmt.Errorf("failed to record schedule provision failure: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return 0, fmt.Errorf("%w: %s/%s", ErrScheduleNotFound, project, id)
+	}
+	sch, err := s.GetSchedule(ctx, project, id)
+	if err != nil {
+		return 0, err
+	}
+	return sch.ProvisionFailures, nil
+}
+
+// ClearScheduleProvisionFailures zeroes the streak. Called when a firing starts
+// a job — the only thing that counts as the schedule working.
+func (s *Store) ClearScheduleProvisionFailures(ctx context.Context, project, id string) error {
+	if project == "" || id == "" {
+		return fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	if err := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ? AND id = ?", project, id).
+		Updates(map[string]any{
+			"provision_failures":   0,
+			"last_provision_error": "",
+		}).Error; err != nil {
+		return fmt.Errorf("failed to clear schedule provision failures: %w", err)
+	}
+	return nil
+}
+
+// truncateReason keeps a stored error bounded; the full text is in the log.
+func truncateReason(reason string) string {
+	const max = 500
+	if len(reason) <= max {
+		return reason
+	}
+	return reason[:max] + "…"
 }
 
 // ── Firings (runtime state — the idempotency guard) ─────────────────────────

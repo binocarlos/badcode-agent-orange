@@ -152,6 +152,19 @@ of gravity: it is the instruction the firing delivers, so "10:00 → write the m
 was down are **skipped, not replayed**. A due schedule whose worker no longer exists is disabled
 and logged.
 
+A schedule is also disabled after **five consecutive firings that could not start a job at all** —
+the worker is gone or disabled, composition refused, or the session would not provision. Fifty-three
+abandoned `* * * * *` rows once did exactly that, and between them held every host port until a human
+deleted the rows. The disable appends a `schedule_update` to the config log whose rationale carries
+the last reason, so it shows up in the changelog and is undone by re-enabling the row (which starts
+the count again from zero). The streak and the last error are readable on the schedule itself
+(`provision_failures`, `last_provision_error`).
+
+**A job that ran and failed does not count.** Only a firing that never became a running session
+does. A worker whose jobs keep failing is what the §8.7 self-improvement loop exists to repair, and
+retiring its schedule would silence that loop; a firing merely *queued* behind a busy worker is the
+capacity gate working and does not count either.
+
 **External events** — `POST /agent/events {type, text}`, project from the JWT. Note that with
 schedules in core, *scheduled pull usually beats pushed events*: give a worker an email MCP tool
 and a schedule saying "every 2 hours, check the inbox", rather than building a connector.

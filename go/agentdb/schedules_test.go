@@ -33,6 +33,89 @@ func newScheduleStore(t *testing.T) *Store {
 	return &Store{gdb: db}
 }
 
+// ── The provision-failure streak (§8.6) ─────────────────────────────────────
+
+// TestScheduleProvisionFailureStreak covers the counter's whole contract in one
+// place: it counts up, it persists with its reason, a reset zeroes it, the
+// counter writes stay OUT of the config log, and switching the schedule off
+// spends the streak (so a re-enable starts from zero rather than retiring on its
+// very next firing) while the DISABLE itself is logged with its reason.
+func TestScheduleProvisionFailureStreak(t *testing.T) {
+	s := newScheduleStore(t)
+	ctx := context.Background()
+
+	sch, err := s.CreateSchedule(ctx, NewSchedule("acme", "tweeter", "* * * * *", "tweet"), ConfigWrite{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sch.ProvisionFailures != 0 {
+		t.Fatalf("a new schedule starts with no streak, got %d", sch.ProvisionFailures)
+	}
+
+	for want := 1; want <= 3; want++ {
+		n, err := s.NoteScheduleProvisionFailure(ctx, "acme", sch.ID, "port pool exhausted")
+		if err != nil {
+			t.Fatalf("note %d: %v", want, err)
+		}
+		if n != want {
+			t.Fatalf("streak = %d, want %d", n, want)
+		}
+	}
+	got, err := s.GetSchedule(ctx, "acme", sch.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.ProvisionFailures != 3 || got.LastProvisionError != "port pool exhausted" {
+		t.Fatalf("streak not persisted with its reason: %+v", got)
+	}
+
+	if err := s.ClearScheduleProvisionFailures(ctx, "acme", sch.ID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	got, _ = s.GetSchedule(ctx, "acme", sch.ID)
+	if got.ProvisionFailures != 0 || got.LastProvisionError != "" {
+		t.Fatalf("clear left state behind: %+v", got)
+	}
+
+	// The counter is runtime state: neither write appends to the config log
+	// (§15.3 rule 3). Only the create is in there so far.
+	evs, err := s.ListConfigEvents(ctx, ConfigEventQuery{Project: "acme"})
+	if err != nil {
+		t.Fatalf("list config events: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("expected only the create in the config log, got %d: %+v", len(evs), evs)
+	}
+
+	if _, err := s.NoteScheduleProvisionFailure(ctx, "acme", sch.ID, "still exhausted"); err != nil {
+		t.Fatalf("note: %v", err)
+	}
+	if _, err := s.DisableSchedule(ctx, "acme", sch.ID, ConfigWrite{Rationale: "5 consecutive firings"}); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	got, _ = s.GetSchedule(ctx, "acme", sch.ID)
+	if got.Enabled {
+		t.Fatalf("schedule should be disabled")
+	}
+	if got.ProvisionFailures != 0 {
+		t.Fatalf("the disable must spend the streak, got %d", got.ProvisionFailures)
+	}
+	// …and the decision IS logged, carrying the reason.
+	evs, _ = s.ListConfigEvents(ctx, ConfigEventQuery{Project: "acme"})
+	if len(evs) != 2 || evs[0].Action != ActionScheduleUpdate || !strings.Contains(evs[0].Rationale, "5 consecutive") {
+		t.Fatalf("the disable must append one config event carrying the reason: %+v", evs)
+	}
+}
+
+// TestScheduleProvisionFailureUnknownRow: a row that vanished mid-streak is a
+// not-found, never a silent success that counts into nothing.
+func TestScheduleProvisionFailureUnknownRow(t *testing.T) {
+	s := newScheduleStore(t)
+	if _, err := s.NoteScheduleProvisionFailure(context.Background(), "acme", "nope", "x"); !errors.Is(err, ErrScheduleNotFound) {
+		t.Fatalf("want ErrScheduleNotFound, got %v", err)
+	}
+}
+
 // ── The cron parser: acceptance ─────────────────────────────────────────────
 
 func TestSchedulesCronParseRejects(t *testing.T) {

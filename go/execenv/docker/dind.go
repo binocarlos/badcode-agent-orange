@@ -12,6 +12,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,7 +50,18 @@ type DinDConfig struct {
 
 	// Network is the Docker network mode for the containers. Defaults to "bridge".
 	Network string
+
+	// Logf receives the pool warnings below. Defaults to log.Printf, so the host
+	// that embeds the engine (agentd) gets them with no wiring.
+	Logf func(format string, v ...any)
 }
+
+// portPoolLowWater is how few free ports are left before every provision starts
+// warning. The pool is the host's hard session ceiling and nothing reaps it, so
+// the only chance to notice is on the way up: at 10 free, an operator still has
+// ten sessions' worth of time to act, and the warning stops at most ten lines
+// short of the exhaustion error itself.
+const portPoolLowWater = 10
 
 // dindState holds the runtime information for a provisioned container.
 type dindState struct {
@@ -138,6 +150,35 @@ func defaultPoller(_ context.Context, address string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
+// Capacity implements execenv.CapacityReporter. It is what lets the Runner say
+// "this host is full" instead of "this session is lost" (see runner.go's
+// restoreToWorker).
+func (e *DinD) Capacity() error { return e.ports.Capacity() }
+
+// Compile-time assertion that a DinD can be asked about capacity.
+var _ execenv.CapacityReporter = (*DinD)(nil)
+
+func (e *DinD) logf(format string, v ...any) {
+	if e.cfg.Logf != nil {
+		e.cfg.Logf(format, v...)
+		return
+	}
+	log.Printf(format, v...)
+}
+
+// warnIfPoolLow shouts on the approach to the cliff. Silence until the pool is
+// already empty is how a saturated host gets read as a product bug.
+func (e *DinD) warnIfPoolLow() {
+	total, inUse, free := e.ports.Stats()
+	if free > portPoolLowWater {
+		return
+	}
+	e.logf("[dind] WARNING: host port pool nearly exhausted — %d/%d ports leased, %d free (range %d-%d). "+
+		"One live session holds one port until it is DELETED and nothing reaps them; at zero free, "+
+		"every new session on this host fails.",
+		inUse, total, free, e.cfg.PortRangeStart, e.cfg.PortRangeEnd)
+}
+
 // ─── ExecutionEnvironment ────────────────────────────────────────────────────
 
 // Provision creates and starts a new per-session container.
@@ -157,8 +198,11 @@ func (e *DinD) Provision(ctx context.Context, spec execenv.ProvisionSpec) (*exec
 	// Allocate a host port.
 	port, err := e.ports.Allocate(spec.SessionID)
 	if err != nil {
+		// Do NOT re-word: the allocator's message is the operator-facing one and
+		// it wraps execenv.ErrNoCapacity, which is what the Runner tests for.
 		return nil, fmt.Errorf("dind provision: %w", err)
 	}
+	e.warnIfPoolLow()
 
 	name := containerName(spec.SessionID)
 	agentPort := spec.AgentPort
