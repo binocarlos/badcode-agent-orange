@@ -484,6 +484,44 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(fix-createerr, 2026-07-26)` **FIXED — the root defect behind every unreachable diagnostic.**
+  `httpapi/session.go` backgrounded `CreateSession` and **discarded the error entirely**, keeping
+  only `status:"error"` and not even a log line — so every good failure message written above it
+  was dead on arrival, and three engineers misdiagnosed the same symptom. The reason is now stored
+  on the session row (**migration 032**, `create_error`) and surfaced where the generic
+  "must be re-created" text used to be. A caller with a bad `base_image` now receives:
+  *`session "…" never started: … project_settings.base_image = "…" (project "…") names no image in
+  the §13 catalogue, so it was used as a literal registry reference and that reference failed: … —
+  fix the cause, then create the session again`*.
+- `(fix-createerr, 2026-07-26)` **Recorded in the Runner, not the handler** — the dispatcher and
+  scheduler background creates too and were equally silent, so one place fixes all three.
+  `GET /agent/session/{id}` now returns `create_error` beside `status`; rendering it in the UI is
+  the obvious follow-up.
+- `(fix-createerr, 2026-07-26)` **The precedence rule, which is the interesting part:** live
+  capacity is asked **first** and wins (it is current, and carries a *type* — `ErrNoCapacity` — that
+  a stored string could never round-trip, which the 503-vs-404 branch depends on); a stored reason
+  is second; the generic lost-session text only when there is nothing else to say. A capacity
+  failure is **never stored** (it would be guaranteed to go stale) and never overwrites a stored
+  configuration reason (the host recovers; a mis-typed setting does not). So a saturated host says
+  saturation, and the moment a port frees the same session says `base_image` — both true, in the
+  order that can be acted on.
+- `(fix-createerr, 2026-07-26)` **A reason must be clearable or it becomes the next bug** — hence no
+  gorm `default:` tag (gorm substitutes a declared default for a zero value, making the
+  clear-on-success unwritable) and an unconditional set in the sqlite upsert rather than the
+  CASE-guard used by its neighbours. The sqlite fallback needed the column too, or the fix would be
+  invisible on exactly the stack a developer runs first.
+- `(fix-createerr, 2026-07-26)` **New hazard found, not fixed: `runMigrations` is not
+  concurrency-safe.** It checks `applied` then inserts with no lock, so two processes applying the
+  same new migration at once collide on the primary key — it bit one test run. A
+  `pg_advisory_xact_lock` needs dialect detection since `Open` also serves sqlite. **A live hazard
+  for multi-replica agentd boots.**
+- `(fix-portrange, 2026-07-26)` **The session port range is now configuration**
+  (`AGENTKIT_PORT_RANGE_START`/`_END`, defaulting to 30001-30100 so nothing shifts unless it opts
+  in), because a 100-port pool nobody can fill made the exhaustion path impossible to exercise
+  honestly. A test stack with three ports reaches the real error at a real caller in seconds.
+  Setting one bound alone is a **boot error** — otherwise an operator's number pairs silently with
+  a default from the other end and boots inverted. Compose forwarding was verified by substitution
+  (`docker compose config`), the check that would have caught the `AGENTKIT_EMBEDDING_BACKEND` drop.
 - `(fix-portpool, 2026-07-26)` **FIXED — both halves.** The operator-facing error now reads
   "execution environment is at capacity: the host port pool is exhausted — all 100 ports in
   30001-30100 are leased to live sessions, and a session holds its port until it is deleted, so
