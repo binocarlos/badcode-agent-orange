@@ -484,6 +484,47 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(fix-prompt, 2026-07-26)` **FIXED and externally verified.** For a routed worker job the entire
+  model-visible system prompt was the project prompt alone (`got: "House style."`) — no core
+  preamble, no worker prompt, no memory briefing. Rule adopted: **a session row with a non-empty
+  `composed_prompt` runs every turn with that string verbatim**; a row without one keeps the
+  provider path. Deliberately *not* combined with the provider (that would duplicate the project
+  layer and let a mid-job `worker_prompt_write` leak into a running session — what compose-once
+  exists to prevent), and read off the durable row per turn rather than cached, which makes resume
+  free. The e2e delivery guard went red → green independently.
+- `(fix-prompt, 2026-07-26)` **`Persona` deliberately stays empty on routed jobs**, with a comment
+  and a test so nobody "fixes" it later: `persona` is what the provider re-resolves worker config
+  from *live, every turn*, while a composed job has prompt/image/tools pinned at dispatch. Setting
+  both gives one session two worker identities that can drift apart.
+- `(fix-prompt, 2026-07-26)` **Same defect class, one layer up, not fixed:** `POST /agent/session`
+  accepts a `systemPrompt`, forwards it, and — with no `Worker` — never persists or uses it. Nothing
+  in tree sends one, so nothing is broken today; closing it means widening `persistComposition`
+  beyond worker jobs, which is a deliberate decision rather than a side effect.
+- `(fix-prompt, 2026-07-26)` **The sandbox sends the composed prompt as `append` to Claude Code's
+  stock `claude_code` preset**, not as *the* system prompt. So the core preamble's "you may be
+  running with no human present" competes with preset text written for an interactive CLI. Affects
+  how strongly the preamble lands; needs a human decision, not an executor's.
+- `(audit, 2026-07-26)` **Nine weak assertions found across the suite, in four classes** — and the
+  spec I had publicly credited with getting this right (`skill_install`) was among them: it asserted
+  `{installed, file_written, bytes_written}`, **every one a field the tool writes about itself**. An
+  install that wrote nothing and returned that JSON would have passed. Strengthened to read the
+  document back out of the container and check the install script's own side effect. It passes, so
+  nothing was hiding — but it was luck, not evidence.
+- `(audit, 2026-07-26)` **Three real gaps where the untested behaviour is load-bearing** (assigned):
+  nothing asserts a burned image can actually **launch** (a version can record while the snapshot is
+  garbage — the §13.3 drift the design exists to prevent); nothing asserts
+  `project_settings.base_image` changes a session's launch image (silent failure mode: sessions use
+  the global default and nobody notices); and nothing asserts **`worker.enabled: false` actually
+  stops a worker reacting**, though that flag is the mechanism E4 chose *instead of* a
+  `worker_delete` tool, so retiring a worker rests entirely on it.
+- `(audit, 2026-07-26)` Left alone deliberately, and labelled rather than churned: the harness
+  permalink assertions (they check our own helper against a literal, and the 200-HTML check passes
+  for any path because the SPA fallback answers everything — both covered for real by the product-ui
+  test), and the CRUD round-trips, which are storage-only **by nature** and fine once named as such.
+- `(infra, 2026-07-26)` **`docker rm -f` returns before the daemon finishes**, and agentd **fatals on
+  boot** if it reclaims a container mid-removal (`removal … already in progress`) — so the agentd
+  restart added to `clean` was itself a reliable way to kill agentd. `clean` now waits for removals
+  to settle. **Engine-side, recovery treating a transient Docker state as fatal is worth softening.**
 - `(audit, 2026-07-26)` **Two passing tests were passing for a weaker reason than they read — the
   most important lesson of the build.** Both `the router starts an answerer job` and, critically,
   `a memory written by one job reaches the next job's composed prompt` assert `composed_prompt`
