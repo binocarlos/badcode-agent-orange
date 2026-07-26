@@ -183,6 +183,12 @@ chats filter on `interactive`.
 
 Delivery status is exactly `pending|running|ok|failed|awaiting_human|rate_limited`. A **cancelled**
 turn records `ok` (nothing better exists in that closed vocabulary, and the lease is released).
+A job whose turn called `request_human_attention` and left the request open ends at
+**`awaiting_human`** with no `ended_at` — a pause, not a completion. A failed turn still records
+`failed`: a crash does not get to look like patience. A parked delivery holds **no** capacity slot
+(`max_concurrent_jobs` and `max_instances` count `running` only), so a human who never replies
+cannot retire a worker. Nothing currently moves a delivery *out* of `awaiting_human` — a human
+replying resumes the session but leaves the old job-history row parked; see "known limitations".
 `GET /agent/events` and `GET /agent/deliveries` are the read paths the UI's events view uses.
 
 ---
@@ -364,6 +370,14 @@ Stated plainly because each one will otherwise be discovered the hard way.
 - **Semantic memory search is off in the shipped stack.** See §11.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
   tool events, and it is reused rather than duplicated.
+- **A delivery parked at `awaiting_human` never leaves that status.** The human clicks the
+  permalink and replies, and the *session* resumes exactly as §9 intends — but the reply arrives
+  through the ordinary chat path, which knows nothing about deliveries, so the job-history row
+  stays parked with no `ended_at`. It is a display wart, not a stall: the parked row holds no
+  capacity slot, the lease reaper only touches `running` rows, and the worker keeps running new
+  jobs. Closing it would mean either a resume hook on the message path or extending the attention
+  sweep — and `expires_in`-less requests, which are the common case, are invisible to that sweep.
+  Deliberately not fixed by growing an approval state machine, which §9 explicitly deletes.
 
 ---
 

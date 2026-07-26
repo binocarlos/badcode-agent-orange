@@ -258,3 +258,65 @@ func TestAttentionSessionStampHelper(t *testing.T) {
 		t.Fatalf("stamping an unknown session must fail loudly")
 	}
 }
+
+// TestSessionAwaitsHuman pins the read the §8.4 dispatch gate parks a delivery
+// on. It is deliberately NOT the session's per-turn `attention_requested`
+// column — that one is cleared as soon as the §8.2 emitter has copied it onto a
+// `worker.finished` envelope, so by the time a job settles it says nothing about
+// whether a human has replied. The open rows of `attention_requests` are the
+// durable fact.
+func TestSessionAwaitsHuman(t *testing.T) {
+	s := newAttentionStore(t)
+	ctx := context.Background()
+	seedAttentionSession(t, s, "s-1", "acme")
+	seedAttentionSession(t, s, "s-2", "acme")
+
+	awaits, err := s.SessionAwaitsHuman(ctx, "acme", "s-1")
+	if err != nil || awaits {
+		t.Fatalf("a session with no request awaits nobody: %v err=%v", awaits, err)
+	}
+
+	req, err := s.CreateAttentionRequest(ctx, &AttentionRequest{
+		Project: "acme", SessionID: "s-1", Worker: "tweet-author",
+		Message: "sign off on this draft", Channel: "webhook", Delivered: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if awaits, err = s.SessionAwaitsHuman(ctx, "acme", "s-1"); err != nil || !awaits {
+		t.Fatalf("an open request means the session awaits a human: %v err=%v", awaits, err)
+	}
+	// The per-turn stamp being cleared (what the emitter does) must NOT change
+	// the answer — that is the whole reason this read exists.
+	if err := s.SetSessionAttentionRequested(ctx, "s-1", false); err != nil {
+		t.Fatalf("clear stamp: %v", err)
+	}
+	if awaits, err = s.SessionAwaitsHuman(ctx, "acme", "s-1"); err != nil || !awaits {
+		t.Fatalf("clearing the per-turn stamp must not close the request: %v err=%v", awaits, err)
+	}
+
+	// Tenancy: another project's session looks like no request at all.
+	if awaits, err = s.SessionAwaitsHuman(ctx, "other-co", "s-1"); err != nil || awaits {
+		t.Fatalf("cross-project read leaked: %v err=%v", awaits, err)
+	}
+	// A sibling session is unaffected.
+	if awaits, err = s.SessionAwaitsHuman(ctx, "acme", "s-2"); err != nil || awaits {
+		t.Fatalf("the request must be scoped to its own session: %v err=%v", awaits, err)
+	}
+
+	// Resolving closes it.
+	if err := s.MarkAttentionAnswered(ctx, req.ID, 2000); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if awaits, err = s.SessionAwaitsHuman(ctx, "acme", "s-1"); err != nil || awaits {
+		t.Fatalf("an answered request is not outstanding: %v err=%v", awaits, err)
+	}
+
+	if _, err := s.SessionAwaitsHuman(ctx, "", "s-1"); err == nil {
+		t.Fatalf("an unscoped read must be refused")
+	}
+	if _, err := s.SessionAwaitsHuman(ctx, "acme", ""); err == nil {
+		t.Fatalf("a read with no session must be refused")
+	}
+}

@@ -151,3 +151,41 @@ func TestSchedulesLivePGConfigLogDualWrite(t *testing.T) {
 		t.Fatalf("payload jsonb extraction: got %q", worker)
 	}
 }
+
+// TestSessionAwaitsHumanLivePG runs the read the §8.4 dispatch gate parks a
+// delivery on against real Postgres — the sqlite cases prove the logic, this
+// proves the query. It is the one thing standing between "the job asked for a
+// human" and the delivery being closed `ok` as if the job were done.
+func TestSessionAwaitsHumanLivePG(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	project := liveScheduleProject(t, s)
+	session := uuid.New().String() // session_id is varchar(36) — a bare uuid, no prefix
+
+	awaits, err := s.SessionAwaitsHuman(ctx, project, session)
+	if err != nil || awaits {
+		t.Fatalf("a session with no request awaits nobody: %v err=%v", awaits, err)
+	}
+
+	req, err := s.CreateAttentionRequest(ctx, &AttentionRequest{
+		Project: project, SessionID: session, Worker: "tweet-author",
+		Message: "sign off on this draft", Channel: "webhook", Delivered: true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if awaits, err = s.SessionAwaitsHuman(ctx, project, session); err != nil || !awaits {
+		t.Fatalf("an open request must be visible: %v err=%v", awaits, err)
+	}
+	// Another project's read must not see it (the query is tenant-scoped in SQL).
+	if awaits, err = s.SessionAwaitsHuman(ctx, project+"-other", session); err != nil || awaits {
+		t.Fatalf("cross-project read leaked: %v err=%v", awaits, err)
+	}
+
+	if err := s.MarkAttentionTimedOut(ctx, req.ID, 4000); err != nil {
+		t.Fatalf("time out: %v", err)
+	}
+	if awaits, err = s.SessionAwaitsHuman(ctx, project, session); err != nil || awaits {
+		t.Fatalf("a resolved request is not outstanding: %v err=%v", awaits, err)
+	}
+}

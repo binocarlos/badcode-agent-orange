@@ -54,6 +54,9 @@ type dispatchStore interface {
 	CountActiveDeliveriesForWorker(ctx context.Context, project, worker string) (int64, error)
 	ListPendingDeliveries(ctx context.Context, project, worker string, limit int) ([]*agentdb.EventDelivery, error)
 	UpdateDeliveryStatus(ctx context.Context, project, id string, u agentdb.DeliveryStatusUpdate) (*agentdb.EventDelivery, error)
+	// SessionAwaitsHuman answers §8.4's `awaiting_human`: did this job end its
+	// turn with a `request_human_attention` still open?
+	SessionAwaitsHuman(ctx context.Context, project, sessionID string) (bool, error)
 }
 
 // The concrete store must always satisfy the seam.
@@ -312,6 +315,23 @@ func (d *dispatcher) Dispatch(ctx context.Context, delivery *agentdb.EventDelive
 				status = agentdb.DeliveryFailed
 				d.logf("[dispatch] delivery %s (%s/%s) session %s ended badly: %v",
 					deliveryID, project, worker.Name, sessionID, runErr)
+			} else if awaits, err := d.store.SessionAwaitsHuman(ctx, project, sessionID); err != nil {
+				// Unknowable ⇒ close it normally. A delivery wrongly left parked
+				// would misreport the job for ever; wrongly closed it only loses a
+				// status nuance — the human still has the link the webhook carried,
+				// and the session itself is untouched either way.
+				d.logf("[dispatch] delivery %s: could not check for an open attention request: %v",
+					deliveryID, err)
+			} else if awaits {
+				// §8.4: the job asked for a human and ended its turn. That is a
+				// PAUSE, not a completion — UpdateDeliveryStatus leaves ended_at
+				// unset for `awaiting_human` (E1). No approval machinery follows
+				// (§9): the human clicks the permalink, types the next message, and
+				// the thread carries on. Note this frees the worker's instance slot,
+				// which is deliberate — see CountActiveDeliveriesForWorker.
+				status = agentdb.DeliveryAwaitingHuman
+				d.logf("[dispatch] delivery %s (%s/%s) session %s is awaiting a human",
+					deliveryID, project, worker.Name, sessionID)
 			}
 			if _, err := d.store.UpdateDeliveryStatus(ctx, project, deliveryID, agentdb.DeliveryStatusUpdate{
 				Status:    status,
