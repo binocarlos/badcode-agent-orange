@@ -170,6 +170,11 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		} else {
 			r.progress.finish(req.SessionID, "")
 		}
+		// Record WHY, durably, before the error leaves this function. Every
+		// caller that provisions in the background — agentd's HTTP handler, the
+		// dispatcher, the scheduler — used to drop it here, and the operator's
+		// next message was answered by the lost-session path instead.
+		r.recordCreateOutcome(ctx, req.SessionID, err)
 	}()
 
 	// The host's per-session defaults (§5), resolved ONCE: both the MCP union
@@ -977,6 +982,75 @@ func workerCapacity(worker *fleet.Worker) error {
 	return cr.Capacity()
 }
 
+// maxCreateErrorLen bounds what a create failure may write onto the session row.
+// Docker's daemon errors can carry a whole build log; the row is a diagnostic,
+// not a log store.
+const maxCreateErrorLen = 2000
+
+// recordCreateOutcome persists WHY a create failed — or clears the record when
+// one succeeds — and logs the failure.
+//
+// Only reasons that are PERMANENT FACTS ABOUT THIS SESSION'S CONFIGURATION are
+// stored. A capacity failure (execenv.ErrNoCapacity) is a fact about the HOST at
+// one instant: it stops being true the moment another session is deleted, so
+// storing it would plant a reason guaranteed to go stale, which is worse than
+// silence. Capacity is asked of the environment live instead (workerCapacity).
+// A capacity failure therefore also leaves any EXISTING reason alone: a session
+// with a broken base_image that then meets a full host still has a broken
+// base_image, and that is the fact worth keeping.
+//
+// Best-effort throughout: this runs on the failure path and must never replace
+// the caller's error with a storage error.
+func (r *runnerImpl) recordCreateOutcome(ctx context.Context, sessionID string, createErr error) {
+	if sessionID == "" || r.deps.Store == nil {
+		return
+	}
+	if createErr != nil {
+		// The silence half of the defect: agentd logged NOTHING for a session
+		// whose background create failed, so even the operator with shell
+		// access had nowhere to look.
+		log.Printf("agentkit: session %s failed to start: %v", sessionID, createErr)
+		if errors.Is(createErr, execenv.ErrNoCapacity) {
+			return
+		}
+	}
+	// The create context may already be cancelled (a client that hung up, a
+	// cancelled dispatch); the reason still has to land.
+	ctx = context.WithoutCancel(ctx)
+	reason := ""
+	if createErr != nil {
+		reason = createErr.Error()
+		if len(reason) > maxCreateErrorLen {
+			reason = reason[:maxCreateErrorLen] + "… (truncated)"
+		}
+	}
+	sess, err := r.deps.Store.GetSession(ctx, sessionID)
+	if err != nil || sess == nil {
+		return
+	}
+	if sess.CreateError == reason {
+		return // nothing to write; don't churn updated_at
+	}
+	sess.CreateError = reason
+	if _, err := r.deps.Store.UpdateSession(ctx, sess); err != nil {
+		log.Printf("agentkit: session %s: could not record why it failed to start: %v", sessionID, err)
+	}
+}
+
+// createFailureReason reads back the recorded reason a session failed to start.
+// "" when there is none, or when the row cannot be read — in which case the
+// caller falls through to the generic message rather than inventing one.
+func (r *runnerImpl) createFailureReason(ctx context.Context, sessionID string) string {
+	if r.deps.Store == nil {
+		return ""
+	}
+	sess, err := r.deps.Store.GetSession(ctx, sessionID)
+	if err != nil || sess == nil {
+		return ""
+	}
+	return sess.CreateError
+}
+
 // restoreToWorker attempts to restore a session from its snapshot handle onto the
 // given worker. If no snapshot handle exists the session is unrecoverable.
 func (r *runnerImpl) restoreToWorker(ctx context.Context, sessionID string, worker *fleet.Worker) (inst *execenv.Instance, err error) {
@@ -1004,6 +1078,20 @@ func (r *runnerImpl) restoreToWorker(ctx context.Context, sessionID string, work
 		if cerr := workerCapacity(worker); cerr != nil {
 			return nil, fmt.Errorf("cannot start session %q on this host: %w", sessionID, cerr)
 		}
+		// Live capacity was asked FIRST and wins, deliberately: it is the
+		// current truth about the host and it carries a type a caller can
+		// branch on, whereas a stored reason is a snapshot of one past moment.
+		//
+		// With the host healthy, a recorded reason is the whole answer. It is
+		// the §13 diagnostic (which setting, which value, which project, which
+		// of the two interpretations) or whatever else the create actually hit
+		// — recorded by recordCreateOutcome, which stores only causes that are
+		// still true: permanent facts about this session's configuration.
+		if reason := r.createFailureReason(ctx, sessionID); reason != "" {
+			return nil, fmt.Errorf("session %q never started: %s — fix the cause, then create the session again", sessionID, reason)
+		}
+		// Genuinely lost: no instance, no snapshot, no recorded reason, and a
+		// host with room. "Re-create it" is correct advice here and nowhere else.
 		return nil, fmt.Errorf("session %q has no running instance and no snapshot — session must be re-created", sessionID)
 	}
 

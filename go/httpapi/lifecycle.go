@@ -30,6 +30,10 @@ type sessionResp struct {
 	Job      string `json:"job"`
 	Persona  string `json:"persona"`
 	Status   string `json:"status"`
+	// CreateError is why the session failed to start; omitted when it didn't.
+	// A `status: "error"` with nothing beside it is the same unreachable
+	// diagnostic the SSE path had.
+	CreateError string `json:"create_error,omitempty"`
 }
 
 // Status reports combined runtime + durable state for a session.
@@ -114,6 +118,11 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 			"current_node":   session.CurrentNode,
 			"metadata":       session.Metadata,
 			"snapshot_state": session.SnapshotState,
+			// Why this session failed to start, when it did. A UI showing
+			// `status: "error"` with no explanation is the same defect one
+			// layer up from the SSE one — the operator can see that something
+			// broke and not what. "" whenever the create succeeded.
+			"create_error": session.CreateError,
 			// Composition provenance (§6.2, C2). `worker` names the worker this
 			// job ran as ("" for a plain human session) and `composed_prompt` is
 			// the EXACT system prompt ComposeJob produced for it — preamble +
@@ -143,11 +152,12 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return camelCase JSON so the browser useAgentSession hook can parse it.
 	writeJSON(w, sessionResp{
-		ID:       sess.ID,
-		Customer: sess.Customer,
-		Job:      sess.Job,
-		Persona:  sess.Persona,
-		Status:   sess.Status,
+		ID:          sess.ID,
+		Customer:    sess.Customer,
+		Job:         sess.Job,
+		Persona:     sess.Persona,
+		Status:      sess.Status,
+		CreateError: sess.CreateError,
 	})
 }
 

@@ -645,6 +645,33 @@ var agentMigrations = []migration{
 			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_provision_error TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		// Why a session failed to start. agentd provisions in a background
+		// goroutine and used to keep only `status = "error"` from a failure;
+		// the reason — including the §13 pointer diagnostic that names the
+		// setting, its value, the project and which interpretation the string
+		// was given — was discarded at the `if err != nil` and never logged.
+		// The caller's next message then took the no-instance-and-no-snapshot
+		// path and was told the session was LOST and should be re-created.
+		// Three engineers misdiagnosed that same message in one day.
+		//
+		// A column rather than a key in `metadata`, for the same reason
+		// migration 031 gave schedules `last_provision_error` its own column:
+		// `metadata` is a host-writable grab-bag that stores replace wholesale
+		// (Save writes the whole jsonb), so a reserved key there is one host
+		// write away from vanishing, and cannot be queried or indexed. This is
+		// runtime state on a runtime row — an observation, not a decision — so
+		// it writes no config event.
+		//
+		// DEFAULT here rather than a gorm `default:` tag, per the store
+		// convention: GORM substitutes a declared default for a zero value on
+		// write, which would make the clear-on-success unwritable — and a
+		// reason that outlives its cause is worse than no reason at all.
+		Name: "032_session_create_error",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS create_error TEXT NOT NULL DEFAULT '';
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

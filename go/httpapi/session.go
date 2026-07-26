@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/binocarlos/badcode-agent-orange"
@@ -106,8 +107,19 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	bg := context.WithoutCancel(r.Context())
 	go func() {
 		if _, err := h.cfg.Runner.CreateSession(bg, createReq); err != nil {
+			// This goroutine used to be where every create diagnostic died: the
+			// error was neither logged nor persisted, and `status = "error"` was
+			// all that survived — so the caller's next message took the
+			// no-instance-and-no-snapshot path and was told the session was
+			// LOST. The Runner now records the reason on the session row
+			// (agent_sessions.create_error) before returning, and reads it back
+			// on exactly that path. Log it here too: this is the request that
+			// asked for the session, and an operator reading agentd's log needs
+			// the session id next to the failure.
+			log.Printf("httpapi: background create of session %s failed: %v", sid, err)
 			// Get-patch-write so we only flip Status and don't clobber the rest of
-			// the row (stores do a full replace).
+			// the row (stores do a full replace) — in particular not the
+			// create_error the Runner has just written.
 			if sess, getErr := h.cfg.Store.GetSession(bg, sid); getErr == nil && sess != nil {
 				sess.Status = "error"
 				_, _ = h.cfg.Store.UpdateSession(bg, sess)

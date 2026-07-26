@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 	status          TEXT NOT NULL DEFAULT '',
 	snapshot_handle TEXT NOT NULL DEFAULT '',
 	worker_id       TEXT NOT NULL DEFAULT '',
-	mcp_servers     TEXT NOT NULL DEFAULT '{}'
+	mcp_servers     TEXT NOT NULL DEFAULT '{}',
+	create_error    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS query_events (
@@ -97,6 +98,13 @@ CREATE TABLE IF NOT EXISTS query_events (
 	// column the fallback store would silently drop it and a resumed session
 	// would come back with no tools.
 	if err := addColumnIfMissing(db, "sessions", "mcp_servers", `TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return err
+	}
+	// Why a session failed to start (agentdb migration 032's column, here).
+	// Without it the fallback store would drop the reason and the operator
+	// would be back to "no running instance and no snapshot — session must be
+	// re-created", which is the whole defect this column exists to close.
+	if err := addColumnIfMissing(db, "sessions", "create_error", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 	return nil
@@ -131,10 +139,10 @@ func addColumnIfMissing(db *sql.DB, table, column, decl string) error {
 // GetSession returns the session row for id.
 func (s *Store) GetSession(ctx context.Context, id string) (*agentdb.Session, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers FROM sessions WHERE id=?`, id)
+		`SELECT id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers, create_error FROM sessions WHERE id=?`, id)
 	var sess agentdb.Session
 	var mcp string
-	if err := row.Scan(&sess.ID, &sess.Customer, &sess.Job, &sess.UserEmail, &sess.Persona, &sess.Status, &sess.SnapshotHandle, &sess.WorkerID, &mcp); err != nil {
+	if err := row.Scan(&sess.ID, &sess.Customer, &sess.Job, &sess.UserEmail, &sess.Persona, &sess.Status, &sess.SnapshotHandle, &sess.WorkerID, &mcp, &sess.CreateError); err != nil {
 		return nil, fmt.Errorf("sqlitestore: GetSession %q: %w", id, err)
 	}
 	if mcp != "" && mcp != "{}" {
@@ -156,8 +164,8 @@ func (s *Store) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agen
 		mcp = string(blob)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions(id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers)
-		 VALUES(?,?,?,?,?,?,?,?,?)
+		`INSERT INTO sessions(id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers, create_error)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   customer        = CASE WHEN excluded.customer        != '' THEN excluded.customer        ELSE customer        END,
 		   job             = CASE WHEN excluded.job             != '' THEN excluded.job             ELSE job             END,
@@ -166,8 +174,11 @@ func (s *Store) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agen
 		   status          = CASE WHEN excluded.status          != '' THEN excluded.status          ELSE status          END,
 		   snapshot_handle = excluded.snapshot_handle,
 		   worker_id       = excluded.worker_id,
-		   mcp_servers     = excluded.mcp_servers`,
-		sess.ID, sess.Customer, sess.Job, sess.UserEmail, sess.Persona, sess.Status, sess.SnapshotHandle, sess.WorkerID, mcp,
+		   mcp_servers     = excluded.mcp_servers,
+		   -- Unconditional, unlike the CASE-guarded columns above: a create that
+		   -- finally succeeds must be able to CLEAR the reason it failed before.
+		   create_error    = excluded.create_error`,
+		sess.ID, sess.Customer, sess.Job, sess.UserEmail, sess.Persona, sess.Status, sess.SnapshotHandle, sess.WorkerID, mcp, sess.CreateError,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitestore: UpdateSession %q: %w", sess.ID, err)

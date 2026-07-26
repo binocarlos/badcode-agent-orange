@@ -395,8 +395,18 @@ Stated plainly because each one will otherwise be discovered the hard way.
   never a forged one. It starts working the moment the create path composes.
 - **Sessions hold a running container until the session is deleted.** Nothing reaps them on a
   timer. They accumulate, and past roughly a hundred a stack starts failing to provision new
-  sessions — `image_create` reports "session has no running instance and no snapshot", which reads
-  exactly like a product bug and is not one. Delete sessions you are finished with.
+  sessions. That used to read as "session has no running instance and no snapshot", which looks
+  exactly like a product bug and is not one; it now says the host is at capacity and names the
+  port pool. Delete sessions you are finished with — see `docs/15-standalone-stack.md`.
+- **A session that fails to start now says why.** The reason is recorded on the session row
+  (`agent_sessions.create_error`), logged by `agentd`, returned as `create_error` from
+  `GET /agent/session/{id}`, and prefixed onto the next message's error — so a mis-typed
+  `project_settings.base_image` names the setting, its value, the project and which of the two
+  §13 interpretations it was given, instead of claiming the session was lost. Only a session with
+  no instance, no snapshot, no recorded reason and a host with room still says **"must be
+  re-created"**. Capacity is asked of the environment *live* and outranks the stored reason,
+  because a stored capacity error would go stale; conversely a capacity failure never overwrites a
+  recorded configuration reason. Details and the exact strings: `docs/15-standalone-stack.md`.
 - **`POST /agent/project-token` returns 501** in the standalone stack (the issuer seam is not
   wired), so a headless event poster needs an ordinary JWT for now.
 - **Session tokens expire after an hour, jobs do not.** An expired-but-signature-valid token is
