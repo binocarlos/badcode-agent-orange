@@ -484,6 +484,46 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(e2e, 2026-07-26)` **THE REAL CAUSE OF THE PORT DRAIN — a product race, not the schedules.**
+  `POST /agent/session` answers 200 and provisions in the **background**; delete the session before
+  that finishes and the row goes while the container arrives afterwards, belonging to nothing,
+  holding a port for ever. **Nothing reaps it** — the archive loop iterates sessions, cleanup keys
+  on rows, every count trusts the database. So one orphan is manufactured per fast-failing session
+  and all of them are invisible to every check we have; a run reported "0 ports in use" at teardown
+  and had three orphans minutes later. Reproduced deliberately (create → DELETE at 0ms → container
+  healthy 14s later, no row, still holding port 30001). Abandoned schedules drained the pool faster,
+  but this is the mechanism underneath. Assigned as #37 with the caution the finder reached first:
+  **a sweep that is wrong is far worse than a leak** — a missing row does not prove abandonment
+  until restore, re-provision and multi-host fleets are considered.
+- `(e2e, 2026-07-26)` **The exhaustion path is now genuinely exercised**, not merely source-verified:
+  a three-port stack fills for real (three sessions confirmed *running*, not merely created), the
+  fourth is told which resource ran out, how big it is, what holds it and that it is a host limit
+  rather than a lost session — and **freeing a port lets the next session start**, which is the
+  claim "capacity limit" makes and "lost session" would deny. Note for anyone writing an error-path
+  test here: it arrives **inside the message stream**, not as a thrown error, because create
+  provisions in the background and the message route answers 200. A first version watched only for
+  a rejected promise and scored the silence as a pass.
+- `(e2e, 2026-07-26)` **Harness bug that had been corrupting the stack since `--mock-script`
+  existed:** under `set -e` a failing command inside a shell function *exits* the script, and a
+  `RETURN` trap does not fire on exit — so every per-run override was restored **only when the run
+  passed**. Every failing scripted run left its mock model script loaded for whoever ran next. Same
+  shape as everything else today: a state leak whose symptom surfaces somewhere else entirely.
+- `(e2e, 2026-07-26)` **Two blind spots in the leak detector itself, both closed:**
+  `runningContainers()` returned 0 on *any* error, so a docker hiccup certified a leaking run as
+  clean; and teardown measured once, so a container still starting was never counted. A detector
+  that fails safe in the wrong direction is worse than none, because it is trusted.
+- `(e2e, 2026-07-26)` Three previously-red tests are green and promoted to regression guards
+  (`base_image` diagnostic reaching the caller, composed prompt reaching the model, attention
+  parking the job), and the README's claims were corrected to match what actually runs — **which
+  only surfaced because everything was re-run rather than trusted.**
+- `(open decision for Kai, 2026-07-26)` The schedule-resilience test costs ~5 minutes of a
+  ~15-minute suite, floored by the product (a firing is one wall-clock minute, no catch-up). Kept in
+  the default run because it guards the mechanism protecting everything else; the obvious candidate
+  for a flag if suite time starts to matter.
+- `(lesson, 2026-07-26)` **Making a hardcoded limit configurable for testability paid within the
+  hour:** the port range became config, a failure path that had rotted for the life of the project
+  was exercised immediately, and doing so turned up a second and worse bug next door. Worth the same
+  treatment anywhere else a limit is currently a constant.
 - `(fix-createerr, 2026-07-26)` **FIXED — the root defect behind every unreachable diagnostic.**
   `httpapi/session.go` backgrounded `CreateSession` and **discarded the error entirely**, keeping
   only `status:"error"` and not even a log line — so every good failure message written above it
