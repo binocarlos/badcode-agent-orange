@@ -195,7 +195,7 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		return nil, err
 	}
 
-	img, err := r.resolveLaunchImage(ctx, req.Image, req.CustomImageID, req.UserEmail, req.Customer, sctx)
+	img, imgFrom, err := r.resolveLaunchImage(ctx, req.Image, req.CustomImageID, req.UserEmail, req.Customer, sctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve launch image: %w", err)
 	}
@@ -203,7 +203,10 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 	r.progress.phase(req.SessionID, "downloading")
 	pctx := imageregistry.WithProgressSink(ctx, r.progressSinkFor(req.SessionID))
 	if err = r.deps.Registry.EnsurePresent(pctx, img); err != nil {
-		return nil, fmt.Errorf("ensure image present: %w", err)
+		// Annotated with the setting that chose the image: an image that cannot
+		// be pulled is otherwise indistinguishable from any other launch
+		// failure, and "no running instance" is what the operator is left with.
+		return nil, fmt.Errorf("ensure image present: %w", imgFrom.annotate(img, err))
 	}
 	// Resolve which worker will host this session.
 	worker, err := r.deps.Fleet.PlaceForSession(ctx, req.SessionID, fleet.PlacementHint{})
@@ -222,7 +225,9 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		r.sessionEnv(req.SessionID, token, req.Model))
 	if err != nil {
 		// The host owns the session row and deletes the orphan on this error.
-		return nil, fmt.Errorf("provision: %w", err)
+		// Annotated too: an image that pulls but will not run (wrong arch, no
+		// harness in it) is still the configured image's fault.
+		return nil, fmt.Errorf("provision: %w", imgFrom.annotate(img, err))
 	}
 	r.track(req.SessionID, worker.ID, inst)
 
@@ -1998,6 +2003,43 @@ func (r *runnerImpl) snapshotPersistCache(ctx context.Context, worker fleet.Work
 // forbids falling back on is distinguishable from an infrastructure hiccup.
 var ErrLaunchImageUnresolvable = errors.New("launch image unresolvable")
 
+// imageOrigin records WHICH configuration setting chose a launch image, so that
+// a failure further down — the pull, the provision — can name the field an
+// operator actually wrote instead of only the docker reference it became.
+//
+// Without it the entire diagnosis of a mistyped `base_image` is "no running
+// instance", which is true of every launch failure there has ever been.
+type imageOrigin struct {
+	// Setting is the configuration field, e.g. "project_settings.base_image".
+	// Empty when the image came from the request or the engine's own default —
+	// nothing an operator can mis-write, so nothing to name.
+	Setting string
+	// Value is exactly what that field held.
+	Value string
+	// Project is the tenancy namespace the setting was read from (P5).
+	Project string
+	// Literal is true when Value named no catalogue image and was therefore
+	// used verbatim as a registry reference. It is the difference between "your
+	// curated image is broken" and "that is not a curated image at all, so we
+	// tried to pull it" — which is usually the whole answer.
+	Literal bool
+}
+
+// annotate wraps an image failure with the setting that chose the image.
+// A zero origin returns err untouched, so nothing that is not configuration
+// grows a misleading explanation.
+func (o imageOrigin) annotate(img execenv.ImageRef, err error) error {
+	if o.Setting == "" || err == nil {
+		return err
+	}
+	if o.Literal {
+		return fmt.Errorf("%s = %q (project %q) names no image in the §13 catalogue, so it was used as a literal registry reference and that reference failed: %w",
+			o.Setting, o.Value, o.Project, err)
+	}
+	return fmt.Errorf("%s = %q (project %q) resolved through the §13 catalogue to %q, which failed: %w",
+		o.Setting, o.Value, o.Project, img, err)
+}
+
 // resolveLaunchImage implements the launch-image priority
 // (docs/product/08-images-and-skills.md §13.5, §13.6):
 //
@@ -2009,30 +2051,41 @@ var ErrLaunchImageUnresolvable = errors.New("launch image unresolvable")
 // composed image already in explicitImage (ComposeJob resolved the pointer
 // through the same seam), and every other session on a worker arrives with the
 // pointer unresolved on the session context, where this function resolves it.
-// The two layers below it — the project's `base_image` and the host's global —
-// travel together on SessionContext.BaseImage, which the Runner used to ignore
-// entirely, so a project's configured image applied to worker jobs and to
-// nothing else.
+// The host's global default travels on SessionContext.BaseImage; the project's
+// `base_image` travels alongside it on ProjectBaseImage, because those two
+// layers are NOT interchangeable — see below.
 //
-// The two middle links fail in DELIBERATELY OPPOSITE ways:
+// Three of the links fail in DELIBERATELY DIFFERENT ways:
 //
-//   - the worker pointer fails the launch, loudly. §13.3: "resolution failure
-//     fails the job loudly rather than silently falling back to the project
-//     default — a worker that was pointed at an environment and quietly got a
-//     different one is exactly the drift §13 exists to prevent";
+//   - the worker pointer fails the launch, loudly, on every error. §13.3:
+//     "resolution failure fails the job loudly rather than silently falling
+//     back to the project default — a worker that was pointed at an environment
+//     and quietly got a different one is exactly the drift §13 exists to
+//     prevent";
+//   - the project's base_image resolves through the SAME catalogue seam, so the
+//     string an operator is told to write means the same thing in both columns
+//     — but a value the catalogue does not know is a literal registry reference
+//     and is used verbatim, which is what it has always been and what the
+//     standalone stack's `agentkit-sandbox:dev` depends on. Only that one
+//     outcome falls through: a name the catalogue DOES know and cannot produce
+//     (reaped, unmaterialisable, database unavailable) fails the launch, since
+//     substituting a different image there is the same drift;
 //   - a custom image id logs and falls through to the base image, as it always
 //     has. That is the legacy user-image path, whose whole contract is that a
 //     session still starts.
-func (r *runnerImpl) resolveLaunchImage(ctx context.Context, explicitImage, customImageID, callerEmail, callerCustomer string, sctx *extension.SessionContext) (execenv.ImageRef, error) {
+//
+// The returned imageOrigin travels with the image so a later failure can name
+// the setting; it is empty for everything but a configured image.
+func (r *runnerImpl) resolveLaunchImage(ctx context.Context, explicitImage, customImageID, callerEmail, callerCustomer string, sctx *extension.SessionContext) (execenv.ImageRef, imageOrigin, error) {
 	if explicitImage != "" {
-		return execenv.ImageRef(explicitImage), nil
+		return execenv.ImageRef(explicitImage), imageOrigin{}, nil
 	}
 	if ref := workerImagePointer(sctx); ref != "" {
 		image, err := r.resolveWorkerImage(ctx, callerCustomer, ref)
 		if err != nil {
-			return "", err
+			return "", imageOrigin{}, err
 		}
-		return image, nil
+		return image, imageOrigin{Setting: "worker.image", Value: ref, Project: callerCustomer}, nil
 	}
 	if customImageID != "" && r.deps.CustomImages != nil {
 		h, ok, err := r.deps.CustomImages.Resolve(ctx, customImageID, callerEmail, callerCustomer)
@@ -2044,17 +2097,59 @@ func (r *runnerImpl) resolveLaunchImage(ctx context.Context, explicitImage, cust
 		default:
 			ref, mErr := r.deps.Registry.Materialize(ctx, h)
 			if mErr == nil {
-				return ref, nil
+				return ref, imageOrigin{}, nil
 			}
 			log.Printf("agentkit: custom image %s materialize failed, falling back: %v", customImageID, mErr)
 		}
 	}
 	if sctx != nil {
 		if img := strings.TrimSpace(sctx.BaseImage); img != "" {
-			return execenv.ImageRef(img), nil
+			if ptr := strings.TrimSpace(sctx.ProjectBaseImage); ptr != "" && ptr == img {
+				return r.resolveProjectBaseImage(ctx, callerCustomer, ptr)
+			}
+			return execenv.ImageRef(img), imageOrigin{}, nil
 		}
 	}
-	return execenv.ImageRef(r.deps.Policy.BaseImage), nil
+	return execenv.ImageRef(r.deps.Policy.BaseImage), imageOrigin{}, nil
+}
+
+// projectBaseImageSetting is the operator-facing name of the setting, spelled
+// once so the error, the log line and the tests cannot drift.
+const projectBaseImageSetting = "project_settings.base_image"
+
+// resolveProjectBaseImage turns `project_settings.base_image` into a launch
+// image through the SAME Deps.Images seam the worker pointer uses (§13.3) —
+// there is deliberately no second resolution path, because two of them is how
+// one column comes to mean two things.
+//
+// It differs from resolveWorkerImage in exactly one place: ErrImageRefNotInCatalogue
+// means the value is a plain registry reference and is returned verbatim. Every
+// other error fails the launch, naming the setting and the value.
+func (r *runnerImpl) resolveProjectBaseImage(ctx context.Context, project, ref string) (execenv.ImageRef, imageOrigin, error) {
+	literal := imageOrigin{Setting: projectBaseImageSetting, Value: ref, Project: project, Literal: true}
+	if r.deps.Images == nil {
+		// No catalogue wired at all: every host that predates §13, and the
+		// setting's original meaning. Verbatim, silently, as before.
+		return execenv.ImageRef(ref), literal, nil
+	}
+	image, err := r.deps.Images.Resolve(ctx, project, ref)
+	switch {
+	case errors.Is(err, ErrImageRefNotInCatalogue):
+		return execenv.ImageRef(ref), literal, nil
+	case err != nil:
+		return "", imageOrigin{}, fmt.Errorf("%w: %s = %q (project %q) names a §13 catalogue image that cannot be launched: %w",
+			ErrLaunchImageUnresolvable, projectBaseImageSetting, ref, project, err)
+	}
+	if strings.TrimSpace(image) == "" {
+		return "", imageOrigin{}, fmt.Errorf("%w: %s = %q (project %q) resolved to nothing",
+			ErrLaunchImageUnresolvable, projectBaseImageSetting, ref, project)
+	}
+	// Worth a line: this is the one place a project's configured string stops
+	// meaning what it literally says, so an operator can see the substitution
+	// they asked for actually happened.
+	log.Printf("agentkit: %s %s=%q resolved through the image catalogue to %q", project, projectBaseImageSetting, ref, image)
+	return execenv.ImageRef(strings.TrimSpace(image)),
+		imageOrigin{Setting: projectBaseImageSetting, Value: ref, Project: project}, nil
 }
 
 // workerImagePointer is the session context's §13 pointer, or "" — including

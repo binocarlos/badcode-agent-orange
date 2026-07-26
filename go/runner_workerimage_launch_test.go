@@ -138,7 +138,7 @@ func TestResolveLaunchImageWorkerPointer(t *testing.T) {
 				r.deps.Images = resolver
 			}
 
-			got, err := r.resolveLaunchImage(context.Background(),
+			got, _, err := r.resolveLaunchImage(context.Background(),
 				tt.explicitImage, tt.customImageID, "a@acme.com", project, tt.sctx)
 
 			if tt.wantErr != "" {
@@ -191,7 +191,7 @@ func TestResolveLaunchImageWorkerPointerOutranksCustomImageID(t *testing.T) {
 	r.deps.CustomImages = &fakeCustomImages{handle: h, ok: true}
 	r.deps.Images = &stubImageResolver{images: map[string]string{"toolbox": "sha256:toolbox"}}
 
-	got, err := r.resolveLaunchImage(context.Background(), "", "img-1", "a@acme.com", "acme",
+	got, _, err := r.resolveLaunchImage(context.Background(), "", "img-1", "a@acme.com", "acme",
 		&extension.SessionContext{WorkerImage: "toolbox", BaseImage: "toolbox"})
 	if err != nil {
 		t.Fatalf("resolveLaunchImage: %v", err)

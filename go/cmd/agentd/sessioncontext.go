@@ -71,7 +71,12 @@ type resolvedContext struct {
 	// materialise an image for every create, including the worker jobs that
 	// arrive with a composed image already chosen.
 	WorkerImage string
-	MCPServers  agentdb.MCPServers
+	// ProjectBaseImage is `project_settings.base_image`, carried UNRESOLVED for
+	// the same reason and to the same place as WorkerImage. It may be a §13
+	// pointer or a literal registry reference; which one it is, is a question
+	// only the catalogue can answer, and it is asked once, at launch.
+	ProjectBaseImage string
+	MCPServers       agentdb.MCPServers
 }
 
 // Resolve implements extension.SessionContextProvider: the system prompt, the
@@ -87,10 +92,11 @@ func (p *sessionContextProvider) Resolve(ctx context.Context, scope extension.Co
 		return nil, err
 	}
 	return &extension.SessionContext{
-		SystemPrompt: rc.SystemPrompt,
-		BaseImage:    rc.BaseImage,
-		WorkerImage:  rc.WorkerImage,
-		MCPServers:   rc.MCPServers,
+		SystemPrompt:     rc.SystemPrompt,
+		BaseImage:        rc.BaseImage,
+		WorkerImage:      rc.WorkerImage,
+		ProjectBaseImage: rc.ProjectBaseImage,
+		MCPServers:       rc.MCPServers,
 	}, nil
 }
 
@@ -128,7 +134,14 @@ func (p *sessionContextProvider) resolve(ctx context.Context, scope extension.Co
 	}
 	prompts := []string{ps.SystemPrompt}
 	if ps.BaseImage != "" {
+		// Verbatim here, for the same reason as the worker pointer below: this
+		// string may be a §13 name or a plain registry reference, and only the
+		// catalogue can tell. Carrying it separately is what lets the Runner
+		// ask — before I4 it travelled on BaseImage alone, where a curated
+		// name was indistinguishable from a docker ref and was therefore
+		// pulled as one, and every session in the project failed to launch.
 		rc.BaseImage = ps.BaseImage
+		rc.ProjectBaseImage = ps.BaseImage
 	}
 	rc.MCPServers = MergeMCPServers(rc.MCPServers, projectMCP)
 
