@@ -87,6 +87,26 @@ type ImageResolver interface {
 	Resolve(ctx context.Context, project, ref string) (string, error)
 }
 
+// ErrImageRefNotInCatalogue is how a resolver says "that string names no image
+// of mine" — as opposed to "it names one of mine and I cannot produce it".
+//
+// The distinction exists for exactly one caller. Two columns hold a §13
+// reference and they have DIFFERENT contracts (§13.5):
+//
+//   - `worker.image` is a pointer and nothing else. Both failures are fatal;
+//     the worker was pointed at an environment and must get that one or none.
+//   - `project_settings.base_image` is a pointer OR a literal registry
+//     reference — the standalone stack's `agentkit-sandbox:dev` is the latter
+//     and predates the catalogue entirely. Only "not one of mine" may fall
+//     through to using the string verbatim. "Reaped", "unmaterialisable" and a
+//     database that will not answer must still fail the launch, because those
+//     mean the operator DID name a catalogue image and we cannot honour it —
+//     launching something else would be §13.3's silent substitution.
+//
+// A resolver that never reports it simply makes every failure fatal, which is
+// the safe direction: an unwrapped error is never mistaken for "use it as-is".
+var ErrImageRefNotInCatalogue = errors.New("image reference names no catalogue image")
+
 // BriefingSection is one headed block injected after the worker prompt
 // (§6.2 step 2.4, §7.4): the newest memory matching one briefing selector.
 //

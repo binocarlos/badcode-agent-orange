@@ -43,10 +43,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 
+	agentkit "github.com/binocarlos/badcode-agent-orange"
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/binocarlos/badcode-agent-orange/execenv"
 	"github.com/binocarlos/badcode-agent-orange/imageregistry"
@@ -97,7 +99,7 @@ func (c *catalogueImageResolver) Resolve(ctx context.Context, project, ref strin
 	// 1. §13.3 — bare name → latest, `name:version` → pinned, every failure loud.
 	ci, err := c.store.ResolveCustomImage(ctx, project, ref)
 	if err != nil {
-		return "", err
+		return "", classifyResolveError(ref, err)
 	}
 	// 2. The handle. I1 guarantees a non-empty RegistryHandle survives
 	//    resolution, so an undecodable one is a genuinely corrupt row: report it
@@ -123,6 +125,31 @@ func (c *catalogueImageResolver) Resolve(ctx context.Context, project, ref strin
 		c.logf("[images] %s: could not stamp last_resumed_at on %s:%d: %v", project, ci.Name, ci.Version, err)
 	}
 	return strings.TrimSpace(string(launch)), nil
+}
+
+// classifyResolveError marks the ONE failure that means "this string is not a
+// reference to anything of mine" with agentkit.ErrImageRefNotInCatalogue.
+//
+// Two shapes qualify and no others:
+//
+//   - ErrCustomImageInvalid — the string is not even a §13.3 reference
+//     (`agentkit-sandbox:dev` has a non-integer version; `ghcr.io/acme/x:1` is
+//     not a §13 name). ParseImageRef answers this before any query runs, which
+//     is why the standalone stack's literal image costs no database round trip;
+//   - ErrCustomImageNotFound — a well-formed reference the catalogue has never
+//     held (or held in a different project — P5's namespace is hard).
+//
+// ErrCustomImageReaped, ErrCustomImageUnmaterialisable and any database error
+// are deliberately NOT marked: those mean the catalogue does know the name and
+// cannot serve it, and the caller must fail rather than substitute (§13.3).
+//
+// The marking is additive — the original sentinel still matches errors.Is, so
+// the worker-pointer path, which treats every failure identically, is unchanged.
+func classifyResolveError(ref string, err error) error {
+	if errors.Is(err, agentdb.ErrCustomImageInvalid) || errors.Is(err, agentdb.ErrCustomImageNotFound) {
+		return fmt.Errorf("%w: %q: %w", agentkit.ErrImageRefNotInCatalogue, ref, err)
+	}
+	return err
 }
 
 // decodeRegistryHandle reverses what image_create stored (mcp_images.go marshals

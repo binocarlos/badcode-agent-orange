@@ -37,6 +37,25 @@ type SessionContext struct {
 	// sets WorkerImage, and BaseImage is used verbatim as it always was.
 	BaseImage string
 
+	// ProjectBaseImage is `project_settings.base_image` — the project layer of
+	// the chain above — carried separately so the Runner can tell WHICH layer
+	// won and resolve it accordingly.
+	//
+	// It is a §13 pointer OR a literal registry reference, and the Runner finds
+	// out which by asking the catalogue: a name it knows resolves per §13.3
+	// (bare name → latest, `name:version` → pinned), anything it does not know
+	// is used verbatim, exactly as this setting always behaved. That ordering
+	// is the whole point — the same string an operator is told to write in
+	// `worker.image` must mean the same thing here (§13.5), while
+	// `agentkit-sandbox:dev` and every other plain docker reference keeps
+	// working untouched.
+	//
+	// It is only consulted when it is the string that WON the chain (i.e. it
+	// equals BaseImage), so a host that computes BaseImage some other way gets
+	// verbatim behaviour and never a surprise resolution. Empty on every host
+	// with no project settings, which is the pre-product-layer path unchanged.
+	ProjectBaseImage string
+
 	// WorkerImage is the worker's §13 image pointer — a bare `name` (floating:
 	// the latest version in the project) or `name:version` (pinned) — carried
 	// UNRESOLVED, because §13.3 resolution belongs to the image catalogue and

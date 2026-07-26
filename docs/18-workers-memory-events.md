@@ -62,7 +62,7 @@ settings page in the UI. The row is created lazily; `GET` before any write retur
 
 | Field | Meaning |
 | --- | --- |
-| `base_image` | default launch image for the project's worker jobs (`''` → the global `AGENTKIT_IMAGE`) |
+| `base_image` | default launch image for the project (`''` → the global `AGENTKIT_IMAGE`). A **curated image name** — `toolbox` or `toolbox:1`, §7 — resolves through the image catalogue exactly as `worker.image` does; anything the catalogue does not hold is used as a literal registry reference, so `ghcr.io/acme/base:v1` still works |
 | `system_prompt` | prepended to every worker's prompt at composition |
 | `mcp_config` | MCP servers granted to **all** workers — no per-worker filtering |
 | `attention_channel` | where `request_human_attention` posts: `{"kind":"webhook","url":…,"headers":{…}}`. Header values may be whole-value `${VAR}` references resolved from agentd's env. Unset → the tool still succeeds and only logs |
@@ -112,7 +112,7 @@ otherwise it blanks `mcp_config` and the change is logged as `worker_update` rat
 
 Composition is deterministic and happens exactly **once, at job start**:
 
-1. **Image** — `worker.image` (resolved) > `project_settings.base_image` > global default.
+1. **Image** — `worker.image` (resolved) > `project_settings.base_image` (resolved) > global default.
 2. **System prompt**, concatenated with fixed separators:
    core preamble (§6.3, engine-owned, pinned by test) → project prompt → worker prompt →
    briefing sections.
@@ -303,9 +303,33 @@ reaping is still in daily use (it does **not** extend the expiry — §5 sets th
 
 The launch chain, in full, is `explicit image > worker pointer > custom image id >
 project_settings.base_image > global default`. A worker job arrives with the pointer already
-resolved by composition; anything else on a worker resolves it at launch. The two middle links
-fail in opposite ways on purpose: an unresolvable **custom image id** (the legacy user-image
-path) logs and still starts the session, an unresolvable **worker pointer** never does.
+resolved by composition; anything else on a worker resolves it at launch.
+
+**A curated image name is legal in `project_settings.base_image` too**, and resolves through the
+same catalogue — the same string must not mean two different things in two columns. The three
+middle links fail in deliberately different ways:
+
+| Link | A name the catalogue does not hold | A name it holds but cannot serve (reaped, unmaterialisable, database down) |
+| --- | --- | --- |
+| `worker.image` | fails the job | fails the job |
+| `project_settings.base_image` | used verbatim as a registry reference | **fails the launch** |
+| custom image id (legacy) | logs, session still starts | logs, session still starts |
+
+The middle row is what keeps `ghcr.io/acme/base:v1` and the stack's own `agentkit-sandbox:dev`
+working: only "that is not one of mine" falls through to a literal pull. A name the catalogue
+*does* know and cannot produce fails, because quietly launching something else is the drift §13
+exists to prevent. Either way the error names the setting and the value —
+
+```
+ensure image present: project_settings.base_image = "definitely-not-an-image:v9" (project "acme")
+names no image in the §13 catalogue, so it was used as a literal registry reference and that
+reference failed: Error response from daemon: …
+```
+
+— so a mistyped or unburned image is a ten-second diagnosis rather than "the session never
+started". Nothing is validated at **write** time: a pointer may legitimately name an image
+curation is about to publish (the same rule `worker.image` follows), and no write-time check can
+tell a typo from a registry reference that simply is not in the catalogue.
 
 `image_create` and `skill_create` are configuration mutations and appear in the config log;
 `skill_install` changes the *session*, not the project, and writes no config event.
