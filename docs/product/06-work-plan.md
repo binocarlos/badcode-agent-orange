@@ -484,6 +484,27 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(e2e, 2026-07-26)` **The create-failure precedence rule is now documented AND half-pinned.** The
+  consequence worth knowing: a session with a broken `base_image` on a saturated host reports
+  saturation, and reports `base_image` the moment a port frees — **both answers are correct**, so a
+  failure that changes its story between two runs is the host recovering while the configuration
+  stays wrong, not flakiness. The non-obvious half is now an assertion: after a capacity failure
+  `create_error` is **empty**, because a fact true for one instant must never be stored. That is
+  exactly what a later refactor would "improve" away (every *other* failure stores its reason), and
+  a comment would not survive it.
+- `(e2e, 2026-07-26)` A suggestion of mine correctly declined: I offered `create_error` as a cheaper
+  assertion than driving a message. Driving the message asserts **reachability**, and unreachability
+  *was* the entire defect — a `create_error` check would have passed throughout the period the
+  message reached nobody.
+- `(e2e, 2026-07-26)` Two docs had gone stale **in the dangerous direction**: the README presented
+  §8.6's disable rule as unqualified good news (it cannot tell an abandoned schedule from a healthy
+  one on an unhealthy host — both look like five firings that started nothing), and `docs/18` still
+  said `AGENTKIT_EMBEDDING_BACKEND` was not forwarded by compose, telling readers a setting would
+  work while it silently did nothing.
+- `(e2e, 2026-07-26)` The narrow-pool seam is a **per-run flag**, not a compose overlay or per-spec
+  file — both would bake the narrow pool into a stack every other spec shares. It reloads agentd,
+  runs, and restores however the run ends, and refuses to start on a stack with live sessions. That
+  refusal is what made the `set -e` trap bug visible, so it paid for itself before running a test.
 - `(e2e, 2026-07-26)` **THE REAL CAUSE OF THE PORT DRAIN — a product race, not the schedules.**
   `POST /agent/session` answers 200 and provisions in the **background**; delete the session before
   that finishes and the row goes while the container arrives afterwards, belonging to nothing,
