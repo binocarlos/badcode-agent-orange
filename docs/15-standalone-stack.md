@@ -118,14 +118,31 @@ identical (§7.6.5):
 
 A session holds a running container inside DinD until the **session is deleted**. Nothing
 expires them, so they accumulate. The ceiling is exact: `agentd` leases each live session one
-host port from `30001-30100` (`cmd/agentd/main.go`), so the **101st concurrent session cannot
-start**, and neither can any after it until one is released.
+host port from a pool that defaults to `30001-30100`, so by default the **101st concurrent
+session cannot start**, and neither can any after it until one is released.
+
+The pool is configurable — `AGENTKIT_PORT_RANGE_START` / `AGENTKIT_PORT_RANGE_END`, defaulting
+to `30001` and `30100` so an existing deployment is unchanged (`cmd/agentd/portrange.go`).
+`agentd` prints the effective pool at boot:
+
+```
+[agentd] session port pool=30001-30100 (100 concurrent sessions max on this host; one live session holds one port until deleted)
+```
+
+Set **both or neither**: one alone is a boot error rather than an operator's number silently
+paired with a default from the other end. So are a non-numeric bound, a start above the end, a
+port outside `1024-65535`, and a range wider than 10000 ports — a pool that cannot work stops
+`agentd` at boot instead of starting and failing every session.
+
+Narrowing it is how the exhaustion path below is *exercised* rather than merely read: a test
+stack setting `AGENTKIT_PORT_RANGE_START=40000` / `AGENTKIT_PORT_RANGE_END=40002` reaches the
+real error, at a real caller, on the fourth session instead of the 101st.
 
 That ceiling is a legitimate limit; failing to recognise it is not. It used to surface as
 "session has no running instance and no snapshot — session must be re-created", which describes
 a *lost session* and invites a re-create that fails identically — it was misdiagnosed twice, once
 as a Docker container limit and once as an image-resolution bug. It now says what is actually
-true:
+true (the count and the range are the *configured* pool, so the message matches the boot log):
 
 ```
 execution environment is at capacity: the host port pool is exhausted — all 100 ports in

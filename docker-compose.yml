@@ -78,6 +78,13 @@ services:
       # variable never reached agentd, so setting it in .env silently did nothing
       # and memory search stayed keyword+recency whatever the docs said.
       AGENTKIT_EMBEDDING_BACKEND: ${AGENTKIT_EMBEDDING_BACKEND:-}
+      # Host port pool for session containers. Unset → 30001-30100, i.e. 100
+      # concurrent sessions on this host — one live session leases one port and
+      # holds it until the session is DELETED. Set both or neither; nonsense is
+      # refused at boot. A test stack narrows it (…START=40000, …END=40002) to
+      # reach the pool-exhausted error deliberately instead of with 100 sessions.
+      AGENTKIT_PORT_RANGE_START: ${AGENTKIT_PORT_RANGE_START:-}
+      AGENTKIT_PORT_RANGE_END: ${AGENTKIT_PORT_RANGE_END:-}
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
       # Login modes (see .env.example). Neither set → legacy dev-open demo.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}

@@ -126,11 +126,23 @@ func main() {
 	must(err)
 	log.Printf("[agentd] blobs=%s registry=%s", blobCfg.backend, regCfg.backend)
 
+	// ── Session port pool ────────────────────────────────────────────────────────
+	// One live session leases one host port until it is deleted, so the size of
+	// this range IS the concurrent-session ceiling for the host. Default
+	// 30001-30100 (what agentd hardcoded before the seam existed); a nonsense
+	// range is a boot error rather than a pool that fails every session. A test
+	// stack sets a pool of three to reach the exhaustion path in seconds. See
+	// portrange.go.
+	pool, err := resolvePortRange(os.Getenv)
+	must(err)
+	log.Printf("[agentd] session port pool=%s (%d concurrent sessions max on this host; one live session holds one port until deleted)",
+		pool, pool.size())
+
 	// ── DinD execution environment ───────────────────────────────────────────────
 	dindEnv, err := dockerdind.NewDinD(dockerdind.DinDConfig{
 		DockerHost:     dockerHost,
-		PortRangeStart: 30001,
-		PortRangeEnd:   30100,
+		PortRangeStart: pool.start,
+		PortRangeEnd:   pool.end,
 		GatewayIP:      "172.17.0.1",
 	})
 	must(err)
