@@ -25,7 +25,23 @@ log recorded that" means anything.
 ./e2e/run-stack-e2e.sh test         # run every spec against the running stack
 ./e2e/run-stack-e2e.sh down         # stop (add --purge to wipe volumes)
 ./e2e/run-stack-e2e.sh run mock     # clean-room: up → test → purge-down (the CI job)
+
+# From cold, the whole product-layer suite:
+./e2e/run-stack-e2e.sh up mock && ./e2e/run-stack-e2e.sh test
+
+# With a scripted model, so the MODEL calls tools (adds the §8.8 tests):
+./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json
 ```
+
+`--mock-script` loads the script into agentd, runs, and restores the plain model however the run
+ends — deliberately per-run, because the script is agentd-wide and read once at boot. See
+[`mock-scripts/README.md`](mock-scripts/README.md).
+
+> **Runs longer than a few minutes are currently unreliable, and it is not the tests.** DinD stops
+> accepting new containers at ~100, and a full suite creates more sessions than the per-test cleanup
+> drains — so whatever runs last fails with "no running instance and no snapshot" or a 502. Run a
+> single spec while iterating, and `clean` between full runs. The real fix is engine-side (idle
+> session reaping); see the coverage notes below.
 
 Modes are `mock` (deterministic, offline — the CI signal), `api-key`, and `subscription`. Docker is
 required; the stack runs one session container per session inside DinD.

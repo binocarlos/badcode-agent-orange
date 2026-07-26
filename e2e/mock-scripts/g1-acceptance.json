@@ -1,0 +1,54 @@
+{
+  "rules": [
+    {
+      "match": "G1-MARKER-RECONCILE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_create",
+              "input": {
+                "name": "tweet-author",
+                "description": "writes the daily tweet",
+                "system_prompt": "You write BadCode's daily tweet. Draft it, then get sign-off before posting."
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reconciled the workforce: hired tweet-author, which my prompt describes and which did not exist."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "G1-MARKER-SIGNOFF",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "tool_use",
+              "name": "mcp__core__request_human_attention",
+              "input": {
+                "message": "Draft tweet ready for sign-off: \"shipping something small today\". Reply 'post it' to publish."
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Asked for sign-off and paused. I will not post until a human replies."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

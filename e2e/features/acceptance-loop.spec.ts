@@ -464,9 +464,23 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
   test.setTimeout(240_000)
 
   const MANAGER = 'marketing-manager'
+  // The marker is what the mock script matches on. It has to be a token unique
+  // to THIS worker's prompt: matching on 'tweet-author' would also fire inside
+  // the manager's own job, because the manager's prompt names the workers it is
+  // supposed to create.
+  const MANAGER_PROMPT = [
+    'You own BadCode marketing.',
+    'The workforce that should exist: a tweet-author posting daily,',
+    'an instagram-image-maker, and a secretary handling inbound mail.',
+  ].join('\n')
+  // The marker goes in the schedule INPUT, not the worker's prompt: the input
+  // becomes the event text and therefore the job's first user message, which is
+  // what the mock proxy matches on. A marker in the system prompt does not
+  // match — see the (G1) finding about composed prompts and the model request.
   const RECONCILE =
-    'Reconcile the workforce: ensure every worker, schedule, and subscription described in ' +
-    'your system prompt exists and matches; create or update via your tools. Report what you changed.'
+    '[G1-MARKER-RECONCILE] Reconcile the workforce: ensure every worker, schedule, and ' +
+    'subscription described in your system prompt exists and matches; create or update via ' +
+    'your tools. Report what you changed.'
   const CRITIQUE =
     'Critique your own system prompt: search memory for prompt revisions, published content ' +
     'and lessons; judge the strategy, then rewrite your prompt to be the most effective version of itself.'
@@ -485,11 +499,7 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
     // Everything a human does, done: one worker whose prompt describes the org.
     await client.putWorker(MANAGER, {
       description: 'owns marketing strategy and the workforce that delivers it',
-      system_prompt: [
-        'You own BadCode marketing.',
-        'The workforce that should exist: a tweet-author posting daily,',
-        'an instagram-image-maker, and a secretary handling inbound mail.',
-      ].join('\n'),
+      system_prompt: MANAGER_PROMPT,
     })
     await client.createSchedule({
       worker: MANAGER,
@@ -521,35 +531,103 @@ test.describe('G1 §8.8 — the marketing-manager shape', () => {
     expect(log.filter((e) => e.action === 'schedule_create').every((e) => e.rationale !== '')).toBe(true)
   })
 
-  test('the daily reconcile builds the workforce described in the prompt', async () => {
-    test.fixme(
-      true,
-      'E3 has landed, so a due schedule now dispatches a job; what is missing is E4\'s ' +
-        '`worker_create` tool for the manager to call, and a mock script driving it. The point ' +
-        'of the assertion is that NO bootstrap code path exists: the org appears because a ' +
-        'worker read its own prompt and called tools.',
+  // The §8.8 claim in one test: no bootstrap code path exists. The org appears
+  // because a worker read its own prompt, on a schedule, and called a tool.
+  //
+  // Needs a scripted model, since the mock model does not choose tool calls:
+  //   ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json
+  //
+  // STATUS 2026-07-26: runs only with --mock-script, and FAILS there. The
+  // scripted tool call demonstrably reaches the model (a marker in the trigger
+  // text produces tool_use_start/tool_use_end and the turn-1 reply), but no
+  // worker appears and the tool result carries no error I could capture. Two
+  // things are known and worth starting from:
+  //   * a marker in the worker's SYSTEM PROMPT never matches, though the
+  //     composed prompt provably contains it and dispatch.go hands it to the
+  //     session as SystemPrompt — so markers must go in the trigger text;
+  //   * with the marker in the trigger text the model does call
+  //     mcp__core__worker_create, and the worker still is not created.
+  // Left runnable rather than deleted: it is one `--mock-script` away from
+  // being the §8.8 proof, and the gap it names is real.
+  test('the daily reconcile hires the worker its prompt describes', async () => {
+    test.skip(
+      !process.env.STACK_MOCK_SCRIPT,
+      'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',
     )
-    // …after the daily schedule fires, workers the human never created exist.
-    const workers = await client.listWorkers()
-    expect(workers.map((w) => w.name)).toContain('tweet-author')
-    const log = await configEvents(client)
-    const created = log.filter((e) => e.action === 'worker_create' && e.actor_worker === MANAGER)
-    expect(created.length).toBeGreaterThan(0)
+    await client.putWorker(MANAGER, {
+      description: 'owns marketing strategy and the workforce that delivers it',
+      system_prompt: MANAGER_PROMPT,
+    })
+    // Every minute, so the scheduler's next sweep picks it up. The daily cron of
+    // the test above is the realistic one; this is the same mechanism on a
+    // timescale a test can wait for.
+    await client.createSchedule({
+      worker: MANAGER,
+      cron: '* * * * *',
+      input: RECONCILE,
+      rationale: 'reconcile the workforce (§8.8)',
+    })
+
+    // The schedule fires, the router dispatches a manager job, and the manager
+    // calls worker_create — nothing here creates the worker but the worker.
+    const hired = await poll(
+      () => client.listWorkers(),
+      (rows) => rows.some((w) => w.name === 'tweet-author'),
+      180_000,
+      'the manager to hire the worker its prompt describes',
+    )
+    const author = hired.find((w) => w.name === 'tweet-author')!
+    expect(author.enabled).toBe(true)
+    expect(author.system_prompt).not.toBe('')
+
+    // The config log says a WORKER did the hiring, from a job — not a human.
+    const record = await waitForConfigAction(client, 'worker_create')
+    const byManager = (await client.configEvents({ action: 'worker_create' })).find(
+      (e) => String(e.payload.name) === 'tweet-author',
+    )!
+    expect(byManager.actor_worker).toBe(MANAGER)
+    expect(byManager.actor_session).not.toBe('')
+    expect(record).toBeTruthy()
+
+    // …and the job that did it was started by the schedule, not by a human.
+    const session = await client.getSession(byManager.actor_session)
+    expect(session.worker).toBe(MANAGER)
   })
 
+  // Staged autonomy (§8.8 step 3): a content worker drafts, then asks a human
+  // before acting. The pause is a real state the delivery sits in, not a
+  // convention — which is what lets a human answer hours later.
+  //
+  // STATUS 2026-07-26: same shape as the reconcile test above — runs only with
+  // --mock-script, and blocked behind the same unexplained gap between "the
+  // model called the tool" and "the tool took effect".
   test('a content worker pauses cleanly for human sign-off', async () => {
-    test.fixme(
-      true,
-      'H2 built request_human_attention and the attention sweep, and E3 now starts the jobs — ' +
-        'what is missing is a job that CALLS the tool, which needs a mock script ' +
-        '(AGENTKIT_MOCK_MODEL_SCRIPT) driving the content worker. Needs: the delivery parked at ' +
-        '`awaiting_human` with no ended_at, an envelope carrying attention_requested, and a POST ' +
-        'to the project attention channel of {message, session_url}.',
+    test.skip(
+      !process.env.STACK_MOCK_SCRIPT,
+      'needs a scripted model: ./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json',
     )
-    await client.putSettings({
-      attention_channel: { kind: 'webhook', url: 'http://127.0.0.1:9/never' },
+    await client.putWorker('tweet-author', {
+      description: 'writes the daily tweet',
+      system_prompt:
+        'You write BadCode tweets. Draft it, then call request_human_attention to get ' +
+        'sign-off before posting.',
     })
-    const parked = await client.waitForDeliveries((rows) => rows.some((d) => d.status === 'awaiting_human'), {})
-    expect(parked.find((d) => d.status === 'awaiting_human')!.ended_at).toBe(0)
+    await client.createSubscription({ event_type: 'content.requested', worker: 'tweet-author' })
+
+    // Marker in the event text, for the same reason the reconcile input carries one.
+    const event = await client.postEvent({
+      type: 'content.requested',
+      text: '[G1-MARKER-SIGNOFF] today: ship something small',
+    })
+
+    // The job parks awaiting a human, with no ended_at: awaiting is a pause, not
+    // a finish, so the UI shows an open-ended duration rather than a closed job.
+    const parked = await client.waitForDeliveries(
+      (rows) => rows.some((d) => d.status === 'awaiting_human'),
+      { event_id: event.id, timeoutMs: 180_000 },
+    )
+    const waiting = parked.find((d) => d.status === 'awaiting_human')!
+    expect(waiting.ended_at).toBe(0)
+    expect(waiting.started_at).toBeGreaterThan(0)
   })
 })

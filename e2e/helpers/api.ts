@@ -462,6 +462,17 @@ export class ProjectClient {
    */
   async cleanup(): Promise<void> {
     this.created.splice(0)
+    // Stop the cascade BEFORE sweeping sessions. A test that posts one event
+    // leaves the router working: each job that finishes emits worker.finished,
+    // which starts more jobs, for as long as the subscriptions and schedules
+    // exist. Deleting sessions first just races that — the containers a test
+    // leaks are mostly ones created after it finished.
+    for (const sub of await this.listSubscriptions().catch(() => [])) {
+      await this.raw('DELETE', `/agent/subscriptions/${encodeURIComponent(sub.id)}`).catch(() => {})
+    }
+    for (const sched of await this.listSchedules().catch(() => [])) {
+      await this.raw('DELETE', `/agent/schedules/${encodeURIComponent(sched.id)}`).catch(() => {})
+    }
     // `user_email=*` is load-bearing: the route defaults to the caller's own
     // email, and the router creates job sessions under a different one. Without
     // it, exactly the sessions a test did not create are the ones it leaks.

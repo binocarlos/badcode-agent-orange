@@ -93,10 +93,49 @@ cmd_up() {
   echo "$mode" > "$MODE_FILE"
 }
 
+# reload_agentd_with_script SCRIPT_JSON — recreates agentd carrying (or no
+# longer carrying) a mock model script, then waits for the stack to answer.
+#
+# The script is stack configuration read ONCE at boot (mock mode only), so
+# handing the model a tool call means restarting agentd. Passing "" restores the
+# ordinary canned model.
+#
+# Returns non-zero if agentd does not come back. A malformed script is a
+# deliberate boot failure, and without this check the stack would simply be left
+# dead with a timeout as the only clue.
+reload_agentd_with_script() {
+  AGENTKIT_MOCK_MODEL_SCRIPT="$1" "${COMPOSE[@]}" up -d --no-deps agentd >/dev/null 2>&1
+  local deadline=$(( $(date +%s) + 60 ))
+  until curl -fsS "$WEB_URL/auth/config" >/dev/null 2>&1; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      return 1
+    fi
+    sleep 2
+  done
+}
+
+# cmd_test [mode] [--mock-script FILE] [-- <playwright args>]
+#
+# --mock-script is deliberately PER RUN rather than baked into `up`: the script
+# is agentd-wide and read at boot, so leaving one loaded would quietly change
+# the model's behaviour for every later run and for anyone else sharing the
+# stack. So this loads it, runs the tests, and restores the plain model
+# afterwards — even if the tests fail.
+#
+# Specs that need a scripted tool call gate on STACK_MOCK_SCRIPT, which is set
+# only for the duration of such a run.
 cmd_test() {
-  local recorded=""
+  local recorded="" mode="" script="" args=()
   [ -f "$MODE_FILE" ] && recorded="$(cat "$MODE_FILE")"
-  local mode="${1:-${recorded:-mock}}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mock-script) script="${2:-}"; shift 2 ;;
+      --) shift; args+=("$@"); break ;;
+      *) [ -z "$mode" ] && mode="$1" || args+=("$1"); shift ;;
+    esac
+  done
+  mode="${mode:-${recorded:-mock}}"
+
   if [ -n "$recorded" ] && [ "$mode" != "$recorded" ]; then
     echo "running stack is in '$recorded' mode, not '$mode' — run: $0 up $mode" >&2
     return 1
@@ -104,9 +143,32 @@ cmd_test() {
   curl -fsS "$WEB_URL/auth/config" >/dev/null 2>&1 ||
     { echo "no stack listening at $WEB_URL — run: $0 up $mode" >&2; return 1; }
   ensure_test_deps
+
+  local script_json=""
+  if [ -n "$script" ]; then
+    [ "$mode" = "mock" ] ||
+      { echo "--mock-script only applies in mock mode (stack is '$mode')" >&2; return 1; }
+    [ -f "$script" ] || { echo "no such mock script: $script" >&2; return 1; }
+    script_json="$(cat "$script")"
+    echo "── stack e2e: loading mock model script $script into agentd ──"
+    if ! reload_agentd_with_script "$script_json"; then
+      # agentd refuses to boot on a malformed script, by design. Say why, and
+      # put the stack back — a bad script must cost you a run, not the stack.
+      echo "agentd did not come back with that script. Its own words:" >&2
+      "${COMPOSE[@]}" logs --tail 5 agentd 2>&1 | sed 's/^/    /' >&2
+      echo "── stack e2e: restoring the plain mock model ──" >&2
+      reload_agentd_with_script "" ||
+        echo "agentd is still down; try: $0 up mock" >&2
+      return 1
+    fi
+    # Restore the plain model however the run ends.
+    trap 'echo "── stack e2e: unloading mock model script ──"; reload_agentd_with_script "" || true' RETURN
+  fi
+
   echo "── stack e2e [$mode]: running playwright against $WEB_URL ──"
   (cd "$ROOT/e2e" && STACK_BASE_URL="$WEB_URL" STACK_E2E_MODE="$mode" \
-    npx playwright test --config playwright.stack.config.ts)
+    STACK_MOCK_SCRIPT="${script_json:+1}" \
+    npx playwright test --config playwright.stack.config.ts "${args[@]}")
 }
 
 cmd_down() {
