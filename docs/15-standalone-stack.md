@@ -164,6 +164,46 @@ does the restart for you; if you clear containers by hand, do it yourself.
 
 Whether long-lived idle sessions should reap their containers is an open product question.
 
+## A session that failed to start says why
+
+Capacity was only one cause. `agentd` provisions in a **background goroutine** (the POST returns
+`status: "creating"` immediately so the UI can render a download bar), and that goroutine used to
+keep nothing from a failure but `status = "error"` — the reason was neither logged nor stored. So
+every non-capacity failure also came back as "no running instance and no snapshot — session must
+be re-created", and the good diagnostics written for those causes reached nobody.
+
+The reason is now recorded on the session row (`agent_sessions.create_error`, migration 032),
+logged by `agentd`, and returned three ways:
+
+- on the **next message**, over SSE:
+
+  ```
+  session "<id>" never started: ensure image present: project_settings.base_image =
+  "definitely-not-an-image:v9" (project "acme") names no image in the §13 catalogue, so it was
+  used as a literal registry reference and that reference failed: <docker error> — fix the
+  cause, then create the session again
+  ```
+
+- on `GET /agent/session/{id}`, as `create_error` beside `status` — a UI showing `error` with no
+  explanation is the same defect one layer up;
+- in `agentd`'s log, as `session <id> failed to start: …`.
+
+Two rules keep the stored reason honest:
+
+- **Only permanent facts about the session's configuration are stored.** A capacity failure
+  (`execenv.ErrNoCapacity`) is a fact about the *host* at one instant — it stops being true the
+  moment a session is deleted — so it is never written to the row, and never overwrites a reason
+  already there.
+- **Live capacity is asked first and wins.** When the host is full, the message above is the
+  capacity message, wrapping `errors.Is(err, execenv.ErrNoCapacity)`; the stored reason is
+  consulted only once the environment says it has room. A session with a broken `base_image` on a
+  saturated host is told about the saturation first, and about the `base_image` as soon as a port
+  frees up — both true, in the order that can be acted on.
+
+A successful create clears the reason, so it can never outlive its cause. A session with no
+instance, no snapshot, no stored reason, on a host with room is genuinely lost, and only that
+case still says **"must be re-created"**.
+
 ## Session permalinks
 
 `AGENTKIT_PUBLIC_BASE_URL` is the externally reachable base of the **web UI** — not

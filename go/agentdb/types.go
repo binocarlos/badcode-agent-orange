@@ -128,11 +128,32 @@ type Session struct {
 	// envelope so reviewers can skip deliberately half-done work. Written by
 	// agentdb/attention.go; NO gorm `default:` tag, because a declared default
 	// makes GORM omit the false value and the flag could never be cleared.
-	AttentionRequested bool   `json:"attention_requested,omitempty"`
-	ArtifactCount      int    `json:"artifact_count" gorm:"->;<-:false"`
-	MessageCount       int    `json:"message_count" gorm:"->;<-:false"`
-	ToolCallCount      int    `json:"tool_call_count" gorm:"->;<-:false"`
-	ContainerState     string `json:"container_state" gorm:"-"`
+	AttentionRequested bool `json:"attention_requested,omitempty"`
+	// CreateError is WHY this session failed to start, recorded by the Runner
+	// when a create fails and cleared when one succeeds.
+	//
+	// It exists because the reason used to be thrown away: agentd provisions in
+	// a background goroutine, and the only thing that survived a failure was
+	// `status = "error"`. The caller's next message then took the
+	// no-instance-and-no-snapshot path and was told the session was lost and
+	// should be re-created — which is false, and is advice that fails
+	// identically for ever when the cause is a mis-typed `base_image`.
+	//
+	// Scope: causes that are PERMANENT FACTS ABOUT THIS SESSION'S
+	// CONFIGURATION. Host-wide transients — chiefly execenv.ErrNoCapacity — are
+	// deliberately NOT recorded here (runner.recordCreateOutcome), because a
+	// stored copy of them goes stale the moment a port frees up; those are
+	// asked of the environment live instead (runner.workerCapacity).
+	//
+	// NO gorm `default:` tag, for the same reason attention_requested has none
+	// and migration 031's columns have none: a declared default makes GORM omit
+	// the zero value on write, so the field could never be cleared. The DEFAULT
+	// lives in migration 032's SQL.
+	CreateError    string `json:"create_error,omitempty"`
+	ArtifactCount  int    `json:"artifact_count" gorm:"->;<-:false"`
+	MessageCount   int    `json:"message_count" gorm:"->;<-:false"`
+	ToolCallCount  int    `json:"tool_call_count" gorm:"->;<-:false"`
+	ContainerState string `json:"container_state" gorm:"-"`
 }
 
 func (Session) TableName() string { return "agent_sessions" }
