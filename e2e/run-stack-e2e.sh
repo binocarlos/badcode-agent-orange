@@ -104,7 +104,15 @@ cmd_up() {
 # deliberate boot failure, and without this check the stack would simply be left
 # dead with a timeout as the only clue.
 reload_agentd_with_script() {
-  AGENTKIT_MOCK_MODEL_SCRIPT="$1" "${COMPOSE[@]}" up -d --no-deps agentd >/dev/null 2>&1
+  AGENTKIT_MOCK_MODEL_SCRIPT="$1" reload_agentd
+}
+
+# reload_agentd — recreate agentd carrying whatever AGENTKIT_* overrides the
+# caller has in its environment, then wait for the stack to answer. Every
+# per-run reconfiguration goes through here so there is one place that knows how
+# long to wait and what "back up" means.
+reload_agentd() {
+  "${COMPOSE[@]}" up -d --no-deps agentd >/dev/null 2>&1
   local deadline=$(( $(date +%s) + 60 ))
   until curl -fsS "$WEB_URL/auth/config" >/dev/null 2>&1; do
     if [ "$(date +%s)" -ge "$deadline" ]; then
@@ -114,27 +122,63 @@ reload_agentd_with_script() {
   done
 }
 
-# cmd_test [mode] [--mock-script FILE] [-- <playwright args>]
+# The base of the narrowed pool --port-pool builds. Deliberately far from the
+# 30001-30100 default: a leftover container from an ordinary run holds a port in
+# the default range, and a narrowed pool that overlapped it would fail for that
+# reason instead of the one under test.
+PORT_POOL_BASE=40000
+
+# reload_agentd_with_pool SIZE — boot agentd with a pool of exactly SIZE ports,
+# or restore the default when SIZE is empty.
 #
-# --mock-script is deliberately PER RUN rather than baked into `up`: the script
-# is agentd-wide and read at boot, so leaving one loaded would quietly change
-# the model's behaviour for every later run and for anyone else sharing the
-# stack. So this loads it, runs the tests, and restores the plain model
+# Restoring passes both variables as EMPTY rather than unsetting them: agentd
+# treats empty as unset (compose's `${VAR:-}` cannot distinguish the two), and
+# leaving a stale value exported would silently narrow the pool for every later
+# run on this stack — the kind of leak this suite exists to refuse.
+reload_agentd_with_pool() {
+  if [ -z "${1:-}" ]; then
+    AGENTKIT_PORT_RANGE_START="" AGENTKIT_PORT_RANGE_END="" reload_agentd
+    return
+  fi
+  AGENTKIT_PORT_RANGE_START="$PORT_POOL_BASE" \
+    AGENTKIT_PORT_RANGE_END="$(( PORT_POOL_BASE + $1 - 1 ))" \
+    reload_agentd
+}
+
+# cmd_test [mode] [--mock-script FILE] [--port-pool N] [-- <playwright args>]
+#
+# Both reconfiguration flags are deliberately PER RUN rather than baked into
+# `up`: each is agentd-wide and read at boot, so leaving one loaded would
+# quietly change the stack for every later run and for anyone else sharing it.
+# So this applies them, runs the tests, and restores the ordinary stack
 # afterwards — even if the tests fail.
 #
-# Specs that need a scripted tool call gate on STACK_MOCK_SCRIPT, which is set
-# only for the duration of such a run.
+#   --mock-script FILE  let the mock model emit tool_use (see mock-scripts/).
+#                       Specs that need it gate on STACK_MOCK_SCRIPT.
+#   --port-pool N       boot agentd with a session port pool of exactly N,
+#                       instead of the default 100. This is what makes the
+#                       exhaustion path reachable: filling a pool of three takes
+#                       seconds, filling a hundred takes a hundred containers.
+#                       Specs that need it gate on STACK_PORT_POOL.
 cmd_test() {
-  local recorded="" mode="" script="" args=()
+  local recorded="" mode="" script="" pool="" args=()
   [ -f "$MODE_FILE" ] && recorded="$(cat "$MODE_FILE")"
   while [ $# -gt 0 ]; do
     case "$1" in
       --mock-script) script="${2:-}"; shift 2 ;;
+      --port-pool) pool="${2:-}"; shift 2 ;;
       --) shift; args+=("$@"); break ;;
       *) [ -z "$mode" ] && mode="$1" || args+=("$1"); shift ;;
     esac
   done
   mode="${mode:-${recorded:-mock}}"
+
+  if [ -n "$pool" ]; then
+    case "$pool" in
+      ''|*[!0-9]*) echo "--port-pool wants a number of ports, got: $pool" >&2; return 1 ;;
+    esac
+    [ "$pool" -ge 1 ] || { echo "--port-pool must be at least 1" >&2; return 1; }
+  fi
 
   if [ -n "$recorded" ] && [ "$mode" != "$recorded" ]; then
     echo "running stack is in '$recorded' mode, not '$mode' — run: $0 up $mode" >&2
@@ -165,10 +209,51 @@ cmd_test() {
     trap 'echo "── stack e2e: unloading mock model script ──"; reload_agentd_with_script "" || true' RETURN
   fi
 
+  local pool_range=""
+  if [ -n "$pool" ]; then
+    [ -z "$script" ] ||
+      { echo "--port-pool and --mock-script cannot be combined (each reload carries only its own override)" >&2; return 1; }
+    # Any session still running holds a port in the OLD range. Narrowing the
+    # pool under them would leave agentd's accounting and the host disagreeing,
+    # so refuse rather than produce an exhaustion that is nobody's fault.
+    local live
+    live="$("${COMPOSE[@]}" exec -T dind sh -c 'docker ps -q --filter name=sandbox- | wc -l' 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "$live" ] && [ "$live" != "0" ]; then
+      echo "--port-pool needs an empty stack; $live session container(s) are still running." >&2
+      echo "    ./e2e/run-stack-e2e.sh clean" >&2
+      return 1
+    fi
+    pool_range="$PORT_POOL_BASE-$(( PORT_POOL_BASE + pool - 1 ))"
+    echo "── stack e2e: narrowing agentd's session port pool to $pool ($pool_range) ──"
+    if ! reload_agentd_with_pool "$pool"; then
+      echo "agentd did not come back with that pool. Its own words:" >&2
+      "${COMPOSE[@]}" logs --tail 5 agentd 2>&1 | sed 's/^/    /' >&2
+      echo "── stack e2e: restoring the default port pool ──" >&2
+      reload_agentd_with_pool "" || echo "agentd is still down; try: $0 up mock" >&2
+      return 1
+    fi
+    # Restore the default pool however the run ends. A stack left on a pool of
+    # three would fail the fourth session of every later run, which is exactly
+    # the misdiagnosis this whole area keeps producing.
+    trap 'echo "── stack e2e: restoring the default port pool ──"; reload_agentd_with_pool "" || true' RETURN
+  fi
+
   echo "── stack e2e [$mode]: running playwright against $WEB_URL ──"
+  # The status is captured rather than allowed to propagate, and that is
+  # load-bearing rather than style. Under `set -e` a failing command inside a
+  # function EXITS the script instead of returning from it, and a RETURN trap
+  # does not fire on exit — so every restore above would be skipped on exactly
+  # the runs that need it most: the failing ones. That is not hypothetical. It
+  # left agentd on a three-port pool after the first red run of the port-pool
+  # spec, and `--mock-script` had the same hole for as long as it has existed:
+  # a failing scripted run left the scripted model loaded for whoever ran next.
+  local status=0
   (cd "$ROOT/e2e" && STACK_BASE_URL="$WEB_URL" STACK_E2E_MODE="$mode" \
     STACK_MOCK_SCRIPT="${script_json:+1}" \
-    npx playwright test --config playwright.stack.config.ts "${args[@]}")
+    STACK_PORT_POOL="$pool" STACK_PORT_RANGE="$pool_range" \
+    E2E_PORT_POOL_SIZE="$pool" \
+    npx playwright test --config playwright.stack.config.ts "${args[@]}") || status=$?
+  return "$status"
 }
 
 cmd_down() {

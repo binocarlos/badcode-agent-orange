@@ -31,8 +31,15 @@ const exec = promisify(execFile)
 
 const COMPOSE_PROJECT = process.env.STACK_COMPOSE_PROJECT || 'agent-orange-stack-e2e'
 
-/** The size of agentd's sandbox port pool (PortRangeStart..PortRangeEnd). */
-export const PORT_POOL_SIZE = 100
+/**
+ * The size of agentd's sandbox port pool (AGENTKIT_PORT_RANGE_START..END).
+ *
+ * 100 is agentd's default and what every ordinary run sees. A run started with
+ * `--port-pool N` deliberately narrows it so the exhaustion path is reachable,
+ * and sets this — without it the guard and the leak check would both do their
+ * arithmetic against a pool the stack does not have.
+ */
+export const PORT_POOL_SIZE = Number(process.env.E2E_PORT_POOL_SIZE) || 100
 
 /**
  * Projects this suite creates, derived from the constant the fixtures mint with
@@ -54,10 +61,19 @@ export interface Occupancy {
   allSchedules: number
 }
 
-/** Counts the running sandbox containers, i.e. ports taken out of the pool. */
+/**
+ * Counts the running sandbox containers, i.e. ports taken out of the pool.
+ *
+ * Throws if it cannot count. It used to answer 0 on any failure, which is the
+ * worst possible answer: a docker hiccup, a stopped dind, a renamed compose
+ * project all reported "the stack is empty", so the pre-run guard waved the run
+ * through and the post-run check certified a leaking run as clean. A number
+ * this one is allowed to invent is not a measurement.
+ */
 export async function runningContainers(): Promise<number> {
+  let stdout: string
   try {
-    const { stdout } = await exec('docker', [
+    ;({ stdout } = await exec('docker', [
       'compose',
       '-p',
       COMPOSE_PROJECT,
@@ -67,11 +83,18 @@ export async function runningContainers(): Promise<number> {
       'sh',
       '-c',
       'docker ps -q --filter name=sandbox- | wc -l',
-    ])
-    return Number(stdout.trim()) || 0
-  } catch {
-    return 0
+    ]))
+  } catch (e) {
+    throw new Error(
+      `could not count session containers in the '${COMPOSE_PROJECT}' stack, so this run cannot ` +
+        `tell whether the host is full or whether it leaked: ${e instanceof Error ? e.message : String(e)}`,
+    )
   }
+  const n = Number(stdout.trim())
+  if (!Number.isFinite(n)) {
+    throw new Error(`could not read a container count from docker; it said: ${JSON.stringify(stdout)}`)
+  }
+  return n
 }
 
 /** A snapshot of what the stack is carrying right now. */
@@ -85,6 +108,80 @@ export async function measure(): Promise<Occupancy> {
     containers,
     e2eSchedules: Number(String(e2e).trim()) || 0,
     allSchedules: Number(String(all).trim()) || 0,
+  }
+}
+
+/**
+ * Is there a running container for this session id?
+ *
+ * Answers the question a count cannot: whether a specific session's container
+ * exists, which is what distinguishes an ORPHAN (container, no session row)
+ * from an ordinary live session.
+ */
+export async function sandboxContainerExists(sessionId: string): Promise<boolean> {
+  const { stdout } = await exec('docker', [
+    'compose',
+    '-p',
+    COMPOSE_PROJECT,
+    'exec',
+    '-T',
+    'dind',
+    'sh',
+    '-c',
+    `docker ps -q --filter name=sandbox-${sessionId}`,
+  ])
+  return stdout.trim() !== ''
+}
+
+/**
+ * Force-removes a session's container.
+ *
+ * Reaching past the API like this is normally a smell, and here it is the
+ * point: an ORPHAN has no session row, so there is no API call that could
+ * remove it. A test that demonstrates the orphan must still not leave one, or
+ * every run afterwards fails the leak check for a mess the test made.
+ */
+export async function removeSandboxContainer(sessionId: string): Promise<void> {
+  await exec('docker', [
+    'compose',
+    '-p',
+    COMPOSE_PROJECT,
+    'exec',
+    '-T',
+    'dind',
+    'sh',
+    '-c',
+    `docker rm -f sandbox-${sessionId} 2>/dev/null || true`,
+  ]).catch(() => {})
+}
+
+/**
+ * Measures, then keeps measuring until the count stops moving.
+ *
+ * A leak can arrive AFTER the run appears to be over, and measuring once misses
+ * it. `POST /agent/session` provisions in the background, so a session deleted
+ * while its create is still in flight is removed from the database and *then*
+ * gets its container — an orphan holding a port that nothing will ever reap
+ * (reproduced on 2026-07-26: create, delete 0ms later, container up 14s after
+ * that, no session row, still running minutes later). Teardown measured zero
+ * and certified the run clean; the ports were gone all the same.
+ *
+ * So: wait for two consecutive identical readings before believing either.
+ * Cheap when nothing is in flight — one extra reading — and the only way a
+ * late-arriving container is counted against the run that caused it.
+ */
+export async function measureSettled(
+  quietMs = 6_000,
+  timeoutMs = 60_000,
+): Promise<Occupancy> {
+  const deadline = Date.now() + timeoutMs
+  let last = await measure()
+  for (;;) {
+    await new Promise((r) => setTimeout(r, quietMs))
+    const next = await measure()
+    if (next.containers === last.containers) return next
+    last = next
+    if (Date.now() >= deadline) return next
   }
 }
 

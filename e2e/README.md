@@ -33,11 +33,23 @@ log recorded that" means anything.
 
 # Without the script, the §8.8 pair skips and everything else runs:
 ./e2e/run-stack-e2e.sh test
+
+# The exhaustion path, on a pool of three instead of a hundred:
+./e2e/run-stack-e2e.sh test --port-pool 3 -- features/port-pool.stack.spec.ts
 ```
 
-`--mock-script` loads the script into agentd, runs, and restores the plain model however the run
-ends — deliberately per-run, because the script is agentd-wide and read once at boot. See
-[`mock-scripts/README.md`](mock-scripts/README.md).
+`--mock-script` and `--port-pool` are both per-run: each is agentd-wide and read once at boot, so
+the script loads it, runs, and restores the ordinary stack however the run ends — including when
+the tests fail. (That last clause was a lie until 2026-07-26: under `set -e` a failing command
+inside a shell function *exits* rather than returns, and a `RETURN` trap does not fire on exit, so
+the restore was skipped on exactly the runs that needed it. A red `--port-pool` run left agentd on
+a three-port pool, and every scripted run that failed had been leaving its model script loaded for
+whoever ran next. `cmd_test` now captures the status instead of letting it propagate.)
+
+See [`mock-scripts/README.md`](mock-scripts/README.md) for the script format. `--port-pool N` boots
+agentd with `AGENTKIT_PORT_RANGE_START/END` spanning exactly N ports at 40000 — deliberately away
+from the 30001 default so a stray container from an ordinary run cannot be mistaken for the
+exhaustion under test. It refuses to start on a stack with live sessions, for the same reason.
 
 
 ## When a run fails, triage before you debug
@@ -262,53 +274,49 @@ Two conventions worth keeping:
 | **G1 §8.8 autonomy** | same, with `--mock-script` | with a scripted model the **model chooses the tool call**: a due schedule fires, the manager job calls `worker_create`, and a worker its prompt described — which no human and no bootstrap code path created — exists, logged with the manager as actor. A content worker calls `request_human_attention` and gets back a permalink to its own conversation, succeeding with `channel: "none"` when none is configured |
 | Images §13 / skills §14 | `features/images-and-skills.stack.spec.ts` | curate-then-burn end to end: `skill_create` → `skill_install` lands the document and runs its script; **a failing script is a loud failure** carrying exit status, stderr and "do not proceed"; `image_create` allocates versions 1 then 2, gap-free, listed newest-first with worker/session/`session_url` provenance; an older version survives a newer burn unchanged; the catalogue exposes **no update or delete verb**; `image_create`/`skill_create` are logged with the acting session while `skill_install` logs nothing (§14.2); both lists cap at 200 with `truncated`; and a token with no `sid` is refused by both |
 | **The worker image pointer §13.3/§13.5 (I4)** | `features/image-curation.stack.spec.ts` | curate-then-burn all the way to a launch: a vanilla session `skill_install`s a probe whose script marks the filesystem, `image_create` burns it, `worker_update` adopts it — and the worker's **next job runs in a container carrying that marker**, read back through DinD, which is the only assertion a "resolved perfectly then launched the base image anyway" regression cannot fake. Plus: a floating `toolbox` follows a second burn while a pinned `toolbox:1` does not; a pointer at a name nobody burned **fails the delivery with no session created** (§13.3 — never a silent fallback); a worker with no pointer is undisturbed; and every launch stamps `last_resumed_at`, which nothing called before I4 |
+| **A full host says it is full** | `features/port-pool.stack.spec.ts` (needs `--port-pool 3`) | the pool really fills — three live sessions on a three-port pool — and the fourth is told which resource ran out, how big it is, what holds it, and that this is *"a host capacity limit, not a lost or broken session"*, never the old "session must be re-created". Then a freed port lets the next session start, which is the claim "capacity limit" makes and "lost session" would have denied |
 | **Schedules that cannot provision §8.6** | `features/schedule-resilience.stack.spec.ts` | the mechanism that stops the incident this suite caused: a `* * * * *` schedule on a **disabled** worker is refused at the dispatch gate every minute, and after five consecutive firings that start no job the scheduler **switches the schedule off**, with the reason in the config log — one record for the decision, none for the five observations. The disable resets the streak (re-enabling gets a full budget), and nothing is provisioned along the way, so the test for the anti-storm mechanism cannot itself start a storm. Slowest test in the suite (~6 min): a firing is one wall-clock minute and there is no catch-up |
 | Harness itself | `features/harness.stack.spec.ts` | the fixtures do what they claim, including the polling failure message and the permalink format |
 
-### No known failures
+### One known failure
 
-Both defects this suite found have been fixed and are now guarded — see below. When you add a red
-test, list it here with its evidence so nobody mistakes it for flakiness.
+Every defect this suite has found is fixed and guarded except one — the orphaned container below,
+which is red on purpose. When you add a red test, list it there with its evidence so nobody mistakes
+it for flakiness.
 
 
 ### Known gaps — deliberately red
 
-`features/acceptance-loop.spec.ts` › *a worker's own prompt reaches the model, not just the session
-row*.
+`features/port-pool.stack.spec.ts` › *deleting a session mid-create does not leave an orphaned
+container*.
 
-**The composed prompt never reaches the model.** `dispatch.go` creates the session with `Worker` set
-and the full composed prompt written to `composed_prompt`, but never sets `Persona`; `SendMessage`
-then re-resolves the system prompt every turn through the provider, which — with an empty `Persona`
-— contributes no worker layer; and nothing sends the stored `composed_prompt` on the query. So the
-core preamble, the worker prompt and the memory briefings are composed deterministically, written to
-the database, and discarded. The model sees the project prompt and nothing else.
+**A session deleted while its create is still provisioning leaves a container that nothing reaps.**
+`POST /agent/session` answers 200 with status `creating` and provisions in the background. Delete
+before that finishes and the row is removed; the container arrives afterwards, belonging to nothing.
+Reproduced by hand on 2026-07-26 — create, `DELETE` 0ms later (204), container up and healthy 14s
+after that, no session row, still running and holding port 30001 several minutes later. Not the
+archive loop's problem (it knows about sessions), not `cleanup()`'s (no row to sweep), and invisible
+to every count that trusts the database.
 
-This test is built so the row cannot fool it: the marker lives **only** in the worker's system
-prompt, the triggering event text carries none, and the scripted model calls a tool only if it
-actually saw the marker. The witness worker exists if and only if the prompt was delivered.
+**This is the best available explanation for how this stack kept filling up.** The suite's own
+`cleanup()` deletes sessions the moment a test ends — including tests that fail in milliseconds,
+before anything has provisioned — so the harness has been manufacturing orphans for as long as it
+has existed, one per fast-failing session. It now waits for `creating` to clear first
+(`waitForCreatesToSettle`), which stops the suite *causing* it, and teardown settles before its
+final count so a late arrival is charged to the run that caused it. Neither is a fix: the race is
+the product's.
 
-**Read this before trusting any other prompt assertion here.** Every other one reads
-`composed_prompt` off the session row, which is what composition *stored* — including the §7.4
-memory-briefing test. Those were all passing throughout the period the model was receiving none of
-it. They are not wrong, but they are assertions about composition, not delivery, and their comments
-now say so.
+The test removes its own orphan in a `finally`. A deliberately-red test that also leaked would fail
+every subsequent run's leak check for a container it left itself.
 
 
-`features/acceptance-loop.spec.ts` › *asking for attention pauses the job*.
-
-**Asking for human attention does not pause the job.** The tool records the request and returns
-cleanly — the test above it proves that — but the delivery runs to `ok` with an `ended_at`, and the
-`worker.finished` envelope carries `attention_requested: false`. §8.4 wants the delivery parked at
-`awaiting_human` with no `ended_at`: a pause, not a finish, so the UI shows an open-ended duration
-and a human can answer hours later. This is exactly the gap E2 flagged when it wrote
-`attention_requested` as a parameter the Runner passes `false` — "H2 must add a session-level flag
-and one line in `emitJobOutcome`". From the outside, a job that asked for sign-off is currently
-indistinguishable from one that finished its work.
+That is the only one left. The other two that lived here — the composed prompt never reaching the
+model, and `request_human_attention` not parking the job — are both fixed and are listed below.
 
 ### Fixed, and now guarded
 
-Two defects were found by writing the test first, leaving it red, and reporting it. Both are fixed;
-the tests stay as regression guards.
+These were found by writing the test first, leaving it red, and reporting it. All are fixed; the
+tests stay as regression guards.
 
 - *a turn interrupted by a reload is still persisted* (`product-ui`) — red until `8faaa95`.
   Reloading mid-answer lost the whole turn, the human's own message included: `persist()` handed
@@ -319,6 +327,31 @@ the tests stay as regression guards.
 - *a project's mcp_config reaches its sessions* (`session-mcp`) — red until `7170bed`. A project's
   tools resolved correctly and reached no container: agentd's `Resolve` never set the `MCPServers`
   field the Runner merges. Three tracks each built their half and nothing joined them.
+- *a base_image that cannot launch tells the caller which setting and which interpretation*
+  (`image-curation`) — red until session-create failures stopped being discarded. The `§13` pointer
+  fix wrote an excellent diagnostic naming the setting, the value, the project, and which of the two
+  meanings the string was given; it reached nobody, because the create path dropped its error and
+  the caller got "session has no running instance and no snapshot" instead. The lesson worth keeping
+  is that a diagnostic is not done when it is written, only when someone can read it — so the test
+  asserts what the **caller receives**, and any refactor that swallows a create error fails here.
+- *a worker's own prompt reaches the model, not just the session row* (`acceptance-loop`, needs
+  `--mock-script`). The composed prompt was written to `composed_prompt` and never sent: `dispatch.go`
+  set `Worker` but not `Persona`, so `SendMessage` re-resolved a system prompt with no worker layer,
+  and the stored composition was discarded. The model saw the project prompt and nothing else — for
+  a day, behind green tests. **Read this before trusting any other prompt assertion here**: every
+  other one reads `composed_prompt` off the session row, which is what composition *stored*, and all
+  of them passed throughout. They are assertions about composition, not delivery, and their comments
+  now say so. This one cannot be fooled by the row: the marker lives only in the worker's system
+  prompt, the triggering event carries none, and the scripted model calls a tool only if it saw the
+  marker — so the witness worker exists if and only if the prompt was delivered.
+- *asking for attention parks the job instead of finishing it* (`acceptance-loop`, needs
+  `--mock-script`). The delivery used to run to `ok` with an `ended_at` and a `worker.finished`
+  carrying `attention_requested: false`; §8.4 wants it parked at `awaiting_human` with no `ended_at`,
+  so the UI shows an open-ended duration and a human can answer hours later. From the outside a job
+  awaiting sign-off was indistinguishable from one that had finished its work.
+
+All three of the last group were verified green on 2026-07-26: the full suite at 50 passed / 0
+failed, and the scripted acceptance-loop run at 17 passed.
 
 ### The queue — not covered, and why
 
@@ -338,7 +371,7 @@ Do **not** write these until the machinery exists; they would be tests of unbuil
 | `config.changed` event (§15.4) | J3 | a config mutation emits the routable event **after commit**, once, idempotent on the config-event id |
 | `config_history` / fold / restore (§15.6–§15.7) | J2/J4 | fold to a timestamp; restore a deleted worker from its `worker_delete` record |
 | Schedules §8.6 — the happy path | Track H | a due schedule fires a job; a missed window is skipped, not caught up. (The *failure* path is covered: `features/schedule-resilience.stack.spec.ts`) |
-| Port-pool exhaustion is reported as a host limit | nothing — it is **untestable from here**, on purpose | the capacity error needs 100 live sessions to reach, and `PortRangeStart/End` are hardcoded at `go/cmd/agentd/main.go:132` rather than configurable, so a test could only produce it by filling the host it runs on. Verified instead by reading the string out of the running binary (see the triage section) plus `go/runner_portpool_test.go` and `go/execenv/docker/ports_exhaustion_test.go`. That the message *reaches an HTTP caller* is evidenced by the red `base_image` test, which measures the sibling line of the same function (`runner.go:1007`) arriving verbatim. **Making the range configurable would make this testable** — worth doing if the pool is ever touched again |
+| Reaping orphaned session containers | a product decision (see Known gaps) | when nothing can leave a container behind, assert it: create, delete mid-provision, and expect no container |
 | `request_human_attention` (§9) | H2 | delivery goes `awaiting_human`, the attention channel receives `{message, session_url}` |
 | Images & skills §13–§14 | I2/I3/I4 | `image_create` → a worker pinned to `name:version` launches from it; `skill_install` |
 | G3: live smoke | G1 | the same loop in `api-key` mode, manually observed |

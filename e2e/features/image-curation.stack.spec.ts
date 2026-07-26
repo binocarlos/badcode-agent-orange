@@ -310,7 +310,8 @@ test.describe('I4 §13 — a worker launches from the image it was pointed at', 
     expect(await marker(id)).toBe('project-default')
   })
 
-  // KNOWN GAP — left red deliberately.
+  // A regression guard now — it was red for a day, and the story is the reason
+  // to keep it.
   //
   // The pointer fix built an excellent diagnostic:
   //
@@ -322,20 +323,17 @@ test.describe('I4 §13 — a worker launches from the image it was pointed at', 
   // the string was given — the question the old message refused to answer, and
   // the reason three people misdiagnosed this class of failure in one day.
   //
-  // It does not reach anyone. Measured on the running stack with a base_image
-  // that cannot launch:
-  //   * the caller receives, over SSE, only
-  //       session "<id>" has no running instance and no snapshot — session must
-  //       be re-created
-  //     which describes a lost session and invites re-creation, when the truth
-  //     is a setting naming an image that does not exist;
-  //   * agentd logs NOTHING for that session — the rich line appears on the
-  //     SUCCESS path ("resolved through the image catalogue to sha256:…") but
-  //     not on the failure it was written for.
+  // And for a day it reached nobody. Measured on the running stack: the caller
+  // received only "session <id> has no running instance and no snapshot —
+  // session must be re-created", and agentd logged the rich line on the SUCCESS
+  // path and not on the failure it was written for. A perfect diagnostic that
+  // no operator could ever see is worth exactly nothing, which is why this was
+  // left red rather than deleted.
   //
-  // So the diagnostic is real and unreachable. This test asserts that an
-  // operator can find out what they got wrong.
-  test('a base_image that cannot launch tells the caller which setting and which interpretation (KNOWN GAP: the good message never reaches them)', async () => {
+  // Green since session-create failures stopped being discarded. What it guards
+  // is not the text but the REACHABILITY: assert what the caller receives, so
+  // the next refactor that swallows a create error fails here.
+  test('a base_image that cannot launch tells the caller which setting and which interpretation', async () => {
     await client.putSettings({ base_image: 'definitely-not-an-image:v9' })
 
     const id = await client.createSession({ job: 'plain' })

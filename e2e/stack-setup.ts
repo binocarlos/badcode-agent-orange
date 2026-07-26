@@ -6,9 +6,10 @@ import { describe, measure, PORT_POOL_SIZE, type Occupancy } from './helpers/occ
 //
 // The failure this prevents: a run starts on a host that is already full, every
 // session fails to provision, and the output blames whatever spec happened to
-// run last. That has cost this project several debugging rounds — the error a
-// saturated host produces ("session has no running instance and no snapshot")
-// reads exactly like a product bug.
+// run last. That cost this project several debugging rounds, because a
+// saturated host used to say "session has no running instance and no snapshot",
+// which reads exactly like a product bug. It now names the host limit — but
+// being told clearly at the fiftieth failure is still worse than not starting.
 //
 // So: say what the host is carrying before a single test runs, and refuse to
 // start when there is not enough room to be worth trying.
@@ -26,6 +27,18 @@ import { describe, measure, PORT_POOL_SIZE, type Occupancy } from './helpers/occ
  * margin a guess should have.
  */
 const MINIMUM_FREE_PORTS = 25
+
+/**
+ * What this run actually requires free.
+ *
+ * On the default 100-port pool that is `MINIMUM_FREE_PORTS`. On a pool
+ * deliberately narrowed with `--port-pool N` it cannot be: a pool of three can
+ * never have 25 free, and a guard that refused every such run would simply be
+ * disabled by the next person to need one. Requiring all but one port keeps the
+ * guard meaningful there — the run still refuses to start on a stack somebody
+ * else is using — without asking for room that does not exist.
+ */
+const minimumFreePorts = Math.min(MINIMUM_FREE_PORTS, PORT_POOL_SIZE - 1)
 
 export const BASELINE_FILE = path.join(import.meta.dirname, '.stack-baseline.json')
 
@@ -50,14 +63,14 @@ export default async function globalSetup(): Promise<void> {
     )
   }
 
-  if (free < MINIMUM_FREE_PORTS) {
+  if (free < minimumFreePorts) {
     throw new Error(
       `the stack has only ${free} of ${PORT_POOL_SIZE} session ports free, which is not enough to ` +
         `run this suite.\n\n` +
-        `Every session takes one port from agentd's pool (30001–30100) and holds it until the ` +
-        `session is deleted; nothing reaps them. A run started now would fail with ` +
-        `"session has no running instance and no snapshot", which looks like a product bug and ` +
-        `is not one.\n\n` +
+        `Every session takes one port from agentd's pool and holds it until the session is ` +
+        `deleted; nothing reaps them. A run started now would fail to provision most of its ` +
+        `sessions — the error says so plainly these days, but a suite reporting fifty failures ` +
+        `still tells you nothing about the product.\n\n` +
         `    ./e2e/run-stack-e2e.sh clean\n\n` +
         `Currently: ${describe(before)}`,
     )

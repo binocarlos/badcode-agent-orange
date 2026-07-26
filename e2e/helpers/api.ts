@@ -500,9 +500,40 @@ export class ProjectClient {
     for (const sched of await this.listSchedules().catch(() => [])) {
       await this.raw('DELETE', `/agent/schedules/${encodeURIComponent(sched.id)}`).catch(() => {})
     }
+    await this.waitForCreatesToSettle()
     for (const row of await this.listAllSessions()) {
       if (row?.id) await this.raw('DELETE', `/agent/session/${encodeURIComponent(row.id)}`).catch(() => {})
     }
+  }
+
+  /**
+   * Waits until no session in this project is still `creating`.
+   *
+   * Deleting one that is mid-create is how this suite leaked containers without
+   * leaking sessions: `POST /agent/session` answers 200 with status "creating"
+   * and provisions in the background, so a DELETE that lands first removes the
+   * row and the create then produces a container belonging to nothing. Nothing
+   * reaps it, and it holds a host port for as long as the stack lives.
+   *
+   * Bounded and best-effort on purpose. It is a courtesy to the next run, not a
+   * guarantee — the guarantee is teardown, which counts what is actually there
+   * and fails the run. A create still unsettled after this long is a finding in
+   * its own right, and letting cleanup proceed surfaces it as a leak rather
+   * than hiding it in a hang.
+   */
+  async waitForCreatesToSettle(timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const rows = await this.listAllSessions().catch(() => [])
+      if (!rows.some((r) => r?.status === 'creating')) return
+      if (Date.now() >= deadline) return
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+
+  /** Deletes one session, releasing its container and its host port. */
+  async deleteSession(id: string): Promise<void> {
+    await this.raw('DELETE', `/agent/session/${encodeURIComponent(id)}`)
   }
 
   /**

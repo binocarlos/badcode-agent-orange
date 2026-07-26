@@ -1,5 +1,5 @@
 import { readFileSync, rmSync } from 'node:fs'
-import { deleteE2ESchedules, describe, measure, type Occupancy } from './helpers/occupancy'
+import { deleteE2ESchedules, describe, measureSettled, type Occupancy } from './helpers/occupancy'
 import { BASELINE_FILE } from './stack-setup'
 
 // Post-run leak check.
@@ -26,7 +26,10 @@ export default async function globalTeardown(): Promise<void> {
   const before = baseline()
   rmSync(BASELINE_FILE, { force: true })
 
-  const after = await measure()
+  // Settled, not instantaneous: a container can still be on its way up when the
+  // last test ends, and counting before it lands is how this check certified a
+  // leaking run as clean (see measureSettled).
+  const after = await measureSettled()
   console.log(`[stack] after the run: ${describe(after)}`)
 
   const problems: string[] = []
@@ -52,10 +55,14 @@ export default async function globalTeardown(): Promise<void> {
   if (leakedPorts > 0) {
     problems.push(
       `${leakedPorts} session container(s) more than when the run started — each holds one of ` +
-        `agentd's 100 session ports until deleted.\n` +
+        `agentd's session ports until deleted.\n` +
         `  Specs that create sessions must release them: client.cleanup() sweeps every session in ` +
         `the project (the router creates its own, which your test never sees), and browser specs ` +
         `use cleanupOpenedProjects().\n` +
+        `  If the count is right but the containers are ORPHANS — running with no session row — ` +
+        `suspect the create/delete race instead: a session deleted while its background create is ` +
+        `still provisioning loses its row and gets its container anyway, and nothing reaps that. ` +
+        `Check with: docker compose -p agent-orange-stack-e2e exec -T dind docker ps --filter name=sandbox-\n` +
         `  Not deleted automatically: on a shared stack a container may belong to someone else's run.`,
     )
   }
