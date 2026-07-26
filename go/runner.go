@@ -23,6 +23,12 @@ import (
 	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 )
 
+// ErrSessionDeleted is returned by CreateSession when the session it was
+// provisioning was deleted while the create was still in flight. It is not a
+// create *failure*: nobody wants this session any more, so there is no cause to
+// record and no row left to record it on.
+var ErrSessionDeleted = errors.New("session was deleted while it was being created")
+
 // ErrHarnessUnavailable is returned by CreateSession when the sandbox rejects
 // the harness choice with a 400 (UNKNOWN_HARNESS) or 424 (HARNESS_CREDENTIALS_MISSING)
 // response. The host can use this to clean up the orphan session row.
@@ -99,8 +105,37 @@ type runnerImpl struct {
 	// progress holds live snapshot/restore progress per session, read by Status.
 	progress *progressStore
 
+	// creating holds one guard per IN-FLIGHT create, keyed by session id. It is
+	// how a Destroy tells a create that is still provisioning that its session
+	// is gone — see createGuard. Entries live only for the duration of a create.
+	creating map[string]*createGuard
+
 	stop   chan struct{}
 	closed bool
+}
+
+// createGuard is the rendezvous between one in-flight CreateSession and a
+// Destroy for the same session.
+//
+// Hosts answer POST /agent/session immediately with status "creating" and
+// provision in the background, because pulling the launch image can take
+// minutes. Delete the session inside that window and Destroy finds nothing to
+// destroy — the container does not exist yet — so the container arrives
+// afterwards owned by nobody: no session row, no tracked instance, and
+// therefore invisible to every reaper that iterates sessions. It then holds one
+// of the host's finite host ports until a human finds it. One prompt delete —
+// including a test that fails in milliseconds — manufactures one such orphan.
+//
+// The guard closes that window by making the create itself responsible for its
+// own container: Destroy marks the guard, and the create checks the mark at
+// every point where it might otherwise walk away from a container.
+//
+// The predicate is deliberately narrow: "a Destroy for THIS session arrived
+// while THIS create was in flight". It is in-process state, so it can never
+// mis-fire on a container another host owns, on a restore, or on a re-provision
+// — see the note on abandonCreate.
+type createGuard struct {
+	abandoned bool
 }
 
 func newRunnerImpl(deps Deps) *runnerImpl {
@@ -112,6 +147,7 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 		queryErrors:      map[string]string{},
 		userImageHandles: map[string]imageregistry.Handle{},
 		progress:         newProgressStore(),
+		creating:         map[string]*createGuard{},
 		stop:             make(chan struct{}),
 	}
 	r.sink = &storeSink{store: deps.Store, pending: map[string]int{}}
@@ -152,12 +188,136 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 // state with no progress and the frontend would treat it as settled and stop
 // polling. Idempotent with CreateSession's own begin (CreateSession skips begin
 // when an entry already exists, preserving StartedAt).
+// It also installs a FRESH createGuard, because MarkCreating is precisely the
+// host saying "a new create attempt for this session starts now". Installing a
+// fresh one (rather than reusing whatever is there) is what lets a session id be
+// deleted and then legitimately created again: the abandonment of the previous
+// attempt must not carry over to the next one.
 func (r *runnerImpl) MarkCreating(sessionID string) {
+	r.mu.Lock()
+	r.creating[sessionID] = &createGuard{}
+	r.mu.Unlock()
 	r.progress.begin(sessionID, "create")
 	r.progress.phase(sessionID, "downloading")
 }
 
+// adoptCreateGuard returns the guard for this create: the one MarkCreating
+// installed if the host pre-registered the attempt, otherwise a fresh one.
+//
+// Reusing MarkCreating's guard is the point. A host answers the POST and
+// backgrounds the create, so a DELETE can land after MarkCreating and before
+// the goroutine is even scheduled; the mark left on that guard is the only
+// record that it did.
+func (r *runnerImpl) adoptCreateGuard(sessionID string) *createGuard {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if g, ok := r.creating[sessionID]; ok {
+		return g
+	}
+	g := &createGuard{}
+	r.creating[sessionID] = g
+	return g
+}
+
+// endCreate deregisters g when the create it belongs to finishes. The pointer
+// check matters: a later attempt on the same session id may already have
+// installed its own guard, and this one must not evict it.
+func (r *runnerImpl) endCreate(sessionID string, g *createGuard) {
+	r.mu.Lock()
+	if cur, ok := r.creating[sessionID]; ok && cur == g {
+		delete(r.creating, sessionID)
+	}
+	r.mu.Unlock()
+}
+
+// markCreateAbandoned records that this session was destroyed, so a create still
+// in flight for it tears down whatever it has provisioned. A no-op when no
+// create is in flight, which is the ordinary case.
+func (r *runnerImpl) markCreateAbandoned(sessionID string) {
+	r.mu.Lock()
+	if g, ok := r.creating[sessionID]; ok {
+		g.abandoned = true
+	}
+	r.mu.Unlock()
+}
+
+// abandoned reports whether a Destroy for this session landed since the create
+// began. Read under the runner lock; g is only ever mutated there.
+func (r *runnerImpl) abandoned(g *createGuard) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return g.abandoned
+}
+
+// abandonCreate tears down what a create had built when the session was deleted
+// underneath it, and returns ErrSessionDeleted so the caller stops.
+//
+// inst is nil when the delete arrived before any container existed (during the
+// image pull, say) — then there is nothing to reclaim and this is just the stop
+// signal.
+//
+// What it will NOT destroy, deliberately:
+//
+//   - a shared-tenancy instance. That container hosts other sessions; taking it
+//     down would delete live work, and it holds no per-session port anyway.
+//   - a container that is not the one THIS create provisioned, or that a newer
+//     create for the same session id has since adopted. Leaking a container is
+//     bad; destroying somebody else's is worse.
+//
+// It never scans, never asks the database whose container this is, and never
+// touches anything it did not itself create — so it cannot mis-fire on a
+// restore, a re-provision, or a container belonging to another host in a fleet.
+func (r *runnerImpl) abandonCreate(ctx context.Context, sessionID string, g *createGuard, worker *fleet.Worker, inst *execenv.Instance) error {
+	if inst == nil || worker == nil {
+		return ErrSessionDeleted
+	}
+
+	// Untrack, but only if the tracked instance is still the one we provisioned,
+	// and only if no newer create attempt has taken over this session id.
+	r.mu.Lock()
+	newerCreate := false
+	if cur, ok := r.creating[sessionID]; ok && cur != g && !cur.abandoned {
+		newerCreate = true
+	}
+	if cur, ok := r.instances[sessionID]; ok && cur.ID == inst.ID && !newerCreate {
+		delete(r.instances, sessionID)
+		delete(r.instanceWorkers, sessionID)
+		delete(r.lastActivity, sessionID)
+	}
+	r.mu.Unlock()
+
+	if newerCreate {
+		log.Printf("agentkit: session %s was deleted mid-create, but a newer create has adopted "+
+			"container %s — leaving it alone", sessionID, inst.ID)
+		return ErrSessionDeleted
+	}
+	if worker.Caps.Tenancy == execenv.TenancyShared {
+		// Shared container, shared by definition: other sessions are on it.
+		return ErrSessionDeleted
+	}
+
+	// The create context may already be cancelled (the request that asked for
+	// the session has long since been answered). The teardown still has to run —
+	// not doing it is the entire bug.
+	dctx := context.WithoutCancel(ctx)
+	if err := worker.Env.Destroy(dctx, inst.ID, execenv.DestroyOptions{SkipSnapshot: true}); err != nil {
+		// Log loudly rather than returning it: the caller needs ErrSessionDeleted,
+		// and an operator needs to know a container may still be holding a port.
+		log.Printf("agentkit: session %s was deleted mid-create but its container %s could NOT be "+
+			"destroyed (%v) — it may still be holding a host port", sessionID, inst.ID, err)
+		return ErrSessionDeleted
+	}
+	log.Printf("agentkit: session %s was deleted while it was being created; destroyed the container "+
+		"(%s) the create had already started and released its host port", sessionID, inst.ID)
+	return ErrSessionDeleted
+}
+
 func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest) (handle *SessionHandle, err error) {
+	// Claim this create so a Destroy landing mid-flight can reach it (see
+	// createGuard). Taken before any work, and released however we leave.
+	guard := r.adoptCreateGuard(req.SessionID)
+	defer r.endCreate(req.SessionID, guard)
+
 	// Track image-pull + provision progress under a "create" op so the frontend can
 	// render a download bar while the launch image is pulled. MarkCreating may have
 	// begun this already (async host path) — don't reset StartedAt if so.
@@ -176,6 +336,14 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		// next message was answered by the lost-session path instead.
 		r.recordCreateOutcome(ctx, req.SessionID, err)
 	}()
+
+	// The delete may already have happened: hosts call MarkCreating and then
+	// background this function, so a DELETE can land before the goroutine is
+	// scheduled. Nothing has been built yet, so there is nothing to tear down —
+	// just don't build it.
+	if r.abandoned(guard) {
+		return nil, ErrSessionDeleted
+	}
 
 	// The host's per-session defaults (§5), resolved ONCE: both the MCP union
 	// below and the launch image read it, and asking twice would double every
@@ -213,6 +381,12 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		// failure, and "no running instance" is what the operator is left with.
 		return nil, fmt.Errorf("ensure image present: %w", imgFrom.annotate(img, err))
 	}
+	// The pull is the long pole — minutes, on a cold host — and so it is the
+	// window a delete is most likely to land in. Check before provisioning:
+	// the cheapest orphan is the container that was never created.
+	if r.abandoned(guard) {
+		return nil, ErrSessionDeleted
+	}
 	// Resolve which worker will host this session.
 	worker, err := r.deps.Fleet.PlaceForSession(ctx, req.SessionID, fleet.PlacementHint{})
 	if err != nil {
@@ -236,6 +410,20 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 	}
 	r.track(req.SessionID, worker.ID, inst)
 
+	// The container now exists. From here on, walking away without destroying it
+	// leaks a host port that nothing will ever reclaim: the session row is gone,
+	// so no loop that iterates sessions can see this container, and no count that
+	// trusts the database will report it.
+	//
+	// track() runs FIRST on purpose. A Destroy that arrives after it finds the
+	// instance and tears it down itself; one that arrives before it leaves the
+	// mark this check reads. Either way exactly one of the two destroys, because
+	// both take the runner lock and abandonCreate only destroys an instance that
+	// is still tracked as its own.
+	if r.abandoned(guard) {
+		return nil, r.abandonCreate(ctx, req.SessionID, guard, worker, inst)
+	}
+
 	// POST /sessions to the in-image control server: boot the harness + credential check.
 	// Skip when the instance address is not an HTTP URL (e.g. mock:// in unit tests that
 	// test only the orchestration layer, not the sandbox HTTP contract).
@@ -245,6 +433,12 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 			// can clean up the orphan session row.
 			return nil, err
 		}
+	}
+
+	// Booting the harness is another multi-second window with a live container in
+	// it, so check once more on the way out.
+	if r.abandoned(guard) {
+		return nil, r.abandonCreate(ctx, req.SessionID, guard, worker, inst)
 	}
 
 	return &SessionHandle{SessionID: req.SessionID, Address: inst.Address, State: string(inst.State)}, nil
@@ -449,6 +643,24 @@ func (r *runnerImpl) Resume(ctx context.Context, ref SessionRef) (*SessionHandle
 }
 
 func (r *runnerImpl) Destroy(ctx context.Context, ref SessionRef) error {
+	// Tell any create still provisioning this session that nobody wants it. This
+	// must come FIRST and must not block: the create may be minutes into an image
+	// pull, and a delete that waited for it would hang the caller. The create
+	// tears down its own container when it reaches the next checkpoint.
+	//
+	// Without this, a delete that arrives before the container exists destroys
+	// nothing, the container appears afterwards owned by nobody, and its host
+	// port is never released.
+	r.markCreateAbandoned(ref.SessionID)
+	return r.teardownInstance(ctx, ref)
+}
+
+// teardownInstance is Destroy without the "the session is gone" meaning: it
+// removes the container and forgets the instance, but leaves any in-flight
+// create alone. The archive loop uses it — archiving a session that has gone
+// idle snapshots it and drops the container, but the session very much still
+// exists and will be restored on its next message.
+func (r *runnerImpl) teardownInstance(ctx context.Context, ref SessionRef) error {
 	inst := r.get(ref.SessionID)
 	if inst != nil {
 		env, err := r.workerEnvFor(ref.SessionID)
@@ -830,7 +1042,9 @@ func (r *runnerImpl) archiveLoop() {
 				if _, err := r.Snapshot(ctx, SessionRef{SessionID: sid}); err != nil {
 					continue
 				}
-				_ = r.Destroy(ctx, SessionRef{SessionID: sid})
+				// teardownInstance, not Destroy: the session is being ARCHIVED, not
+				// deleted. Cancelling a create for it would be a lie.
+				_ = r.teardownInstance(ctx, SessionRef{SessionID: sid})
 			}
 		}
 	}
@@ -1006,6 +1220,12 @@ func (r *runnerImpl) recordCreateOutcome(ctx context.Context, sessionID string, 
 		return
 	}
 	if createErr != nil {
+		if errors.Is(createErr, ErrSessionDeleted) {
+			// Not a failure to record. The row this would be written to has been
+			// deleted — and if the id has since been re-created, writing here
+			// would stamp a stale "why it failed" onto a healthy new session.
+			return
+		}
 		// The silence half of the defect: agentd logged NOTHING for a session
 		// whose background create failed, so even the operator with shell
 		// access had nowhere to look.

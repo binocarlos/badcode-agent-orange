@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 
@@ -67,6 +68,26 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		resolvedImage = ref
 	}
+	// Provisioning includes a force-pull of the launch image, which can take from
+	// seconds to minutes. Rather than block the POST for that whole window, return
+	// immediately with status "creating" and provision in the background; the
+	// frontend polls GET /session/{id}/status to render download progress (the
+	// runner streams image-pull bytes into the per-session progress store).
+	//
+	// MarkCreating pre-registers the "create" progress op synchronously (before we
+	// background the work) so a status poll that races ahead of the goroutine still
+	// sees an active op and keeps polling instead of treating the not-yet-running
+	// session as settled. Capability-probed so non-runner stubs stay compatible.
+	//
+	// It runs BEFORE the row is written, and that order is load-bearing: it also
+	// registers the create with the Runner so a DELETE landing mid-create can
+	// abort it. A DELETE cannot reach us until the row exists (the ownership
+	// check 404s without it), so registering first leaves no window in which a
+	// delete is possible but invisible to the create.
+	if mc, ok := h.cfg.Runner.(interface{ MarkCreating(string) }); ok {
+		mc.MarkCreating(sid)
+	}
+
 	// Persist the row before provisioning (Runner contract).
 	_, _ = h.cfg.Store.UpdateSession(r.Context(), &agentdb.Session{
 		ID: sid, Customer: id.Customer, Job: body.Job,
@@ -88,25 +109,21 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		Image:         resolvedImage,
 	}
 
-	// Provisioning includes a force-pull of the launch image, which can take from
-	// seconds to minutes. Rather than block the POST for that whole window, return
-	// immediately with status "creating" and provision in the background; the
-	// frontend polls GET /session/{id}/status to render download progress (the
-	// runner streams image-pull bytes into the per-session progress store).
-	//
-	// MarkCreating pre-registers the "create" progress op synchronously (before we
-	// background the work) so a status poll that races ahead of the goroutine still
-	// sees an active op and keeps polling instead of treating the not-yet-running
-	// session as settled. Capability-probed so non-runner stubs stay compatible.
-	if mc, ok := h.cfg.Runner.(interface{ MarkCreating(string) }); ok {
-		mc.MarkCreating(sid)
-	}
-
 	// Detach from the request context: it is cancelled when this handler returns,
 	// which would abort provisioning the instant we respond.
 	bg := context.WithoutCancel(r.Context())
 	go func() {
 		if _, err := h.cfg.Runner.CreateSession(bg, createReq); err != nil {
+			// The session was deleted while we were provisioning it. That is not
+			// a failure and there is no row left to mark: the Runner has already
+			// destroyed whatever container the create had built (and released its
+			// host port), which is the whole point of the abort. Touching the row
+			// here would only risk stamping "error" on a re-created session of
+			// the same id.
+			if errors.Is(err, agentkit.ErrSessionDeleted) {
+				log.Printf("httpapi: session %s was deleted while it was being created; create aborted", sid)
+				return
+			}
 			// This goroutine used to be where every create diagnostic died: the
 			// error was neither logged nor persisted, and `status = "error"` was
 			// all that survived — so the caller's next message took the

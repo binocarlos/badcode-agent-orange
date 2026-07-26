@@ -164,6 +164,40 @@ does the restart for you; if you clear containers by hand, do it yourself.
 
 Whether long-lived idle sessions should reap their containers is an open product question.
 
+### Deleting a session mid-create no longer leaks its port
+
+The pool used to lose ports to something no operator could see. `agentd` answers
+`POST /agent/session` with `status: "creating"` and provisions in a **background goroutine**
+(the pull can take minutes). Delete the session inside that window and the delete found no
+container to destroy — the container had not been created yet — so it arrived seconds later
+owned by nobody: no session row, no tracked instance. Nothing reaped it. Not the archive loop
+(it iterates sessions), not any cleanup keyed on a row, not any count that trusts the database.
+It simply held one of the pool's ports until a human ran `docker ps`.
+
+One prompt delete produced one such orphan — including a test that fails in milliseconds, or a
+teardown that deletes what it just created. An e2e run could report "0 ports in use" and have
+three orphans behind it, because both the count and the reaper start from the database and the
+orphan is precisely the container the database has forgotten.
+
+The Runner now cancels an in-flight create instead: `Destroy` marks the create (it never
+*waits* for it — a delete must not block behind a slow image pull), and the create checks that
+mark before provisioning, right after the container exists, and again after the harness boots,
+destroying what it built and releasing the port. `CreateSession` then returns
+`agentkit.ErrSessionDeleted`, which is not a create failure and is not recorded as one.
+
+The predicate is "a delete for **this** session arrived while **this** create was in flight" —
+in-process state about a container the runner itself just created. It is deliberately *not*
+"a container whose session row is missing": a missing row also describes a restore in progress,
+a re-provision, a container belonging to another host in a fleet, and — indistinguishably
+through the store interface — a database that is merely erroring. A sweep on that predicate
+would delete live work, which is worse than the leak. Two consequences of the narrower choice,
+both intentional:
+
+- A container orphaned by an **earlier** run of `agentd` (or by a crash between provisioning and
+  tracking) is still not reaped. `./e2e/run-stack-e2e.sh clean` remains the tool for those.
+- A host that deletes a session row **without** calling `Runner.Destroy` still leaks. Deleting
+  through the API always calls it.
+
 ## A session that failed to start says why
 
 Capacity was only one cause. `agentd` provisions in a **background goroutine** (the POST returns
