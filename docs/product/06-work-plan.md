@@ -484,6 +484,20 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(G3, 2026-07-26)` **What the live smoke does NOT prove, stated so it is not rounded up:** one
+  observation, one model, one turn. It shows the preamble is *acted on* — the model called
+  `request_human_attention`, a tool named nowhere except the preamble — and that the worker prompt
+  is obeyed exactly (an arbitrary marker word, reproduced). It does **not** show the preamble wins a
+  *conflict* with Claude Code's stock preset, only that it is not ignored. The failure mode to watch
+  for, well put by the e2e author, is not an absent prompt but "a worker that behaves almost right
+  and defaults to generic-assistant behaviour at the edges" — easy to explain away.
+- `(lesson, 2026-07-26)` **Two distinct assertion mistakes, worth separating:** *where* to assert
+  (reading back a value the system just wrote proves storage, not delivery) and *when* to assert
+  (cancelling or sampling before establishing a happens-after signal asserts the test's own timing).
+  Today produced three instances of the second: a test watching for a rejected promise that scored
+  silence as a pass, an orphan check that sampled before the goroutine had provisioned, and two
+  pipeline tests that cancelled before the frame was provably scanned. All three were green for
+  reasons unrelated to the code.
 - `(G3, 2026-07-26)` **LIVE SMOKE PASSED — observed against the real Anthropic API.** A worker was
   created whose system prompt said "begin every reply with the exact word PINEAPPLE"; a real
   `email.received` event was posted; the router composed and dispatched a job. The observed
