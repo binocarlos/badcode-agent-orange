@@ -484,6 +484,30 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(fix-portpool, 2026-07-26)` **FIXED — both halves.** The operator-facing error now reads
+  "execution environment is at capacity: the host port pool is exhausted — all 100 ports in
+  30001-30100 are leased to live sessions, and a session holds its port until it is deleted, so
+  every further session on this host will fail the same way until one is released (a host capacity
+  limit, not a lost or broken session)", wrapping `execenv.ErrNoCapacity` so a host maps it to 503
+  with `errors.Is` rather than string-matching. **A genuinely lost session still says "must be
+  re-created"** — pinned by test. agentd also warns once per provision below 10 free ports; silence
+  until the pool was already empty is exactly how this got misread three times.
+- `(fix-portpool, 2026-07-26)` **Why the cause was lost:** `httpapi/session.go` backgrounds
+  `CreateSession` and **discards its error** (the row just becomes `status:"error"`), so the next
+  message hit the no-snapshot bail. Rather than plumb a stale error forward, the Runner now *asks*
+  the environment through a new optional `execenv.CapacityReporter` — stateless, correct after an
+  agentd restart, and it cannot go stale.
+- `(fix-portpool, 2026-07-26)` **Schedules that cannot provision now disable after 5 consecutive
+  failures**, logged, with the reason in the config event (the disable *is* a decision a human must
+  see and be able to undo; the failure **counters** are exempt runtime state — logging each would
+  bury the changelog under a row failing every minute). The provisioning-vs-job distinction is
+  **structural, not a classifier**: `dispatchStarted` is decided before the turn runs, because the
+  turn is detached — so a job that ran and failed cannot possibly decrement the streak, and §8.7's
+  loop is untouched. A started session resets it; a re-enable gets a full budget.
+- `(fix-portpool, 2026-07-26)` **Residual risk, on the record before the first production seeding:**
+  a genuine host-wide capacity crunch lasting 5+ minutes will disable *every* firing schedule, not
+  just abandoned ones. Judged acceptable — bounded, logged, in the changelog, one edit to undo —
+  where an unusable host is none of those. But it is the price of the mechanism.
 - `(fix-baseimage, 2026-07-26)` **FIXED — `project_settings.base_image` now resolves through the §13
   catalogue.** Writing a curated image name there (exactly what §5 and `docs/18` tell an operator to
   do) was accepted, read back fine, and then stopped **every** session in the project launching. It
