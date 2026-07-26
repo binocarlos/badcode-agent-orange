@@ -484,6 +484,24 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   refusal.
 - `(E3, 2026-07-25)` Migration **029** (E3 and I3 both minted 028; E3's was renumbered at merge)
   adds indexes only — a partial index on held leases and the FIFO/capacity index on deliveries.
+- `(audit, 2026-07-26)` **Two passing tests were passing for a weaker reason than they read — the
+  most important lesson of the build.** Both `the router starts an answerer job` and, critically,
+  `a memory written by one job reaches the next job's composed prompt` assert `composed_prompt`
+  **off the session row**: what composition *stored*, never what the model *received*. They kept
+  passing throughout the entire period the model was receiving none of it. The §7.4 one reads as
+  "the lesson is in front of the next job" while proving only "the lesson is in the string we
+  saved". Their comments now say so. **General rule this earns: a test that reads back the value
+  the system under test just wrote proves storage, not delivery — assert at the boundary the
+  feature actually crosses.**
+- `(audit, 2026-07-26)` The replacement is `a worker's own prompt reaches the model, not just the
+  session row`: the marker lives **only** in the worker's system prompt, the triggering event text
+  carries none, and the scripted model calls a tool only if it actually saw the marker — so a
+  witness worker exists **iff** the prompt was delivered. A session row cannot fool it. Verified red
+  against the buggy tree; it is the external gate on the fix.
+- `(audit, 2026-07-26)` The other eight §8.7 assertions are unaffected — routing, envelopes, depth,
+  the config log and the tool-driven rewrites all assert things that never travelled through the
+  model's context. The two §8.8 tool tests pass because their marker is in the **event text**, which
+  does reach the model: they work *despite* the bug, not because of it.
 - `(G1, 2026-07-26)` **The §8.8 half closes: the model itself chooses the tool call.** A due
   schedule fires, the manager job calls `worker_create`, and a worker its own prompt described —
   created by no human and no bootstrap code path — exists, logged with the manager as actor and its
