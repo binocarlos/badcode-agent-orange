@@ -700,6 +700,23 @@ var agentMigrations = []migration{
 			CREATE INDEX IF NOT EXISTS idx_agent_artifacts_customer ON agent_artifacts(customer);
 		`,
 	},
+	{
+		// Frozen workers (F1, docs/product/10-topology-library.md §3): a frozen
+		// worker's configuration cannot be changed by other workers — the core
+		// MCP server refuses worker_update / worker_prompt_write against it —
+		// only by humans through the JWT-guarded HTTP API. The causal-isolation
+		// primitive for measurement instruments.
+		//
+		// DEFAULT here rather than a gorm `default:` tag, per the store
+		// convention (see Worker.Enabled): GORM omits zero-valued fields that
+		// declare a default, which would make `frozen: false` unwritable — an
+		// unfreeze that silently persisted as frozen would lock a worker away
+		// from the very humans the flag exists to reserve it for.
+		Name: "034_workers_frozen",
+		SQL: `
+			ALTER TABLE workers ADD COLUMN IF NOT EXISTS frozen BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration

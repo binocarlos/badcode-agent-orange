@@ -33,11 +33,42 @@ const ev = (over: Partial<ConfigEvent> = {}): ConfigEvent =>
   })
 
 describe('the §15.3 vocabulary', () => {
-  it('carries all sixteen actions, including the worker_delete the spec gained', () => {
-    expect(CONFIG_ACTIONS).toHaveLength(16)
+  it('carries all eighteen actions, including the freeze toggle F1 gained', () => {
+    expect(CONFIG_ACTIONS).toHaveLength(18)
     expect(CONFIG_ACTIONS).toContain('worker_delete')
     expect(CONFIG_ACTIONS).toContain('worker_prompt_write')
+    expect(CONFIG_ACTIONS).toContain('worker_freeze')
+    expect(CONFIG_ACTIONS).toContain('worker_unfreeze')
     expect(CONFIG_ACTIONS).toContain('image_create')
+  })
+
+  it('renders freeze and unfreeze as their own verbs, keyed to the worker', () => {
+    expect(describeConfigAction('worker_freeze')).toBe('Froze worker')
+    expect(describeConfigAction('worker_unfreeze')).toBe('Unfroze worker')
+    expect(changelogTitle(ev({ action: 'worker_freeze', payload: { name: 'quality-scorer' } }))).toBe(
+      'Froze worker “quality-scorer”',
+    )
+    expect(configEntity(ev({ action: 'worker_unfreeze' })).key).toBe('worker:email-answerer')
+  })
+
+  it('a freeze entry carries the full row but no prompt diff — the prompt did not change', () => {
+    const entries = buildChangelog([
+      ev({
+        id: 'c1',
+        action: 'worker_create',
+        payload: { name: 'w', system_prompt: 'P' },
+        created_at: 1,
+      }),
+      ev({
+        id: 'c2',
+        action: 'worker_freeze',
+        payload: { name: 'w', system_prompt: 'P', frozen: true },
+        created_at: 2,
+      }),
+    ])
+    expect(entries[0]!.action).toBe('worker_freeze')
+    expect(entries[0]!.title).toBe('Froze worker “w”')
+    expect(entries[0]!.diff).toBeNull()
   })
 
   it('gives every action a human verb, and passes an unknown one through', () => {

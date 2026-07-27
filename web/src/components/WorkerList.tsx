@@ -14,10 +14,12 @@ import {
   ListItemButton,
   ListItemText,
   Stack,
+  Tooltip,
   Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
-import type { Worker } from '../workers.js'
+import LockIcon from '@mui/icons-material/Lock'
+import { FROZEN_SENTENCE, type Worker } from '../workers.js'
 
 export interface WorkerListProps {
   workers: Worker[]
@@ -71,6 +73,17 @@ export default function WorkerList({
                     <Stack direction="row" spacing={1} alignItems="center">
                       <span>{worker.name}</span>
                       {!worker.enabled && <Chip size="small" label="disabled" />}
+                      {worker.frozen && (
+                        <Tooltip title={FROZEN_SENTENCE}>
+                          <Chip
+                            size="small"
+                            color="info"
+                            variant="outlined"
+                            icon={<LockIcon />}
+                            label="frozen"
+                          />
+                        </Tooltip>
+                      )}
                     </Stack>
                   }
                   secondary={worker.description || undefined}

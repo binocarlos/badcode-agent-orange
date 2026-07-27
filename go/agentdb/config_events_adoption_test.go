@@ -75,6 +75,23 @@ func TestConfigEvents_WorkerUpsertPicksTheMostSpecificAction(t *testing.T) {
 			wantAction: ActionWorkerUpdate,
 		},
 		{
+			name:       "flipping frozen on and nothing else is a freeze",
+			edit:       func(w *Worker) { w.Frozen = true },
+			wantAction: ActionWorkerFreeze,
+		},
+		{
+			name:       "flipping frozen AND changing the body is an update",
+			edit:       func(w *Worker) { w.Frozen = true; w.Description = "now a scorer" },
+			wantAction: ActionWorkerUpdate,
+		},
+		{
+			// Neither toggle can claim the write when both flip: neither
+			// "froze" nor "disabled" alone would be the honest sentence.
+			name:       "flipping frozen AND enabled is an update",
+			edit:       func(w *Worker) { w.Frozen = true; w.Enabled = false },
+			wantAction: ActionWorkerUpdate,
+		},
+		{
 			name:       "rewriting the same values changes nothing but still logs an update",
 			edit:       func(w *Worker) {},
 			wantAction: ActionWorkerUpdate,
@@ -146,6 +163,50 @@ func TestConfigEvents_WorkerEnableIsItsOwnAction(t *testing.T) {
 	}
 	if ev.Payload["enabled"] != true {
 		t.Fatalf("payload must carry the new state: %+v", ev.Payload)
+	}
+}
+
+// The unfreeze direction of the frozen toggle (F1), from a worker that starts
+// frozen — the direction the gorm-default footgun would silently break, since
+// `frozen: false` is exactly the zero value a declared default would swallow.
+func TestConfigEvents_WorkerFreezeAndUnfreezeAreTheirOwnActions(t *testing.T) {
+	s := newConfigLogTestStore(t)
+	ctx := context.Background()
+
+	w := NewWorker("acme", "quality-scorer")
+	w.Frozen = true
+	if _, err := s.UpsertWorker(ctx, w, ConfigWrite{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// Creating a worker already frozen is a create, not a freeze.
+	if ev := newestConfigEvent(t, s, "acme", 1); ev.Action != ActionWorkerCreate {
+		t.Fatalf("want %q, got %q", ActionWorkerCreate, ev.Action)
+	}
+
+	back, err := s.GetWorker(ctx, "acme", "quality-scorer")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !back.Frozen {
+		t.Fatalf("frozen: true did not persist — the gorm-default trap is back")
+	}
+	back.Frozen = false
+	if _, err := s.UpsertWorker(ctx, back, ConfigWrite{}); err != nil {
+		t.Fatalf("unfreeze: %v", err)
+	}
+	ev := newestConfigEvent(t, s, "acme", 2)
+	if ev.Action != ActionWorkerUnfreeze {
+		t.Fatalf("want %q, got %q", ActionWorkerUnfreeze, ev.Action)
+	}
+	if ev.Payload["frozen"] != false {
+		t.Fatalf("payload must carry the new state: %+v", ev.Payload)
+	}
+	thawed, err := s.GetWorker(ctx, "acme", "quality-scorer")
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if thawed.Frozen {
+		t.Fatalf("frozen: false did not persist — the gorm-default trap is back")
 	}
 }
 

@@ -163,6 +163,7 @@ func TestWorkersHTTP_PutDefaultsAndEcho(t *testing.T) {
 		body             string
 		wantMaxInstances int
 		wantEnabled      bool
+		wantFrozen       bool
 		wantBriefing     agentdb.SelectorList
 	}{
 		{
@@ -170,6 +171,17 @@ func TestWorkersHTTP_PutDefaultsAndEcho(t *testing.T) {
 			body:             `{"description":"answers email"}`,
 			wantMaxInstances: 1,
 			wantEnabled:      true,
+			wantFrozen:       false,
+			wantBriefing:     nil,
+		},
+		{
+			// The human path CAN freeze — this route is JWT-guarded, which is
+			// the whole boundary of docs/product/10-topology-library.md §3.
+			name:             "explicit frozen true freezes",
+			body:             `{"frozen":true}`,
+			wantMaxInstances: 1,
+			wantEnabled:      true,
+			wantFrozen:       true,
 			wantBriefing:     nil,
 		},
 		{
@@ -223,6 +235,10 @@ func TestWorkersHTTP_PutDefaultsAndEcho(t *testing.T) {
 				t.Fatalf("enabled: want %v, stored %v, echoed %v",
 					tc.wantEnabled, stored.Enabled, echoed.Enabled)
 			}
+			if stored.Frozen != tc.wantFrozen || echoed.Frozen != tc.wantFrozen {
+				t.Fatalf("frozen: want %v, stored %v, echoed %v",
+					tc.wantFrozen, stored.Frozen, echoed.Frozen)
+			}
 			if len(stored.Briefing) != len(tc.wantBriefing) {
 				t.Fatalf("briefing: want %#v, got %#v", tc.wantBriefing, stored.Briefing)
 			}
@@ -230,6 +246,47 @@ func TestWorkersHTTP_PutDefaultsAndEcho(t *testing.T) {
 				t.Fatalf("briefing nil-ness: want nil=%v, got %#v", tc.wantBriefing == nil, stored.Briefing)
 			}
 		})
+	}
+}
+
+// Freeze and unfreeze are BOTH ordinary PUTs on the human path (F1): the same
+// route that toggles `enabled` toggles `frozen`, and the false direction must
+// not be swallowed — an unfreeze that silently stayed frozen would lock the
+// worker away from the very humans the flag reserves it for.
+func TestWorkersHTTP_FreezeAndUnfreezeRoundTrip(t *testing.T) {
+	store := newFakeWorkerStore()
+	h := workerHandlers(t, store, nil)
+
+	put := func(body string) agentdb.Worker {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.PutWorker(rec, workerReq("PUT", "/agent/workers/quality-scorer", "quality-scorer", body))
+		if rec.Code != 200 {
+			t.Fatalf("put status %d body=%s", rec.Code, rec.Body)
+		}
+		var echoed agentdb.Worker
+		if err := json.Unmarshal(rec.Body.Bytes(), &echoed); err != nil {
+			t.Fatalf("decode echo: %v (%s)", err, rec.Body)
+		}
+		return echoed
+	}
+
+	if got := put(`{"description":"scores email","frozen":true}`); !got.Frozen {
+		t.Fatalf("freeze via PUT did not stick: %+v", got)
+	}
+	if store.rows["acme/quality-scorer"].Frozen != true {
+		t.Fatalf("freeze not stored")
+	}
+	if got := put(`{"description":"scores email","frozen":false}`); got.Frozen {
+		t.Fatalf("unfreeze via PUT did not stick: %+v", got)
+	}
+	if store.rows["acme/quality-scorer"].Frozen != false {
+		t.Fatalf("unfreeze not stored")
+	}
+	// And an omitted field means false, per this route's replace semantics.
+	put(`{"description":"scores email","frozen":true}`)
+	if got := put(`{"description":"scores email"}`); got.Frozen {
+		t.Fatalf("PUT is create-or-replace: an omitted frozen must read as false, got %+v", got)
 	}
 }
 

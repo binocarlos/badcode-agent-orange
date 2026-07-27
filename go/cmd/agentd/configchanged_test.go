@@ -345,6 +345,8 @@ func TestConfigChangedEventTextCoversEveryAction(t *testing.T) {
 		agentdb.ActionWorkerUpdate:       {"name": "w"},
 		agentdb.ActionWorkerEnable:       {"name": "w"},
 		agentdb.ActionWorkerDisable:      {"name": "w"},
+		agentdb.ActionWorkerFreeze:       {"name": "w"},
+		agentdb.ActionWorkerUnfreeze:     {"name": "w"},
 		agentdb.ActionWorkerDelete:       {"name": "w"},
 		agentdb.ActionWorkerPromptWrite:  {"name": "w"},
 		agentdb.ActionProjectPromptWrite: {"system_prompt": "hi"},

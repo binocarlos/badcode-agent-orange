@@ -92,6 +92,13 @@ describe('worker list', () => {
     expect(screen.getByText('disabled')).toBeInTheDocument()
   })
 
+  it('flags frozen workers with a lock badge', async () => {
+    workers.push(worker('quality-scorer', { frozen: true }))
+    renderPage()
+    expect(await screen.findByText('quality-scorer')).toBeInTheDocument()
+    expect(screen.getByText('frozen')).toBeInTheDocument()
+  })
+
   it('puts the selected worker in the URL, router-free', async () => {
     renderPage()
     await userEvent.click(await screen.findByText('email-answerer'))
@@ -139,6 +146,35 @@ describe('worker editor', () => {
       briefing: ['kind=house-style'],
       enabled: true,
     })
+  })
+
+  it('freezes a worker from the settings page — the human path of F1', async () => {
+    renderPage()
+    await userEvent.click(await screen.findByText('email-answerer'))
+    await screen.findByLabelText(/system prompt/i)
+
+    await userEvent.click(screen.getByLabelText('Frozen'))
+    // The plain sentence, verbatim (10-topology-library §3).
+    expect(
+      screen.getByText(/Frozen — cannot be changed by other workers\./),
+    ).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(puts()[0]!.body).toMatchObject({ frozen: true })
+  })
+
+  it('unfreezes with the same switch, sending an explicit false', async () => {
+    workers.push(worker('quality-scorer', { frozen: true }))
+    window.history.replaceState(null, '', '/?worker=quality-scorer')
+    renderPage()
+    await screen.findByLabelText(/system prompt/i)
+    expect(screen.getByText(/cannot be changed by other workers/)).toBeInTheDocument()
+
+    await userEvent.click(screen.getByLabelText('Frozen'))
+    await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(puts()[0]!.body).toMatchObject({ frozen: false })
   })
 
   it('describes how the image reference will resolve', async () => {

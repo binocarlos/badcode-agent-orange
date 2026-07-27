@@ -472,10 +472,11 @@ func TestWorkersLivePG_SchemaDefaults(t *testing.T) {
 	var row struct {
 		MaxInstances int
 		Enabled      bool
+		Frozen       bool
 		Briefing     *string
 	}
 	if err := s.DB().WithContext(ctx).Raw(
-		"SELECT max_instances, enabled, briefing FROM workers WHERE project = ? AND name = ?",
+		"SELECT max_instances, enabled, frozen, briefing FROM workers WHERE project = ? AND name = ?",
 		project, "raw-insert",
 	).Scan(&row).Error; err != nil {
 		t.Fatalf("read back: %v", err)
@@ -485,6 +486,9 @@ func TestWorkersLivePG_SchemaDefaults(t *testing.T) {
 	}
 	if !row.Enabled {
 		t.Fatalf("DDL default enabled: want true")
+	}
+	if row.Frozen {
+		t.Fatalf("DDL default frozen (migration 034): want false")
 	}
 	if row.Briefing != nil {
 		t.Fatalf("DDL default briefing: want NULL, got %q", *row.Briefing)
@@ -500,5 +504,28 @@ func TestWorkersLivePG_SchemaDefaults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(read.Briefing, w.Briefing) {
 		t.Fatalf("live briefing round-trip: want %#v, got %#v", w.Briefing, read.Briefing)
+	}
+
+	// Frozen round-trips through real Postgres in BOTH directions (F1). The
+	// false direction is the one a stray gorm `default:` tag would silently
+	// break — GORM omits declared-default zero values on write — so this is the
+	// live tripwire for that footgun, not just coverage.
+	read.Frozen = true
+	mustUpsertWorker(t, s, read)
+	frozen, err := s.GetWorker(ctx, project, "live-worker")
+	if err != nil {
+		t.Fatalf("live get after freeze: %v", err)
+	}
+	if !frozen.Frozen {
+		t.Fatalf("frozen: true did not persist on live Postgres")
+	}
+	frozen.Frozen = false
+	mustUpsertWorker(t, s, frozen)
+	thawed, err := s.GetWorker(ctx, project, "live-worker")
+	if err != nil {
+		t.Fatalf("live get after unfreeze: %v", err)
+	}
+	if thawed.Frozen {
+		t.Fatalf("frozen: false did not persist on live Postgres — the gorm-default trap")
 	}
 }

@@ -188,6 +188,8 @@ var entityKindForAction = map[string]EntityKind{
 	ActionWorkerUpdate:       EntityWorker,
 	ActionWorkerEnable:       EntityWorker,
 	ActionWorkerDisable:      EntityWorker,
+	ActionWorkerFreeze:       EntityWorker,
+	ActionWorkerUnfreeze:     EntityWorker,
 	ActionWorkerDelete:       EntityWorker,
 	ActionWorkerPromptWrite:  EntityWorker,
 	ActionProjectPromptWrite: EntityProjectPrompt,
