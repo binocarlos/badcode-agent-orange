@@ -28,8 +28,21 @@ import { waitForConfigAction } from '../helpers/configlog'
 // their unique identity phrase ("You are tp6-hand-N" — the dispatcher's
 // roster lists names but never that phrase; the hypothesis lab's fact-checker
 // is keyed the same way, because the critic's tool call names it), and every
-// name carries a per-seed prefix (tp4-/tp5-/tp6-/tp7-/tp13-) with no name a
-// substring of another.
+// name carries a per-seed prefix (tp4-/tp5-/tp6-/tp7-/tp13-, and R1's
+// tp8-/tp9-/tp10-/tp11-) with no name a substring of another.
+//
+// R1 adds one rule with a subtler key, worth naming here because it is a new
+// trick: memory-create SUCCESS is keyed on `\"embedded\":false` — the
+// JSON-escaped, COMPACT form of the tool-result echo as it actually appears
+// in the raw request body (the harness re-marshals the result compactly, so
+// agentd's own pretty-printed `"embedded": false` never reaches the wire;
+// established empirically against the running stack). The obvious key,
+// `created_by_worker`, rides in EVERY request via the image_list tool
+// description and so discriminates nothing; `"embedded"` is a JSON key only
+// memory_create's result carries, and the escaped-quote form can only come
+// from a tool_result body. That rule sits ABOVE the note-marker rules, so a
+// round-1 after-write turn (echo present) and a round-2 briefed turn (note
+// marker present, no echo) are told apart by which rule catches them first.
 //
 // Run with the script loaded (the tests skip without it):
 //   ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/topologies.json -- e2e/features/topologies.stack.spec.ts
@@ -832,5 +845,424 @@ test.describe('L2 — hypothesis-lab@v1', () => {
     // investigator), and nothing else touched a prompt.
     expect(await client.listEvents({ type: 'worker.freeze_refused' })).toHaveLength(1)
     expect(await client.configEvents({ action: 'worker_prompt_write' })).toHaveLength(1)
+  })
+})
+
+// ── R1 / tp8 — solo-memory@v1 (control 2) ───────────────────────────────────
+
+// Solo plus the memory channel: the worker writes a kind=<label> note after
+// each task and carries a briefing selector for the same label, so the newest
+// note rides into the next job's composed prompt. The e2e proves the CHANNEL,
+// end to end and as behaviour: round 1's scripted memory_create stores a note
+// (the reply's MEM-WRITE-CONFIRMED line is keyed on the tool result's
+// `\"embedded\":false` echo — it cannot appear unless the create succeeded),
+// and round 2's reply switches on the note content arriving via the briefing,
+// with the composed_prompt as the where-it-came-from witness. Like solo, the
+// seed's only clock is cron, so the round is driven through an operator-added
+// poke subscription (the T4 pattern).
+
+const KEEPER = 'tp8-keeper'
+const TP8_SEED = 'You tend the orchard and keep its running log.'
+const TP8_POKE = 'tp8.poke'
+const TP8_LABEL = 'tp8-notes'
+const TP8_SELECTOR = `kind=${TP8_LABEL}`
+const TP8_HEADING = `Your memory briefing: ${TP8_SELECTOR}`
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP8_NOTE_MARK = 'TP8-ORCHARD-NOTE'
+const TP8_CONFIRM = 'MEM-WRITE-CONFIRMED'
+const TP8_RECALL = 'TP8-RECALLED'
+
+test.describe('R1 — solo-memory@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp8')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('a round-1 note rides the briefing into round 2', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'solo-memory',
+      version: 'v1',
+      answers: { 'worker-name': KEEPER, 'prompt-seed': TP8_SEED, 'memory-label': TP8_LABEL },
+    }
+
+    // (a) Preview: solo's shape — one worker, one daily schedule, no edges —
+    // plus the memory channel visible in the bundle row: the briefing
+    // selector, and a prompt naming the real tool and the real label.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([KEEPER])
+    expect(preview.diff.new_subscriptions).toEqual([])
+    expect(preview.diff.new_schedules).toHaveLength(1)
+    expect(preview.diff.new_schedules[0]).toMatchObject({ cron: '0 9 * * *', worker: KEEPER })
+    const bundled = preview.bundle.workers[0]
+    expect(bundled.briefing).toEqual([TP8_SELECTOR])
+    expect(bundled.system_prompt).toContain('memory_create')
+    expect(bundled.system_prompt).toContain(TP8_SELECTOR)
+
+    // (b) Apply: the briefing selector survives the write path (applyAndVerify
+    // does not compare briefing, so restate it against the read-back row).
+    const bracket = await applyAndVerify(client, body, preview)
+    expect(bracket.payload.answers).toMatchObject({ cadence: 'daily', 'memory-label': TP8_LABEL })
+    expect((await client.getWorker(KEEPER)).briefing).toEqual([TP8_SELECTOR])
+
+    // (c) Round 1, via the poke pattern: the worker replies, writes the note,
+    // and confirms — the confirm line is keyed on the memory_create SUCCESS
+    // echo, so its presence proves the store accepted the labelled note.
+    await client.createSubscription({ event_type: TP8_POKE, worker: KEEPER })
+    const round1 = await runRound(client, TP8_POKE, 'Keep the log for today, please.')
+    const reply1 = await assistantReply(client, round1.deliveries[0].session_id)
+    expect(reply1, 'round 1 must confirm the stored note').toContain(TP8_CONFIRM)
+    expect(reply1).not.toContain(TP8_RECALL)
+
+    // Round 1 ran BEFORE any note existed: no note content and no briefing
+    // SECTION in its composed prompt — the channel's before/after contrast.
+    // Careful assertion: the worker prompt itself QUOTES the heading (it tells
+    // the model where to look), so the heading string appears once in every
+    // composed prompt; the real briefing section is a SECOND occurrence.
+    const headingCount = (s: string) => s.split(TP8_HEADING).length - 1
+    const session1 = await client.getSession(round1.deliveries[0].session_id)
+    expect(session1.composed_prompt ?? '').not.toContain(TP8_NOTE_MARK)
+    expect(headingCount(session1.composed_prompt ?? ''), 'round 1: prompt quotation only').toBe(1)
+
+    // (d) Round 2: the note content switches the script — a delivery
+    // assertion (the marker can only reach this request via the briefing).
+    const round2 = await runRound(client, TP8_POKE, 'Keep the log again, please.')
+    const reply2 = await assistantReply(client, round2.deliveries[0].session_id)
+    expect(reply2, 'round 2 must act on the briefed note').toContain(TP8_RECALL)
+    expect(reply2).not.toContain(TP8_CONFIRM)
+
+    // And the where: round 2's composed prompt carries the briefing section —
+    // the heading a SECOND time (beyond the prompt's own quotation) and the
+    // note content — §7.4 made visible from outside.
+    const session2 = await client.getSession(round2.deliveries[0].session_id)
+    expect(headingCount(session2.composed_prompt ?? ''), 'round 2: quotation + real section').toBe(2)
+    expect(session2.composed_prompt ?? '').toContain(TP8_NOTE_MARK)
+  })
+})
+
+// ── R1 / tp9 — sham-critic@v1 (control 3) ───────────────────────────────────
+
+// The placebo arm: actor-critic's exact wiring, but the critic's rewrite is an
+// honest arbitrary reshuffle. One improvement round, sham edition: the shuffle
+// lands in the config log with a rationale that says it found nothing wrong,
+// and round 2 proves the actor runs under the REORDERED prompt — the round-2
+// rule is keyed on the shuffled adjacency ("Close ... Open ...") that exists
+// in no other prompt state.
+
+const CLERK = 'tp9-clerk'
+const SHUFFLER = 'tp9-shuffler'
+const TP9_EVENT = `${CLERK}.task` // derived by the renderer from the actor's name
+const TP9_SEED = 'You keep the till ledger. Open with the date line. Close with a totals line.'
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP9_SHUFFLED = 'You keep the till ledger. Close with a totals line. Open with the date line.'
+const TP9_RATIONALE =
+  'an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong'
+const TP9_SWITCH = 'TP9-SHUFFLE-FOLLOWED'
+
+test.describe('R1 — sham-critic@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp9')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('the sham shuffle lands, says it is arbitrary, and the actor follows it', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'sham-critic',
+      version: 'v1',
+      answers: { 'actor-name': CLERK, 'critic-name': SHUFFLER, 'actor-prompt-seed': TP9_SEED },
+    }
+
+    // (a) Preview: the same wiring shape as actor-critic@v1 — same two
+    // workers, same inbound route, same filtered review edge (the Go suite
+    // pins this against actor-critic's renderer; here it is asserted against
+    // the running preview).
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([CLERK, SHUFFLER])
+    expect(preview.diff.new_subscriptions).toEqual([
+      { event_type: TP9_EVENT, worker: CLERK },
+      { event_type: 'worker.finished', worker: SHUFFLER },
+    ])
+    expect(preview.diff.new_schedules).toEqual([])
+    const shuffleEdge = preview.bundle.subscriptions.find((s) => s.worker === SHUFFLER)!
+    expect(shuffleEdge.filter).toMatchObject({ worker: CLERK })
+    // The charter is the honest one: reorder-only, arbitrary, never a claim
+    // of a defect.
+    const shamRow = preview.bundle.workers.find((w) => w.name === SHUFFLER)!
+    expect(shamRow.system_prompt).toContain('REORDER')
+    expect(shamRow.system_prompt).toContain('arbitrary reshuffle')
+
+    // (b) Apply.
+    await applyAndVerify(client, body, preview)
+
+    // (c) Round 1: the actor works under the original order, the sham fires
+    // and reorders — and the config log records exactly what the control arm
+    // must record: a rewrite whose rationale ADMITS it diagnosed nothing.
+    expect((await client.getWorker(CLERK)).system_prompt).toBe(TP9_SEED)
+    const round1 = await runRound(client, TP9_EVENT, 'Write up today.')
+    const reply1 = await assistantReply(client, round1.deliveries[0].session_id)
+    expect(reply1).toContain('ledger')
+    expect(reply1).not.toContain(TP9_SWITCH)
+
+    const followOn = await settleFollowOn(client, round1.deliveries[0].session_id, 1)
+    const rewrite = await waitForConfigAction(client, 'worker_prompt_write', 180_000)
+    expect(rewrite.rationale).toBe(TP9_RATIONALE)
+    expect(rewrite.actor_worker).toBe(SHUFFLER)
+    expect(rewrite.payload).toMatchObject({ name: CLERK })
+    // The sham property, byte-for-byte: the stored prompt is exactly the
+    // reordered seed — same sentences, new order, nothing added or removed.
+    expect(rewrite.payload.system_prompt).toBe(TP9_SHUFFLED)
+    expect((await client.getWorker(CLERK)).system_prompt).toBe(TP9_SHUFFLED)
+
+    // Retire the sham's round before driving another (standing trap: a critic
+    // left subscribed re-fires its script and double-writes).
+    await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === followOn.deliveries[0].session_id),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+    const subs = await client.listSubscriptions()
+    await client.deleteSubscription(subs.find((s) => s.worker === SHUFFLER)!.id)
+
+    // (d) Round 2: the actor's reply switches on the SHUFFLED ORDER being in
+    // its composed prompt — churn delivered, no diagnosis anywhere.
+    const round2 = await runRound(client, TP9_EVENT, 'Write up today.')
+    const reply2 = await assistantReply(client, round2.deliveries[0].session_id)
+    expect(reply2, 'round 2 must run under the reordered prompt').toContain(TP9_SWITCH)
+
+    // The ledger balances: exactly one rewrite, the honest one.
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toHaveLength(1)
+  })
+})
+
+// ── R1 / tp10 — assembly-line@v1 (entry 6) ──────────────────────────────────
+
+// The chain: the inbound event feeds stage 1; stage 2 subscribes to stage 1's
+// worker.finished, so stage 1's ENTIRE transcript is stage 2's first message —
+// the transcript IS the hand-off (the T6 discovery, honestly worded in the
+// prompts). The relay proof is the mock keying itself: stage 2's reply rule
+// matches the BATON MARKER from stage 1's reply, a string that can only reach
+// stage 2's request through the relayed transcript.
+
+const BELT1 = 'tp10-belt-1'
+const BELT2 = 'tp10-belt-2'
+const TP10_EVENT = 'tp10.item'
+const TP10_MISSION = 'You turn rough furniture into painted pieces.'
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP10_BATON = 'TP10-STAGE1-BATON'
+const TP10_DONE = 'TP10-STAGE2-DONE'
+
+test.describe('R1 — assembly-line@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp10')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('one item relays down the chain, transcript as baton', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'assembly-line',
+      version: 'v1',
+      answers: {
+        'stage-prefix': 'tp10-belt',
+        'stage-count': '2',
+        'inbound-event-type': TP10_EVENT,
+        mission: TP10_MISSION,
+      },
+    }
+
+    // (a) Preview: the chain — inbound to stage 1, stage 1's finishes to
+    // stage 2 and nothing else; no schedules.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([BELT1, BELT2])
+    expect(preview.diff.new_subscriptions).toEqual([
+      { event_type: TP10_EVENT, worker: BELT1 },
+      { event_type: 'worker.finished', worker: BELT2 },
+    ])
+    expect(preview.diff.new_schedules).toEqual([])
+    const relayEdge = preview.bundle.subscriptions.find((s) => s.worker === BELT2)!
+    expect(relayEdge.filter).toMatchObject({ worker: BELT1 })
+
+    // (b) Apply — and the honesty is really in the stored prompts: stage 1
+    // documents the transcript hand-off, stage 2 knows its input is stage 1's
+    // transcript and that it is last.
+    await applyAndVerify(client, body, preview)
+    const firstPrompt = (await client.getWorker(BELT1)).system_prompt
+    expect(firstPrompt).toContain('cannot post events yourself')
+    expect(firstPrompt).toContain(BELT2)
+    const lastPrompt = (await client.getWorker(BELT2)).system_prompt
+    expect(lastPrompt).toContain(`${BELT1}'s full finished transcript`)
+    expect(lastPrompt).toContain('last stage')
+
+    // (c) One item down the line. Stage 1 replies with the baton...
+    const round = await runRound(client, TP10_EVENT, 'A rough chair arrives at the line.')
+    const reply1 = await assistantReply(client, round.deliveries[0].session_id)
+    expect(reply1).toContain(TP10_BATON)
+
+    // ...stage 2 fires off stage 1's finish, its first user message IS the
+    // transcript bearing the baton, and its scripted reply — keyed on that
+    // very marker — proves the relay delivered.
+    const followOn = await settleFollowOn(client, round.deliveries[0].session_id, 1)
+    const stage2Session = followOn.deliveries[0].session_id
+    const stage2Messages = await client.listMessages(stage2Session)
+    const firstUser = stage2Messages.find((m) => m.role === 'user')!
+    expect(firstUser, 'stage 2 must have a transcript-bearing first message').toBeTruthy()
+    expect(firstUser.content).toContain(TP10_BATON)
+    const reply2 = await assistantReply(client, stage2Session)
+    expect(reply2, "stage 2's reply is scripted off the baton in its transcript").toContain(TP10_DONE)
+
+    // The chain terminates: stage 2's finish routes nowhere. Let it settle so
+    // teardown is not racing a container.
+    await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === stage2Session),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+  })
+})
+
+// ── R1 / tp11 — blackboard@v1 (entry 8) ─────────────────────────────────────
+
+// N peers, one event, no addressing: both contributors wake on the same
+// inbound event, each appends a labelled note (memory_create success proven
+// per worker by the `\"embedded\":false` echo rule), and the follow-up round
+// proves the notes exist under the label the only way the surface allows —
+// there is no memories HTTP API, so the briefing itself is the witness: round
+// 2's composed prompts carry the kind=tp11-chalk section with a round-1 note
+// in it. Round-1 rules carry `absent: TP11-TASK-TWO` rather than keying
+// round 2 on the note marker, because round-1 jobs run CONCURRENTLY: the
+// slower job may legitimately compose after the faster one's note landed and
+// so carry a briefing already — the round marker in the event text is the
+// only round discriminator that cannot race.
+
+const BOARD1 = 'tp11-board-1'
+const BOARD2 = 'tp11-board-2'
+const TP11_EVENT = 'tp11.chore'
+const TP11_LABEL = 'tp11-chalk'
+const TP11_SELECTOR = `kind=${TP11_LABEL}`
+const TP11_HEADING = `Your memory briefing: ${TP11_SELECTOR}`
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP11_TASK1 = 'TP11-TASK-ONE: survey the orchard wall and leave a note on the board.'
+const TP11_TASK2 = 'TP11-TASK-TWO: read the board and report.'
+const TP11_NOTE_RE = /TP11-NOTE-(ONE|TWO)/
+const TP11_CONFIRM = 'MEM-WRITE-CONFIRMED'
+const TP11_RECALLS: Record<string, string> = {
+  [BOARD1]: 'TP11-RECALL-ONE',
+  [BOARD2]: 'TP11-RECALL-TWO',
+}
+
+test.describe('R1 — blackboard@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp11')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('one event wakes everyone; the board is the only channel', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'blackboard',
+      version: 'v1',
+      answers: {
+        'worker-prefix': 'tp11-board',
+        'worker-count': '2',
+        'inbound-event-type': TP11_EVENT,
+        'memory-label': TP11_LABEL,
+        mission: 'You maintain the orchard wall.',
+      },
+    }
+
+    // (a) Preview: two peers on the SAME unfiltered inbound type, each with
+    // the shared briefing selector; no schedules, and no addressing — no
+    // worker.finished edges, no prompt naming another contributor.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([BOARD1, BOARD2])
+    expect(preview.diff.new_subscriptions).toEqual([
+      { event_type: TP11_EVENT, worker: BOARD1 },
+      { event_type: TP11_EVENT, worker: BOARD2 },
+    ])
+    expect(preview.diff.new_schedules).toEqual([])
+    for (const w of preview.bundle.workers) {
+      expect(w.briefing).toEqual([TP11_SELECTOR])
+      const other = w.name === BOARD1 ? BOARD2 : BOARD1
+      expect(w.system_prompt, 'no addressing: prompts never name a peer').not.toContain(other)
+    }
+    for (const s of preview.bundle.subscriptions) {
+      expect(s.filter ?? {}).toEqual({})
+    }
+
+    // (b) Apply.
+    await applyAndVerify(client, body, preview)
+
+    // Join deliveries to workers through the subscription rows (T6 pattern).
+    const subs = await client.listSubscriptions()
+    const workerOf = new Map(subs.map((s) => [s.id, s.worker]))
+
+    // (c) Round 1: ONE event, BOTH fire — no addressing, so N deliveries for
+    // N contributors — and each writes its note; each confirm line is keyed
+    // on that worker's own memory_create success echo.
+    const round1 = await runRound(client, TP11_EVENT, TP11_TASK1, 2)
+    expect(round1.deliveries).toHaveLength(2)
+    expect(round1.deliveries.map((d) => workerOf.get(d.subscription_id)).sort()).toEqual([BOARD1, BOARD2])
+    for (const d of round1.deliveries) {
+      const reply = await assistantReply(client, d.session_id)
+      expect(reply, `${workerOf.get(d.subscription_id)} must confirm its stored note`).toContain(TP11_CONFIRM)
+    }
+
+    // (d) Round 2: the notes exist under the label — proven through the only
+    // read surface the org has, the shared briefing. Every contributor's
+    // composed prompt now carries the kind=tp11-chalk section with the newest
+    // round-1 note in it, and every reply is the round-2 recall behaviour.
+    const round2 = await runRound(client, TP11_EVENT, TP11_TASK2, 2)
+    expect(round2.deliveries).toHaveLength(2)
+    for (const d of round2.deliveries) {
+      const worker = workerOf.get(d.subscription_id)!
+      const reply = await assistantReply(client, d.session_id)
+      expect(reply, `${worker}'s round 2 must be the recall behaviour`).toContain(TP11_RECALLS[worker])
+      expect(reply).not.toContain(TP11_CONFIRM)
+      const session = await client.getSession(d.session_id)
+      // The contributor prompt QUOTES the heading once; a real briefing
+      // section is a second occurrence (the tp8 lesson, same footgun).
+      const headings = (session.composed_prompt ?? '').split(TP11_HEADING).length - 1
+      expect(headings, `${worker}'s briefing must carry the board section`).toBe(2)
+      expect(session.composed_prompt ?? '').toMatch(TP11_NOTE_RE)
+    }
   })
 })

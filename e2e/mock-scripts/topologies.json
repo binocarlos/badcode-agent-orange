@@ -253,6 +253,213 @@
           ]
         }
       ]
+    },
+    {
+      "match": "\\\"embedded\\\":false",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Unreachable: no fresh session carries a memory-create echo in its prompt."
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "MEM-WRITE-CONFIRMED: the note is stored on the board."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP8-ORCHARD-NOTE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP8-RECALLED: the last note says the north row was pruned - watering the saplings today."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp8-keeper",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Log kept for today. Leaving a note for the next run."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP8-ORCHARD-NOTE: pruned the north row; the next run should water the saplings.",
+                "labels": { "kind": "tp8-notes" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp9-shuffler",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Control duty: reshuffling the clerk's standing orders without judging them."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp9-clerk",
+                "system_prompt": "You keep the till ledger. Close with a totals line. Open with the date line.",
+                "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reshuffle done; the rationale records that it was arbitrary."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "Close with a totals line. Open with the date line",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP9-SHUFFLE-FOLLOWED: my standing orders now put the totals rule before the date rule, and I follow them in that order."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp9-clerk",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The ledger entry is written: date first, totals last, per my standing orders."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP10-STAGE1-BATON",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP10-STAGE2-DONE: painted the chair green, exactly as the baton described it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp10-belt-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Sanded and prepped the chair. TP10-STAGE1-BATON: one rough chair, now sanded, ready for green paint."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-1,",
+      "absent": "TP11-TASK-TWO",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Taking the west end of the wall; leaving a note on the board."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP11-NOTE-ONE: west end measured at four metres; the next reader should bring the long ladder.",
+                "labels": { "kind": "tp11-chalk" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-2,",
+      "absent": "TP11-TASK-TWO",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Taking the east end of the wall; leaving a note on the board."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP11-NOTE-TWO: east end is crumbling; the next reader should rope it off first.",
+                "labels": { "kind": "tp11-chalk" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP11-RECALL-ONE: read the newest board note before starting, and acted on it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-2,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP11-RECALL-TWO: read the newest board note before starting, and acted on it."
+            }
+          ]
+        }
+      ]
     }
   ]
 }
