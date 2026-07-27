@@ -5,7 +5,6 @@ package systemtest
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -36,7 +35,7 @@ func newSystemRig(mockProxyURL string) (*systemRig, error) {
 }
 
 // ociRegistryURL is the registry prefix for the real-registry trust test.
-// Defaults to the local registry:2 from agent-library/docker-compose.test.yml.
+// Defaults to the local registry:2 from this repo's docker-compose.test.yml.
 func ociRegistryURL() string {
 	if v := os.Getenv("OCIREGISTRY_URL"); v != "" {
 		return v
@@ -138,10 +137,6 @@ func waitForHealthy(ctx context.Context, address string, timeout time.Duration) 
 		time.Sleep(500 * time.Millisecond)
 	}
 	return false
-}
-
-func readAll(r io.Reader) ([]byte, error) {
-	return io.ReadAll(r)
 }
 
 // registryReachable reports whether the registry behind registryURL answers its
