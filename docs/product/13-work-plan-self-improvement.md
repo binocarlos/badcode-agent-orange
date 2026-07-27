@@ -143,14 +143,38 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   topologies.stack.spec.ts style: apply, one investigation round, critic rewrite lands, frozen
   boundary holds.
   *Validation:* go suite + the topologies stack command + learning-stories regression.
-- [ ] **L3 — Calibration runbook + EXECUTION (GATED on Kai).** The Tier B protocol
+- [x] **L3 — Calibration runbook** — written: [`14-calibration-runbook.md`](./14-calibration-runbook.md).
+  **EXECUTION remains GATED on Kai** (credential mode + token ceiling are the go-decision).** The Tier B protocol
   (AGENTS_RESEARCH §7) specialised to the lab: N hypotheses with known answers, accuracy on late
   vs early hypotheses, planted-null false-confirmation rate, run recording. Writing the runbook
   is unblocked; RUNNING it against a real model is not.
 
-## Wave 5+ — Remaining seeds, comparison rig, onboarding, Tier B (playbook P4–P7)
+## Wave 5 — Remaining seeds, comparison rig, Tier B build (playbook P4, P5, P7)
 
-*GATED on D3 (self-organizing autonomy) for topology 9; on Wave 4 for the comparison rig.*
+*Onboarding (P6) shipped as T3. D3 decided (uncapped; e2e uses a narrowed port pool).*
+
+- [ ] **R1 — Control + spine seeds**: `solo-memory@v1` (control 2 — solo plus memory
+  write/briefing), `sham-critic@v1` (control 3 — critic whose rewrites shuffle instruction order,
+  rationale says so honestly), `assembly-line@v1` (entry 6 — chain via worker.finished
+  subscriptions), `blackboard@v1` (entry 8 — N workers sharing labelled memory, no addressing).
+  Each: go/topology definition + table tests + one e2e (apply, org matches preview, one mock
+  round) in topologies.stack.spec.ts.
+  *Validation:* go suite + both stack commands (topologies + learning-stories regression).
+- [ ] **R2 — Remaining work seeds**: `debate@v1` (entry 7 — N debaters subscribe to the same
+  event, aggregator judges), `self-organizing@v1` (entry 9 — workers hold worker_create;
+  UNCAPPED per D3; its e2e runs with `--port-pool` narrowed), `temporal-hierarchy@v1` (entry 10 —
+  strategist on a slow schedule rewrites operator prompts), `escalation@v1` (entry 11 — worker +
+  request_human_attention + attention channel).
+  *Validation:* as R1.
+- [ ] **C1 — Comparison rig**: harness script (e2e/experiments/) that runs ONE task through N
+  topologies × M seeds in mock, collects per-arm outcome tables from the event/config logs, and
+  emits a ranked report with variance. Deterministic in mock; the same rig drives the L3
+  calibration when unic gated.
+  *Validation:* rig runs green in mock against ≥3 seeded topologies; report artifact committed.
+- [ ] **B1 — Tier B graded-harness build** (AGENTS_RESEARCH §7): same-stories runner with a
+  grader seam (blind, shuffled, ranked, anchor items); offline test with a scripted grader.
+  EXECUTION against real models gated with L3.
+  *Validation:* offline harness tests green.
 
 ## Decisions (D1–D4) — DECIDED by Kai, 2026-07-27
 
