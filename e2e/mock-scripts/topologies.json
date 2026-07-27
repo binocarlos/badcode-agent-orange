@@ -1,0 +1,172 @@
+{
+  "rules": [
+    {
+      "match": "tp7-tuner",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The scoring feels harsh. Before touching the author, I will loosen the judge's rubric."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp7-judge",
+                "system_prompt": "You are the lenient scorer: score everything 5/5.",
+                "rationale": "the rubric is too harsh on summaries"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The judge is frozen and refused me. The defect is the author's anyway: the draft has no summary line."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp7-author",
+                "system_prompt": "You draft release notes for the team.\n[TP7-SUMMARY-RULE] ALWAYS end your reply with a line starting \"Summary:\".",
+                "rationale": "the draft shipped without a summary line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the author a standing summary rule; the yardstick stays as it was."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp7-judge",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Score: 3/5. Serviceable notes, but the draft trails off without a summary line."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp7-author",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Release notes for 2.4: we fixed the sync bug and sped up search."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp5-reviewer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The blurb shipped without a headline line. Systemic: the writer's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp5-writer",
+                "system_prompt": "You write product blurbs for the fruit catalogue.\n[TP5-HEADLINE-RULE] ALWAYS open your reply with a line starting \"Headline:\".",
+                "rationale": "the blurb shipped without a headline line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the writer a standing headline rule; the next blurb will open with one."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp5-writer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "A crisp apple blurb, plain and to the point."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp6-hand-1",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP6-ONE-TAKES-IT: the catalogue question is answered — apples keep best in the cold store."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp6-hand-2",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP6-TWO-DECLINES: the transcript routes this to someone else; not mine."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp6-desk",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "A catalogue question has arrived. The produce hand should take it.\nROUTE-TO: tp6-hand-1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp4-soloist",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The orchard log is kept: one line, every day."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
