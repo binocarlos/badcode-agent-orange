@@ -115,6 +115,37 @@ export type {
   WorkerJobsApi,
 } from './useWorkers.js'
 
+// Topologies (T3) — the /agent/topologies surface: catalogue, question form
+// helpers, preview + apply, and the onboarding flow component.
+export {
+  TOPOLOGY_ENDPOINTS,
+  topologyRef,
+  coerceTopologyQuestion,
+  coerceTopology,
+  coerceTopologyDiff,
+  coerceTopologyBundle,
+  coerceTopologyPreview,
+  coerceTopologyApplyResult,
+  initialTopologyAnswers,
+  validateTopologyAnswers,
+  topologyAnswersBody,
+} from './topologies.js'
+export type {
+  Topology,
+  TopologyQuestion,
+  TopologyQuestionType,
+  TopologyAnswers,
+  TopologyAnswerErrors,
+  TopologyRouteSummary,
+  TopologyCronSummary,
+  TopologyDiff,
+  TopologyBundle,
+  TopologyPreview,
+  TopologyApplyResult,
+} from './topologies.js'
+export { default as useTopologies } from './useTopologies.js'
+export type { UseTopologiesOptions, TopologiesApi } from './useTopologies.js'
+
 // Events & observability (F1) — the `/agent/events` + `/agent/deliveries` read
 // surface: pure helpers, the overview hook, and the dry-run subscription
 // matcher. Read-only; F2 owns the subscription/schedule editors.
@@ -308,6 +339,8 @@ export { default as WorkerJobHistory } from './components/WorkerJobHistory.js'
 export type { WorkerJobHistoryProps } from './components/WorkerJobHistory.js'
 export { default as WorkerChatPanel } from './components/WorkerChatPanel.js'
 export type { WorkerChatPanelProps } from './components/WorkerChatPanel.js'
+export { default as TopologyOnboarding } from './components/TopologyOnboarding.js'
+export type { TopologyOnboardingProps } from './components/TopologyOnboarding.js'
 
 // Observability + changelog components (F1, owning J4)
 export { default as EventsPage } from './components/EventsPage.js'

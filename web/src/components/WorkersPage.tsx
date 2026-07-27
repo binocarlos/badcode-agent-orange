@@ -8,7 +8,7 @@
 // router, and nothing here assumes one exists.
 
 import React, { useCallback, useEffect, useState } from 'react'
-import { Alert, Box, Divider, Stack, Tab, Tabs, Typography } from '@mui/material'
+import { Alert, Box, Button, Divider, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
 import useWorkers from '../useWorkers.js'
 import type { ConfigApiOptions } from '../configApi.js'
 import { buildWorkerSearch, newWorkerDraft, workerFromSearch, type WorkerDraft } from '../workers.js'
@@ -16,10 +16,14 @@ import WorkerList from './WorkerList.js'
 import WorkerEditor from './WorkerEditor.js'
 import WorkerJobHistory from './WorkerJobHistory.js'
 import WorkerChatPanel from './WorkerChatPanel.js'
+import TopologyOnboarding from './TopologyOnboarding.js'
 
 /** Sentinel for "the create-a-worker form is open". Not a legal worker name
  *  (names are kebab-case), so it can never collide with a real selection. */
 const NEW_WORKER = '#new'
+
+/** Sentinel for "the start-from-a-topology flow is open" (T3). Same trick. */
+const FROM_TOPOLOGY = '#topology'
 
 export interface WorkersPageProps extends ConfigApiOptions {
   /** Project id — scopes permalinks and the chat's session. */
@@ -55,7 +59,7 @@ export default function WorkersPage({
   enableChat = true,
   ...apiOptions
 }: WorkersPageProps) {
-  const { workers, loading, error, save, remove } = useWorkers(apiOptions)
+  const { workers, loading, error, save, remove, reload } = useWorkers(apiOptions)
 
   const controlled = controlledSelected !== undefined
   const hasWindow = typeof window !== 'undefined'
@@ -92,7 +96,12 @@ export default function WorkersPage({
   }, [urlEnabled])
 
   const isNew = selected === NEW_WORKER
-  const current = isNew ? null : (workers.find((w) => w.name === selected) ?? null)
+  const isTopology = selected === FROM_TOPOLOGY
+  const current =
+    isNew || isTopology ? null : (workers.find((w) => w.name === selected) ?? null)
+  // An empty project is where the topology flow earns its place (T3): offer it
+  // prominently instead of a bare "no workers" shrug.
+  const emptyProject = !loading && workers.length === 0
 
   const handleSave = useCallback(
     async (draft: WorkerDraft) => {
@@ -136,11 +145,50 @@ export default function WorkersPage({
           </Alert>
         )}
 
-        {!isNew && current === null ? (
+        {isTopology ? (
+          <TopologyOnboarding
+            onApplied={() => void reload()}
+            onClose={() => select(null)}
+            {...apiOptions}
+          />
+        ) : !isNew && current === null ? (
           <Box sx={{ p: 3 }}>
-            <Typography variant="body2" color="text.secondary">
-              Select a worker, or create one.
-            </Typography>
+            {emptyProject ? (
+              <Paper variant="outlined" sx={{ p: 3, maxWidth: 560 }}>
+                <Typography variant="subtitle1" sx={{ mb: 0.5 }}>
+                  This project has no workers yet
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Start from a topology — a pre-built org chart of workers, subscriptions and
+                  schedules, applied in one step — or create a single worker by hand.
+                </Typography>
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" variant="contained" onClick={() => select(FROM_TOPOLOGY)}>
+                    Start from a topology
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      select(NEW_WORKER)
+                      setTab('config')
+                    }}
+                  >
+                    Create a worker
+                  </Button>
+                </Stack>
+              </Paper>
+            ) : (
+              <>
+                <Typography variant="body2" color="text.secondary">
+                  Select a worker, or create one.
+                </Typography>
+                {/* The flow stays reachable in a populated project: collisions
+                    are the guard, and the preview shows them. */}
+                <Button size="small" sx={{ mt: 1 }} onClick={() => select(FROM_TOPOLOGY)}>
+                  Start from a topology
+                </Button>
+              </>
+            )}
           </Box>
         ) : isNew ? (
           <WorkerEditor
