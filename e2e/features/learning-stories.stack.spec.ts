@@ -801,6 +801,154 @@ test.describe('S6 — no regression (MR-2)', () => {
   })
 })
 
+// ── S7 — the frozen scorer ──────────────────────────────────────────────────
+
+// The e2e proof of the causal-isolation primitive (F1, playbook C2/C8): a
+// critic attempts to rewrite a FROZEN worker's prompt through the real
+// `worker_prompt_write`, and the write is refused AT THE MCP BOUNDARY — the
+// critic's job still finishes, the scorer's prompt is byte-identical after,
+// no `worker_prompt_write` config record exists, and the attempt itself is
+// recorded as a `worker.freeze_refused` project event naming the attempting
+// worker and session (a refusal is a signal, not just an error string).
+//
+// Then the happy sibling: a human unfreezes over the plain-JWT HTTP path (D4 —
+// an ordinary config mutation) and the SAME scripted critic call succeeds on
+// the next round, proving the gate is the `frozen` flag, not the plumbing.
+// That symmetry needs no rule differentiator: both critic firings serve the
+// identical tool call from turn 0, and only the flag decides its fate. There
+// is deliberately NO delete attempt here — workers hold no `worker_delete`
+// tool to refuse (deletion is JWT-only; see the Discovered Issues Log).
+
+const SCORER = 'ls7-scorer'
+const LS7_CRITIC = 'ls7-critic'
+const LS7_EVENT = 'ls7.score.requested'
+const SCORER_PROMPT = 'You score submitted drafts from 1 to 5, plainly and without negotiation.'
+// Byte-for-byte agreements with e2e/mock-scripts/learning-stories.json:
+const LS7_MARKER = 'LS7-RUBRIC-RULE'
+const LS7_RATIONALE = 'the scores arrive with no rubric saying what they mean'
+const LS7_TASK = 'Score the latest draft.'
+
+test.describe('S7 — the frozen scorer', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(480_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-ls-s7')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('the rewrite is refused while frozen, recorded, and succeeds once a human unfreezes', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    await seedStoryOrg(client, {
+      actor: SCORER,
+      actorPrompt: SCORER_PROMPT,
+      critic: LS7_CRITIC,
+      criticPrompt: [
+        `You audit ${SCORER}'s scoring. If the rubric has a systemic defect, use`,
+        `worker_prompt_read and worker_prompt_write to amend ${SCORER}'s system prompt,`,
+        'with a rationale saying what was wrong.',
+      ].join('\n'),
+      eventType: LS7_EVENT,
+    })
+
+    // ── A human freezes the scorer, through the JWT-guarded HTTP path ───────
+    // Freezing rides the ordinary worker PUT (mirroring `enabled`), and the
+    // config log records it as the specific `worker_freeze` action.
+    const frozen = await client.setWorkerFrozen(SCORER, true)
+    expect(frozen.frozen).toBe(true)
+    const freezeRecord = await waitForConfigAction(client, 'worker_freeze', 30_000)
+    expect(freezeRecord.payload).toMatchObject({ name: SCORER, frozen: true })
+    // A human's edit, not a worker's: no actor on the record.
+    expect(freezeRecord.actor_worker).toBe('')
+
+    // ── Round A: the scorer works; the critic's rewrite is REFUSED ──────────
+    const roundA = await runActorRound(client, LS7_EVENT, LS7_TASK)
+    expect(roundA.reply.trim()).not.toBe('')
+
+    // The refusal event is the happens-after signal for the attempt (C8: a
+    // worker trying to edit its measurement instrument is a research signal).
+    const refusals = await client.waitForEvents((rows) => rows.length > 0, {
+      type: 'worker.freeze_refused',
+      timeoutMs: 180_000,
+    })
+    expect(refusals).toHaveLength(1)
+    const refusal = refusals[0]
+    // The envelope and text carry what mcp_frozen_test.go pins: the tool, the
+    // target, and the ATTEMPTING worker and session — core's own observation.
+    expect(refusal.text).toContain('worker_prompt_write')
+    expect(refusal.text).toContain(SCORER)
+    expect(refusal.text).toContain(LS7_CRITIC)
+    expect(refusal.envelope.source).toBe('core')
+    expect(refusal.envelope.depth).toBe(0)
+    expect(refusal.envelope.worker).toBe(LS7_CRITIC)
+    expect(refusal.envelope.session_id).not.toBe('')
+    expect(refusal.text).toContain(refusal.envelope.session_id)
+    expect(refusal.occurred_at).toBeGreaterThan(0)
+
+    // (1) The refusal must not wedge the critic: its delivery settles `ok`,
+    // and the session the delivery names is the one the refusal recorded.
+    const finishedA = await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === roundA.sessionId),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+    const triggerA = finishedA.find((e) => e.envelope.session_id === roundA.sessionId)!
+    const criticDeliveries = await client.waitForDeliveries(
+      (rows) => rows.length > 0 && rows.every((d) => d.status === 'ok'),
+      { event_id: triggerA.id, timeoutMs: 120_000 },
+    )
+    expect(refusal.envelope.session_id).toBe(criticDeliveries[0].session_id)
+
+    // (2) The scorer is BYTE-IDENTICAL to what was seeded — still frozen,
+    // still enabled, prompt untouched.
+    const afterRefusal = await client.getWorker(SCORER)
+    expect(afterRefusal.system_prompt).toBe(SCORER_PROMPT)
+    expect(afterRefusal.frozen).toBe(true)
+    expect(afterRefusal.enabled).toBe(true)
+
+    // (4) And the config log holds NO worker_prompt_write: a refused write is
+    // not a write, so there is nothing to record besides the refusal event.
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toEqual([])
+
+    // ── The happy sibling: a human unfreezes, and the same call lands ───────
+    const thawed = await client.setWorkerFrozen(SCORER, false)
+    expect(thawed.frozen).toBe(false)
+    expect(thawed.system_prompt).toBe(SCORER_PROMPT)
+    await waitForConfigAction(client, 'worker_unfreeze', 30_000)
+
+    // Round B: same task, same reply — the refused rewrite left the scorer's
+    // BEHAVIOUR untouched too, not merely its stored row (storage is not
+    // delivery; the mock switches on the request body).
+    const roundB = await runActorRound(client, LS7_EVENT, LS7_TASK)
+    expect(roundB.reply, 'the refused rewrite must not have leaked into behaviour').toBe(roundA.reply)
+    expect(roundB.sessionId).not.toBe(roundA.sessionId)
+
+    // The critic fires again — a fresh session serving the SAME scripted call
+    // from turn 0 — and this time it succeeds: the gate was the flag.
+    const rewrite = await waitForConfigAction(client, 'worker_prompt_write', 180_000)
+    expect(rewrite.rationale).toBe(LS7_RATIONALE)
+    expect(rewrite.actor_worker).toBe(LS7_CRITIC)
+    expect(rewrite.actor_session).not.toBe('')
+    expect(rewrite.payload).toMatchObject({ name: SCORER })
+    expect(String(rewrite.payload.system_prompt)).toContain(LS7_MARKER)
+    expect((await client.getWorker(SCORER)).system_prompt).toContain(LS7_MARKER)
+
+    await settleCriticRound(client, roundB.sessionId)
+    await retireCritic(client, LS7_CRITIC)
+
+    // The ledger balances: exactly one refusal (round A's), exactly one
+    // rewrite (round B's) — the boundary refused the frozen write and only
+    // that write.
+    expect(await client.listEvents({ type: 'worker.freeze_refused' })).toHaveLength(1)
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toHaveLength(1)
+  })
+})
+
 // ── S8 — the lineage ────────────────────────────────────────────────────────
 
 // Proves P8 for the loop: three rewrites leave a complete, ordered, replayable
