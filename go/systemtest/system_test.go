@@ -1,5 +1,34 @@
 //go:build integration
 
+// Package systemtest drives the Runner as a LIBRARY against real containers.
+//
+// What it is for, and what nothing else covers:
+//
+//   - It is the only test that runs the real sandbox image (built from
+//     ../../sandbox in TestMain) under the real agentkit.Runner, with a mock
+//     Anthropic endpoint in place of the model. Everything above the container
+//     is production code — Runner, fleet, image registry, event sink, artifact
+//     store; only the model and the ExecutionEnvironment are substituted.
+//   - The compose-stack e2e (e2e/features/) covers the same ground through
+//     agentd's HTTP API and the DinD adapter. It is the better test of the
+//     product, and where behaviour overlaps this suite defers to it. What it
+//     cannot reach is the embed-as-a-library seam described in
+//     docs/14-host-adapters.md: a host that constructs a Runner with its own
+//     ExecutionEnvironment. That seam is this package's subject.
+//
+// The model is stubbed by go/mockmodel — the shared scriptable Anthropic mock,
+// which was itself promoted OUT of this package. The copy left behind here was
+// deleted in the same change as this comment; a script written for a systemtest
+// is now the same format agentd's proxy takes in AGENTKIT_MOCK_MODEL_SCRIPT.
+//
+// Everything here is behind `//go:build integration` because it needs Docker
+// and builds an image. CI gates that the package COMPILES under the tag
+// (.github/workflows/ci.yml); CI does not run it. Run it by hand:
+//
+//	cd go && go test -tags integration ./systemtest/ -v -timeout 900s
+//
+// TestSystemSnapshotRestoreTrust additionally needs the local registry from
+// docker-compose.test.yml and skips without it — see its own comment.
 package systemtest
 
 import (
@@ -20,6 +49,8 @@ import (
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/binocarlos/badcode-agent-orange/artifacts"
 	"github.com/binocarlos/badcode-agent-orange/execenv"
+	"github.com/binocarlos/badcode-agent-orange/mockmodel"
+	"github.com/binocarlos/badcode-agent-orange/modelproxy"
 )
 
 func TestMain(m *testing.M) {
@@ -61,7 +92,7 @@ func TestSystemCreateAndSendMessage(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -126,7 +157,7 @@ func TestSystemTwoSessionIsolation(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -201,7 +232,7 @@ func TestSystemDestroyCleanup(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -246,12 +277,27 @@ func TestSystemDestroyCleanup(t *testing.T) {
 	}
 }
 
-func TestSystemSuspendResume(t *testing.T) {
+// TestSystemArchiveRestore is the port of the deleted TestSystemSuspendResume.
+// The old test asserted "a session can be put away and woken, and still take a
+// turn" through Suspend (docker stop) → Status==suspended → Resume (docker
+// start). Suspend and StateSuspended no longer exist: the lifecycle is
+// Running-or-Archived, and Resume is the only wake path — it finds a live
+// container or restores from the snapshot handle.
+//
+// The intent survives the vocabulary change, so it is expressed in the current
+// one: snapshot → destroy → Resume → turn. It also asserts the thing the old
+// shape could not, and which is now the whole substance of a wake: the restored
+// container carries the archived FILESYSTEM, so it is the session coming back
+// rather than a fresh one wearing its ID.
+//
+// Unlike TestSystemSnapshotRestoreTrust this runs on the mock registry, so it
+// never skips — it is the archive/restore assertion that is always exercised.
+func TestSystemArchiveRestore(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -263,7 +309,7 @@ func TestSystemSuspendResume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
-	sessionID := "sys-suspend-1"
+	sessionID := "sys-archive-restore-1"
 	rig.store.Seed(&agentdb.Session{ID: sessionID, Customer: "test", Job: "test-job"})
 
 	_, err = rig.runner.CreateSession(ctx, agentkit.CreateSessionRequest{
@@ -276,18 +322,35 @@ func TestSystemSuspendResume(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	if err := rig.runner.Suspend(ctx, agentkit.SessionRef{SessionID: sessionID}); err != nil {
-		t.Fatalf("Suspend: %v", err)
+	const marker = "archive-marker-4c1e"
+	inst := mustInstance(t, rig, sessionID)
+	if _, err := rig.env.Exec(ctx, inst,
+		[]string{"sh", "-c", "printf %s '" + marker + "' > /workspace/archive-marker.txt"},
+		execenv.ExecOptions{Timeout: 20 * time.Second}); err != nil {
+		t.Fatalf("write workspace marker: %v", err)
+	}
+
+	// Archive: snapshot, then drop the container. This is what the idle archive
+	// loop does; Destroy alone would leave nothing to restore from.
+	if _, err := rig.runner.Snapshot(ctx, agentkit.SessionRef{SessionID: sessionID}); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if err := rig.runner.Destroy(ctx, agentkit.SessionRef{SessionID: sessionID}); err != nil {
+		t.Fatalf("Destroy: %v", err)
 	}
 
 	st, err := rig.runner.Status(ctx, agentkit.SessionRef{SessionID: sessionID})
 	if err != nil {
-		t.Fatalf("Status after suspend: %v", err)
+		t.Fatalf("Status after archive: %v", err)
 	}
-	if st.RuntimeState != string(execenv.StateSuspended) {
-		t.Errorf("state after suspend = %q, want %q", st.RuntimeState, execenv.StateSuspended)
+	if st.RuntimeState != string(execenv.StateDestroyed) {
+		t.Errorf("state after archive = %q, want %q", st.RuntimeState, execenv.StateDestroyed)
+	}
+	if !st.HasSnapshot {
+		t.Error("HasSnapshot = false after archive — nothing to restore from")
 	}
 
+	// Wake: Resume restores from the snapshot handle.
 	h, err := rig.runner.Resume(ctx, agentkit.SessionRef{SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("Resume: %v", err)
@@ -296,15 +359,28 @@ func TestSystemSuspendResume(t *testing.T) {
 		t.Errorf("state after resume = %q, want %q", h.State, execenv.StateRunning)
 	}
 
+	inst2 := mustInstance(t, rig, sessionID)
+	if inst2 == inst {
+		t.Error("restore reused the archived instance ID — the container was never dropped")
+	}
+	res, err := rig.env.Exec(ctx, inst2, []string{"cat", "/workspace/archive-marker.txt"},
+		execenv.ExecOptions{Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatalf("read workspace marker after restore: %v", err)
+	}
+	if got := strings.TrimSpace(string(res.Stdout)); !strings.Contains(got, marker) {
+		t.Errorf("restored container is not the archived one: marker = %q, want substring %q", got, marker)
+	}
+
 	var buf bytes.Buffer
 	err = rig.runner.SendMessage(ctx, agentkit.SessionRef{SessionID: sessionID},
-		agentkit.SendMessageRequest{Content: "Post-resume test", Customer: "test", Job: "test-job"},
+		agentkit.SendMessageRequest{Content: "Post-restore test", Customer: "test", Job: "test-job"},
 		&buf)
 	if err != nil {
-		t.Fatalf("SendMessage after resume: %v", err)
+		t.Fatalf("SendMessage after restore: %v", err)
 	}
 	if buf.Len() == 0 {
-		t.Error("empty SSE output after resume")
+		t.Error("empty SSE output after restore")
 	}
 
 	_ = rig.runner.Destroy(ctx, agentkit.SessionRef{SessionID: sessionID})
@@ -315,7 +391,7 @@ func TestSystemSnapshotRestore(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -379,11 +455,18 @@ func TestSystemSnapshotRestore(t *testing.T) {
 // extracted as an artifact survives, (2) conversation history is preserved, (3) an
 // extracted artifact is not lost, and (4) the session is transparently usable again.
 //
-// Requires the local registry from agent-library/docker-compose.test.yml. Run:
+// Needs a registry on localhost:5001; it SKIPS without one. Session containers
+// and the push/pull both run on the DEFAULT Docker daemon (TestEnv and the
+// ociregistry adapter each use DOCKER_HOST/FromEnv), so a bare registry is all
+// that is required — docker-compose.test.yml also provides one, along with a
+// DinD this test does not use. Verified 2026-07-26 with:
 //
-//	cd agent-library && docker compose -p agentkit-test -f docker-compose.test.yml up -d
+//	docker run -d --name agentorange-test-registry -p 5001:5000 registry:2
 //	cd go && OCIREGISTRY_URL=localhost:5001/agentkit go test -tags integration ./systemtest/ \
 //	  -run TestSystemSnapshotRestoreTrust -v -timeout 600s
+//
+// No insecure-registry daemon config is needed: Docker treats localhost:* as
+// insecure by default.
 func TestSystemSnapshotRestoreTrust(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping system test in short mode")
@@ -392,7 +475,7 @@ func TestSystemSnapshotRestoreTrust(t *testing.T) {
 		t.Skipf("registry %q not reachable — start agent-library/docker-compose.test.yml", ociRegistryURL())
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRigOCI(proxy.URL)
@@ -500,7 +583,7 @@ func TestSystemSandboxCrash(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -567,7 +650,7 @@ func TestSystemHarnessSelection(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	proxy := newMockProxy(t)
+	proxy := mockmodel.New(t)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -626,6 +709,11 @@ func TestSystemSessionHeaderIsolation(t *testing.T) {
 	var headerMu sync.Mutex
 	receivedHeaders := make(map[string][]string)
 
+	// This is the one test that needs its own handler — it asserts on what the
+	// sandbox SENT, which mockmodel does not expose. The SSE body still comes
+	// from the shared renderer (modelproxy.TurnSSE) rather than a local copy:
+	// this package used to carry a third copy of that builder, which is exactly
+	// how it drifted out of date unnoticed.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/messages" {
 			sid := r.Header.Get("x-session-id")
@@ -635,7 +723,9 @@ func TestSystemSessionHeaderIsolation(t *testing.T) {
 
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, sseResponse)
+			_, _ = fmt.Fprint(w, modelproxy.TurnSSE(modelproxy.Turn{
+				Blocks: []modelproxy.Block{{Type: "text", Text: "Hello from the mock proxy"}},
+			}, 0))
 			return
 		}
 		if r.URL.Path == "/health" {
@@ -644,8 +734,7 @@ func TestSystemSessionHeaderIsolation(t *testing.T) {
 		}
 		http.NotFound(w, r)
 	})
-	proxy := httptest.NewUnstartedServer(handler)
-	proxy.Start()
+	proxy := httptest.NewServer(handler)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)
@@ -714,19 +803,19 @@ func TestSystemMultiTurnToolCall(t *testing.T) {
 		t.Skip("skipping system test in short mode")
 	}
 
-	script := &mockScript{
-		Turns: []mockTurn{
-			{Blocks: []mockBlock{
+	script := &modelproxy.Script{
+		Turns: []modelproxy.Turn{
+			{Blocks: []modelproxy.Block{
 				{Type: "text", Text: "Let me check that for you."},
-				{Type: "tool_use", Name: "Bash", Input: map[string]interface{}{"command": "echo hello"}},
+				{Type: "tool_use", Name: "Bash", Input: map[string]any{"command": "echo hello"}},
 			}},
-			{Blocks: []mockBlock{
+			{Blocks: []modelproxy.Block{
 				{Type: "text", Text: "The command returned hello."},
 			}},
 		},
 	}
 
-	proxy := newScriptedMockProxy(t, script)
+	proxy := mockmodel.NewScripted(t, script)
 	defer proxy.Close()
 
 	rig, err := newSystemRig(proxy.URL)

@@ -7,6 +7,22 @@ package systemtest
 // TestEnv implements execenv.ExecutionEnvironment using the host Docker socket
 // with --network host. Each container gets a unique PORT env variable and is
 // health-checked before Provision returns. Containers are labelled for cleanup.
+//
+// WHY THIS IS NOT execenv/docker.Socket. The production socket adapter puts
+// containers on a shared Docker network and addresses them by container DNS
+// name (http://<name>:3010) — reachable from a host app that is itself a
+// container on that network, but NOT from a `go test` binary running on the
+// host. TestEnv trades that for --network host plus a host port so the test
+// process can reach the sandbox directly. The consequence is worth stating
+// plainly: this suite exercises the Runner, the fleet, the image registry and
+// the real sandbox image, but it does NOT exercise execenv/docker. Those
+// adapters are covered by their own unit tests (fake docker client) and, for
+// DinD, by the compose-stack e2e in e2e/features/.
+//
+// It mirrors the production adapters' lifecycle semantics deliberately: the
+// model is Running-or-Archived (no warm suspended state), so a stopped
+// container reports StateDestroyed and Recover reclaims it rather than
+// re-adopting it. See execenv/docker/socket.go Recover and mapContainerState.
 
 import (
 	"bytes"
@@ -155,57 +171,6 @@ func (e *TestEnv) Provision(ctx context.Context, spec execenv.ProvisionSpec) (*e
 	return &cp, nil
 }
 
-func (e *TestEnv) Suspend(ctx context.Context, id execenv.InstanceID) error {
-	e.mu.Lock()
-	s, ok := e.containers[id]
-	e.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("testenv suspend: instance %q not found", id)
-	}
-	if s.inst.State == execenv.StateSuspended {
-		return nil
-	}
-
-	timeout := 5
-	if err := e.docker.ContainerStop(ctx, s.containerID, dockercontainer.StopOptions{Timeout: &timeout}); err != nil {
-		if !strings.Contains(err.Error(), "is not running") {
-			return fmt.Errorf("testenv suspend: stop: %w", err)
-		}
-	}
-
-	e.mu.Lock()
-	s.inst.State = execenv.StateSuspended
-	e.mu.Unlock()
-	return nil
-}
-
-func (e *TestEnv) Resume(ctx context.Context, id execenv.InstanceID) (*execenv.Instance, error) {
-	e.mu.Lock()
-	s, ok := e.containers[id]
-	e.mu.Unlock()
-	if !ok {
-		return nil, fmt.Errorf("testenv resume: instance %q not found", id)
-	}
-	if s.inst.State == execenv.StateRunning {
-		cp := s.inst
-		return &cp, nil
-	}
-
-	if err := e.docker.ContainerStart(ctx, s.containerID, dockertypes.ContainerStartOptions{}); err != nil {
-		return nil, fmt.Errorf("testenv resume: start: %w", err)
-	}
-
-	if !waitForHealthy(ctx, s.inst.Address, 30*time.Second) {
-		return nil, fmt.Errorf("testenv resume: agent at %s did not become healthy", s.inst.Address)
-	}
-
-	e.mu.Lock()
-	s.inst.State = execenv.StateRunning
-	cp := s.inst
-	e.mu.Unlock()
-	return &cp, nil
-}
-
 func (e *TestEnv) Exec(ctx context.Context, id execenv.InstanceID, cmd []string, opts execenv.ExecOptions) (*execenv.ExecResult, error) {
 	e.mu.Lock()
 	s, ok := e.containers[id]
@@ -324,9 +289,19 @@ func (e *TestEnv) Status(ctx context.Context, id execenv.InstanceID) (*execenv.I
 		return nil, fmt.Errorf("testenv status: inspect: %w", err)
 	}
 
-	state := execenv.StateSuspended
-	if info.State != nil && info.State.Running {
-		state = execenv.StateRunning
+	// Running-or-Archived: a stopped container is not a warm session, it is
+	// reclaimable resource. Report it as destroyed so the Runner restores from
+	// the snapshot on next use — the same mapping as docker.mapContainerState.
+	state := execenv.StateDestroyed
+	if info.State != nil {
+		switch {
+		case info.State.Running:
+			state = execenv.StateRunning
+		case info.State.Restarting:
+			state = execenv.StateStarting
+		}
+	} else {
+		state = execenv.StateError
 	}
 
 	return &execenv.InstanceStatus{
@@ -355,16 +330,18 @@ func (e *TestEnv) Recover(ctx context.Context) ([]*execenv.Instance, error) {
 			continue
 		}
 
-		state := execenv.StateSuspended
-		if c.State == "running" {
-			state = execenv.StateRunning
+		// Running-or-Archived: a managed container found stopped is reclaimed,
+		// not re-adopted as a suspended session (docker/socket.go Recover).
+		if c.State != "running" {
+			_ = e.docker.ContainerRemove(ctx, c.ID, dockertypes.ContainerRemoveOptions{Force: true})
+			continue
 		}
 
 		id := execenv.InstanceID(c.ID)
 		inst := &execenv.Instance{
 			ID:        id,
 			SessionID: sessionID,
-			State:     state,
+			State:     execenv.StateRunning,
 			Image:     execenv.ImageRef(c.Image),
 			CreatedAt: time.Unix(c.Created, 0).UTC(),
 		}
@@ -386,7 +363,6 @@ func (e *TestEnv) OnDestroy(cb func(id execenv.InstanceID)) {
 
 func (e *TestEnv) Capabilities() execenv.Capabilities {
 	return execenv.Capabilities{
-		SupportsSuspend:    true,
 		SupportsSnapshot:   true,
 		SupportsExec:       true,
 		IsolatedPerSession: true,
