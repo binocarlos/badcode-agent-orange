@@ -37,23 +37,42 @@ Agent Orange. Three pieces:
   composes it is `examples/web/`, which is what the stack serves.
 
 > **Status / provenance.** Private use for now (the source is bayesprice-owned — a public release
-> would need licensing resolved first). All three packages build and test clean in this fork:
-> `go build ./... && go vet ./... && go test ./...` (Go floor is now **1.25**, raised by the GCP
-> SDK), `cd sandbox && npm ci && npm test` (157 tests), `cd web && npm ci && npm test` (543 tests).
-> The **product layer is built** — 33 of `docs/product/06-work-plan.md`'s 37 items are merged and
-> the acceptance loop (§8.7: a worker rewrites another worker's prompt) closes offline in
-> `e2e/features/acceptance-loop.spec.ts`. **I4** has now landed too — a worker's `image` pointer
-> is bound end to end (`worker.image > project base_image > global`, resolved at every launch,
-> failing the job rather than substituting an image), proved by
-> `e2e/features/image-curation.stack.spec.ts`. The open items are **G1** (the acceptance e2e,
-> landed but not yet ticked), **G2** (docs), and **G3** (live run with a real key, then the first
-> production seeding).
+> would need licensing resolved first). All three packages build and test; the gates are
+> `go build ./... && go vet ./... && go test ./...` from `go/` (Go floor is now **1.25**, raised by
+> the GCP SDK) and each JS package's own `typecheck` + `test` scripts. Don't quote test counts
+> here — `.github/workflows/ci.yml` runs all three and is the live number.
+> The **product layer is built**: every item in `docs/product/06-work-plan.md` is ticked (37 of 37;
+> G3 was the last). The acceptance loop (§8.7: a worker rewrites another worker's prompt, with a
+> rationale, and the next job runs improved) closes offline in `e2e/features/acceptance-loop.spec.ts`,
+> and the same loop was **observed against the real Anthropic API on 2026-07-26** — the composed
+> prompt changed the model's behaviour, `request_human_attention` parked the delivery at
+> `awaiting_human`, and the §6.2.4 prompt-injection boundary held against event text ordering the
+> model to ignore its prompt. What is deliberately **not** done is the first production seeding
+> (§8.8's BadCode marketing manager): that is a production act, left to Kai.
 > GCP support is implemented and **wired into `agentd`**: a GCS `BlobStore` (`extension/gcsblob`),
 > a pluggable registry-auth seam with an ADC provider (`imageregistry/auth`, `auth.GCP`), and
 > config-driven backend selection (`cmd/agentd/backends.go`, env: `AGENTKIT_BLOB_BACKEND`,
-> `AGENTKIT_REGISTRY_BACKEND`, …). Defaults preserve the local fs stack; blob upload and
-> snapshot push+pull were verified against the live project on 2026-06-25 (MIGRATION.md §4a/§4b).
+> `AGENTKIT_REGISTRY_BACKEND`, …). Defaults preserve the local fs stack. Blob upload and snapshot
+> push+pull are **recorded** verified against the live project on 2026-06-25 in MIGRATION.md
+> §4a/§4b; that record is two dated commits and nothing re-runnable, so treat it as testimony, not
+> as a green test — the caveat is stated in MIGRATION.md.
 > The plan and current state live in **`MIGRATION.md`** — read it before doing migration work.
+
+## Reading path
+
+If you need to understand the system rather than patch one file, read in this order:
+
+1. `README.md` — what it is, in one screen.
+2. `docs/01-architecture.md` — the runtime: layers, and how Go owns orchestration.
+3. `docs/product/00-overview.md` (the map) → `docs/product/17-product-spec.md` (goal, atoms,
+   binding principles P1–P8, non-goals) → the component designs `docs/product/01`–`09`.
+4. `docs/18-workers-memory-events.md` — the product layer from an operator's seat.
+5. `docs/product/06-work-plan.md`'s **Discovered Issues Log** — ~100 entries recording what was
+   actually built and what surprised us. When a design doc and this log disagree, the log is
+   closer to the code; when the log and the code disagree, the code wins.
+6. The engine reference docs (`02`, `03`, `05`, `06`, `07`, `13`, `14`, `15`) by seam, as needed.
+
+`README-stack.md` at any point: running the thing is cheap and answers a lot.
 
 ## Repo map
 
@@ -63,9 +82,9 @@ Agent Orange. Three pieces:
 | `sandbox/` | In-image agent (TS). The HTTP/SSE control server + harness adapter that runs inside a session container. `sandbox/Dockerfile` builds the harness image. |
 | `web/` | React component library: chat (one event reducer drives live + replay identically) plus the product-layer pages — project settings, workers, events/jobs, subscriptions + schedules editors, changelog. No router; the app shell is `examples/web/`. |
 | `installations/` | **Example** base images (`core`, `example`) — see `installations/README.md`. Real per-project images live in their own project repos. |
-| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`, `18-workers-memory-events` (the product layer, from an operator's seat — read it before touching workers/memory/events code). Start at `01`. The authoritative product spec is `docs/product/17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/product/00`–`09` (`00-overview` = quick map; component designs; original § numbers preserved). The research trail and executed plan records live beside the spec as dated files in the same folder. |
+| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`, `18-workers-memory-events` (the product layer, from an operator's seat — read it before touching workers/memory/events code). Order: see **Reading path** above. The authoritative product spec is `docs/product/17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/product/00`–`09` (`00-overview` = quick map; component designs; original § numbers preserved). The research trail and executed plan records live beside the spec as dated files in the same folder. |
 | `migration-reference/` | **Reference only — do NOT build or import.** Platinum host-side image pipeline + the original Platinum installations, kept to port from. May contain host-app coupling. |
-| `deploy/`, `docker-compose*.yml`, `README-stack.md` | The standalone stack (run it with one command — below). |
+| `deploy/`, `docker-compose*.yml`, `README-stack.md` | The standalone stack (run it with one command — below). `deploy/gcp/setup.sh` provisions the GCP side (idempotent, safe to re-run). |
 | `mock-server/`, `e2e/`, `examples/` | Mock model server; end-to-end tests (**`e2e/features/` + `playwright.stack.config.ts` is the current rig, run against the compose stack — `e2e/tests/` is the older Vite+mock-server one**); example host + `examples/web/` (the app shell the stack actually serves — `web/` is a component library with no router). |
 | `MIGRATION.md` | The standalone-ification + registry-agnostic + GCP roadmap and live status. |
 
@@ -87,10 +106,12 @@ docker compose up --build     # then open http://localhost:8080
 - **The product layer is wired only when `DATABASE_URL` is set.** On the sqlite fallback the
   router never routes, schedules never fire, the core MCP server is not mounted and project
   settings do not apply — and nothing fails at use time. Compose always sets it.
-- **Sessions hold a running container until deleted**; nothing reaps them on a timer, and enough
-  of them stops the stack provisioning anything. Delete sessions you finish with;
-  `./e2e/run-stack-e2e.sh clean` clears leftovers and restarts `agentd` (which that command
-  requires — see `README-stack.md`).
+- **Sessions hold a running container — and one host port — until deleted**; nothing reaps them on
+  a timer. The port pool is the hard ceiling on concurrent sessions per host: 100 by default,
+  configurable with `AGENTKIT_PORT_RANGE_START`/`_END` (`go/cmd/agentd/portrange.go`, set both or
+  neither). At zero free, every further session fails with "host port pool is exhausted". Delete
+  sessions you finish with; `./e2e/run-stack-e2e.sh clean` clears leftovers and restarts `agentd`
+  (which that command requires — see `README-stack.md`).
 - The stack serves a **built** image of `examples/web`, so UI edits are invisible to browser
   tests until `docker compose up -d --build web`.
 
@@ -111,17 +132,27 @@ go test ./...      # some suites (systemtest/e2e) need Docker available
 database, not a shared one: an unmerged migration on a sibling branch has broken other agents'
 runs before) when touching `agentdb`.
 
-In-image agent + UI (both green):
+In-image agent + UI. Both packages define `typecheck` (`tsc --noEmit`) and `test` (`vitest run`);
+CI runs `yarn install --frozen-lockfile && yarn typecheck && yarn test` in each. Locally:
 
 ```sh
-cd sandbox && npm ci && npm test   # 157 tests
-cd web && npm ci && npm test       # 543 tests
+cd sandbox && npm ci && npm test
+cd web && npm ci && npm test
 ```
 
-`sandbox/` tracks both `package-lock.json` and a stale `yarn.lock`; `npm` keeps the yarn
-lockfile in sync, so an install dirties the tree — `git checkout sandbox/yarn.lock` after.
-Same footgun in `examples/web/`. `web/`'s `npm run build` is `tsc --noEmit`: it typechecks and
-emits no `dist/`.
+Lockfiles are inconsistent and it matters:
+
+- `sandbox/` tracks **both** `package-lock.json` and a stale `yarn.lock`; npm≥7 keeps the yarn
+  lockfile in sync, so an npm install dirties the tree — `git checkout sandbox/yarn.lock` after.
+- `web/` tracks **only** `package-lock.json` (its `yarn.lock` was replaced on this branch), so
+  `npm ci` is the right local command — but CI's `web` job still runs `yarn install
+  --frozen-lockfile`, which has no lockfile to freeze. **That job breaks when this branch reaches
+  `main`; fix `ci.yml` or restore the lockfile before merging.**
+- `examples/web/` tracks **only** `yarn.lock` (no `package-lock.json`), which is what
+  `deploy/web.Dockerfile` uses. Use yarn there, not `npm ci`.
+
+`web/`'s `npm run build` is `tsc -p tsconfig.json`, and that tsconfig sets `"noEmit": true` — so it
+typechecks and emits no `dist/`, despite `package.json` pointing `main`/`types` there.
 
 ## Core concepts (where to look)
 
@@ -155,14 +186,18 @@ Product layer (all Postgres-only, all in `go/agentdb/` + `go/cmd/agentd/`):
 5. **Keep `go build ./...` green** and add tests with changes — the codebase is heavily tested
    (follow the existing table-test patterns).
 6. **Migration work is phased** (`MIGRATION.md`): standalone-ify → genericize installations →
-   registry-agnostic build+push → **GCP (priority)** → automation. Phase 4 is **done and verified
-   against the live project** (`webkit-servers` / `europe-west1`, repo `agent-orange`, bucket
-   `webkit-servers-agent-orange`): GCS `BlobStore` in `extension/gcsblob`, ADC registry auth in
-   `imageregistry/auth`, selection in `cmd/agentd/backends.go`, with artifact→bucket and
-   snapshot push+pull→Artifact Registry both confirmed. Phases 2, 3 and 5 remain, plus two loose
-   ends in Phase 1 (the `examples/standalone` DinD run and de-Platinum naming).
+   registry-agnostic build+push → **GCP (priority)** → automation. Phase 4 is **built** — GCS
+   `BlobStore` in `extension/gcsblob`, ADC registry auth in `imageregistry/auth`, selection in
+   `cmd/agentd/backends.go` — and **recorded** as verified against the live project on 2026-06-25
+   (`webkit-servers` / `europe-west1`, repo `agent-orange`, bucket `webkit-servers-agent-orange`;
+   `deploy/gcp/setup.sh` provisions all of it). Nothing under those paths has changed since, so the
+   record still describes today's code, but it is testimony rather than a re-runnable check — see
+   MIGRATION.md §4a/§4b. Phases 2, 3 and 5 remain, plus two loose ends in Phase 1 (the
+   `examples/standalone` DinD run and de-Platinum naming).
 
 ## Deeper context
+
+(Order to read them in: **Reading path**, near the top.)
 
 - `docs/01-architecture.md` — what it is and how it fits together.
 - `docs/15-standalone-stack.md`, `README-stack.md` — running it.
