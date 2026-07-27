@@ -1,0 +1,74 @@
+{
+  "rules": [
+    {
+      "match": "ls1-reviewer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The poem shipped without a title line. That is systemic, not a one-off: the poet's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls1-poet",
+                "system_prompt": "You write short poems about whatever the event asks for.\n[LS1-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".",
+                "rationale": "the last poem shipped without a title line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the poet a standing title rule; the next poem will open with one."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls1-poet",
+      "absent": "LS1-TITLE-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Soft rain on slate.\nA gutter hums to itself.\nThe street goes silver."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls1-poet",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: Rain on Slate\nSoft rain on slate.\nA gutter hums to itself.\nThe street goes silver."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls0-soloist",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "One plain note, sung the same way every time."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
