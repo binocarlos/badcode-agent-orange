@@ -69,6 +69,641 @@
           ]
         }
       ]
+    },
+    {
+      "match": "ls2-editor",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The reply went out unsigned. Systemic: the answerer's standing orders never ask for a sign-off."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls2-answerer",
+                "system_prompt": "You answer customer emails about their parcels.\n[LS2-SIGNOFF-RULE] ALWAYS end your reply with the answering desk's sign-off line.",
+                "rationale": "the last reply went out unsigned"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the answerer a standing sign-off rule; the next reply will carry one."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls2-answerer",
+      "absent": "LS2-SIGNOFF-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Your parcel ships on Thursday."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls2-answerer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Your parcel ships on Thursday.\n-- The Answering Desk"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls3-calibrator",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The reading was a bare number. Systemic: the gauge's standing orders never demand units."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls3-gauge",
+                "system_prompt": "You report the reading from the cold chamber.\n[LS3-UNITS-RULE] ALWAYS state readings with their units (degrees Celsius).",
+                "rationale": "the reading was a bare number with no units"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the gauge a standing units rule; the next reading will carry them."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls3-gauge",
+      "absent": "LS3-UNITS-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The chamber reads 20 this morning."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls3-gauge",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The chamber reads 20°C this morning."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls4-mentor",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The planner guessed. The request was ambiguous and its standing orders never say to ask first."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls4-planner",
+                "system_prompt": "You handle booking requests for the office.\n[LS4-ASK-RULE] If a request is ambiguous, do not guess: call request_human_attention and ask before assuming.",
+                "rationale": "the planner guessed at an ambiguous request instead of asking"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the planner a standing ask-first rule; the next ambiguous request will pause for a human."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls4-planner",
+      "absent": "LS4-ASK-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I assumed you meant the big room and booked it for Friday morning."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls4-planner",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "tool_use",
+              "name": "mcp__core__request_human_attention",
+              "input": {
+                "message": "The booking request is ambiguous: which room, and for when? Nothing is booked until you answer."
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Asked instead of assuming; nothing is booked until a human answers."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls5-auditor",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The analyst called an insignificant result confirmed. Systemic: its standing orders set no significance bar."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls5-analyst",
+                "system_prompt": "You analyse experiment results for the team.\n[LS5-RIGOUR-RULE] Never call a hypothesis confirmed unless the effect is significant (p <= 0.05); otherwise report no significant effect.",
+                "rationale": "the analyst confirmed a hypothesis the data does not support"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the analyst a standing rigour rule; the next result will be reported honestly."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls5-analyst",
+      "absent": "LS5-RIGOUR-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The new headline clearly worked: click-through is up and the hypothesis is confirmed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls5-analyst",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "No significant effect: the click-through difference is within noise (p = 0.42), so the hypothesis is not supported."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls6-editor",
+      "absent": "Title: The Harvest",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The draft has no title line. Systemic: the drafter's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls6-drafter",
+                "system_prompt": "You draft notices about whatever the event asks for.\n[LS6-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".",
+                "rationale": "the draft shipped without a title line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the drafter a standing title rule."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls6-editor",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Titled now, but still unsigned. The second amendment must keep the first rule intact."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls6-drafter",
+                "system_prompt": "You draft notices about whatever the event asks for.\n[LS6-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".\n[LS6-SIGNOFF-RULE] ALWAYS end your reply with the drafter's sign-off line.",
+                "rationale": "the draft shipped without the drafter's sign-off"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Added the sign-off rule on top of the title rule; both stand."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls6-drafter",
+      "absent": "LS6-TITLE-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "A plain draft about the harvest."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls6-drafter",
+      "absent": "LS6-SIGNOFF-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: The Harvest\nA plain draft about the harvest."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls6-drafter",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: The Harvest\nA plain draft about the harvest.\n-- The Drafter"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-curator",
+      "absent": "Title: The Ledger",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The summary has no title line. Systemic: the scribe's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls8-scribe",
+                "system_prompt": "You post the day's ledger summary.\n[LS8-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".",
+                "rationale": "the summary shipped without a title line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "First amendment: a standing title rule."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-curator",
+      "absent": "-- The Scribe",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Titled now, but unsigned. Second amendment, on top of the first."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls8-scribe",
+                "system_prompt": "You post the day's ledger summary.\n[LS8-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".\n[LS8-SIGNOFF-RULE] ALWAYS end your reply with the scribe's sign-off line.",
+                "rationale": "the summary shipped without the scribe's sign-off"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Second amendment: the sign-off rule, keeping the title rule."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-curator",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Titled and signed, but undated. Third amendment, on top of the other two."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls8-scribe",
+                "system_prompt": "You post the day's ledger summary.\n[LS8-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".\n[LS8-SIGNOFF-RULE] ALWAYS end your reply with the scribe's sign-off line.\n[LS8-DATE-RULE] ALWAYS include a line starting \"Dated:\".",
+                "rationale": "the summary was undated"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Third amendment: the date rule; all three now stand."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-scribe",
+      "absent": "LS8-TITLE-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The ledger is balanced."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-scribe",
+      "absent": "LS8-SIGNOFF-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: The Ledger\nThe ledger is balanced."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-scribe",
+      "absent": "LS8-DATE-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: The Ledger\nThe ledger is balanced.\n-- The Scribe"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls8-scribe",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: The Ledger\nDated: today\nThe ledger is balanced.\n-- The Scribe"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-coach",
+      "absent": "Title: Weather Report",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The report has no title line. Systemic: the reporter's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls9-reporter",
+                "system_prompt": "You publish the morning weather report for the station.\n[LS9-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".",
+                "rationale": "the report shipped without a title line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "First lesson: a standing title rule."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-coach",
+      "absent": "-- Station Nine",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Titled now, but unsigned. Second lesson, on top of the first."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls9-reporter",
+                "system_prompt": "You publish the morning weather report for the station.\n[LS9-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".\n[LS9-SIGNOFF-RULE] ALWAYS end your reply with the station's sign-off line.",
+                "rationale": "the report shipped without the station sign-off"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Second lesson: the sign-off rule, keeping the title rule."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-coach",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Titled and signed, but the temperature is a bare number. Third lesson, on top of the other two."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls9-reporter",
+                "system_prompt": "You publish the morning weather report for the station.\n[LS9-TITLE-RULE] ALWAYS begin your reply with a line starting \"Title:\".\n[LS9-SIGNOFF-RULE] ALWAYS end your reply with the station's sign-off line.\n[LS9-UNITS-RULE] ALWAYS state temperatures with their units (degrees Celsius).",
+                "rationale": "the report gave a bare temperature with no units"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Third lesson: the units rule; all three now stand."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-reporter",
+      "absent": "LS9-TITLE-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "It is 20 out there this morning."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-reporter",
+      "absent": "LS9-SIGNOFF-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: Weather Report\nIt is 20 out there this morning."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-reporter",
+      "absent": "LS9-UNITS-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: Weather Report\nIt is 20 out there this morning.\n-- Station Nine"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls9-reporter",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Title: Weather Report\nIt is 20°C out there this morning.\n-- Station Nine"
+            }
+          ]
+        }
+      ]
     }
   ]
 }
