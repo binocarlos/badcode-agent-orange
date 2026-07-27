@@ -14,24 +14,19 @@ This document sits on top of them.
 ## 0. Prerequisites, and the one trap
 
 **The product layer needs Postgres.** agentd wires it only when `DATABASE_URL` is set. On the
-sqlite fallback (no `DATABASE_URL`) you get a working chat runtime and nothing else:
+sqlite fallback you get a working chat runtime and nothing else: no event router, no scheduler,
+no core MCP server, no project settings or workers, and `POST /agent/attention` 404s. agentd
+says so at boot (`no DATABASE_URL — event routing, schedules and request_human_attention are
+unavailable`, and `core mcp DISABLED (no DATABASE_URL)`), but nothing fails loudly at *use*
+time, so a stack accidentally running on sqlite looks healthy and does nothing.
 
-| Without `DATABASE_URL` | Effect |
-| --- | --- |
-| Event router | never runs — events are never routed, subscriptions never fire |
-| Scheduler | never runs — schedules never fire |
-| Core MCP server (`memory_*`, `worker_*`, `image_*`, …) | **not mounted at all** |
-| Project settings / workers | resolved by nothing — project prompt, base image and MCP defaults silently do not apply |
-| `POST /agent/attention` | not mounted (404) |
-
-agentd says so at boot (`no DATABASE_URL — event routing, schedules and request_human_attention
-are unavailable`, and `core mcp DISABLED (no DATABASE_URL)`), but nothing fails loudly at
-*use* time, so a stack accidentally running on sqlite looks healthy and does nothing. The
-compose stack always sets `DATABASE_URL`; see [`15-standalone-stack.md`](15-standalone-stack.md).
+The compose stack always sets `DATABASE_URL`. The component-by-component table, and the rest of
+the stack's wiring, live in [`15-standalone-stack.md`](15-standalone-stack.md) § "The store" —
+that document owns *running* the stack; this one owns *operating* what runs on it.
 
 Within Postgres, pgvector is optional (§7.6.5 — search degrades to keyword + recency). Memory
-itself is not: all three memory store methods return `ErrMemoryRequiresPostgres` on sqlite rather
-than silently forgetting.
+itself is not: every memory store method returns `ErrMemoryRequiresPostgres` against a
+non-Postgres dialect rather than silently forgetting.
 
 ---
 
@@ -66,11 +61,11 @@ settings page in the UI. The row is created lazily; `GET` before any write retur
 | `system_prompt` | prepended to every worker's prompt at composition |
 | `mcp_config` | MCP servers granted to **all** workers — no per-worker filtering |
 | `attention_channel` | where `request_human_attention` posts: `{"kind":"webhook","url":…,"headers":{…}}`. Header values may be whole-value `${VAR}` references resolved from agentd's env. Unset → the tool still succeeds and only logs |
-| `max_concurrent_jobs` | per-project cap on non-interactive jobs (default 4) |
-| `daily_tokens_soft` | one attention-channel notification per day when crossed (0 = off) |
+| `max_concurrent_jobs` | per-project cap on non-interactive jobs (0 ⇒ the default, 4) |
+| `daily_tokens_soft` | one attention-channel notification per day when crossed (0 = off). The "once" is in-memory, so an agentd restart can re-notify, and the notice carries no `session_url` |
 | `daily_tokens_hard` | stops non-interactive job creation until midnight, stack-local (0 = off) |
-| `briefing_max_bytes` | byte cap **per injected briefing section** (default 2048) |
-| `snapshot_ttl_days` | days before the snapshot reaper deletes a snapshot image (default 30; 0 = never) |
+| `briefing_max_bytes` | byte cap **per injected briefing section** (0 ⇒ the default, 2048) |
+| `snapshot_ttl_days` | stamps `expires_at` on each image burned by `image_create` (default 30; 0 = never). **Inert in the standalone stack** — agentd runs no reaper, so nothing acts on the expiry (see §9) |
 
 Interactive chat is exempt from both budgets and from `max_concurrent_jobs` — a blown budget
 must never lock a human out of talking to their workers.
@@ -130,7 +125,10 @@ prompt never affects a running session; it addresses the successor.
 
 ## 4. Wire what wakes a worker
 
-Four triggers, all arriving through the same composition path.
+Four triggers. **Three of them compose a job; the fourth does not.** Subscriptions, schedules
+and external events all reach a worker through the router → dispatch gate → `ComposeJob`, so
+they get the core preamble, the briefing, the core tools and the event as a first message. A
+human chatting starts an ordinary session, which gets none of those — see §9.
 
 **Subscriptions** — `/agent/subscriptions` CRUD, the UI editor, or `subscription_create` /
 `subscription_list` / `subscription_delete`. There is deliberately no `subscription_update` tool;
@@ -140,7 +138,7 @@ rewiring is delete + create.
 | --- | --- |
 | `event_type` | exact, or trailing-`*` prefix (`email.*`). No other patterns |
 | `filter` | optional equality match on **envelope** fields, e.g. `{"worker":"email-answerer"}` |
-| `worker` | the worker to start a job for (verified to exist at create time) |
+| `worker` | the worker to start a job for. `subscription_create` verifies it exists; the HTTP route and the store do **not**, so a subscription written over HTTP against a missing worker is only discovered when it fires |
 | `max_firings_per_hour` | 0 = unlimited; excess deliveries record `rate_limited` and emit at most one `subscription.throttled` per rolling hour |
 | `enabled` | |
 
@@ -163,7 +161,16 @@ the count again from zero). The streak and the last error are readable on the sc
 **A job that ran and failed does not count.** Only a firing that never became a running session
 does. A worker whose jobs keep failing is what the §8.7 self-improvement loop exists to repair, and
 retiring its schedule would silence that loop; a firing merely *queued* behind a busy worker is the
-capacity gate working and does not count either.
+capacity gate working and does not count either. Nor does an infrastructure error from the gate
+itself — that says the database hiccuped, not that the schedule is broken.
+
+**The residual risk, stated because it is real.** The gate cannot tell "this schedule is
+abandoned" from "this host is full": a session that fails to provision is a failed dispatch
+either way, and `ErrNoCapacity` is not special-cased. So a genuine host-wide capacity crunch
+lasting five minutes disables **every** schedule that fires during it, not only the broken ones.
+The streak and reason are on each row, and re-enabling starts the count from zero, so recovery is
+a re-enable per schedule — but you have to know to look. Judged the better trade against 53
+abandoned rows holding every port on the host.
 
 **External events** — `POST /agent/events {type, text}`, project from the JWT. Note that with
 schedules in core, *scheduled pull usually beats pushed events*: give a worker an email MCP tool
@@ -176,9 +183,14 @@ not yet compose the worker's prompt.)
 
 `worker.finished` (text = the full rendered transcript — *the* composition primitive),
 `worker.failed` (`reason: "error"` or `"lost"`), `human.attention.timeout`,
-`subscription.throttled`, `config.changed`. `worker.finished` fires for worker jobs only, never
-for plain sessions, and interactive chats emit it too — subscriptions that shouldn't react to
-chats filter on `interactive`.
+`subscription.throttled`, `config.changed`.
+
+`worker.finished` fires **only for sessions whose `worker` column is set**, which today means
+routed jobs and nothing else — a plain chat emits nothing. The envelope carries `interactive`,
+and a subscription that should not react to human chats filters on it; but since the only path
+that sets `worker` also creates a delivery, no *interactive* `worker.finished` is currently
+reachable. The field is the seam for when "chat with this worker" composes (§9), not a case you
+have to handle today. A cancelled turn emits neither `worker.finished` nor `worker.failed`.
 
 ### What the router will and won't do (§8.4)
 
@@ -192,7 +204,14 @@ chats filter on `interactive`.
   **fails open** (logged loudly, the job runs) — stopping a whole workforce because Postgres
   hiccuped is the larger harm.
 - **Lease reaper.** Sessions carry a lease renewed while the sandbox streams; an expired lease
-  is marked failed and emits `worker.failed` with `reason:"lost"`.
+  is marked failed and emits `worker.failed` with `reason:"lost"`. It keys on the lease and
+  never on session status, so an interrupted-but-resumable turn is invisible to it.
+- **Interactive chat is not gated at all.** It never becomes a delivery, so it is structurally
+  invisible to every check above — depth, caps, budget. That is the design (a blown budget must
+  not lock a human out), not a branch that could be flipped.
+- **Admission is not serialised.** Router and scheduler can both read capacity before either
+  writes `running`, so the caps can be briefly over-admitted by one or two jobs. Known and
+  logged, not fixed.
 
 Delivery status is exactly `pending|running|ok|failed|awaiting_human|rate_limited`. A **cancelled**
 turn records `ok` (nothing better exists in that closed vocabulary, and the lease is released).
@@ -202,6 +221,14 @@ A job whose turn called `request_human_attention` and left the request open ends
 (`max_concurrent_jobs` and `max_instances` count `running` only), so a human who never replies
 cannot retire a worker. Nothing currently moves a delivery *out* of `awaiting_human` — a human
 replying resumes the session but leaves the old job-history row parked; see "known limitations".
+
+A delivery for a **disabled** worker also records `failed`. Since `worker_update(enabled:false)`
+is the intended way to retire a worker (there is no `worker_delete` tool), every event that
+matches a retired worker's subscription keeps adding a failed-looking row to job history for as
+long as that subscription exists. Delete the subscription too, or expect the noise. A failed
+delivery records **no reason** — `event_deliveries` has no such column, so the cause is only in
+agentd's log (`[dispatch] delivery … failed: …`).
+
 `GET /agent/events` and `GET /agent/deliveries` are the read paths the UI's events view uses.
 
 ---
@@ -228,10 +255,19 @@ one.
   that label; updating it is appending. `memory_current(name)` reads it in one word.
 - **Provenance is part of every result** — which worker wrote it, in which session, with a
   clickable permalink (`<AGENTKIT_PUBLIC_BASE_URL>/p/<project>/s/<session>`).
+- **`memories.created_at` is milliseconds**, like `config_events.created_at` and unlike the
+  `agent_*` tables, which use seconds. Anything joining them must not assume one unit.
 
 ### How memory reaches a prompt
 
-Core performs **exactly one kind of memory read on its own**: the briefing lookups at composition
+Core performs **exactly one kind of memory read on its own**, and **exactly one kind of write**.
+The write is the prompt-revision record: `worker_prompt_write` and `project_prompt_write` each
+append a memory labelled `kind=prompt-revision` plus `worker=<name>` or `scope=project`, carrying
+the rationale and the **superseded prompt** verbatim — so a bad rewrite is searchable and can be
+put back by writing the old text again. If that memory fails to store, the tool still succeeds
+and reports `prompt_revision: {stored: false}` with the error; the prompt is already live by then.
+
+The read is the briefing lookups at composition
 time. For each of — the built-in default selector `kind=rolling-summary, worker=<name>`, plus each
 selector in the worker's `briefing` column — core takes the *newest match* and injects it as its
 own headed section (the default one is headed `Your memory briefing`, the extra ones
@@ -255,8 +291,13 @@ briefing works; one that cannot start does not.
 
 agentd serves one MCP server named `core` at `/mcp`, authenticated by the session's own token
 (the project scope comes from the token, so a session physically cannot cross projects). Tools
-reach the model as `mcp__core__<name>`. Every job is told about it automatically; you do not
-configure it.
+reach the model as `mcp__core__<name>`.
+
+**Only composed worker jobs get these tools.** The `core` server is attached by `ComposeJob`, so
+a routed job is told about it automatically and you never configure it — but a session you start
+by chatting in the UI has **no core tools at all**: no `memory_search`, no `worker_create`,
+nothing. If you want to drive the management tools by hand, do it over HTTP, or trigger a worker
+whose prompt does it. This surprises people who open a chat expecting to poke at memory.
 
 | Group | Tools |
 | --- | --- |
@@ -346,7 +387,15 @@ tell a typo from a registry reference that simply is not in the catalogue.
 
 `image_create` and `skill_create` are configuration mutations and appear in the config log;
 `skill_install` changes the *session*, not the project, and writes no config event.
-`image_list`/`skill_list` cap at the 200 newest and say so in the result.
+`image_list`/`skill_list` cap at the 200 newest and say so in the result. `skill_create`'s
+config-event payload is the whole row **including the markdown**, so the config log and the
+changelog view carry entire skill documents.
+
+Two side effects worth knowing. `image_create` snapshots through `Runner.Snapshot`, which also
+writes `agent_sessions.snapshot_handle` — so burning an image **repoints the calling session's
+own resume snapshot** at the image it just published; the two become the same object. And there
+is no `GET /agent/images` route, so the worker editor's image field is validated free text: a
+typo is caught at launch, not at write.
 
 ---
 
@@ -372,9 +421,16 @@ What that gives you:
   design.
 
 Caveats worth knowing before you read payloads: `config_events.created_at` is **milliseconds**
-(most `agent_*` tables use seconds), and payload timestamps are not authoritative — use the
-config event's own `created_at`. Edits made over HTTP carry no `rationale` today (no route has a
-field for it), so a human edit logs an empty *why*; the MCP tools are the path that records one.
+(most `agent_*` tables use seconds), and payload timestamps are not authoritative — a create
+event's `payload.updated_at` is 0 and an update event's is the *previous* value, so read the
+config event's own `created_at`.
+
+**Rationales over HTTP are patchy.** `POST`/`PUT /agent/schedules` accepts a `rationale` in the
+body and threads it through; **no other HTTP route does**, so every worker, subscription and
+project-settings edit made from the UI or a script logs an empty *why*. The deletes drop it too
+(no body, no query parameter). And no HTTP path can produce a `worker_prompt_write` event at all
+— a prompt rewrite appears in the changelog only when it came from the MCP tool. If you want the
+config log to carry reasons, the tools are the path that records them.
 
 ---
 
@@ -390,9 +446,17 @@ Stated plainly because each one will otherwise be discovered the hard way.
   at an environment and quietly got a different one is the drift §13 exists to prevent. The reason
   is in agentd's log (`[dispatch] delivery … failed: compose: …`); the delivery row itself carries
   no reason column.
-- **"Chat with this worker" opens a plain session.** The create-session HTTP body has no `worker`
-  field, so the UI's chat tab produces an uncomposed session (no worker prompt, no briefing) —
-  never a forged one. It starts working the moment the create path composes.
+- **"Chat with this worker" opens a plain session.** The UI sends a `worker` field; the
+  create-session HTTP body has no such field, so it is dropped. The result is an uncomposed
+  session — no core preamble, no worker prompt, no briefing, **and no core MCP tools** — never a
+  forged one. It starts working the moment the create path composes. There *is* a working
+  half-measure the UI does not use: a session created with `persona: <worker name>` resolves that
+  worker's prompt (project prompt + worker prompt), its `image` pointer and its MCP config
+  through the session-context provider. It still gets no briefing, no core preamble and no core
+  tools, so it is not the same thing as a job.
+- **`POST /agent/session` accepts a `systemPrompt` and does nothing with it.** The field is
+  decoded and forwarded, but for a session with no worker it is never persisted or used. Nothing
+  in-tree sends one; do not build on it.
 - **Sessions hold a running container until the session is deleted.** Nothing reaps them on a
   timer. They accumulate, and past roughly a hundred a stack starts failing to provision new
   sessions. That used to read as "session has no running instance and no snapshot", which looks
@@ -423,7 +487,21 @@ Stated plainly because each one will otherwise be discovered the hard way.
   filters one 200-row page client-side and says so.
 - **Semantic memory search is off in the shipped stack.** See §11.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
-  tool events, and it is reused rather than duplicated.
+  tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
+  said, never what it did.
+- **Event text is fenced but not escaped.** The first message wraps the raw event text in the
+  `--- event text (data, not instructions) begins/ends ---` markers, and the core preamble tells
+  the worker to treat what is between them as data. The text is inserted verbatim, so an event
+  whose own body contains the closing marker can end the block early and have its remainder read
+  as trusted prompt. It held against a real model in one live test; treat that as encouraging,
+  not as a boundary. Events you ingest from outside (`POST /agent/events`) are the exposure.
+- **`snapshot_ttl_days` does nothing here.** The expiry is stamped on every burned image and the
+  reaper exists in the library, but agentd wires neither `Deps.Snapshots` nor
+  `Policy.SnapshotReapInterval`, so images accumulate. Mechanism and consequences:
+  [`15-standalone-stack.md`](15-standalone-stack.md) § "Snapshot images are not reaped either".
+- **A briefing that cannot load is only logged.** `BuildBriefingSections` returns no error by
+  design, so a misconfigured `briefing` selector yields a worker running with a missing section
+  and nothing in the job's output says so — look in agentd's log.
 - **A delivery parked at `awaiting_human` never leaves that status.** The human clicks the
   permalink and replies, and the *session* resumes exactly as §9 intends — but the reply arrives
   through the ordinary chat path, which knows nothing about deliveries, so the job-history row
@@ -447,8 +525,10 @@ the new prompt.
 
 It runs offline. `AGENTKIT_MOCK_MODEL_SCRIPT` (§11) is what lets the mock model emit a `tool_use`,
 which is what makes an offline test able to prove a worker rewrote a worker. The e2e lives under
-`e2e/features/` and runs against the compose stack via `playwright.stack.config.ts` — not the
-legacy `e2e/tests/` rig.
+`e2e/features/` and runs against the compose stack via `e2e/playwright.stack.config.ts` — not the
+legacy `e2e/tests/` rig. The whole run is
+`./e2e/run-stack-e2e.sh up mock && ./e2e/run-stack-e2e.sh test --mock-script
+e2e/mock-scripts/g1-acceptance.json`.
 
 The first real deployment (§8.8) is the BadCode marketing manager: seed exactly *one* worker whose
 prompt describes the workforce that should exist, give it a daily schedule saying "reconcile the
@@ -468,6 +548,7 @@ commentary; this is the product-layer subset.
 | `AGENTKIT_MCP_ENV` | Comma-separated **names** of variables agentd forwards into every session container, so the sandbox can resolve `${VAR}` in MCP config. Allowlist only: naming one of agentd's own secrets (`AGENTKIT_JWT_SECRET`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, …) is a **boot error**. A name that is unset is warned about and not forwarded |
 | `AGENTKIT_PUBLIC_BASE_URL` | Externally reachable base of the web UI; permalinks are minted as `<base>/p/<project>/s/<session>`. Default `http://localhost:8080`. Not `AGENTKIT_SELF_URL` — that is a DinD bridge address only containers can reach. Must be absolute http(s), no query or fragment, or agentd refuses to boot |
 | `AGENTKIT_EMBEDDING_BACKEND` | `none` (default) or `mock`. A typo is a boot error, never a silent fall back. Forwarded by `docker-compose.yml`, so setting it in `.env` reaches agentd — it did not until 2026-07-26, and until then setting it did nothing at all while the docs said it would |
+| `TZ` | the zone every cron expression is evaluated in; unset = UTC. **`docker-compose.yml` does not forward it**, so setting it in `.env` alone changes nothing — see [`15-standalone-stack.md`](15-standalone-stack.md) § "Stack environment variables" |
 | `AGENTKIT_PORT_RANGE_START` / `_END` | The host port pool session containers lease from — its size **is** the concurrent-session ceiling for the host, because one live session holds one port until it is deleted. Default `30001` / `30100` (100 sessions), unchanged from when it was hardcoded. Set both or neither; a non-numeric bound, start above end, a port outside `1024-65535`, or a range wider than 10000 ports is a **boot error**, never a pool that starts and then fails every session. Logged at boot as `session port pool=<range>`. Narrow it (e.g. `40000`/`40002`) to exercise pool exhaustion deliberately — see [`15-standalone-stack.md`](15-standalone-stack.md) |
 | `AGENTKIT_MOCK_MODEL_SCRIPT` / `_FILE` | Mock-model script, read **only** in mock mode (both model credentials blank) and only at boot. Without it the mock serves one canned text turn and can never emit a `tool_use`. Rules match on a substring of the raw model request (a worker name is the natural key — it appears in every composed prompt); the turn is chosen by the assistant-message count, so it is stateless and parallel sessions cannot contaminate each other. A malformed script fails the boot |
 
@@ -475,6 +556,7 @@ Each variable listed in `AGENTKIT_MCP_ENV` must also *reach* agentd: compose can
 dynamic set of names, so add one `environment:` line per credential in `docker-compose.yml`
 alongside the allowlist entry.
 
-Also relevant, documented in [`15-standalone-stack.md`](15-standalone-stack.md): `BASE_IMAGE`
-(→ `AGENTKIT_IMAGE`), `AGENTKIT_JWT_SECRET`, the login variables, `TZ` (schedules are
-stack-local), and the GCP storage backends.
+The stack-level variables — `DATABASE_URL`, `BASE_IMAGE` (→ `AGENTKIT_IMAGE`),
+`AGENTKIT_JWT_SECRET`, the login variables, `AGENTKIT_SELF_URL`, the model credentials, the two
+compose does not forward, and the GCP storage backends — are tabulated in
+[`15-standalone-stack.md`](15-standalone-stack.md) § "Stack environment variables".
