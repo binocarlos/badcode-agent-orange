@@ -37,48 +37,74 @@ plausible but incomplete results. Inside Postgres, pgvector is optional: without
 it search drops the semantic leg and ranks on keyword + recency, with the result
 shape unchanged. Details in `docs/15-standalone-stack.md`.
 
+The semantic leg also needs an embedding provider, and `AGENTKIT_EMBEDDING_BACKEND`
+(forwarded by compose) offers only `none` — the default — and `mock`. So out of
+the box, memory search in this stack is keyword + recency; agentd logs which it
+is at boot. A typo in the variable is a boot error, not a silent fallback. A real
+hosted embedder is host code — you construct one and pass it in.
+
 ## Login + projects (optional)
 
 By default the stack is dev-open (no login, one demo tenant). To turn on login,
-set in `.env`: `AGENTKIT_JWT_SECRET` (a real secret), a project map
+set in `.env`: `AGENTKIT_JWT_SECRET` (a real secret — agentd refuses to boot in a
+login mode without it), a project map
 (`AGENTKIT_PROJECT_MAP={"you@gmail.com":["apples-oranges"]}`), and either
 `GOOGLE_CLIENT_ID` (Google Sign-In) or `AGENTKIT_TEST_LOGIN=email:password`
-(fixed test account, granted every project). A *project* is just a namespace
-over sessions — pick one after login, and the sidebar lists that project's
-sessions with a filter by user.
+(fixed test account, granted every project). Pick a project after login, and the
+sidebar lists that project's sessions with a filter by user.
+
+A *project* is the one hard namespace: it scopes sessions, and it is also what
+holds the product layer — workers, memories, events, schedules, images, skills,
+the config log. In the token it is the `customer` claim.
 
 ## End-to-end test
 
 The e2e runs against a stack you keep up between runs. It covers the chat flow
 (login → create project → new session → streamed reply → replay → project
 namespacing) and the product layer — session MCP config, workers and settings,
-images and skills, and `acceptance-loop.spec.ts`, in which one worker rewrites
-another worker's system prompt with no human and no deploy, offline (the spec's
-definition of done — §8.7). Specs live in `e2e/features/`
-and run via `playwright.stack.config.ts`; `e2e/tests/` is the older Vite +
-mock-server rig. The fast loop is:
+images and skills, image curation, the schedule and port-pool failure paths, and
+`acceptance-loop.spec.ts`, in which one worker rewrites another worker's system
+prompt with no human and no deploy, offline (the spec's definition of done —
+§8.7). Specs live in `e2e/features/` and run via `playwright.stack.config.ts`;
+`e2e/tests/` is the older Vite + mock-server rig. The fast loop is:
 
     ./e2e/run-stack-e2e.sh up            # build + start (mock mode), ~minutes once
     ./e2e/run-stack-e2e.sh test          # seconds per iteration — repeat at will
     ./e2e/run-stack-e2e.sh down          # capture logs + stop (volumes kept)
 
 Tests clean up after themselves (run-scoped project names, sessions deleted in
-teardown), so repeated `test` runs against one stack don't collide. CI uses the
-clean-room one-shot: `./e2e/run-stack-e2e.sh run [mock|api-key|subscription|all]`.
+teardown), so repeated `test` runs against one stack don't collide. The
+clean-room one-shot is `./e2e/run-stack-e2e.sh run [mock|api-key|subscription|all]`
+(up → test → purge-down); a bare mode name is shorthand for the same thing.
 
-- `mock` (default): deterministic offline model — the CI signal.
+- `mock` (default): deterministic offline model — the signal you iterate against.
 - `api-key` / `subscription`: the same flow against the real Anthropic model,
   billed to `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` (read from the
   shell env or `.env`) — sanity checks that both auth modes really work.
   Switching modes = another `up` (only agentd restarts).
 
-Per-mode logs land in `e2e/stack-e2e-logs-<mode>.txt`.
+Two per-run flags on `test`, mutually exclusive (each reload carries only its own
+override, and both restore however the run ends):
 
-**Sessions hold a running container until the session is deleted** — nothing
-reaps them on a timer, and a stack that has accumulated enough of them starts
-failing to provision new ones (roughly a hundred was enough once; the symptom is
-"session has no running instance and no snapshot", which reads like a product
-bug and is not one). The suite
+- `--mock-script FILE` — let the mock model choose its own tool calls. §8.8's
+  half of the acceptance loop (a manager worker creating a missing worker;
+  `request_human_attention` parking a job) **only runs with it**, and skips
+  silently without: `./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/g1-acceptance.json`.
+- `--port-pool N` — boot agentd with exactly N session ports, so the exhaustion
+  path is reachable in seconds. Refuses to start if any session is live.
+
+Per-mode logs land in `e2e/stack-e2e-logs-<mode>.txt`, written by `down`.
+
+**Note that `.github/workflows/ci.yml` does not run any of this.** CI covers
+`go/`, `sandbox/` and `web/` only; the stack e2e is a thing a human runs.
+
+**Sessions hold a running container — and one host port — until the session is
+deleted**; nothing reaps them on a timer. The port pool is the hard ceiling on
+concurrent sessions per host: **100 by default** (`AGENTKIT_PORT_RANGE_START`
+/`_END`, set both or neither). At zero free, every further session fails with
+"host port pool is exhausted", naming the pool, its size and what holds it —
+and the message arrives *inside the message stream*, because create answers 200
+and provisions in the background. The suite
 deletes its own sessions; `./e2e/run-stack-e2e.sh clean` removes leftovers when
 something else did not. `clean` also **restarts agentd**, which is not optional:
 pulling containers out from under a running agentd leaves its placement state
@@ -89,7 +115,7 @@ new session until restarted. The script does the restart for you.
 
 | Service | Role |
 |---|---|
-| `web` | nginx serving the bundled chat UI; same-origin reverse proxy to agentd |
+| `web` | nginx serving a **built** bundle of `examples/web` (the app shell that composes the `web/` component library); same-origin reverse proxy to agentd. UI edits are invisible to the browser until `docker compose up -d --build web` |
 | `agentd` | the API + orchestrator + `/agent-proxy`; shares DinD's network namespace |
 | `dind` | Docker-in-Docker; hosts one container per session |
 | `init-sandbox` | one-shot: builds + loads the sandbox image into DinD |
