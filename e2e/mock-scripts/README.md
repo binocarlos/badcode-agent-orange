@@ -38,21 +38,25 @@ because that rule cost me a run: a `_comment` key stopped agentd dead.)
 ## Choosing a `match` key
 
 Match on a marker planted in the **trigger text** — the schedule input, or the text of the event
-that starts the job — because that becomes the job's first user message.
+that starts the job (it becomes the job's first user message) — or in the worker's **system
+prompt**. The latter works because for a routed worker job the composed prompt is sent verbatim
+every turn (the `fix-prompt` repair, 2026-07-26; `a worker's own prompt reaches the model` in
+acceptance-loop.spec.ts is the guard). A prompt-planted marker is what the learning stories run
+on: a `worker_prompt_write` that adds the marker flips which rule the actor's next job matches,
+so the behaviour switch is itself proof of prompt delivery.
 
-**Not the system prompt.** A marker placed in a worker's system prompt does not match, even though
-the composed prompt provably contains it and the dispatcher hands it to the session as
-`SystemPrompt`. The same marker in event text matches every time, and a direct POST to the proxy
-carrying it in `system` also matches — so the matcher handles `system` fine, and something between
-composition and the model request is dropping it. That is logged as a `(G1)` finding; until it is
-resolved, put markers where a job's *input* goes.
-
-Not the worker's name either: a name is a substring of every composed prompt that mentions it,
-including a manager's prompt describing the workforce it should create, so it would fire in the
-wrong job.
+Beware the worker's *name* as a sole key: a name is a substring of every composed prompt that
+mentions it, including a manager's prompt describing the workforce it should create, and of every
+transcript that names it — a `worker.finished` event's text is the finishing job's whole
+transcript, so a critic triggered by an actor receives the actor's name, output and event text in
+its first message. Names still partition well if the rules are **ordered**: put the critic's rule
+above the actor's (the critic's requests contain the actor's name and, after its tool call, the
+marker — never the other way round), and keep names mutually non-substring
+(`ls1-poet`/`ls1-reviewer`, not `poet`/`poet-critic`).
 
 ## What's here
 
 | Script | Drives |
 | --- | --- |
 | `g1-acceptance.json` | G1 §8.8: the manager's reconcile hiring `tweet-author` via `worker_create`, and the content worker pausing for sign-off via `request_human_attention` |
+| `learning-stories.json` | The learning stories (`features/learning-stories.stack.spec.ts`): one composite table, rules partitioned by worker name, before/after actor states split with `absent` on each story's marker |
