@@ -105,6 +105,13 @@ type runnerImpl struct {
 	// progress holds live snapshot/restore progress per session, read by Status.
 	progress *progressStore
 
+	// held counts the in-flight turns per session (a streaming SendMessage, a
+	// client attached with Stream). It is the archive sweep's "busy" signal:
+	// lastActivity is stamped at the START and END of a turn, so a model run
+	// longer than the archive timeout would otherwise look idle from the middle
+	// of it onwards and be torn down under its own stream.
+	held map[string]int
+
 	// creating holds one guard per IN-FLIGHT create, keyed by session id. It is
 	// how a Destroy tells a create that is still provisioning that its session
 	// is gone — see createGuard. Entries live only for the duration of a create.
@@ -145,6 +152,7 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 		instanceWorkers:  map[string]string{},
 		lastActivity:     map[string]time.Time{},
 		queryErrors:      map[string]string{},
+		held:             map[string]int{},
 		userImageHandles: map[string]imageregistry.Handle{},
 		progress:         newProgressStore(),
 		creating:         map[string]*createGuard{},
@@ -852,6 +860,8 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 		return err
 	}
 	r.touch(ref.SessionID)
+	// This session is busy until the turn returns — see hold.
+	defer r.hold(ref.SessionID)()
 
 	// The per-turn request usually carries only the prompt — the chat UI does not
 	// resend customer/job/persona on every message — so backfill any missing scope
@@ -943,6 +953,9 @@ func (r *runnerImpl) Stream(ctx context.Context, ref SessionRef, opts StreamOpti
 	if err != nil {
 		return err
 	}
+	// An attached client is live traffic: hold the session for the attach, so a
+	// reconnected stream outliving the archive timeout is not torn down.
+	defer r.hold(ref.SessionID)()
 	// Both normal attach and reconnect use the session-scoped stream path.
 	// GET /sessions/:sessionId/stream/:queryId replays the in-image buffer and
 	// then streams live — no separate /reconnect endpoint exists in the contract
@@ -1019,34 +1032,86 @@ func (r *runnerImpl) Close() error {
 	return nil
 }
 
+// defaultArchiveTick is the production sweep cadence: idleness is measured in
+// minutes or hours, so looking once a minute is precise enough and costs
+// nothing when there is nothing to do.
+const defaultArchiveTick = 60 * time.Second
+
+// archiveTick is how often archiveIdleOnce runs for a given timeout. A sweep can
+// never notice idleness sooner than it runs, so a timeout SHORTER than the
+// production cadence lowers the cadence to match — otherwise a host asking for
+// a 5-second archive would wait a minute for it, and the loop would be
+// untestable through its own front door. agentd floors the timeout at a minute,
+// so in the standalone stack this is always 60s.
+func archiveTick(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout >= defaultArchiveTick {
+		return defaultArchiveTick
+	}
+	if timeout < 10*time.Millisecond {
+		return 10 * time.Millisecond
+	}
+	return timeout
+}
+
 func (r *runnerImpl) archiveLoop() {
-	t := time.NewTicker(60 * time.Second)
+	t := time.NewTicker(archiveTick(r.deps.Policy.ArchiveTimeout))
 	defer t.Stop()
 	for {
 		select {
 		case <-r.stop:
 			return
 		case <-t.C:
-			ctx := context.Background()
-			for _, sid := range r.idleSessions(r.deps.Policy.ArchiveTimeout) {
-				if r.sink.pendingCount(sid) > 0 { // flush guard
-					continue
-				}
-				env, err := r.workerEnvFor(sid)
-				if err != nil {
-					continue
-				}
-				if !env.Capabilities().SupportsSnapshot {
-					continue
-				}
-				if _, err := r.Snapshot(ctx, SessionRef{SessionID: sid}); err != nil {
-					continue
-				}
-				// teardownInstance, not Destroy: the session is being ARCHIVED, not
-				// deleted. Cancelling a create for it would be a lie.
-				_ = r.teardownInstance(ctx, SessionRef{SessionID: sid})
-			}
+			r.archiveIdleOnce(context.Background())
 		}
+	}
+}
+
+// archiveIdleOnce is one sweep: every session idle longer than the configured
+// timeout is snapshotted and its container released. The session row survives
+// and stays resumable — ensureRunning restores it from the snapshot handle on
+// the next message — so this reclaims a container and its host port WITHOUT
+// losing anything a user can see.
+//
+// It is a method, not an inline loop body, so the reclamation policy is
+// testable without waiting for a ticker.
+func (r *runnerImpl) archiveIdleOnce(ctx context.Context) {
+	timeout := r.deps.Policy.ArchiveTimeout
+	if timeout <= 0 {
+		// Belt and braces: Start does not launch the loop at zero, and a sweep
+		// that ran anyway would read idleSessions(0) — which matches EVERY
+		// tracked session, including one that spoke a millisecond ago.
+		return
+	}
+	for _, sid := range r.idleSessions(timeout) {
+		if r.sink.pendingCount(sid) > 0 { // flush guard
+			continue
+		}
+		// A turn in flight is not an idle session, however long ago it started.
+		// lastActivity is stamped when a turn BEGINS and again when it ends, so
+		// without this a model run longer than the timeout would have its own
+		// container pulled out from under it mid-stream.
+		if r.heldCount(sid) > 0 {
+			continue
+		}
+		env, err := r.workerEnvFor(sid)
+		if err != nil {
+			continue
+		}
+		if !env.Capabilities().SupportsSnapshot {
+			continue
+		}
+		if _, err := r.Snapshot(ctx, SessionRef{SessionID: sid}); err != nil {
+			log.Printf("agentkit: archive session %s: snapshot failed, keeping the container: %v", sid, err)
+			continue
+		}
+		// teardownInstance, not Destroy: the session is being ARCHIVED, not
+		// deleted. Cancelling a create for it would be a lie.
+		if err := r.teardownInstance(ctx, SessionRef{SessionID: sid}); err != nil {
+			log.Printf("agentkit: archive session %s: releasing the container failed: %v", sid, err)
+			continue
+		}
+		log.Printf("agentkit: archived session %s — idle for over %s; container and host port released, the session resumes from its snapshot on the next message",
+			sid, timeout)
 	}
 }
 
@@ -2192,6 +2257,30 @@ func (r *runnerImpl) touch(sessionID string) {
 	r.mu.Lock()
 	r.lastActivity[sessionID] = time.Now()
 	r.mu.Unlock()
+}
+
+// hold marks a session busy for the duration of a turn and returns the release.
+// Callers use it as `defer r.hold(id)()`.
+func (r *runnerImpl) hold(sessionID string) func() {
+	r.mu.Lock()
+	r.held[sessionID]++
+	r.mu.Unlock()
+	return func() {
+		r.mu.Lock()
+		if n := r.held[sessionID] - 1; n > 0 {
+			r.held[sessionID] = n
+		} else {
+			delete(r.held, sessionID)
+		}
+		r.mu.Unlock()
+	}
+}
+
+// heldCount is how many turns are in flight for a session.
+func (r *runnerImpl) heldCount(sessionID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.held[sessionID]
 }
 
 func (r *runnerImpl) idleSessions(olderThan time.Duration) []string {

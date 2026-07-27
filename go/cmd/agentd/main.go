@@ -135,7 +135,7 @@ func main() {
 	// portrange.go.
 	pool, err := resolvePortRange(os.Getenv)
 	must(err)
-	log.Printf("[agentd] session port pool=%s (%d concurrent sessions max on this host; one live session holds one port until deleted)",
+	log.Printf("[agentd] session port pool=%s (%d concurrent sessions max on this host; one live session holds one port until it is deleted or reclaimed for idleness)",
 		pool, pool.size())
 
 	// ── DinD execution environment ───────────────────────────────────────────────
@@ -224,6 +224,30 @@ func main() {
 	if agentDB != nil {
 		workerEvents = agentDB
 	}
+
+	// ── Session garbage collection ───────────────────────────────────────────────
+	// Both of the Runner's background loops, off by default until this was wired:
+	// idle containers were never reclaimed (so the host port pool only drained)
+	// and expired snapshots were never retired. See gc.go for the numbers and
+	// why. A nonsense duration is a boot error, not a loop that quietly never
+	// runs.
+	gc, err := resolveGCConfig(os.Getenv)
+	must(err)
+	// The B4 constraint, stated where it is relied on: the reaper tombstones
+	// `agent_custom_images` — a config-guarded table — deliberately OUTSIDE the
+	// config-event seam, because storage GC is not a configuration decision an
+	// agent made. That is legal here precisely because agentd never arms
+	// agentdb.InstallConfigEventGuard on this store (only tests do). Wire it only
+	// on Postgres: the catalogue it sweeps has no sqlite equivalent. Declared as
+	// the interface so the sqlite fallback hands the Runner a genuine nil, not a
+	// non-nil interface wrapping a nil *Store.
+	var snapshotCatalog agentkit.SnapshotCatalog
+	if agentDB != nil {
+		snapshotCatalog = agentDB
+	}
+	log.Printf("[agentd] %s", gc.describeIdleTimeout())
+	log.Printf("[agentd] %s", gc.describeReapInterval(snapshotCatalog != nil))
+
 	runner, err := agentkit.NewRunner(agentkit.Deps{
 		Fleet:          f,
 		Registry:       registry,
@@ -237,9 +261,16 @@ func main() {
 		// here, and a failure fails the launch rather than substituting the
 		// base image.
 		Images: imageResolver,
+		// The §13.7 / B4 image catalogue the snapshot TTL reaper sweeps.
+		Snapshots: snapshotCatalog,
 		Policy: agentkit.Policy{
-			BaseImage:                  baseImage,
-			AgentPort:                  3010,
+			BaseImage: baseImage,
+			AgentPort: 3010,
+			// Reclaim the container (and its host port) of a session nobody has
+			// spoken to for this long. NOT a delete: the row survives and the
+			// next message restores it from its snapshot.
+			ArchiveTimeout:             gc.idleTimeout,
+			SnapshotReapInterval:       gc.reapInterval,
 			SessionEnv:                 sessionEnv,
 			DisableModelAPIKeyOverride: subscriptionMode,
 		},

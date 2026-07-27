@@ -132,19 +132,43 @@ identical (§7.6.5):
   — it did not until 2026-07-26, and until then the shipped stack always ran `none` whatever
   `.env` said.
 
-## Session containers are not reaped on a timer
+## Idle session containers are reclaimed after 30 minutes
 
-A session holds a running container inside DinD until the **session is deleted**. Nothing
-expires them, so they accumulate. The ceiling is exact: `agentd` leases each live session one
-host port from a pool that defaults to `30001-30100`, so by default the **101st concurrent
-session cannot start**, and neither can any after it until one is released.
+A session holds a running container inside DinD, and one host port with it. **Since 2026-07-26
+that container is reclaimed once the session has been idle for 30 minutes** — `agentd` sets
+`Policy.ArchiveTimeout` from `AGENTKIT_SESSION_IDLE_TIMEOUT` and the Runner's archive loop
+snapshots the container and drops it. Until then it set neither of the Runner's GC loops, so a
+session held its container from creation until a human deleted it, and the pool below only ever
+drained.
+
+**Archiving is not deleting.** The session row, its events and its snapshot handle all survive;
+the next message restores the container from the snapshot (`ensureRunning`) and the
+conversation continues. A returning user pays one image materialise and sees nothing else. What
+is reclaimed is a container, its memory, and the host port.
+
+Two things are deliberately never archived mid-flight: a session with a turn in progress
+(however long the model has been thinking) and a session with events still being flushed.
+
+```
+[agentd] session gc: containers idle >30m0s are snapshotted and released (the session survives
+and resumes from its snapshot on the next message)
+```
+
+Set `AGENTKIT_SESSION_IDLE_TIMEOUT` to change it, or to `off` to restore the old behaviour.
+Below `1m` or above `720h` is a boot error, as is a bare number (`30` is not a duration) — the
+sweep runs once a minute, so a shorter setting promises a precision it does not have.
+
+The ceiling is still exact while sessions are live: `agentd` leases each live session one
+host port from a pool that defaults to `30001-30100`, so the **101st concurrent
+session cannot start**, and neither can any after it until one is released — by a delete, or
+now by the archive sweep.
 
 The pool is configurable — `AGENTKIT_PORT_RANGE_START` / `AGENTKIT_PORT_RANGE_END`, defaulting
 to `30001` and `30100` so an existing deployment is unchanged (`cmd/agentd/portrange.go`).
 `agentd` prints the effective pool at boot:
 
 ```
-[agentd] session port pool=30001-30100 (100 concurrent sessions max on this host; one live session holds one port until deleted)
+[agentd] session port pool=30001-30100 (100 concurrent sessions max on this host; one live session holds one port until it is deleted or reclaimed for idleness)
 ```
 
 Set **both or neither**: one alone is a boot error rather than an operator's number silently
@@ -188,18 +212,33 @@ does the restart for you; if you clear containers by hand, do it yourself — an
 removals to settle first: `docker rm -f` returns before the daemon has finished, and an
 `agentd` that boots while a removal is still in flight dies on `removal … already in progress`.
 
-Whether long-lived idle sessions should reap their containers is an open product question.
+Deleting is still the right thing to do with a session you are finished with: archiving keeps
+the row, the events and a snapshot blob for ever.
 
-### Snapshot images are not reaped either
+### Snapshot images are reaped every 6 hours
 
 `project_settings.snapshot_ttl_days` stamps an `expires_at` on every image burned by
-`image_create`, and the library ships the reaper that would honour it
-(`agentkit.SnapshotReaper`, `go/snapshot_reaper.go`). **`agentd` wires neither
-`Deps.Snapshots` nor `Policy.SnapshotReapInterval`, so in this stack nothing ever runs it**:
-burned images accumulate until something outside `agentd` removes them. The setting is durable
-— every row already carries the right expiry — so wiring the loop later reaps correctly without
-a backfill. Session resume snapshots (`agent_sessions.snapshot_handle`, written by the idle
-archive loop) carry no TTL at all and are not in the reaper's scope in any case.
+`image_create`, and `agentd` now runs the reaper that honours it (`agentkit.SnapshotReaper`,
+`go/snapshot_reaper.go`): `Deps.Snapshots` is the Postgres store and
+`Policy.SnapshotReapInterval` comes from `AGENTKIT_SNAPSHOT_REAP_INTERVAL`, default **6h**. The
+expiry is per project and stamped per row, so the interval is only how often we *look*; a
+promise measured in days does not need a minutely sweep, and a pass that finds nothing still
+costs queries.
+
+```
+[agentd] snapshot TTL reaper: sweeping every 6h0m0s (expiry itself is per project —
+project_settings.snapshot_ttl_days, 0 = never)
+```
+
+Expired versions lose their **bytes** and keep their **record** as a tombstone (§13.7): history
+and the version high-water mark survive, and resolving a reaped version fails with
+`ErrCustomImageReaped` rather than pointing at nothing. Bytes are deleted *before* the
+tombstone is written, never the reverse — the other order orphans the blob for ever.
+
+It needs `DATABASE_URL`: the catalogue it sweeps is Postgres-only, so on the SQLite fallback
+the loop is not started and the boot log says so. `off` disables it. Session *resume* snapshots
+(`agent_sessions.snapshot_handle`, written by the archive loop above) carry no TTL and are not
+in the reaper's scope.
 
 ### Deleting a session mid-create no longer leaks its port
 
@@ -306,7 +345,8 @@ One exception to "no `agentd` secret reaches a session": in subscription mode
 
 `.env.example` and `docker-compose.yml` carry the full commentary. The product-layer subset
 (`AGENTKIT_MCP_ENV`, `AGENTKIT_PUBLIC_BASE_URL`, `AGENTKIT_EMBEDDING_BACKEND`,
-`AGENTKIT_PORT_RANGE_*`, `AGENTKIT_MOCK_MODEL_SCRIPT*`) is tabulated in
+`AGENTKIT_PORT_RANGE_*`, `AGENTKIT_SESSION_IDLE_TIMEOUT`, `AGENTKIT_SNAPSHOT_REAP_INTERVAL`,
+`AGENTKIT_MOCK_MODEL_SCRIPT*`) is tabulated in
 [`18-workers-memory-events.md`](18-workers-memory-events.md) § "Environment variables". The
 stack-level ones:
 

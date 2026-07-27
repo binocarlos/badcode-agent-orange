@@ -85,6 +85,16 @@ services:
       # reach the pool-exhausted error deliberately instead of with 100 sessions.
       AGENTKIT_PORT_RANGE_START: ${AGENTKIT_PORT_RANGE_START:-}
       AGENTKIT_PORT_RANGE_END: ${AGENTKIT_PORT_RANGE_END:-}
+      # Session garbage collection (gc.go). Unset → a session idle for 30m has
+      # its container snapshotted and released — the session ROW survives and
+      # the next message restores it, so this frees a container and its host
+      # port without losing a conversation. Without it nothing reclaims
+      # anything on a timer and the port pool above only ever drains.
+      AGENTKIT_SESSION_IDLE_TIMEOUT: ${AGENTKIT_SESSION_IDLE_TIMEOUT:-}
+      # How often the snapshot TTL reaper sweeps expired catalogue images
+      # (§13.7). Unset → 6h. The expiry itself is per project
+      # (project_settings.snapshot_ttl_days). "off" disables either loop.
+      AGENTKIT_SNAPSHOT_REAP_INTERVAL: ${AGENTKIT_SNAPSHOT_REAP_INTERVAL:-}
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
       # Login modes (see .env.example). Neither set → legacy dev-open demo.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
