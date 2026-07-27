@@ -50,6 +50,13 @@ beforeEach(() => {
       new Response(JSON.stringify(v), { status: 200, headers: { 'Content-Type': 'application/json' } })
 
     if (u.includes('/agent/sessions')) return json(sessions)
+    if (u.includes('/agent/topologies')) {
+      return json({
+        topologies: [
+          { name: 'solo', version: 'v1', description: 'One worker, no supervision.', questions: [] },
+        ],
+      })
+    }
     if (u.includes('/agent/workers/')) {
       const name = decodeURIComponent(u.split('/agent/workers/')[1]!)
       if (method === 'DELETE') {
@@ -119,6 +126,36 @@ describe('worker list', () => {
     await userEvent.click(screen.getByText('copy-editor'))
     expect(onSelect).toHaveBeenCalledWith('copy-editor')
     expect(window.location.search).toBe('')
+  })
+})
+
+describe('topology onboarding entry (T3)', () => {
+  it('offers "start from a topology" prominently when the project is empty', async () => {
+    workers = []
+    renderPage()
+    expect(await screen.findByText(/this project has no workers yet/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /start from a topology/i }))
+    // The flow opens on the catalogue.
+    expect(await screen.findByRole('button', { name: /choose solo/i })).toBeInTheDocument()
+  })
+
+  it('keeps the flow reachable in a populated project', async () => {
+    renderPage()
+    // No worker selected: the default panel still carries the entry point.
+    expect(await screen.findByText(/select a worker/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /start from a topology/i }))
+    expect(await screen.findByRole('button', { name: /choose solo/i })).toBeInTheDocument()
+  })
+
+  it('leaves the flow back to the worker list via Cancel', async () => {
+    workers = []
+    renderPage()
+    // Wait for the settled empty-project panel before clicking: while workers
+    // load, the default panel renders its own entry button, which detaches.
+    await screen.findByText(/this project has no workers yet/i)
+    await userEvent.click(screen.getByRole('button', { name: /start from a topology/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /^cancel$/i }))
+    expect(await screen.findByText(/this project has no workers yet/i)).toBeInTheDocument()
   })
 })
 
