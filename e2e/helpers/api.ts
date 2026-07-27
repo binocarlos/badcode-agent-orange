@@ -192,6 +192,76 @@ export interface SessionRow {
   create_error?: string
 }
 
+// ── Topologies (work plan 13, T2/T4–T7) ─────────────────────────────────────
+
+/** One question a topology asks before it can render (go/topology). */
+export interface TopologyQuestion {
+  id: string
+  prompt: string
+  type: 'string' | 'bool' | 'choice'
+  choices?: string[]
+  default?: unknown
+  required: boolean
+}
+
+/** One built-in topology, as `GET /agent/topologies` lists it. */
+export interface TopologyInfo {
+  name: string
+  version: string
+  description: string
+  questions: TopologyQuestion[]
+}
+
+/**
+ * A rendered bundle: PROJECT-AGNOSTIC rows of the ordinary config types —
+ * project/ids/timestamps are zero until apply stamps them (T1's invariant).
+ */
+export interface TopologyBundle {
+  workers: Worker[]
+  subscriptions: Subscription[]
+  schedules: Schedule[]
+  settings_patch?: Partial<ProjectSettings>
+  memory_seeds?: unknown[]
+  preconditions: { images?: string[]; skills?: string[] }
+}
+
+/** The preview diff against the project's current config (go/httpapi/topologies.go). */
+export interface TopologyDiff {
+  new_workers: string[]
+  colliding_workers: string[]
+  new_subscriptions: Array<{ event_type: string; worker: string }>
+  new_schedules: Array<{ cron: string; worker: string; input: string }>
+  settings_fields: string[]
+  memory_seeds: number
+}
+
+/** The whole preview response. `applicable` is the one-word verdict. */
+export interface TopologyPreview {
+  topology: TopologyInfo
+  bundle: TopologyBundle
+  diff: TopologyDiff
+  missing_images: string[]
+  missing_skills: string[]
+  applicable: boolean
+}
+
+/** The preview/apply request body: which topology, and the answers. */
+export interface TopologyBody {
+  name: string
+  version: string
+  answers: Record<string, unknown>
+}
+
+/** Everything an apply created, read back, plus the `topology_apply` receipt. */
+export interface TopologyApplyResult {
+  workers: Worker[]
+  subscriptions: Subscription[]
+  schedules: Schedule[]
+  settings?: ProjectSettings
+  memories?: unknown[]
+  event: ConfigEvent
+}
+
 /** One record in the config log (§15.2), as `GET /agent/config-events` returns it. */
 export interface ConfigEvent {
   id: string
@@ -428,6 +498,24 @@ export class ProjectClient {
 
   async deleteSubscription(id: string): Promise<void> {
     await this.json<{ deleted: boolean }>('DELETE', `/agent/subscriptions/${encodeURIComponent(id)}`)
+  }
+
+  // ── Topologies (T2: preview/apply; T4–T7 drive these) ─────────────────────
+
+  /** The built-in topology catalogue. */
+  async listTopologies(): Promise<TopologyInfo[]> {
+    const { topologies } = await this.json<{ topologies: TopologyInfo[] }>('GET', '/agent/topologies')
+    return topologies ?? []
+  }
+
+  /** Renders + diffs without writing anything — the look-before-you-leap half. */
+  previewTopology(body: TopologyBody): Promise<TopologyPreview> {
+    return this.json<TopologyPreview>('POST', '/agent/topologies/preview', body)
+  }
+
+  /** The atomic apply. Throws on refusal — use `raw` to assert a 409. */
+  applyTopology(body: TopologyBody): Promise<TopologyApplyResult> {
+    return this.json<TopologyApplyResult>('POST', '/agent/topologies/apply', body)
   }
 
   // ── The config log (§15.9) ────────────────────────────────────────────────

@@ -60,3 +60,4 @@ marker — never the other way round), and keep names mutually non-substring
 | --- | --- |
 | `g1-acceptance.json` | G1 §8.8: the manager's reconcile hiring `tweet-author` via `worker_create`, and the content worker pausing for sign-off via `request_human_attention` |
 | `learning-stories.json` | The learning stories (`features/learning-stories.stack.spec.ts`): one composite table, rules partitioned by worker name, before/after actor states split with `absent` on each story's marker |
+| `topologies.json` | The topology seeds T4–T7 (`features/topologies.stack.spec.ts`): per-seed name prefixes (`tp4-`…`tp7-`), critics above actors, and the supervisor's specialists keyed on their unique identity phrase (`You are tp6-hand-N`) because dispatcher and specialist requests each contain the other's *name* |
