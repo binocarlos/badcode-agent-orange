@@ -21,6 +21,11 @@ export const WORKER_ENDPOINTS = {
 /** max_instances a worker gets when the caller does not choose one (§6.1). */
 export const DEFAULT_MAX_INSTANCES = 1
 
+/** The plain sentence the lock badge carries, everywhere it appears
+ *  (10-topology-library.md §3) — one string, so the list, the editor and any
+ *  host surface say exactly the same thing. */
+export const FROZEN_SENTENCE = 'Frozen — cannot be changed by other workers.'
+
 /** One configured worker. Field names are the wire names (snake_case).
  *  `briefing` is null-preserving: null/absent = "no selectors configured",
  *  [] = "an explicitly empty list" — the engine keeps those distinct. */
@@ -34,6 +39,10 @@ export interface Worker {
   briefing: string[] | null
   max_instances: number
   enabled: boolean
+  /** Frozen — cannot be changed by other workers; only humans, through this
+   *  (JWT-guarded) API, may edit or unfreeze it. The causal-isolation
+   *  primitive for measurement instruments (10-topology-library.md §3). */
+  frozen: boolean
   created_at: number
   updated_at: number
 }
@@ -54,6 +63,7 @@ export function newWorkerDraft(project = ''): WorkerDraft {
     briefing: null,
     max_instances: DEFAULT_MAX_INSTANCES,
     enabled: true,
+    frozen: false,
     created_at: 0,
     updated_at: 0,
   }
@@ -81,6 +91,7 @@ export function coerceWorker(raw: unknown, project = ''): Worker {
         ? r.max_instances
         : DEFAULT_MAX_INSTANCES,
     enabled: typeof r.enabled === 'boolean' ? r.enabled : true,
+    frozen: typeof r.frozen === 'boolean' ? r.frozen : false,
     created_at: typeof r.created_at === 'number' ? r.created_at : 0,
     updated_at: typeof r.updated_at === 'number' ? r.updated_at : 0,
   }
@@ -219,6 +230,7 @@ export function workerBody(w: WorkerDraft): {
   max_instances: number
   briefing: string[] | null
   enabled: boolean
+  frozen: boolean
 } {
   return {
     description: w.description,
@@ -228,6 +240,9 @@ export function workerBody(w: WorkerDraft): {
     max_instances: w.max_instances,
     briefing: w.briefing,
     enabled: w.enabled,
+    // Always sent explicitly: PUT is create-or-replace, and an omitted frozen
+    // reads as false server-side — an accidental unfreeze, silently.
+    frozen: w.frozen,
   }
 }
 

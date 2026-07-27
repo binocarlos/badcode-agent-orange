@@ -83,18 +83,36 @@ type Worker struct {
 	MCPConfig    JSONMap      `json:"mcp_config" gorm:"column:mcp_config;type:jsonb;default:'{}'"`
 	Image        string       `json:"image" gorm:"type:text;default:''"`    // '' | name (latest) | name:version (pinned)
 	Briefing     SelectorList `json:"briefing,omitempty" gorm:"type:jsonb"` // label selectors; nil = NULL
-	// MaxInstances and Enabled carry NO gorm `default` tag on purpose: GORM omits
-	// zero-valued fields from the INSERT when a default is declared, which would
-	// make `enabled: false` silently persist as true. The DDL defaults in
-	// migration 021 still cover rows written outside GORM; through this store the
-	// value is always explicit (see NewWorker / validateWorker).
-	MaxInstances int   `json:"max_instances"` // max simultaneously active jobs
-	Enabled      bool  `json:"enabled"`       // disabled workers ignore subscriptions
-	CreatedAt    int64 `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt    int64 `json:"updated_at" gorm:"autoUpdateTime"`
+	// MaxInstances, Enabled and Frozen carry NO gorm `default` tag on purpose:
+	// GORM omits zero-valued fields from the INSERT when a default is declared,
+	// which would make `enabled: false` (or `frozen: false`) silently persist as
+	// true. The DDL defaults in migrations 021/034 still cover rows written
+	// outside GORM; through this store the value is always explicit (see
+	// NewWorker / validateWorker).
+	MaxInstances int  `json:"max_instances"` // max simultaneously active jobs
+	Enabled      bool `json:"enabled"`       // disabled workers ignore subscriptions
+	// Frozen is the causal-isolation primitive for measurement instruments
+	// (docs/product/10-topology-library.md §3): a frozen worker's configuration
+	// cannot be changed by other workers — the core MCP server refuses
+	// worker_update / worker_prompt_write against it — only by humans, through
+	// the JWT-guarded HTTP API. The store itself does NOT enforce the boundary:
+	// "workers may not, people may" is one check at the MCP seam, and putting a
+	// second copy here would also block the human path that shares these methods.
+	Frozen    bool  `json:"frozen"`
+	CreatedAt int64 `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt int64 `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (Worker) TableName() string { return "workers" }
+
+// EventTypeWorkerFreezeRefused is the project event the core MCP server emits
+// when a worker's tool call is refused because its target is frozen. Named here,
+// beside the flag it shadows, exactly as human.attention.timeout is named beside
+// the attention tables. Refusals are research signals (playbook C8): an agent
+// trying to edit the thing that scores it is the reward-hacking hypothesis of
+// AGENTS_RESEARCH.md §2 in its most literal form, so they are counted, never
+// swallowed.
+const EventTypeWorkerFreezeRefused = "worker.freeze_refused"
 
 // DefaultMaxInstances is the max_instances a worker gets when the caller does
 // not choose one (spec 02-workers §6.1).
@@ -155,10 +173,11 @@ func validateWorker(w *Worker) error {
 	return nil
 }
 
-// workerConfigEqual compares everything a worker carries EXCEPT `enabled` — and
-// except the identity and timestamp columns, which an upsert never changes. It
-// is what distinguishes "the operator flipped the switch" from "the operator
-// rewrote the worker and happened to flip the switch too".
+// workerConfigEqual compares everything a worker carries EXCEPT the two
+// toggles (`enabled`, `frozen`) — and except the identity and timestamp
+// columns, which an upsert never changes. It is what distinguishes "the
+// operator flipped a switch" from "the operator rewrote the worker and
+// happened to flip a switch too".
 func workerConfigEqual(a, b *Worker) bool {
 	if a.Description != b.Description || a.SystemPrompt != b.SystemPrompt ||
 		a.Image != b.Image || a.MaxInstances != b.MaxInstances {
@@ -181,7 +200,8 @@ func jsonValueEqual(a, b any) bool {
 
 // workerUpsertAction picks the most specific §15.3 action the write represents:
 // a new row is a create; a write that only flips `enabled` is an enable or a
-// disable; anything else is an update.
+// disable; a write that only flips `frozen` is a freeze or an unfreeze;
+// anything else — including flipping both toggles at once — is an update.
 //
 // Deliberately never worker_prompt_write: that action requires a rationale
 // (§15.5) and belongs to the dedicated prompt-write path (H1). A whole-object
@@ -190,11 +210,21 @@ func workerUpsertAction(existing, next *Worker) string {
 	if existing == nil {
 		return ActionWorkerCreate
 	}
-	if existing.Enabled != next.Enabled && workerConfigEqual(existing, next) {
-		if next.Enabled {
-			return ActionWorkerEnable
+	if workerConfigEqual(existing, next) {
+		enabledFlip := existing.Enabled != next.Enabled
+		frozenFlip := existing.Frozen != next.Frozen
+		switch {
+		case enabledFlip && !frozenFlip:
+			if next.Enabled {
+				return ActionWorkerEnable
+			}
+			return ActionWorkerDisable
+		case frozenFlip && !enabledFlip:
+			if next.Frozen {
+				return ActionWorkerFreeze
+			}
+			return ActionWorkerUnfreeze
 		}
-		return ActionWorkerDisable
 	}
 	return ActionWorkerUpdate
 }
@@ -226,6 +256,7 @@ func (s *Store) UpsertWorker(ctx context.Context, w *Worker, cw ConfigWrite) (*W
 		existing.MaxInstances = w.MaxInstances
 		existing.Briefing = w.Briefing
 		existing.Enabled = w.Enabled
+		existing.Frozen = w.Frozen
 		if _, err := s.WithConfigEvent(ctx, ConfigChange{
 			Project: existing.Project,
 			Action:  action,

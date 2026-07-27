@@ -19,9 +19,14 @@ type WorkersStore interface {
 }
 
 // workerBody is the PUT payload. PUT is create-or-replace, not patch: an absent
-// field takes its default rather than keeping the stored value. MaxInstances and
-// Enabled are pointers only because their zero values (0, false) are meaningful
-// and would otherwise be indistinguishable from "not supplied".
+// field takes its default rather than keeping the stored value. MaxInstances,
+// Enabled and Frozen are pointers only because their zero values (0, false) are
+// meaningful and would otherwise be indistinguishable from "not supplied".
+//
+// Frozen rides THIS route deliberately: the JWT-guarded HTTP API is the human
+// path, so freeze and unfreeze are one more field on the ordinary worker write
+// (mirroring how Enabled is toggled) rather than a parallel endpoint. The core
+// MCP server — the workers' path — never exposes the field at all.
 type workerBody struct {
 	Description  string               `json:"description"`
 	SystemPrompt string               `json:"system_prompt"`
@@ -30,6 +35,7 @@ type workerBody struct {
 	MaxInstances *int                 `json:"max_instances"` // nil → 1
 	Briefing     agentdb.SelectorList `json:"briefing"`      // nil → NULL
 	Enabled      *bool                `json:"enabled"`       // nil → true
+	Frozen       *bool                `json:"frozen"`        // nil → false
 }
 
 // workers returns the configured store, or writes 501 and returns nil when the
@@ -109,6 +115,9 @@ func (h *Handlers) PutWorker(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Enabled != nil {
 		worker.Enabled = *body.Enabled
+	}
+	if body.Frozen != nil {
+		worker.Frozen = *body.Frozen
 	}
 
 	stored, err := store.UpsertWorker(r.Context(), worker, humanEdit())

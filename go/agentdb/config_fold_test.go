@@ -126,7 +126,7 @@ func TestConfigFold_EveryActionIsFoldable(t *testing.T) {
 // note on TestConfigFold_PayloadTimestampsAreNotAuthoritative.
 func workerFields(m map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"project", "name", "description", "system_prompt", "image", "max_instances", "enabled"} {
+	for _, k := range []string{"project", "name", "description", "system_prompt", "image", "max_instances", "enabled", "frozen"} {
 		out[k] = m[k]
 	}
 	return out

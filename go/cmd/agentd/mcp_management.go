@@ -71,7 +71,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/binocarlos/badcode-agent-orange/extension/embedding"
@@ -105,6 +107,10 @@ type managementStore interface {
 	DeleteSchedule(ctx context.Context, project, id string, cw agentdb.ConfigWrite) error
 	// the prompt-revision memory (§9)
 	CreateMemory(ctx context.Context, m *agentdb.Memory, embedding []float32) (*agentdb.Memory, error)
+	// the worker.freeze_refused signal (F1): a refused write against a frozen
+	// worker is recorded on the event spine, because an agent trying to edit
+	// the thing that scores it is a research finding, not just an error string.
+	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
 }
 
 var _ managementStore = (*agentdb.Store)(nil)
@@ -154,9 +160,12 @@ func newManagementTools(store managementStore, embedder embedding.Provider, atte
 // result carries the prompt text when — and only when — the call wrote or read
 // the prompt.
 type workerRecord struct {
-	Name              string         `json:"name"`
-	Description       string         `json:"description"`
-	Enabled           bool           `json:"enabled"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
+	// Frozen is surfaced so a manager reading worker_list knows BEFORE calling
+	// worker_update / worker_prompt_write that this worker is off-limits to it.
+	Frozen            bool           `json:"frozen"`
 	Image             string         `json:"image"`
 	MaxInstances      int            `json:"max_instances"`
 	Briefing          []string       `json:"briefing"`
@@ -186,6 +195,7 @@ func toWorkerRecord(w *agentdb.Worker) workerRecord {
 		Name:              w.Name,
 		Description:       w.Description,
 		Enabled:           w.Enabled,
+		Frozen:            w.Frozen,
 		Image:             w.Image,
 		MaxInstances:      w.MaxInstances,
 		Briefing:          briefing,
@@ -685,6 +695,50 @@ func (m *managementTools) configWrite(caller mcpCaller, rationale string) agentd
 	}
 }
 
+// refuseFrozen is the frozen-worker boundary (F1, docs/product/10-topology-
+// library.md §3), applied at THIS seam and only this seam: the core MCP server
+// is the workers' path, the JWT-guarded HTTP API is the humans' path, so
+// "workers may not change this; people may" is one check at one boundary — the
+// store stays permissive because the human path shares its methods.
+//
+// The returned error is the model's whole explanation, so it says why the rule
+// exists rather than just "denied". Before returning, the refusal is recorded
+// as a worker.freeze_refused project event: an agent trying to edit the thing
+// that scores it is among the most interesting signals this system produces
+// (playbook C8), and it is close to free to collect. Emission is best-effort —
+// the refusal stands whether or not the event lands.
+func (m *managementTools) refuseFrozen(ctx context.Context, caller mcpCaller, target, tool string) error {
+	text := fmt.Sprintf("Refused %s against frozen worker %q.", tool, target)
+	if caller.Worker != "" {
+		text += fmt.Sprintf(" Attempted by worker %q", caller.Worker)
+		if caller.SessionID != "" {
+			text += fmt.Sprintf(" (session %s)", caller.SessionID)
+		}
+		text += "."
+	} else if caller.SessionID != "" {
+		text += fmt.Sprintf(" Attempted from session %s.", caller.SessionID)
+	}
+	if _, err := m.store.CreateProjectEvent(ctx, &agentdb.ProjectEvent{
+		Project:    caller.Project, // in code, never an argument
+		Type:       agentdb.EventTypeWorkerFreezeRefused,
+		Text:       text,
+		OccurredAt: time.Now().Unix(),
+		Envelope: agentdb.EventEnvelope{
+			Source:    agentdb.EventSourceCore,
+			Depth:     0,
+			Worker:    caller.Worker,
+			SessionID: caller.SessionID,
+		},
+	}); err != nil {
+		log.Printf("[mcp] could not record %s for worker %q (tool %s): %v — the refusal stands",
+			agentdb.EventTypeWorkerFreezeRefused, target, tool, err)
+	}
+	return fmt.Errorf("worker %q is frozen and cannot be changed by other workers — a frozen worker is a "+
+		"measurement instrument, and letting the workers it measures rewrite it would make its measurements "+
+		"worthless. Only a human, through the project settings UI or HTTP API, can change or unfreeze it. "+
+		"This attempt was recorded as a %s event", target, agentdb.EventTypeWorkerFreezeRefused)
+}
+
 // requireRationale enforces §15.5 on the two prompt writes. It is checked HERE
 // as well as in the store seam so the model gets a sentence it can act on rather
 // than a wrapped database-layer complaint — and so nothing is validated after a
@@ -856,7 +910,9 @@ func (m *managementTools) workerCreate(ctx context.Context, caller mcpCaller, ra
 
 	// Hiring is not overwriting. UpsertWorker would happily replace a live
 	// worker's prompt, which is exactly the accident that must not be possible
-	// from a tool called "create".
+	// from a tool called "create" — and this same refusal is what keeps a
+	// FROZEN worker safe here (F1): a create against its name can neither
+	// replace it nor bring it back thawed, so no frozen check is needed.
 	if existing, err := m.store.GetWorker(ctx, caller.Project, name); err == nil {
 		return nil, fmt.Errorf("worker %q already exists (created %d): use worker_update to change its "+
 			"fields or worker_prompt_write to replace its prompt — worker_create never overwrites",
@@ -898,6 +954,9 @@ var workerRefusedFields = map[string]string{
 		"which requires a rationale and records the superseded prompt as a kind=prompt-revision memory (§9, §15.5). " +
 		"Those semantics must not be bypassable by a partial update",
 	"name": "a worker's name is its identity and cannot be changed; create the new worker and disable the old one",
+	"frozen": "frozen is a human-only control: freezing and unfreezing go through the JWT-guarded HTTP API, " +
+		"never through worker tools — a worker that could unfreeze a measurement instrument could then rewrite it, " +
+		"which is exactly what freezing exists to prevent (docs/product/10-topology-library.md §3)",
 }
 
 type workerUpdateArgs struct {
@@ -930,6 +989,11 @@ func (m *managementTools) workerUpdate(ctx context.Context, caller mcpCaller, ra
 			return nil, fmt.Errorf("no worker %q in this project (worker_list shows who exists)", name)
 		}
 		return nil, err
+	}
+	// The frozen boundary (F1): checked after the read so a made-up name is
+	// still "not found", and before any field moves so nothing is half-applied.
+	if next.Frozen {
+		return nil, m.refuseFrozen(ctx, caller, name, "worker_update")
 	}
 
 	for key := range fields {
@@ -1035,6 +1099,21 @@ func (m *managementTools) workerPromptWrite(ctx context.Context, caller mcpCalle
 	}
 	if err := requireRationale(args.Rationale); err != nil {
 		return nil, err
+	}
+	// The frozen boundary (F1). Read-then-write is racy in principle, but the
+	// race costs nothing worse than one rewrite landing before a human froze —
+	// the config log still records it — while checking here keeps the store
+	// permissive for the human path that shares SetWorkerPrompt.
+	target, err := m.store.GetWorker(ctx, caller.Project, name)
+	if err != nil {
+		if errors.Is(err, agentdb.ErrWorkerNotFound) {
+			return nil, fmt.Errorf("no worker %q in this project, so nothing was written "+
+				"(worker_list shows who exists)", name)
+		}
+		return nil, err
+	}
+	if target.Frozen {
+		return nil, m.refuseFrozen(ctx, caller, name, "worker_prompt_write")
 	}
 
 	stored, previous, err := m.store.SetWorkerPrompt(ctx, caller.Project, name, args.SystemPrompt,

@@ -57,6 +57,8 @@ export const CONFIG_ACTIONS = [
   'worker_update',
   'worker_enable',
   'worker_disable',
+  'worker_freeze',
+  'worker_unfreeze',
   'worker_delete',
   'worker_prompt_write',
   'project_prompt_write',
@@ -175,6 +177,11 @@ export function describeConfigAction(action: string): string {
       return 'Enabled worker'
     case 'worker_disable':
       return 'Disabled worker'
+    case 'worker_freeze':
+      // Frozen — cannot be changed by other workers (10-topology-library §3).
+      return 'Froze worker'
+    case 'worker_unfreeze':
+      return 'Unfroze worker'
     case 'worker_delete':
       return 'Retired worker'
     case 'worker_prompt_write':

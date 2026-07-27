@@ -41,6 +41,9 @@ type fakeManagementStore struct {
 	subscriptions map[string]*agentdb.Subscription // project|id
 	schedules     map[string]*agentdb.Schedule
 	memories      []*agentdb.Memory
+	// events records every project event the tools emitted — the
+	// worker.freeze_refused signal is asserted against this (F1).
+	events []*agentdb.ProjectEvent
 
 	// Every ConfigWrite the tools passed, keyed by the call that made it — the
 	// actor and the rationale are the audit story (§15.2).
@@ -49,6 +52,7 @@ type fakeManagementStore struct {
 	scopes []string
 
 	memoryErr error
+	eventErr  error
 	nextID    int
 }
 
@@ -269,6 +273,20 @@ func (f *fakeManagementStore) DeleteSchedule(_ context.Context, project, id stri
 	f.note("DeleteSchedule", cw)
 	delete(f.schedules, key(project, id))
 	return nil
+}
+
+func (f *fakeManagementStore) CreateProjectEvent(_ context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error) {
+	if f.eventErr != nil {
+		return nil, f.eventErr
+	}
+	f.scope(ev.Project)
+	stored := *ev
+	if stored.ID == "" {
+		stored.ID = f.id("evt")
+	}
+	f.events = append(f.events, &stored)
+	copied := stored
+	return &copied, nil
 }
 
 func (f *fakeManagementStore) CreateMemory(_ context.Context, m *agentdb.Memory, _ []float32) (*agentdb.Memory, error) {

@@ -140,10 +140,18 @@ const EventTypeConfigChanged = "config.changed"
 // The closed action vocabulary of §15.3. Nothing outside this list may be
 // logged; adding a verb is a spec change, not an implementation detail.
 const (
-	ActionWorkerCreate       = "worker_create"
-	ActionWorkerUpdate       = "worker_update"
-	ActionWorkerEnable       = "worker_enable"
-	ActionWorkerDisable      = "worker_disable"
+	ActionWorkerCreate  = "worker_create"
+	ActionWorkerUpdate  = "worker_update"
+	ActionWorkerEnable  = "worker_enable"
+	ActionWorkerDisable = "worker_disable"
+	// ActionWorkerFreeze / ActionWorkerUnfreeze record the `frozen` toggle
+	// (docs/product/10-topology-library.md §3) flipping on its own, exactly as
+	// enable/disable record the `enabled` toggle. They matter to a reader of the
+	// changelog: "someone froze the scorer" is a different sentence from
+	// "someone rewrote the scorer" — and freezing is the human act that makes a
+	// measurement instrument trustworthy, so it must be findable by name.
+	ActionWorkerFreeze       = "worker_freeze"
+	ActionWorkerUnfreeze     = "worker_unfreeze"
 	ActionWorkerPromptWrite  = "worker_prompt_write"
 	ActionProjectPromptWrite = "project_prompt_write"
 	ActionProjectSettingsPut = "project_settings_put"
@@ -169,6 +177,8 @@ var ConfigActions = []string{
 	ActionWorkerUpdate,
 	ActionWorkerEnable,
 	ActionWorkerDisable,
+	ActionWorkerFreeze,
+	ActionWorkerUnfreeze,
 	ActionWorkerDelete,
 	ActionWorkerPromptWrite,
 	ActionProjectPromptWrite,
@@ -636,13 +646,18 @@ var ConfigMutations = []ConfigMutation{
 	{
 		// The whole-object worker write picks the most specific action it can:
 		// create for a new row, enable/disable when the write only flips
-		// `enabled`, update otherwise. It deliberately never writes
-		// worker_prompt_write — that action requires a rationale (§15.5) and
-		// belongs to the dedicated prompt-write path (H1), not to a PUT that
-		// happens to carry a different system_prompt.
-		Method:  "UpsertWorker",
-		Actions: []string{ActionWorkerCreate, ActionWorkerUpdate, ActionWorkerEnable, ActionWorkerDisable},
-		Tables:  []string{"workers"},
+		// `enabled`, freeze/unfreeze when it only flips `frozen` (F1), update
+		// otherwise. It deliberately never writes worker_prompt_write — that
+		// action requires a rationale (§15.5) and belongs to the dedicated
+		// prompt-write path (H1), not to a PUT that happens to carry a
+		// different system_prompt.
+		Method: "UpsertWorker",
+		Actions: []string{
+			ActionWorkerCreate, ActionWorkerUpdate,
+			ActionWorkerEnable, ActionWorkerDisable,
+			ActionWorkerFreeze, ActionWorkerUnfreeze,
+		},
+		Tables: []string{"workers"},
 	},
 	{
 		Method:  "DeleteWorker",

@@ -276,6 +276,10 @@ func configChangePhrase(ev *agentdb.ConfigEvent) string {
 		return fmt.Sprintf("enabled worker %q", name)
 	case agentdb.ActionWorkerDisable:
 		return fmt.Sprintf("disabled worker %q", name)
+	case agentdb.ActionWorkerFreeze:
+		return fmt.Sprintf("froze worker %q — its configuration can now only be changed by a human", name)
+	case agentdb.ActionWorkerUnfreeze:
+		return fmt.Sprintf("unfroze worker %q — other workers may change its configuration again", name)
 	case agentdb.ActionWorkerDelete:
 		return fmt.Sprintf("retired worker %q", name)
 	case agentdb.ActionWorkerPromptWrite:

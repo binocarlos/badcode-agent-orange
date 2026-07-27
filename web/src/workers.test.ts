@@ -119,6 +119,12 @@ describe('workerBody', () => {
     expect('created_at' in body).toBe(false)
     expect(body.enabled).toBe(true)
     expect(body.max_instances).toBe(1)
+    expect(body.frozen).toBe(false)
+  })
+
+  it('always sends frozen explicitly — PUT replaces, and an omitted frozen unfreezes', () => {
+    expect(workerBody({ ...newWorkerDraft(), name: 'w', frozen: true }).frozen).toBe(true)
+    expect('frozen' in workerBody({ ...newWorkerDraft(), name: 'w' })).toBe(true)
   })
 
   it('preserves null vs [] on briefing — the engine keeps them distinct', () => {
@@ -142,6 +148,11 @@ describe('coerceWorker', () => {
 
   it('keeps enabled:false rather than re-defaulting it to true', () => {
     expect(coerceWorker({ name: 'w', enabled: false }).enabled).toBe(false)
+  })
+
+  it('defaults frozen to false and keeps an explicit true', () => {
+    expect(coerceWorker({ name: 'w' }).frozen).toBe(false)
+    expect(coerceWorker({ name: 'w', frozen: true }).frozen).toBe(true)
   })
 
   it('survives a garbage row', () => {
