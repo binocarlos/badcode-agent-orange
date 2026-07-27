@@ -623,11 +623,31 @@ per finding, prefixed with the item id and the date. Do not edit or delete other
   clear-on-success unwritable) and an unconditional set in the sqlite upsert rather than the
   CASE-guard used by its neighbours. The sqlite fallback needed the column too, or the fix would be
   invisible on exactly the stack a developer runs first.
-- `(fix-createerr, 2026-07-26)` **New hazard found, not fixed: `runMigrations` is not
-  concurrency-safe.** It checks `applied` then inserts with no lock, so two processes applying the
-  same new migration at once collide on the primary key — it bit one test run. A
-  `pg_advisory_xact_lock` needs dialect detection since `Open` also serves sqlite. **A live hazard
-  for multi-replica agentd boots.**
+- `(fix-createerr, 2026-07-26)` **Hazard found: `runMigrations` was not concurrency-safe** — it
+  checked `applied` then inserted with no lock, so two processes applying the same new migration
+  collided on the primary key. It bit twice in one day, both times on a brand-new migration's first
+  application (032, then 033), because `go test` runs package binaries in parallel against one
+  database. **A live hazard for multi-replica agentd boots. FIXED — see below.**
+- `(fix-migrationlock, 2026-07-26)` **FIXED with a session-level `pg_advisory_lock` held across the
+  whole read-and-apply.** Three things the fix turned up that the original diagnosis missed:
+  **`CREATE TABLE IF NOT EXISTS` races too** — the reproduction's first failure was
+  `pg_type_typname_nsp_index`, not the pkey, because two sessions both find the tracking table
+  absent and both create it, so the lock has to be taken *before* that table exists (fine — advisory
+  locks need no table). **A transaction-scoped lock would have been the wrong tool**: it would force
+  one transaction around every migration, turning "failure at 30 leaves 1–29 applied" into "every
+  boot redoes the lot". And the **applied set had to move inside the lock** — serialising only the
+  INSERT would leave the loser re-running a body it decided was pending before it waited; it now
+  waits, re-reads, applies nothing, and boots.
+- `(fix-migrationlock, 2026-07-26)` A deadlock found by a test that hung rather than by reading:
+  taking the lock on a dedicated connection while migrating through the pool wedges a
+  `MaxOpenConns(1)` pool against its own lock holder. Lock and migrations now share one pinned
+  `*sql.Conn`. The unlock is `defer`red ahead of `conn.Close()`, uses `context.Background()` so a
+  cancelled caller cannot skip it, and marks the connection bad if unlock fails so `Close` destroys
+  the session rather than returning it to the pool still locked.
+- `(fix-migrationlock, 2026-07-26)` The lock key is derived (`fnv64a("agentdb:migrations")`) and
+  **pinned by a literal in a test** — a key that drifted between versions would silently un-fix this
+  with every test still green. Also recorded honestly: `agentdb.Open` is Postgres-only and no sqlite
+  path reaches `runMigrations` today, so the dialect gate is **defensive**, not load-bearing.
 - `(fix-portrange, 2026-07-26)` **The session port range is now configuration**
   (`AGENTKIT_PORT_RANGE_START`/`_END`, defaulting to 30001-30100 so nothing shifts unless it opts
   in), because a 100-port pool nobody can fill made the exhaustion path impossible to exercise

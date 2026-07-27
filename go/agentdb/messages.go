@@ -228,4 +228,3 @@ func (s *Store) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]ev
 	}
 	return out, nil
 }
-
