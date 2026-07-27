@@ -6,8 +6,11 @@ stack. Run it when you want agent sessions over HTTP without writing a host or
 managing Docker.
 
 `agentd` also hosts the **product layer** — projects, workers, memory, subscriptions,
-schedules, images, skills and the config log. This document covers running the stack;
-`docs/18-workers-memory-events.md` covers operating what runs on it.
+schedules, images, skills and the config log. **This document covers running the stack:
+which components `agentd` wires, which environment variables it reads, and how it fails.
+[`18-workers-memory-events.md`](18-workers-memory-events.md) covers operating what runs on
+it** — project settings, workers, triggers, memory, the core tools and the config log.
+Where a topic touches both, the mechanism is described here and the operating rules there.
 
 ## Library vs standalone — pick ONE
 
@@ -45,7 +48,8 @@ session container (the same `Policy.SessionEnv` seam Platinum uses). The real ke
 lives only in `agentd`'s env and is injected upstream by `/agent-proxy` — it never
 enters a container. With no key, `/agent-proxy` serves canned mock responses.
 
-Point at a non-Anthropic upstream with `ANTHROPIC_UPSTREAM_URL`.
+Point at a non-Anthropic upstream with `ANTHROPIC_UPSTREAM_URL` — one of the two variables
+compose does not forward, so it needs its own `environment:` line (below).
 
 ## Customize the agent image (base image + plugins)
 
@@ -55,16 +59,25 @@ The Runner launches `BASE_IMAGE` per session. Build your own on top of
 `/workspace/CLAUDE.md`) — see `docs/14-host-adapters.md`. Per-app **UI** plugins
 register against `@agentkit/chat-ui`'s render-plugin seam in the app's frontend.
 
-Selection order, as the Runner applies it: `Image` > `CustomImageID` on the create-session
-request > `BASE_IMAGE` (stack-wide, reaching `agentd` as `AGENTKIT_IMAGE`). Worker jobs
-additionally compose an image from `project_settings.base_image` and pass it as the explicit
-`Image`, so a project can override the stack default for its workers without touching `.env`.
+Selection order, as the Runner applies it (`resolveLaunchImage`, `go/runner.go`):
 
-> The named-image layer of the product spec (§13 — `image_create`, `name:version`, a worker's
-> `image` pointer) is built at the store and tool level but **not yet bound at launch**: a
-> worker with `image` set fails its job loudly rather than launching from that image
-> (work-plan item I4). Use `project_settings.base_image` until it lands. See
-> `docs/18-workers-memory-events.md` § "Known limitations".
+    explicit Image  >  worker image pointer  >  CustomImageID  >
+    project_settings.base_image  >  BASE_IMAGE (stack-wide, reaching agentd as AGENTKIT_IMAGE)
+
+The two product-layer links are **bound at launch, every launch**. A worker's `image` pointer
+and `project_settings.base_image` both resolve through the §13 image catalogue, and they fail
+in deliberately different ways — a worker pointer at an image nobody burned fails the job,
+while a `base_image` the catalogue does not hold is used verbatim as a registry reference (which
+is what keeps `ghcr.io/acme/base:v1` and the stack's own `agentkit-sandbox:dev` working). The
+full table, and what the failures say, is in
+[`18-workers-memory-events.md`](18-workers-memory-events.md) § "Images and skills".
+
+Two consequences for anyone running the stack. `project_settings.base_image` applies to **every**
+session in the project, not only to worker jobs — a project whose `base_image` names a catalogue
+image that cannot be served fails its sessions rather than quietly using `BASE_IMAGE`. And
+`CustomImageID` now ranks *below* a worker pointer, which reverses the older httpapi contract
+that the caller's custom image always wins; `agentd` wires no `Deps.CustomImages`, so that link
+is inert here in any case.
 
 ## The store — and why the product layer needs Postgres
 
@@ -72,6 +85,10 @@ additionally compose an image from `project_settings.base_image` and pass it as 
 unset → a local sqlite file, kept for zero-dependency demos. The compose stack always
 sets it, and the image is `pgvector/pgvector:pg16` so `CREATE EXTENSION vector` works
 without an image swap.
+
+Migrations run at boot and are **not concurrency-safe**: `runMigrations` checks whether a
+migration is applied and then inserts, with no lock, so two `agentd` processes booting against
+one database can collide on the primary key. One replica at a time, or migrate out of band.
 
 **`DATABASE_URL` is the switch for the entire product layer**, not just for memory.
 Everything in `docs/18-workers-memory-events.md` lives in the product-layer tables, so on
@@ -93,12 +110,13 @@ The sqlite store also drops the product columns on the sessions table (`mcp_serv
 carried, `worker` and `composed_prompt` are not), which is the mechanical reason the fallback
 is not a supported product-layer configuration.
 
-**The memory system (spec §7) requires Postgres.** On sqlite, `CreateMemory` /
-`GetMemory` / `SearchMemories` all fail with `ErrMemoryRequiresPostgres` — memory
-leans on jsonb label selectors, `tsvector` ranking and (optionally) pgvector, and a
-keyword-ish sqlite imitation would answer searches with plausible but incomplete
-results. A store that silently forgets is worse than no store, so the sqlite fallback
-refuses loudly instead. If you want memory, keep `DATABASE_URL` set.
+**The memory system (spec §7) requires Postgres.** Every memory store method —
+`CreateMemory`, `GetMemory`, `NewestMemory` (the briefing lookup) and `SearchMemories` —
+returns `ErrMemoryRequiresPostgres` against a non-Postgres dialect. Memory leans on jsonb
+label selectors, `tsvector` ranking and (optionally) pgvector, and a keyword-ish sqlite
+imitation would answer searches with plausible but incomplete results. A store that silently
+forgets is worse than no store, so the fallback refuses loudly instead. If you want memory,
+keep `DATABASE_URL` set.
 
 Inside Postgres, two things *do* degrade quietly, and both keep the result shape
 identical (§7.6.5):
@@ -110,9 +128,9 @@ identical (§7.6.5):
   memories are stored with a NULL embedding and search is keyword + recency. `mock` selects
   the deterministic offline embedder; a real embedder is host code implementing
   `extension/embedding.Provider`. A typo in the value is a boot error, never a silent fall
-  back to `none`. **`docker-compose.yml` does not currently forward this variable**, so the
-  shipped stack always runs `none` — setting it means adding one `environment:` line to the
-  `agentd` service.
+  back to `none`. `docker-compose.yml` forwards it, so setting it in `.env` reaches `agentd`
+  — it did not until 2026-07-26, and until then the shipped stack always ran `none` whatever
+  `.env` said.
 
 ## Session containers are not reaped on a timer
 
@@ -138,6 +156,12 @@ Narrowing it is how the exhaustion path below is *exercised* rather than merely 
 stack setting `AGENTKIT_PORT_RANGE_START=40000` / `AGENTKIT_PORT_RANGE_END=40002` reaches the
 real error, at a real caller, on the fourth session instead of the 101st.
 
+One firing schedule can drain the pool on its own. Fifty-three abandoned `* * * * *` rows left
+by dead test runs held every port between them; before blaming the code, check
+`select count(*) from schedules where enabled`. Schedules that repeatedly fail to *provision*
+now retire themselves after five consecutive firings — see
+[`18-workers-memory-events.md`](18-workers-memory-events.md) § "Wire what wakes a worker".
+
 That ceiling is a legitimate limit; failing to recognise it is not. It used to surface as
 "session has no running instance and no snapshot — session must be re-created", which describes
 a *lost session* and invites a re-create that fails identically — it was misdiagnosed twice, once
@@ -145,10 +169,10 @@ as a Docker container limit and once as an image-resolution bug. It now says wha
 true (the count and the range are the *configured* pool, so the message matches the boot log):
 
 ```
-execution environment is at capacity: the host port pool is exhausted — all 100 ports in
-30001-30100 are leased to live sessions, and a session holds its port until it is deleted, so
-every further session on this host will fail the same way until one is released (a host capacity
-limit, not a lost or broken session)
+cannot start session "<id>" on this host: execution environment is at capacity: the host port
+pool is exhausted — all 100 ports in 30001-30100 are leased to live sessions, and a session
+holds its port until it is deleted, so every further session on this host will fail the same
+way until one is released (a host capacity limit, not a lost or broken session)
 ```
 
 The error wraps `execenv.ErrNoCapacity`, so a host can map it to a 503 with `errors.Is` rather
@@ -160,9 +184,22 @@ in teardown). `./e2e/run-stack-e2e.sh clean` clears leftovers, and **restarts `a
 afterwards — that restart is not optional. Removing containers out from under a running
 `agentd` leaves its placement state naming instances that no longer exist, and it then
 refuses to provision *any* new session, including brand-new ones, until restarted. The script
-does the restart for you; if you clear containers by hand, do it yourself.
+does the restart for you; if you clear containers by hand, do it yourself — and wait for the
+removals to settle first: `docker rm -f` returns before the daemon has finished, and an
+`agentd` that boots while a removal is still in flight dies on `removal … already in progress`.
 
 Whether long-lived idle sessions should reap their containers is an open product question.
+
+### Snapshot images are not reaped either
+
+`project_settings.snapshot_ttl_days` stamps an `expires_at` on every image burned by
+`image_create`, and the library ships the reaper that would honour it
+(`agentkit.SnapshotReaper`, `go/snapshot_reaper.go`). **`agentd` wires neither
+`Deps.Snapshots` nor `Policy.SnapshotReapInterval`, so in this stack nothing ever runs it**:
+burned images accumulate until something outside `agentd` removes them. The setting is durable
+— every row already carries the right expiry — so wiring the loop later reaps correctly without
+a backfill. Session resume snapshots (`agent_sessions.snapshot_handle`, written by the idle
+archive loop) carry no TTL at all and are not in the reaper's scope in any case.
 
 ### Deleting a session mid-create no longer leaks its port
 
@@ -264,6 +301,33 @@ name in `AGENTKIT_MCP_ENV`, and its own `environment:` line on the `agentd` serv
 
 One exception to "no `agentd` secret reaches a session": in subscription mode
 `CLAUDE_CODE_OAUTH_TOKEN` legitimately does, because the in-image CLI authenticates with it.
+
+## Stack environment variables
+
+`.env.example` and `docker-compose.yml` carry the full commentary. The product-layer subset
+(`AGENTKIT_MCP_ENV`, `AGENTKIT_PUBLIC_BASE_URL`, `AGENTKIT_EMBEDDING_BACKEND`,
+`AGENTKIT_PORT_RANGE_*`, `AGENTKIT_MOCK_MODEL_SCRIPT*`) is tabulated in
+[`18-workers-memory-events.md`](18-workers-memory-events.md) § "Environment variables". The
+stack-level ones:
+
+| Variable | Effect |
+| --- | --- |
+| `DATABASE_URL` | Postgres → the product layer exists; unset → sqlite and it does not (above). Compose always sets it |
+| `BASE_IMAGE` | the stack-wide default launch image, reaching `agentd` as `AGENTKIT_IMAGE` (default `agentkit-sandbox:dev`) |
+| `AGENTKIT_JWT_SECRET` | HS256 secret `agentd` verifies incoming JWTs with. Blank = dev-open mode, which also registers `/dev/token`. Required as soon as any login mode is on |
+| `GOOGLE_CLIENT_ID` / `AGENTKIT_TEST_LOGIN` | enable Google login (`POST /auth/google`) and password login (`POST /auth/password`). Either one requires `AGENTKIT_JWT_SECRET` and a project map (`AGENTKIT_PROJECT_MAP` / `_FILE`), and replaces `/dev/token` with `POST /auth/project-token`. `AGENTKIT_TEST_LOGIN` grants **all** projects — test/dev only |
+| `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | model credentials. Both blank = mock model. Both set = the API key wins (proxy mode) |
+| `AGENTKIT_SELF_URL` | how a session container nested in DinD reaches `agentd` (`http://172.17.0.1:8099`). **Not** a browser-reachable URL — see permalinks below |
+
+**Two variables `agentd` reads that `docker-compose.yml` does not forward.** Setting either in
+`.env` does nothing in the compose stack; each needs its own `environment:` line on the `agentd`
+service, exactly like an `AGENTKIT_MCP_ENV` credential:
+
+- **`TZ`** — the zone every cron expression is evaluated in (`agentd` logs it at boot as
+  `zone=…`). Unset means UTC, which is what the shipped stack always runs. Schedules are
+  stack-local, so this is the one knob that changes when every schedule in every project fires.
+- **`ANTHROPIC_UPSTREAM_URL`** — the model endpoint `/agent-proxy` forwards to, default
+  `https://api.anthropic.com`.
 
 ## Storage backends (local default, or Google Cloud)
 
