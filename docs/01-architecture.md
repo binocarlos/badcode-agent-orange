@@ -5,6 +5,53 @@ map: the durable thesis behind the design, the layered picture, the package layo
 ships, and how a message turn and a session's lifecycle flow through it. Read it first, then the
 per-subsystem docs listed at the end.
 
+## Two layers — read this before anything else
+
+Agent Orange is **two stacked systems**, and this document describes only the lower one.
+
+| | **Engine** (this doc set, `docs/01`–`docs/15`) | **Product layer** (`docs/product/`, `docs/18`) |
+|---|---|---|
+| Unit | a **session**: one container, one conversation | a **project**: workers, memory, events, schedules |
+| Entry point | `Runner` (`go/agentkit.go`) — a library a host embeds | `agentd` (`go/cmd/agentd/`) — the service that uses it |
+| Code | `go/` (minus `cmd/agentd`), `sandbox/`, `web/` chat | `go/agentdb/`, `go/cmd/agentd/`, `go/compose.go`, `web/` product pages |
+| Storage | whatever the host's `RunnerStore` is (sqlite works) | **Postgres only** — the product layer is wired only when `DATABASE_URL` is set |
+| Knows about | containers, images, SSE, snapshots, artifacts | workers, `project_events`, subscriptions, cron, memories, skills, the config log |
+
+The engine has **no knowledge of the product layer**. It does not know what a worker is beyond
+two opaque strings on the session row (`worker`, `composed_prompt`), it does not read
+`project_events`, and it never starts a job. Everything that wakes a worker, matches a
+subscription, fires a schedule or serves a memory tool lives in `go/cmd/agentd/` and is documented
+in [`docs/product/`](product/00-overview.md) — start at
+[`product/17-product-spec.md`](product/17-product-spec.md) (the authoritative spec) or
+[`docs/18-workers-memory-events.md`](18-workers-memory-events.md) (the operator's view).
+
+The two layers meet at exactly three seams, all of them in `go/`:
+
+- **`ComposeJob`** (`go/compose.go`) — a pure function that turns a worker row, project settings and
+  a triggering event into a `ComposedJob{Image, SystemPrompt, MCPServers, FirstMessage}`, which the
+  caller feeds to `CreateSessionRequest`. It reads no store and writes no row. It lives in the
+  engine module but is product vocabulary; `agentd` calls it, the `Runner` never does.
+- **Two fields on the session row** — `worker` (which persona this session is) and
+  `composed_prompt` (the exact system prompt it was composed with). When `composed_prompt` is set
+  the `Runner` runs every turn with it, re-read off the row, instead of asking the host's
+  `SessionContextProvider`. That is deliberate: a restore or an `agentd` restart cannot change a
+  running job's prompt mid-life.
+- **`Deps.WorkerEvents`** — an optional store the `Runner` appends `worker.finished` /
+  `worker.failed` to when a session carries a worker. Leaving it nil is legal and correct for a
+  host that embeds the engine without the product layer.
+
+> ### Terminology trap: two different "workers"
+>
+> The word is overloaded and the two meanings were confused during the build.
+>
+> - **Fleet worker** — a *host that runs containers*. `fleet.Worker`, `Session.WorkerID`,
+>   `GetWorkerBinding`. Infrastructure. See [13-fleet-placement.md](13-fleet-placement.md).
+> - **Product worker** — a *persona*: a row of prompt + tools + wiring. `agentdb.Worker`,
+>   `Session.Worker`, the `workers` table. See [`product/02-workers.md`](product/02-workers.md).
+>
+> They are unrelated. `Session.WorkerID` and `Session.Worker` are adjacent columns on the same row
+> and mean completely different things; the comment in `go/agentdb/types.go` says so explicitly.
+
 ## The thesis
 
 Three ideas hold the design together. Everything else follows from them.
@@ -41,8 +88,9 @@ lets a session be published as an app (snapshot) while its charts are pinned to 
 
 ## Three runtimes, one contract
 
-The system spans three runtimes with deliberate, minimal boundaries between them: the Go host
-process, the in-image agent (TypeScript), and the browser (React).
+The **engine** spans three runtimes with deliberate, minimal boundaries between them: the Go host
+process, the in-image agent (TypeScript), and the browser (React). (The product layer adds no
+fourth runtime — it is more Go in the host process, plus more React pages in the browser.)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -109,7 +157,9 @@ The host embeds the `agentkit` Go module and calls the `Runner` from its own HTT
   search text, persists via the store, and relays bytes to the browser.
 - **Interfaces it depends on**: `ExecutionEnvironment` (via `Fleet`), `ImageRegistry`, the store
   seam (`RunnerStore`), `ArtifactStore`, and the host extensions (`ScopedClaimsIssuer`,
-  `SessionContextProvider`, `TokenUsageLogger`, `ArtifactEnricher`, `Metrics`).
+  `SessionContextProvider`, `ArtifactEnricher`, `Metrics`, `BlobStoreFactory`).
+  `extension.TokenUsageLogger` is declared and accepted as `Deps.TokenLogger`, but **nothing in the
+  module ever calls it** — it is an unwired seam, not a working costing hook.
 
 ### Runtime 2 — In-image agent (TypeScript, `sandbox/`)
 
@@ -123,9 +173,14 @@ lifecycle — those are the host's job.
 
 ### Runtime 3 — Browser (React, `web/`)
 
-A single `agentEventReducer` reconstructs the UI from events, identically for live streaming and for
-restored/replayed sessions. The runtime preserves that single-codepath invariant absolutely; live
+A single `agentEventReducer` reconstructs the chat UI from events, identically for live streaming and
+for restored/replayed sessions. The runtime preserves that single-codepath invariant absolutely; live
 and replay must never diverge.
+
+`web/` also ships the product layer's pages (workers, project settings, events/jobs, subscription and
+schedule editors, the changelog). Those are ordinary JSON-over-HTTP screens — they are not driven by
+the SSE reducer and have nothing to do with the invariant above. `web/` is a component library with
+no router; the app shell that composes it is `examples/web/`.
 
 ## The dependency direction
 
@@ -146,29 +201,43 @@ implementation of each; production passes real engine + host adapters, tests pas
 go/
   agentkit.go              # Runner interface, Deps, Policy, request/handle types, NewRunner
   runner.go                # runnerImpl: lifecycle orchestration
+  compose.go               # ComposeJob — product-layer job composition (called by agentd)
+  snapshot_reaper.go       # snapshot-TTL sweep of the image catalogue
+  progress.go              # per-session progress ops surfaced through Status
+  skillcatalog.go          # SkillCatalog seam (hoisted/installed skills)
   agentkittest/            # in-memory MemStore + test helpers
   execenv/                 # ExecutionEnvironment interface + shared types
-    docker/                #   Docker + Docker-in-Docker adapters
+    docker/                #   socket + Docker-in-Docker adapters (both per-session)
     mock.go                #   in-memory MockExecutionEnvironment
   imageregistry/           # ImageRegistry interface, BuildSpec, Handle, mock
     ociregistry/           #   registry push/pull (pluggable auth)
     blobarchive/           #   snapshot-to-blob diff-archive adapter
     auth/                  #   registry auth: Static (basic) + GCP (ADC tokens)
   events/                  # Event vocabulary, SSE envelope, Sink, EventPipeline, compaction
-  artifacts/               # ArtifactStore interface + AgentArtifact + dir adapter + mock
+  artifacts/               # ArtifactStore interface + Artifact type + tar helpers + mock
   fleet/                   # Fleet + Worker placement (pool of ExecutionEnvironments)
-  agentdb/                 # sessions/messages/query-events/artifacts/skills/customimages store
+  agentdb/                 # engine tables (sessions/events/artifacts/skills/images) AND the
+                           #   whole product layer (workers, memories, project_events,
+                           #   subscriptions, schedules, config_events) — Postgres
   extension/               # host-implemented seams
-    blobartifacts/ devclaims/ filesblob/ gcsblob/ sqlitestore/
+    blobartifacts/ devclaims/ embedding/ filesblob/ gcsblob/ sqlitestore/
   httpapi/                 # optional net/http handlers a host can mount (Handlers)
+  imagetree/               # derived-image tree model behind the imagetree CLI
+  mockmodel/ modelproxy/   # deterministic offline model + the host-side model proxy
   titlebot/                # utility LLM helper (session titling)
-  cmd/                     # agentd (standalone API+orchestrator), imagetree
+  systemtest/ internal/    # Docker-dependent system tests; internal helpers
+  cmd/                     # agentd (standalone API + product layer), imagetree
   examples/                # standalone, mockproxy, exampleimage
 ```
 
 The module is self-contained: its path is `github.com/binocarlos/badcode-agent-orange` and it imports
 nothing from any host app (CI enforces this). The `httpapi` package *does* ship mountable HTTP
 handlers, but they are optional — the library is embedded, not run as a service of its own.
+
+Two directories are the product layer rather than the engine, and are documented in
+[`docs/product/`](product/00-overview.md), not here: the product tables and stores in `agentdb/`
+(workers, memories, `project_events`, subscriptions, schedules, `config_events`), and the router,
+scheduler, dispatch gate and core MCP tool server in `cmd/agentd/`.
 
 ## Control flow: a message turn, end to end
 
@@ -177,27 +246,40 @@ handlers, but they are optional — the library is embedded, not run as a servic
    `Fleet` (`WorkerForSession`, or `PlaceForSession` on the first message), and — if the container is
    gone — restores from the snapshot (`ImageRegistry.Materialize` → `ExecutionEnvironment.Provision`)
    and rehydrates the conversation.
-3. The Runner enriches the turn via host extensions (`SessionContextProvider` for prompt context,
-   `ScopedClaimsIssuer` for a per-session token) and POSTs it to the in-image agent's
-   `/query-stream` at the address the `ExecutionEnvironment` reported.
+3. The Runner resolves the turn's system prompt: if the session row carries a `composed_prompt`
+   (a worker job — see "Two layers" above) that string is used verbatim, re-read off the row every
+   turn; otherwise it asks the host's `SessionContextProvider`. It mints a per-session token via
+   `ScopedClaimsIssuer` and POSTs the turn to the in-image agent's `/query-stream` at the address
+   the `ExecutionEnvironment` reported.
 4. The **in-image agent** drives the harness and emits SSE events.
 5. The **EventPipeline** tees the stream: bytes relay straight to the client writer `w`; in parallel
    it compacts events, extracts search text, and persists via the store — each persist bracketed by
    the flush guard (`Sink.BeginFlush` / `EndFlush`) so the session cannot be archived mid-flush.
-6. Marker events fire host hooks: artifact bytes are pulled from the workspace and saved via
-   `ArtifactStore` (optionally rewritten by `ArtifactEnricher`); token usage is reported via
-   `TokenUsageLogger`.
-7. When the turn ends, `SendMessage` returns; the browser's reducer holds the full conversation.
+6. Marker events fire hooks the Runner registers on the pipeline: `artifact_registered` pulls the
+   bytes from the workspace and saves them via `ArtifactStore` (optionally rewritten by
+   `ArtifactEnricher`); `skill_hoisted` / `skill_installed` update the skill catalogue; `error`
+   stashes the failure text so a worker job can report `worker.failed`.
+7. When the turn ends, `SendMessage` returns; the browser's reducer holds the full conversation. If
+   the session is a worker job, the Runner appends `worker.finished` (or `worker.failed`) to
+   `Deps.WorkerEvents` — which is how the product layer's next worker gets woken.
 
 ## Control flow: lifecycle in the background
 
 The lifecycle is **running-or-archived** — there is no warm suspended state and no idle reaper. The
-Runner starts exactly one background loop, and only when configured:
+Runner starts two background loops, each only when configured:
 
 - **Archive loop** (`runner.go`, started by `Start` when `Policy.ArchiveTimeout > 0`) — every 60s it
   finds sessions idle past `ArchiveTimeout`, skips any with pending flushes and any whose engine
   reports `SupportsSnapshot = false`, then runs snapshot → persist → destroy. The session's snapshot
   handle is recorded via the store so it can be restored later.
+- **Snapshot-TTL reaper** (`snapshot_reaper.go`, started when `Policy.SnapshotReapInterval > 0`
+  *and* `Deps.Snapshots` is set) — the other half of the same lifecycle: it retires catalogued
+  image versions whose expiry has passed. The TTL itself is a product-layer setting
+  (`project_settings.snapshot_ttl_days`); this loop is only how often the engine looks.
+
+Neither loop is on by default, and **`cmd/agentd` sets neither knob** — in the standalone stack a
+session holds its container until something explicitly destroys it, and no snapshot is ever reaped.
+The loops are there for a host that wants them.
 
 **Restore is lazy.** A destroyed session is brought back on its *next message*, inside
 `ensureRunning`: materialize the snapshot, provision a fresh instance (possibly on a different
@@ -213,15 +295,22 @@ snapshot on next use).
 
 The Runner branches on exactly one capability axis — `Tenancy`:
 
-- **`TenancyPerSession`** — one container/pod per session (the default). Provision, snapshot, and
-  destroy operate on it 1:1.
+- **`TenancyPerSession`** — one container/pod per session. Provision, snapshot, and destroy operate
+  on it 1:1.
 - **`TenancyShared`** — one container hosts many sessions; the sandbox routes by session ID. Snapshot
   is gated off for shared instances, so the archive loop skips them.
 
-Placement is delegated to the `Fleet` (`go/fleet/`), a pool of `ExecutionEnvironment` workers. A
-single-worker deployment needs no fleet: passing `Deps.Env` alone wraps it as a one-worker fleet via
-a shim. The trust gate lives in `fleet.Register` — a shared-tenancy environment below the required
-isolation tier (without `TrustedWorkload`) is rejected at construction.
+The Runner implements both branches, but **no shipped adapter declares `TenancyShared`**: the two
+Docker adapters (`execenv/docker` — socket and DinD) both report `TenancyPerSession`. The shared
+branch is exercised only by tests and by the mock. Treat it as a supported shape of the interface,
+not as something you can select today.
+
+Placement is delegated to the `Fleet` (`go/fleet/`), a pool of `ExecutionEnvironment` workers —
+*fleet* workers, hosts that run containers, not the product layer's personas. A single-worker
+deployment needs no fleet: passing `Deps.Env` alone wraps it as a one-worker fleet via a shim. The
+trust gate lives in `fleet.Register` — a shared-tenancy environment below the required isolation
+tier (without `TrustedWorkload`) is rejected there, and `NewRunner` surfaces it as a construction
+error because the shim registers.
 
 ## Why this boundary and not another
 
@@ -243,20 +332,29 @@ table.
 
 ## How to read the rest
 
+### The engine (these docs)
+
 - **[02-execution-environment.md](02-execution-environment.md)** — the `ExecutionEnvironment`
-  contract and the Docker/DinD adapters.
+  contract and the Docker adapters.
 - **[03-image-registry.md](03-image-registry.md)** — `ImageRegistry`: ensure-present / build /
   persist / materialize, and the OCI + blob-archive adapters.
-- **[05-event-streaming.md](05-event-streaming.md)** — the canonical SSE event vocabulary and the
-  compaction pipeline.
+- **[05-event-streaming.md](05-event-streaming.md)** — the canonical **session** SSE vocabulary and
+  the compaction pipeline. (Not the product event spine — that is `product/04`.)
 - **[06-artifacts.md](06-artifacts.md)** — the `ArtifactStore` and the snapshot-vs-artifact split.
 - **[07-in-image-agent.md](07-in-image-agent.md)** — the sandbox control server and the harness seam.
-- **[13-fleet-placement.md](13-fleet-placement.md)** — the `Fleet`, workers, and placement.
+- **[13-fleet-placement.md](13-fleet-placement.md)** — the `Fleet`, *fleet* workers, and placement.
 - **[14-host-adapters.md](14-host-adapters.md)** — the host-implemented seams (store, claims, context)
   a host application author must supply.
 - **[15-standalone-stack.md](15-standalone-stack.md)** — running the demo stack end to end.
-- **[17-product-spec.md](17-product-spec.md)** — the authoritative forward-looking spec: projects,
-  workers, memory, events, and schedules built on these session-runtime atoms.
+
+### The product layer (a different system — do not read these five docs as the whole picture)
+
+- **[18-workers-memory-events.md](18-workers-memory-events.md)** — the operator's guide: project
+  settings, workers, triggers, memory, the core tools, images/skills, the config log.
+- **[`product/00-overview.md`](product/00-overview.md)** — the quick map of the spec folder.
+- **[`product/17-product-spec.md`](product/17-product-spec.md)** — the authoritative spec: goal,
+  atoms, binding principles, non-goals. Component designs are `product/01`–`product/09`; the
+  Discovered Issues Log in `product/06-work-plan.md` is the best record of what was actually built.
 
 ---
 

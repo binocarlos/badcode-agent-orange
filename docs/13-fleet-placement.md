@@ -1,9 +1,29 @@
 # 13 — Fleet & placement: horizontal scaling across a pool of workers
 
+> ### The word "worker" in this document
+>
+> A **worker here is a host that runs containers** — a DinD daemon, a K8s cluster, a managed
+> sandbox provider. `fleet.Worker`, `Session.WorkerID`, `GetWorkerBinding`. Pure infrastructure.
+>
+> The product layer's **worker** is a completely different thing: a persona, a row of prompt +
+> tools, `Session.Worker`, the `workers` table, documented in
+> [`product/02-workers.md`](product/02-workers.md). The two columns sit next to each other on the
+> session row and mean nothing alike. Confusing them has already cost time on this codebase.
+>
+> Nothing in `go/fleet/` knows the product layer exists.
+
 > **Definition.** A **`Fleet`** is the layer between the `Runner` and a *pool* of
 > `ExecutionEnvironment` **workers**. It answers one question — "for session S, which worker runs it,
 > and where is that worker?" — and makes the binding **sticky** and **durable** so the orchestration
 > core stays stateless across host replicas.
+
+> **Maturity.** The `Fleet` seam is real, shipped, and on the hot path — every `Provision` goes
+> through it, and `NewRunner` wraps a bare `Deps.Env` in a one-worker fleet so there is no
+> non-fleet path left. But the **multi-worker** half is mostly interface: the only implementation
+> is `fleet.NewMemory`, `cmd/agentd` registers exactly one worker, and several policies described
+> below (health probing, drain, portability validation, load-aware placement) are **not
+> implemented**. Each is marked inline. Read this as the design plus an honest status, not as
+> behaviour you can rely on today.
 
 The v0 design assumed one `ExecutionEnvironment` per deployment. That cannot scale horizontally. The
 `Fleet` generalises it without changing the per-worker interface: **each worker IS an
@@ -71,9 +91,23 @@ type PlacementPolicy interface {
 }
 ```
 
-Shipped: `LeastLoaded` (default; honours `Policy.MaxConcurrent` per worker) and `RoundRobin`.
-Affinity-aware policies (prefer a worker that already has the user/app image cached — see
+Shipped: `LeastLoaded` (the default `NewMemory` installs) and `RoundRobin`. Both honour
+`hint.PreferWorkerID` first — a sticky-restore hint wins over load balancing, and is not
+load-checked.
+
+**`LeastLoaded` does not currently balance anything.** Its load counter is moved by
+`Acquire`/`Release`, and **the Runner never calls either** — only `fleet_test.go` does. With every
+count stuck at zero it picks the first candidate in ID-sorted order, i.e. it behaves as a stable
+"first worker". Relatedly, its `MaxConcurrent` field is its own: **`agentkit.Policy.MaxConcurrent`
+is read by nothing in the module** and is not copied into the policy. Neither matters with one
+worker; both must be fixed before a second one is added.
+
+Affinity-aware policies (prefer a worker that already has the app image cached — see
 [03](03-image-registry.md)) slot in here without touching the `Fleet` or `Runner`.
+
+> Not to be confused with the product layer's concurrency limits — `project_settings.
+> max_concurrent_jobs` and a worker row's `max_instances`. Those gate *how many jobs a project may
+> run*, are enforced in `cmd/agentd/dispatch.go`, and have nothing to do with placement.
 
 ## The sticky session→worker binding (where it is persisted)
 
@@ -94,29 +128,43 @@ in-memory `Fleet` for tests/single-host (mirroring `agentkittest.NewMemStore`).
 
 ## How Provision/Resume/Snapshot route through the Fleet
 
-`deps.Env` becomes `deps.Fleet` (a single `ExecutionEnvironment` is wrapped as a one-worker fleet via a
-shim). `ensureRunning`
-([01](01-architecture.md)) becomes:
+`Deps.Fleet` is the seam the Runner uses. `Deps.Env` remains as a single-worker convenience: when
+`Fleet` is nil and `Env` is set, `NewRunner` wraps it via `fleet.NewMemory` + `Register` under the
+worker ID `"local"`. Both nil is a construction error. `ensureRunning` ([01](01-architecture.md)):
 
-1. Resolve worker: `WorkerForSession`; if none, `PlaceForSession`.
+1. Resolve worker: `WorkerForSession`; if that errors — no binding *or* a binding naming a worker
+   that is no longer registered — `PlaceForSession`, which re-places and overwrites the binding.
 2. Operate on `worker.Env` exactly as today (Provision/Resume/Status/Snapshot/Destroy).
 3. The in-memory `instances` map keys by `sessionID` and records the `workerID`, so subsequent calls
    reach the same `Env` without re-resolving.
+
+Two things the Runner does **not** do, both visible at `runner.go`'s call sites: it never calls
+`Fleet.Rebind` (re-placement happens through `PlaceForSession`'s worker-gone fallthrough instead),
+and it always passes an empty `PlacementHint{}` — so `PreferWorkerID`, `Labels` and `Tenancy` are
+never populated on the way in.
 
 `Recover` iterates **all** workers' `Env.Recover()` and re-adopts, cross-checking against `RunnerStore`
 bindings.
 
 ## Worker health, drain, and loss
 
-- **Health:** the `Fleet` excludes unhealthy workers from `PlacementPolicy.Pick` (a cheap per-worker
-  probe — daemon ping / K8s API reachability).
-- **Drain (`Deregister(DrainGraceful)`):** stop placing new sessions; let bound sessions finish; on
-  idle, snapshot-and-rebind (Persist → clear binding → next message re-places elsewhere).
-  `DrainImmediate` snapshots in place if possible, else marks bindings stale.
+- **Health — not implemented.** `memFleet.healthyCandidates()` is named for the intent but only
+  filters out *drained* workers. There is no probe of any kind: no daemon ping, no API
+  reachability check, no `Status` call. A dead worker stays a placement candidate until something
+  deregisters it. (`execenv.CapacityReporter` — [02](02-execution-environment.md) — is the nearest
+  live signal, and the fleet does not consult it either.)
+- **Drain — partially implemented, and not as described.** `Deregister` **removes the worker from
+  the map in both modes**; `DrainGraceful` additionally marks it drained. There is no
+  snapshot-and-rebind, and nothing marks bindings stale. The practical consequence: after a
+  "graceful" deregister, `WorkerForSession` for a session still bound to that worker returns an
+  error rather than letting the session finish. The intended semantics — graceful stops new
+  placement and lets bound sessions drain to a snapshot boundary — are unbuilt.
 - **Loss (worker dies) = the restore path *iff a snapshot exists*.** A bound session whose worker is
-  gone falls through `ensureRunning`: read the snapshot handle from `RunnerStore`; if present →
-  `Rebind` to a healthy worker → `Materialize` + `Provision` there (**a lost worker is just an extreme
-  drain** — which is *why* restore-portability, below, is mandatory). **If the session was never
+  gone falls through `ensureRunning`: `WorkerForSession` errors, `PlaceForSession` re-places on a
+  healthy worker (overwriting the binding — not via `Rebind`, which nothing calls), then the
+  snapshot handle is read from `RunnerStore`; if present → `Materialize` + `Provision` there
+  (**a lost worker is just an extreme drain** — which is *why* restore-portability, below, is
+  mandatory). **If the session was never
   snapshotted** (`GetSnapshotHandle` returns `ok=false` — the common case for an active session that
   was never suspended), there is nothing to restore: the session is **unrecoverable** and must be
   re-created. The workspace written since the last snapshot is the RPO gap; an aggressive
@@ -130,9 +178,15 @@ A snapshot `Handle` must be **worker-portable** for cross-worker restore to work
   same `BlobStore` and can pull/rebuild the same base image.
 - `local-tar` handles are **NOT** portable (a tar on worker A's disk is invisible to worker B).
 
-So the rule, validated at `Fleet` construction: **multi-worker fleets require a portable registry**
-(`blobarchive` with a shared blob store, or `remote`); `localbuild`/`local-tar` is single-worker only.
-This is surfaced via `imageregistry.Capabilities.PortableHandles` ([03](03-image-registry.md)).
+So the rule is: **multi-worker fleets require a portable registry** (`blobarchive` with a shared blob
+store, or `remote`); `localbuild`/`local-tar` is single-worker only.
+`imageregistry.Capabilities.PortableHandles` ([03](03-image-registry.md)) exists to express it.
+
+**It is not enforced.** `fleet.NewMemory` carries a `TODO(AG-6)` where the validation should be, and
+the `Fleet` is never handed an `ImageRegistry` to ask. Nothing stops you registering two workers
+against a non-portable registry; the failure would appear as a cross-worker restore that cannot find
+its bytes. (The code comment on that TODO also claims `PortableHandles` does not exist yet — it does,
+in `imageregistry/registry.go`. Only the check is missing.)
 
 ## Future backends prove the interface is open
 
@@ -153,3 +207,6 @@ per-session placement, plus the snapshot/persist split that enables cross-worker
 - **Shared-tenancy snapshot ban:** a `TenancyShared` worker declares `SupportsSnapshot=false`
   ([02](02-execution-environment.md), [03](03-image-registry.md)); such workers cannot host sessions that
   need snapshot/restore, so placement must not put a snapshot-requiring session on a shared worker.
+  Moot in practice today: **no shipped `ExecutionEnvironment` declares `TenancyShared`** — both
+  Docker adapters are per-session — so the case exists only in tests. `PlacementHint.Tenancy` is
+  likewise accepted by the interface and ignored by both shipped policies.

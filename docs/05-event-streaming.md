@@ -1,10 +1,33 @@
-# 05 — Event streaming & rendering
+# 05 — Session event streaming & rendering
 
-The event stream is the spine of the system: it carries everything the agent does from the in-image
-SDK loop, through the host, to the browser, and into durable storage for replay. Three properties hold
-it together — **one event vocabulary**, **one persistence/compaction step**, and **one rendering
-reducer**. The host-side half of the pipeline lives in Go (`go/events/`); the producer-side buffer and
-the browser reducer live in the TypeScript packages (`sandbox/`, `web/`).
+> **Scope.** This document describes the **session** event stream: what one agent turn emits inside
+> one container, and how it reaches the browser and durable storage. It is `go/events/`.
+>
+> It is **not** the product layer's event spine. Those are two unrelated systems that both use the
+> word "event":
+>
+> | | **Session events** (this doc) | **Project events** (`docs/product/04`) |
+> |---|---|---|
+> | Type | SSE frames — `content_delta`, `tool_use_start`, … | rows in `project_events` — `worker.finished`, `config.changed`, external POSTs |
+> | Transport | `text/event-stream`, streamed live | ordinary JSON routes; the router **polls** the table every 3s |
+> | Lifetime | one query | append-only, forever |
+> | Stored as | `agent_query_events` (compacted) | `project_events` + `event_deliveries` |
+> | Purpose | render a conversation | wake a worker |
+> | Code | `go/events/`, `sandbox/`, `web/src/agentEventReducer.ts` | `go/agentdb/events.go`, `go/cmd/agentd/router.go` |
+>
+> Nothing in `go/events/` knows subscriptions, the router or schedules exist. Read
+> [`product/04-events-and-schedules.md`](product/04-events-and-schedules.md) for that half.
+>
+> The one place they touch: when a session that carries a product worker finishes, the **Runner**
+> appends a `worker.finished` (or `worker.failed`) row to the project spine via `Deps.WorkerEvents`,
+> with the rendered transcript as its text. That is a write into the other system, not part of this
+> vocabulary.
+
+The session event stream is the spine of a conversation: it carries everything the agent does from
+the in-image SDK loop, through the host, to the browser, and into durable storage for replay. Three
+properties hold it together — **one event vocabulary**, **one persistence/compaction step**, and
+**one rendering reducer**. The host-side half of the pipeline lives in Go (`go/events/`); the
+producer-side buffer and the browser reducer live in the TypeScript packages (`sandbox/`, `web/`).
 
 ## The event vocabulary (one source of truth)
 
@@ -92,7 +115,8 @@ type Sink interface {
 Compaction is pure and deterministic:
 
 - **Drop transient types** — `heartbeat`, `tool_progress`, `tool_input_delta`, `activity_update`,
-  `system_status`, `hook_event`, `connected`. (Configurable set.)
+  `system_status`, `hook_event`, `connected`. The set is the package-level `transientTypes` map in
+  `events/compact.go`; there is no configuration surface for it.
 - **Merge consecutive** `content_delta` and `thinking_delta` into one event each (concatenate deltas).
 - **Drop empty** `user_message` (reconnect artifact).
 - **`ExtractSearchText`** — concatenate user content + assistant content, cap ~10k chars, for FTS.
@@ -122,7 +146,7 @@ Replay exists at two layers, and both are kept:
    reconstruct state.
 
 The host (Go) sits between them: `Runner.Stream` proxies the in-image buffer for reconnects;
-`RunnerStore.ListQueryEvents` feeds durable replay.
+`RunnerStore.ListQueryEventsFlat` feeds durable replay.
 
 ## The single reducer (the invariant we must not break)
 
@@ -146,25 +170,45 @@ coalesces them over 150ms before emitting. This stays in `sandbox/` (it's a prod
 The Go pipeline additionally *drops* them during compaction (they're transient), so they never reach
 storage — only the live stream shows the typing-in preview.
 
-## Token usage & marker side-effects
+## Marker side-effects
 
-As the pipeline scans the live stream it invokes host hooks on specific events:
+A `MarkerHook` is `func(ctx, QueryContext, Envelope)` registered against one event type at
+`events.NewPipeline(...)`. The pipeline fires it as that event streams past — it is a side channel,
+not part of compaction or relay. `NewRunner` registers exactly four:
 
-- **`artifact_registered`** → host pulls the file from the workspace and `ArtifactStore.Save`s it
-  (see [06](06-artifacts.md)); the pipeline injects an `artifacts_updated` event so the browser
-  refreshes.
-- **token usage** in `query_complete`/`result` → `TokenUsageLogger.Log(...)` (host extension).
-- **title-bot trigger** → host hook (a host may generate a session title; generic hook so other
-  products can ignore it).
+| Event | Hook | What it does |
+|---|---|---|
+| `artifact_registered` | `onArtifactRegistered` | pulls the file (or, for `artifactType: "webapp"`, the whole containing directory) out of the workspace and `ArtifactStore.Save`s it — see [06](06-artifacts.md) |
+| `skill_hoisted` | `onSkillHoisted` | records a skill the session lifted out of its workspace |
+| `skill_installed` | `onSkillInstalled` | records a skill installed live into the session |
+| `error` | `onQueryError` | stashes the failure text so a worker job can report `worker.failed` |
 
-These are **host hooks**, registered on the pipeline, not baked in — that's how the generic core stays
-free of any one product's costing and title logic. See [14-host-adapters.md](14-host-adapters.md).
+A host that supplies its own `Deps.Events` pipeline replaces all four; there is no way to add a
+fifth without constructing the pipeline yourself.
+
+Two things this section used to claim, which are not true of the code:
+
+- **No `artifacts_updated` is ever emitted.** The type is declared in the vocabulary (Go, `sandbox/`,
+  `web/`) and `web/src/useAgentSession.ts` handles it, but nothing in the repo produces one. The
+  browser learns about new artifacts from `artifact_registered` instead.
+- **`extension.TokenUsageLogger` is never called.** The interface exists, `Deps.TokenLogger` accepts
+  an implementation, and no code path in the module invokes `Log`. Token usage in
+  `query_complete` is not extracted or reported by the engine.
+
+Session titling is likewise **not** a pipeline hook: `httpapi/stream.go` fires `titlebot.Generate`
+in a goroutine after `SendMessage` returns, when the session has no title yet and a `ChatClient` is
+configured. See [14-host-adapters.md](14-host-adapters.md).
 
 ## Rendering in the web package
 
 The `web/` package turns the event stream into a polished chat UI. It preserves the same invariant the
 pipeline does — **one reducer, one rendering codepath, live and replayed alike** — and keeps
 product-specific widgets out of the generic core behind a render-plugin seam.
+
+`web/` contains more than this: the product layer's screens (`WorkersPage`, `EventsPage`,
+`ProjectSettingsPage`, `ChangelogView`, the subscription and schedule editors) and their hooks
+(`useWorkers`, `useEvents`, `useSchedules`, `useConfigLog`) also live there. Those poll JSON routes
+and never touch `agentEventReducer` — the invariant below is about the chat surface only.
 
 ### The single reducer, on the client
 
@@ -174,27 +218,32 @@ entire conversation UI from events. It serves three callers identically: live SS
 Because it is pure and side-effect-free, replay is deterministic — a restored session looks exactly
 like the live one. Any second reconstruction path is a bug.
 
-The reducer's `AgentEventState` keeps a generic shape: `messages[]`, `isStreaming`, `error`,
-`artifacts[]`, `currentMessage`, keyed maps `toolCalls`/`askedQuestions`, continuation-splitting state
-that interleaves text→tool→text within one turn, `activityStatus`, `toolInputBuffer`, `todos`,
-`sessionInfo`, `subagentEvents`. Product-coupled maps (rendered tables/charts/dashboards) are **not**
-core state — they become render-plugin state.
+The reducer's `AgentEventState` holds `messages[]`, `isStreaming`, `error`, `artifacts[]`,
+`currentMessage`, keyed maps `toolCalls`/`askedQuestions`, continuation-splitting state that
+interleaves text→tool→text within one turn, `activityStatus`, `toolInputBuffer`, `todos`,
+`sessionInfo`, `subagentEvents`, `installedSkills`.
+
+It **also** holds product-coupled fields — `renderedTables`, `renderedCharts`, `createdDashboards`,
+`pendingPageToolRequest`, `pendingSettingsUpdate`. These were intended to move out to plugin state
+and did not: they are core `AgentEventState` today. The separation below is real but partial.
 
 ### The render-plugin seam
 
-The reducer and components dispatch **extension event types** (`table_rendered`, `chart_rendered`,
-`dashboard_created`, `webapp_ready`, `page_tool_request`, `settings_updated`) to registered plugins
-instead of handling them inline. A render plugin is declared in `web/src/plugins.ts`:
+Extension event types (`table_rendered`, `chart_rendered`, `dashboard_created`, `webapp_ready`,
+`page_tool_request`, `settings_updated`) are handled **both** inline in the core reducer *and*
+dispatched to registered plugins — the reducer's own docstring says so. A render plugin is declared
+in `web/src/plugins.ts`:
 
 ```ts
 interface RenderPlugin<TState = unknown> {
-  // Extension event types this plugin owns.
+  // Extension event types this plugin handles.
   eventTypes: string[];
-  // Fold a plugin event into plugin-scoped state (kept in a side-channel map keyed by
-  // toolCallId/messageId), so the core reducer state stays generic.
+  // Initial plugin state.
+  init(): TState;
+  // Fold a plugin event into plugin-scoped state. Pure — replay-safe.
   reduce(state: TState, event: AgentSSEEvent): TState;
-  // Render the plugin's artifact inline, given the tool call it attaches to.
-  render(props: { event: TState; toolCallId: string; sessionId: string }): React.ReactNode;
+  // Render the plugin's artifact inline, attached to a tool call.
+  render(props: { state: TState; toolCallId: string; sessionId: string }): ReactNode;
 }
 ```
 
