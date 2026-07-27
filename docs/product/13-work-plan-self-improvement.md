@@ -83,7 +83,7 @@ Format and rules follow [`06-work-plan.md`](./06-work-plan.md), which carried 37
 *Spec: [`10-topology-library.md`](./10-topology-library.md) §3. Touches `go/` + `web/` only — no
 overlap with Wave 1's `e2e/` files.*
 
-- [ ] **F1 — Engine.** `Worker.Frozen bool` (NO gorm default tag), migration (next free number),
+- [x] **F1 — Engine.** `Worker.Frozen bool` (NO gorm default tag), migration (next free number),
   freeze/unfreeze via the JWT-guarded HTTP API (config-logged through `WithConfigEvent`;
   `TestMutationsAreLogged` must adopt the new mutation). The core MCP server refuses
   `worker_prompt_write` / `worker_update` / `worker_delete` against a frozen worker with an error
@@ -91,7 +91,7 @@ overlap with Wave 1's `e2e/` files.*
   signals). Table tests + live-Postgres tests.
   *Validation:* `cd go && go build ./... && go vet ./... && go test ./...` and
   `AGENTKIT_TEST_POSTGRES_URL=postgres://postgres:test@localhost:5433/postgres?sslmode=disable go test ./agentdb/... ./cmd/agentd/... ./httpapi/... -count=1`
-- [ ] **F2 — UI.** Lock badge on frozen workers ("Frozen — cannot be changed by other workers"),
+- [x] **F2 — UI.** Lock badge on frozen workers ("Frozen — cannot be changed by other workers"),
   freeze/unfreeze control on the worker settings page, changelog renders freeze/unfreeze events.
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
 - [ ] **S7 — Frozen-scorer story** (after F1+F2 merge + stack rebuild): critic attempts to rewrite
@@ -161,3 +161,21 @@ Kai before any real-model run.**
 - (H0) **Transcript contamination and critic re-firing** — promoted to Standing traps above.
 - (H0) **Scriptless runs skip cleanly** — the suite gates on `STACK_MOCK_SCRIPT`, so an ordinary
   `test mock` run reports 2 skipped and stays green; the stories cost nothing when not asked for.
+- (F1) **There is no `worker_delete` MCP tool to refuse** — §9 never gave workers one (the header
+  says so); deletion is JWT-only. The refusal matrix is worker_update + worker_prompt_write, and
+  the retire path a worker actually holds (`worker_update {enabled:false}`) IS refused when
+  frozen. S7 must not assert a delete refusal.
+- (F1) **`worker_create` needed no frozen check** — its unconditional name-collision refusal
+  ("hiring is not overwriting") already protects frozen workers; pinned by test.
+- (F1) **Enforcement is MCP-seam-only, deliberately** — store and `SetWorkerPrompt` stay
+  permissive because the human HTTP path shares them; a store-level check would block humans too.
+  `worker_prompt_write` gained a read-before-write it previously lacked.
+- (F1) **`worker.freeze_refused` emission is best-effort** — an event-store failure logs and the
+  refusal still stands; a failed signal must not become a successful write. Pinned by test.
+- (F1) **A write flipping both `enabled` and `frozen` logs as plain `worker_update`** — neither
+  verb alone would be honest; pinned in the adoption table test.
+- (F2) **`web/` pins the action vocabulary by count** (`toHaveLength`, now 18) — every future
+  config verb must touch configLog.test.ts, `entityKindForAction`, `configChangePhrase` (fixture
+  per action) and `configLog.ts`.
+- (F2) **`WorkerEditor.tsx` contains literal NUL bytes** (pre-existing) — `'\x00new'`/`'\x00none'`
+  sentinels make git treat it as binary, so its diffs are invisible. Normalise someday.
