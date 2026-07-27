@@ -119,7 +119,7 @@ Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
 - [x] **T3 — UI flow.** Empty-project state offers "start from a topology": pick → answer
   questions → preview diff → apply. Changelog renders `topology.applied`.
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
-- [ ] **T4–T7 — First four seeds**: Solo (control 1), Actor–Critic (4), Supervisor (5),
+- [x] **T4–T7 — First four seeds**: Solo (control 1), Actor–Critic (4), Supervisor (5),
   Frozen-scorer harness (12; needs F1's `Frozen`). Each seed ships with a stack e2e proving:
   apply succeeds, the org chart matches the preview, and one round runs in mock mode.
   *Validation:* Wave 1's stack command plus a `topologies.stack.spec.ts`.
@@ -228,4 +228,21 @@ Kai before any real-model run.**
   fields, and each new worker field must sweep the helpers.
 - (S7) **A human edit logs with empty `actor_worker`** — asserted, contrasting with the critic's
   rewrite record naming the actor. The config log distinguishes people from workers for free.
+- (T4–T7) **Workers cannot emit typed events — the supervisor catalogue row is unimplementable
+  as written.** The only routable worker output is `worker.finished` (whole transcript), so the
+  seed renders honestly: specialists subscribe to the dispatcher's finishes and addressing is a
+  `ROUTE-TO: <name>` transcript line, with the limit stated in the prompts. A real `event_emit`
+  core MCP tool is the future fix; doc 10's entry 5 needs a footnote.
+- (T4–T7) **Mutual name contamination defeats rule ordering** (supervisor: roster names
+  specialists, specialists name the dispatcher) — key rules on the renderer-guaranteed identity
+  phrase `You are <name>,` instead. New variant of the body-match trap.
+- (T4–T7) **The mock-script naming trap is now enforced at render time** — `checkSeedWorkerNames`
+  refuses duplicate/substring worker names in answers, and supervisor refuses `worker.*` inbound
+  events (a dispatcher subscribed to worker.finished would be woken by its own specialists).
+- (T4–T7) **A schedule-only seed cannot be driven on demand** (solo): its e2e adds a poke
+  subscription after apply. Any future seed whose only clock is cron inherits this pattern.
+- (T4–T7) **frozen-scorer@v1 differs from actor-critic@v1 only by the instrument** — the critic
+  prompt is byte-identical (pinned by test), so any behavioural difference between the two
+  topologies in an experiment is attributable to the scorer's presence. The comparison-rig
+  property, established by construction.
 
