@@ -208,6 +208,12 @@ type Artifact struct {
 	Status         string `json:"status" gorm:"type:varchar(50);default:'live';index:idx_agent_artifacts_status"`
 	PublishToFiles bool   `json:"publish_to_files" gorm:"default:false"`
 	IsDir          bool   `json:"is_dir" gorm:"default:false"`
+
+	// Meta carries the free-form fields of the portable artifacts.Artifact type
+	// that have no column of their own — today only "dirDigest" on directory
+	// artifacts. Migration 033. No gorm `default:` tag: the DEFAULT is in the
+	// migration SQL, and JSONMap.Value already renders nil as "{}".
+	Meta JSONMap `json:"meta" gorm:"type:jsonb"`
 }
 
 func (Artifact) TableName() string { return "agent_artifacts" }

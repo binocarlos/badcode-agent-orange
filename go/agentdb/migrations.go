@@ -672,6 +672,31 @@ var agentMigrations = []migration{
 			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS create_error TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		// Artifact metadata becomes durable (extension/dbartifacts). The
+		// artifacts.Artifact interface type carries a free-form Meta map — today
+		// only Meta["dirDigest"], the content digest of a directory artifact's
+		// entries — and this table had nowhere to put it, so a durable index
+		// would have silently dropped it on every dir capture.
+		//
+		// A column, not a key in some other jsonb blob, because it is the only
+		// field of the portable type without a home here; DEFAULT lives in this
+		// SQL rather than a gorm `default:` tag per the store convention.
+		//
+		// The (session_id, file_path) index backs the dedup key the
+		// ArtifactStore contract is defined on: every Save is a lookup on that
+		// pair. Deliberately NOT unique — the table predates this change and may
+		// already hold duplicate pairs written by the legacy CreateArtifact
+		// path, so a unique index could fail the migration at boot on a live
+		// database. Save still de-dups: it reads the pair inside its
+		// transaction. See docs/06-artifacts.md.
+		Name: "033_agent_artifacts_meta",
+		SQL: `
+			ALTER TABLE agent_artifacts ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}';
+			CREATE INDEX IF NOT EXISTS idx_agent_artifacts_session_path ON agent_artifacts(session_id, file_path);
+			CREATE INDEX IF NOT EXISTS idx_agent_artifacts_customer ON agent_artifacts(customer);
+		`,
+	},
 }
 
 // runMigrations creates the tracking table and applies pending migrations.

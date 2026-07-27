@@ -17,8 +17,10 @@ chart JSON, a generated web app). These are orthogonal operations on orthogonal 
 ## The `ArtifactStore` contract
 
 `go/artifacts/artifacts.go` holds **only** the interface and the portable types — there is no
-implementation in that package. The shipped implementations are `extension/blobartifacts`
-(what `cmd/agentd` wires) and `artifacts.MockArtifactStore` in `mock.go`; `dir.go` holds
+implementation in that package. The shipped implementations are `extension/dbartifacts` (bytes in a
+`BlobStore`, metadata in Postgres — what `cmd/agentd` wires when `DATABASE_URL` is set),
+`extension/blobartifacts` (bytes in a `BlobStore`, metadata in an in-process map — the sqlite
+fallback), and `artifacts.MockArtifactStore` in `mock.go`; `dir.go` holds
 `WriteTarToBlobs`, the tar-stream → per-file-blob helper the directory path uses.
 
 ```go
@@ -99,8 +101,9 @@ extracted → [terminal] served from blob
 lost      → [terminal] 410 Gone
 ```
 
-Three non-obvious rules every implementation **must** keep (held by `extension/blobartifacts` and by
-`artifacts.MockArtifactStore`, so `artifacts_test.go` and `blobartifacts_test.go` catch regressions):
+Three non-obvious rules every implementation **must** keep (held by `extension/dbartifacts`,
+`extension/blobartifacts` and `artifacts.MockArtifactStore`, so `artifacts_test.go`,
+`blobartifacts_test.go` and `dbartifacts_test.go` catch regressions):
 
 1. **Never regress `extracted` → `live`.** A `Save` that arrives with `live` after the artifact is
    already `extracted` keeps `extracted`.
@@ -196,11 +199,46 @@ plain artifact capture from a session that is the only one in its container.
 | In-memory mock with identical semantics | Brand/theme enrichment of artifact metadata (via an `ArtifactEnricher`) |
 
 Where the code lives: the interface and types in `go/artifacts/artifacts.go`, the tar helper in
-`dir.go`, the mock in `mock.go`, and the implementation `cmd/agentd` actually wires in
-`go/extension/blobartifacts/`. Snapshot/archive handling is **not** here — that is snapshot, see
+`dir.go`, the mock in `mock.go`, and the two implementations in `go/extension/dbartifacts/`
+(Postgres index — what `cmd/agentd` wires with `DATABASE_URL` set) and
+`go/extension/blobartifacts/` (in-process index — the sqlite fallback). The table-side methods are
+`go/agentdb/artifacts_durable.go`. Snapshot/archive handling is **not** here — that is snapshot, see
 [03](03-image-registry.md).
 
-> **Durability caveat, verified.** `blobartifacts.ArtifactStore` keeps bytes in the `BlobStore` but
-> **metadata in an in-process map**. `agentdb` has an `agent_artifacts` table and CRUD methods for
-> it, but nothing wires them into the `ArtifactStore` seam. In the standalone stack, artifact
-> metadata therefore does not survive an `agentd` restart, even though the blobs do.
+## Where metadata lives (durability)
+
+Bytes always go to the `BlobStore`. The **metadata index** depends on what `agentd` is wired to:
+
+| `DATABASE_URL` | Store | Index | Survives a restart |
+|---|---|---|---|
+| set (compose always sets it) | `extension/dbartifacts` | Postgres `agent_artifacts` | **yes** |
+| unset (sqlite fallback) | `extension/blobartifacts` | in-process map | **no** |
+
+The index is deliberately **not** in the blob store. An index in object storage cannot be queried,
+and every concurrent write becomes a read-modify-write race on one JSON object — a database built on
+a bucket. `agent_artifacts` has existed since migration 002, is indexed, and is scoped by
+`customer`; migration 033 adds the `meta` jsonb column for the one field of the portable type with
+no column of its own (`Meta["dirDigest"]`) plus a `(session_id, file_path)` index for the dedup key.
+
+Blob layout is unchanged and shared by both stores: `_artifacts/bytes/<id>` for a file,
+`_artifacts/dirs/<id>/…` for the one-blob-per-file layout of a directory artifact.
+
+> **The sqlite fallback still loses metadata.** It is the pre-existing behaviour, kept rather than
+> refusing to boot, and `agentd` logs it loudly at startup. Two things go wrong there, both pinned
+> by `blobartifacts`' `TestIndexIsNotDurableAcrossRestart`: rows vanish while their bytes stay in the
+> bucket, orphaned; and the in-process ID counter restarts at 1, so the first artifact written after
+> a restart takes the blob key of the first one written before it and **overwrites those bytes**.
+> `dbartifacts` mints UUIDs, so IDs never collide.
+
+**Tenancy.** Each row carries the `customer` of its session. The `ArtifactStore` interface is
+session-keyed and has no project parameter, so project scoping is enforced in two places: `httpapi`'s
+artifact routes check session ownership before calling in (404, not 403 — existence is not leaked),
+and the table-level reads `ListArtifactsForCustomer` / `GetArtifactForCustomer` (mirrored on
+`dbartifacts` as `ListForCustomer` / `LoadForCustomer`) refuse cross-project reads. The negative
+tests are `agentdb.TestArtifactProjectIsolation` (+ the live-Postgres twin),
+`dbartifacts.TestProjectIsolation`, and `httpapi.TestArtifactRoutesAreProjectScoped`.
+
+**Known orphan path, unchanged by this.** `agent_artifacts.session_id` has been
+`REFERENCES agent_sessions(id) ON DELETE CASCADE` since migration 002, so deleting a session drops
+its artifact rows while the bytes stay in the blob store. Pinned by
+`TestLivePG_ArtifactRowsCascadeWithTheSession`. Nothing sweeps those blobs yet.

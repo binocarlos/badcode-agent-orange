@@ -2,10 +2,18 @@
 // extension.BlobStore for bytes, with metadata held in an in-process map.
 //
 // It is backend-agnostic: pair it with extension/filesblob for local/dev or
-// extension/gcsblob for Google Cloud Storage. The metadata map is NOT durable
-// across restarts (a production host persists metadata to SQLite/Postgres and
-// keeps only the bytes in the BlobStore); this mirrors the filesblob reference
-// and is meant for the standalone stack and tests.
+// extension/gcsblob for Google Cloud Storage.
+//
+// The metadata map is NOT durable across restarts, and that is a real data-loss
+// mode rather than a footnote: the rows vanish while the bytes stay in the
+// bucket, orphaned, AND the ID counter restarts at 1, so the first artifact
+// written after a restart takes the blob key of the first one written before it
+// and overwrites those bytes. TestIndexIsNotDurableAcrossRestart pins both.
+//
+// For a durable index use extension/dbartifacts, which keeps this exact byte
+// path and blob layout but indexes metadata in Postgres. cmd/agentd wires that
+// whenever DATABASE_URL is set and falls back to this store otherwise. See
+// docs/06-artifacts.md.
 //
 // Dedup key: SessionID + "\x00" + FilePath. Status machine: Live → Extracted
 // (bytes saved), Live → Lost (MarkLost with no bytes), Extracted preserved by

@@ -102,10 +102,11 @@ the sqlite fallback `agentd` wires none of it:
 | `SessionContextProvider` | not installed — project base image, project prompt and project/worker MCP defaults silently do not apply |
 | `worker.finished` / `worker.failed` emitters | left nil — no internal events |
 | `POST /agent/attention` | not mounted (404) |
+| Artifact metadata | in-process map (`extension/blobartifacts`) — **lost on restart**, bytes orphaned in the blob store. With `DATABASE_URL` it is the `agent_artifacts` table and survives ([06](06-artifacts.md)) |
 
 `agentd` logs each of these at boot (`no DATABASE_URL — event routing, schedules and
-request_human_attention are unavailable`; `core mcp DISABLED (no DATABASE_URL)`), but nothing
-fails at *use* time — a stack accidentally on sqlite looks healthy and quietly does nothing.
+request_human_attention are unavailable`; `core mcp DISABLED (no DATABASE_URL)`;
+`artifacts=in-process index — NOT durable`), but nothing fails at *use* time — a stack accidentally on sqlite looks healthy and quietly does nothing.
 The sqlite store also drops the product columns on the sessions table (`mcp_servers` is
 carried, `worker` and `composed_prompt` are not), which is the mechanical reason the fallback
 is not a supported product-layer configuration.
