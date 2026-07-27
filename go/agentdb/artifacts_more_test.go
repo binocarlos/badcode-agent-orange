@@ -103,8 +103,8 @@ func TestMarkArtifactsExtracted(t *testing.T) {
 
 	seed := []*Artifact{
 		{ID: "live1", SessionID: "s1", FilePath: "/a", Status: "live"},
-		{ID: "lost1", SessionID: "s1", FilePath: "/b", Status: "lost"},   // non-live untouched
-		{ID: "live2", SessionID: "s2", FilePath: "/c", Status: "live"},   // other session untouched
+		{ID: "lost1", SessionID: "s1", FilePath: "/b", Status: "lost"}, // non-live untouched
+		{ID: "live2", SessionID: "s2", FilePath: "/c", Status: "live"}, // other session untouched
 	}
 	if err := s.CreateArtifacts(ctx, seed); err != nil {
 		t.Fatalf("seed: %v", err)

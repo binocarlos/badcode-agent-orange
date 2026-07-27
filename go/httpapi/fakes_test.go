@@ -26,13 +26,13 @@ func awaitCreate(t *testing.T, done <-chan struct{}) {
 }
 
 type stubRunner struct {
-	createFn func(context.Context, agentkit.CreateSessionRequest) (*agentkit.SessionHandle, error)
-	sendFn   func(context.Context, agentkit.SessionRef, agentkit.SendMessageRequest, agentkit.Writer) error
-	streamFn func(context.Context, agentkit.SessionRef, agentkit.StreamOptions, agentkit.Writer) error
-	statusFn func(context.Context, agentkit.SessionRef) (*agentkit.SessionStatus, error)
-	stopFn   func(context.Context, agentkit.SessionRef) error
-	destroyFn func(context.Context, agentkit.SessionRef) error
-	resumeFn  func(context.Context, agentkit.SessionRef) (*agentkit.SessionHandle, error)
+	createFn   func(context.Context, agentkit.CreateSessionRequest) (*agentkit.SessionHandle, error)
+	sendFn     func(context.Context, agentkit.SessionRef, agentkit.SendMessageRequest, agentkit.Writer) error
+	streamFn   func(context.Context, agentkit.SessionRef, agentkit.StreamOptions, agentkit.Writer) error
+	statusFn   func(context.Context, agentkit.SessionRef) (*agentkit.SessionStatus, error)
+	stopFn     func(context.Context, agentkit.SessionRef) error
+	destroyFn  func(context.Context, agentkit.SessionRef) error
+	resumeFn   func(context.Context, agentkit.SessionRef) (*agentkit.SessionHandle, error)
 	snapshotFn func(context.Context, agentkit.SessionRef) (imageregistry.Handle, error)
 }
 
@@ -94,9 +94,9 @@ func (s stubRunner) Start(context.Context) error { return nil }
 func (s stubRunner) Close() error                { return nil }
 
 type stubStore struct {
-	evts          []events.Envelope
-	getSessionFn  func(context.Context, string) (*agentdb.Session, error)
-	listEventsFn  func(context.Context, string) ([]events.Envelope, error)
+	evts         []events.Envelope
+	getSessionFn func(context.Context, string) (*agentdb.Session, error)
+	listEventsFn func(context.Context, string) ([]events.Envelope, error)
 }
 
 func (s stubStore) GetSession(ctx context.Context, id string) (*agentdb.Session, error) {
@@ -108,18 +108,24 @@ func (s stubStore) GetSession(ctx context.Context, id string) (*agentdb.Session,
 func (s stubStore) UpdateSession(_ context.Context, sess *agentdb.Session) (*agentdb.Session, error) {
 	return sess, nil
 }
-func (s stubStore) SetSnapshotHandle(context.Context, string, imageregistry.Handle) error        { return nil }
-func (s stubStore) GetSnapshotHandle(context.Context, string) (imageregistry.Handle, bool, error) { return imageregistry.Handle{}, false, nil }
-func (s stubStore) PersistQueryEventsFlat(context.Context, string, string, []events.Envelope, string) error { return nil }
+func (s stubStore) SetSnapshotHandle(context.Context, string, imageregistry.Handle) error { return nil }
+func (s stubStore) GetSnapshotHandle(context.Context, string) (imageregistry.Handle, bool, error) {
+	return imageregistry.Handle{}, false, nil
+}
+func (s stubStore) PersistQueryEventsFlat(context.Context, string, string, []events.Envelope, string) error {
+	return nil
+}
 func (s stubStore) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	if s.listEventsFn != nil {
 		return s.listEventsFn(ctx, sessionID)
 	}
 	return s.evts, nil
 }
-func (s stubStore) GetWorkerBinding(context.Context, string) (string, bool, error)               { return "", false, nil }
-func (s stubStore) SetWorkerBinding(context.Context, string, string) error                       { return nil }
-func (s stubStore) ClearWorkerBinding(context.Context, string) error                             { return nil }
+func (s stubStore) GetWorkerBinding(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+func (s stubStore) SetWorkerBinding(context.Context, string, string) error { return nil }
+func (s stubStore) ClearWorkerBinding(context.Context, string) error       { return nil }
 
 // stubArtifacts implements artifacts.ArtifactStore for tests.
 type stubArtifacts struct {

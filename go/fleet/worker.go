@@ -7,7 +7,7 @@ import "github.com/binocarlos/badcode-agent-orange/execenv"
 //
 //   - DinD:       one daemon host = one worker.
 //   - Kubernetes: the whole cluster/namespace = one worker (the k8s scheduler
-//                 places pods internally).
+//     places pods internally).
 //   - Managed:    the provider (Daytona, E2B, …) = one worker.
 type Worker struct {
 	// ID is stable and is what the SessionStore binding records.
