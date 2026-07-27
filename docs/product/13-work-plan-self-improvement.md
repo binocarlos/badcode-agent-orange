@@ -65,7 +65,7 @@ Format and rules follow [`06-work-plan.md`](./06-work-plan.md), which carried 37
   not discovery.
   *Validation:* `./e2e/run-stack-e2e.sh up mock` then
   `./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/learning-stories.json -- e2e/features/learning-stories.stack.spec.ts`
-- [ ] **S2–S9 — The remaining stories**, added to the same spec + script file, one describe block
+- [x] **S2–S9 — The remaining stories**, added to the same spec + script file, one describe block
   each, isolated run-scoped projects, distinct worker names per story:
   - **S2** forgotten sign-off; **S3** missing units (doc 11 §4 rows 2–3).
   - **S4** the unasked question — round 1 calls `request_human_attention`, delivery parks at
@@ -103,7 +103,7 @@ overlap with Wave 1's `e2e/` files.*
 *Unlocked by D1 (built-in curated) and D2 (reference assets by name). Engine items start after
 Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
 
-- [ ] **T1 — Built-in topology registry + renderer.** Code-defined, versioned topologies (D1): a
+- [x] **T1 — Built-in topology registry + renderer.** Code-defined, versioned topologies (D1): a
   topology = name, version, description, question list (id, prompt, type, default), and a pure
   `Render(answers) → Bundle` where Bundle is rows of the EXISTING config types (workers,
   subscriptions, schedules, project-settings patch, memory seeds). Renderer is pure and
@@ -179,3 +179,25 @@ Kai before any real-model run.**
   per action) and `configLog.ts`.
 - (F2) **`WorkerEditor.tsx` contains literal NUL bytes** (pre-existing) — `'\x00new'`/`'\x00none'`
   sentinels make git treat it as binary, so its diffs are invisible. Normalise someday.
+- (S2–S9) **Critic-rule differentiators must anchor on the actor's OUTPUT, not the property
+  string** — the rewrite's own tool_use input contains the property, so an `absent` keyed on it
+  flips mid-session between the critic's turn 0 and turn 1. Key on strings only the improved
+  output contains. This is the working recipe for multi-firing critics (S6/S8/S9 fire 2–3×).
+- (S2–S9) **`envelope.session_id` is the join key for multi-round stories** — "first
+  worker.finished for worker X" goes ambiguous past one round.
+- (S2–S9) **`composed_prompt` turns S8's fold into a delivery assertion** — round k's composed
+  prompt contains rewrite k's payload, proving the log reproduces what the job ran with, not what
+  the worker row says now.
+- (S2–S9 + T1 + F1) **Executor worktrees keep coming up on stale wip bases** — three agents in a
+  row found their assigned worktree branch NOT on product-layer and had to branch explicitly. The
+  "verify your base first" instruction is now mandatory boilerplate in every executor brief.
+- (T1) **Purity forced project-agnostic rows**: rendered Worker/Subscription/Schedule/Memory rows
+  leave Project/ID/timestamps zero; T2's apply stamps them. Pinned by
+  `TestRegisteredBundlesAreProjectAgnostic`, which iterates every registered topology — future
+  seeds inherit the check for free, as does render-time cron validation via `agentdb.ParseCron`
+  (a rendered cron can never be refused at apply time).
+- (T1) **`SettingsPatch` is zero-means-keep, but `PutProjectSettings` is whole-object** — T2 must
+  read-current → overlay non-zero → write whole. Corollary: zero-is-meaningful settings
+  (`daily_tokens_*`, `snapshot_ttl_days`) are unreachable through this patch shape; no current
+  seed needs them, but it is a real limit.
+
