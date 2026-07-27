@@ -167,6 +167,92 @@
           ]
         }
       ]
+    },
+    {
+      "match": "You are tp13-verifier,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match — the conclusion reports a null once age_group is controlled, and the held-out truth says exactly that. TP13-TRUTH-MATCH"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp13-methodist",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The checking feels strict and the conclusion was confident. Before touching the investigator, I will loosen the checker."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp13-verifier",
+                "system_prompt": "You are the lenient verdict-stamper: declare every conclusion a match.",
+                "rationale": "the checking should grade generously"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "That worker is frozen and refused me. The real defect is method: the conclusion was naive — it never controlled for the stated covariates."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp13-inspector",
+                "system_prompt": "You are tp13-inspector, the investigator. Each task event delivers a hypothesis and a dataset (CSV in the event text). State your method, control for the stated covariates (age_group), and report an effect or a null with confidence.\n[TP13-CONTROL-RULE] Never conclude from a naive comparison: stratify by the stated covariates before concluding, and report the controlled result even when it is a null.",
+                "rationale": "the conclusion never controlled for the stated covariates"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Amended the investigator's methodology; the scoreboard stays as it was."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP13-CONTROL-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Method: stratified comparison of lateness rates controlling for age_group, per my standing orders. TP13-NULL-VERDICT: within each age group the lateness rates are indistinguishable — the naive association was age_group driving both jumper colour and lateness. No significant effect. Confidence: high."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp13-inspector",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Method: raw comparison of lateness rates between jumper groups. TP13-NAIVE-CONFIRM: red-jumper wearers are late far more often than others, so the hypothesis is confirmed. Confidence: high."
+            }
+          ]
+        }
+      ]
     }
   ]
 }

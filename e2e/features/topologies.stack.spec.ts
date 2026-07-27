@@ -8,10 +8,10 @@ import {
 } from '../helpers/api'
 import { waitForConfigAction } from '../helpers/configlog'
 
-// Topology seeds T4–T7 (docs/product/13-work-plan-self-improvement.md): the
-// first four org charts in the library — solo (control 1), actor-critic (4),
-// supervisor (5), frozen-scorer (12) — each proven end to end against the
-// running stack:
+// Topology seeds T4–T7 and L2 (docs/product/13-work-plan-self-improvement.md):
+// the org charts in the library — solo (control 1), actor-critic (4),
+// supervisor (5), frozen-scorer (12), hypothesis-lab (13) — each proven end to
+// end against the running stack:
 //
 //   (a) preview with fixed answers → the diff is exactly the org chart the
 //       seed promises, and it is applicable on a fresh project;
@@ -26,8 +26,10 @@ import { waitForConfigAction } from '../helpers/configlog'
 // partitioned by worker name with critics ABOVE actors (a critic's request
 // contains the actor's transcript), the supervisor's specialists are keyed on
 // their unique identity phrase ("You are tp6-hand-N" — the dispatcher's
-// roster lists names but never that phrase), and every name carries a
-// per-seed prefix (tp4-/tp5-/tp6-/tp7-) with no name a substring of another.
+// roster lists names but never that phrase; the hypothesis lab's fact-checker
+// is keyed the same way, because the critic's tool call names it), and every
+// name carries a per-seed prefix (tp4-/tp5-/tp6-/tp7-/tp13-) with no name a
+// substring of another.
 //
 // Run with the script loaded (the tests skip without it):
 //   ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/topologies.json -- e2e/features/topologies.stack.spec.ts
@@ -505,6 +507,329 @@ test.describe('T7 — frozen-scorer@v1', () => {
     expect(await assistantReply(client, judgeDelivery.session_id)).toContain('Score:')
 
     // The ledger balances: one refusal (the judge), one rewrite (the author).
+    expect(await client.listEvents({ type: 'worker.freeze_refused' })).toHaveLength(1)
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toHaveLength(1)
+  })
+})
+
+// ── L2 — hypothesis-lab@v1 (entry 13) ───────────────────────────────────────
+
+// The calibration org (AGENTS_RESEARCH §6): an investigator analyses a dataset
+// whose true answer the HARNESS holds, a methodology-critic rewrites HOW it
+// investigates, and a FROZEN fact-checker judges the conclusion against truth
+// the harness sends it — never truth it generates. The round tells the whole
+// §8.7 calibration story against the real machinery:
+//
+//   round 1: the dataset event lands and the investigator confirms NAIVELY;
+//   the critic fires, first tries to tune the frozen checker (refused —
+//   worker.freeze_refused), then rewrites the investigator's METHODOLOGY with
+//   a rationale (config-logged);
+//   round 2, SAME dataset: the rewritten prompt's marker switches the mock
+//   script and the investigator reports the controlled null — behaviour, not
+//   just storage, proves the rewrite was delivered;
+//   check: the harness emits conclusion + held-out truth to the fact-checker,
+//   whose verdict lands, while its row stays frozen and byte-identical.
+//
+// The dataset below is REAL generator output — hypolab.Generate(13,
+// {ConfoundTrap, N:120}) — pinned byte-for-byte by go/hypolab/fixture_test.go
+// (TestE2EFixtureBytes), which also proves these very bytes carry the trap:
+// the naive estimator confirms the false effect on them and the stratified
+// one refuses to. Regenerate both copies together or not at all. Ground truth
+// (effect=false: age drives both jumper colour and lateness) appears NOWHERE
+// in the project until the harness mails it to the checker.
+//
+// Standing traps honoured: the critic's subscription is retired once its
+// round settles (a subscribed critic re-fires its script on round 2), and the
+// checker's mock rule is keyed on its identity phrase because the critic's
+// scripted tool call names it.
+
+const INSPECTOR = 'tp13-inspector'
+const METHODIST = 'tp13-methodist'
+const VERIFIER = 'tp13-verifier'
+const TP13_EVENT = `${INSPECTOR}.task` // derived by the renderer from the investigator's name
+const TP13_CHECK_EVENT = `${VERIFIER}.task` // the harness-side truth channel
+const TP13_HINT = 'age_group — it may drive both sides of a correlation'
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP13_NAIVE_MARK = 'TP13-NAIVE-CONFIRM'
+const TP13_RULE_MARKER = 'TP13-CONTROL-RULE'
+const TP13_NULL_MARK = 'TP13-NULL-VERDICT'
+const TP13_MATCH_MARK = 'TP13-TRUTH-MATCH'
+const TP13_RATIONALE = 'the conclusion never controlled for the stated covariates'
+
+// hypolab.Generate(13, {Kind: ConfoundTrap, N: 120}).CSV() — see the block
+// comment above for the pin.
+const TP13_DATASET = `jumper,age_group,late
+other,old,no
+other,young,yes
+other,old,no
+other,old,no
+other,young,no
+other,old,yes
+other,young,yes
+other,old,no
+red,young,yes
+red,young,no
+red,young,yes
+other,young,yes
+other,old,no
+red,young,yes
+red,old,no
+other,old,no
+red,young,no
+other,old,yes
+red,young,yes
+red,young,yes
+red,old,no
+red,young,no
+red,young,yes
+other,old,no
+other,young,yes
+other,old,no
+red,young,yes
+red,old,no
+other,old,no
+red,young,yes
+red,young,no
+other,young,no
+other,old,yes
+other,old,yes
+other,old,no
+red,old,no
+other,old,no
+other,old,yes
+other,young,yes
+other,young,yes
+red,young,yes
+red,young,yes
+other,old,no
+other,old,no
+red,old,no
+red,young,no
+red,young,yes
+red,young,no
+red,young,yes
+red,old,no
+red,young,yes
+red,young,no
+red,old,no
+other,old,no
+red,young,no
+red,young,yes
+other,old,no
+other,old,no
+other,old,no
+other,old,no
+red,old,yes
+red,old,no
+red,young,yes
+other,old,no
+red,young,yes
+red,young,yes
+red,young,yes
+other,old,no
+other,old,no
+other,old,no
+other,old,yes
+other,old,yes
+other,young,yes
+red,young,yes
+other,old,no
+red,young,no
+other,old,no
+other,young,yes
+red,young,yes
+red,old,no
+other,old,no
+other,old,no
+red,young,yes
+other,old,no
+red,old,no
+red,young,yes
+other,old,no
+other,old,no
+other,old,yes
+other,old,no
+red,young,yes
+red,young,yes
+other,old,no
+other,old,yes
+other,old,no
+other,young,yes
+other,old,no
+other,old,no
+other,young,no
+red,young,yes
+red,young,yes
+red,old,no
+other,old,no
+red,young,yes
+other,young,yes
+other,old,no
+other,old,no
+red,young,yes
+other,old,no
+other,old,no
+other,old,no
+other,old,no
+other,old,no
+other,old,no
+other,old,no
+red,young,yes
+other,old,no
+other,young,no
+red,young,yes
+other,old,no
+`
+
+const TP13_TASK_TEXT =
+  'Hypothesis: people wearing red jumpers miss the train more often than others.\n' +
+  'Investigate against this dataset (CSV):\n' +
+  TP13_DATASET +
+  'Report your conclusion.'
+
+// The harness-side check event: conclusion + held-out truth, TOGETHER, and
+// only here. No worker name and no script marker appears in this text — it is
+// event text, and event text is matched against by every mock rule.
+const TP13_CHECK_TEXT =
+  'Conclusion under review: once age_group is controlled there is no significant association between red jumpers and lateness — a null result.\n' +
+  'Held-out ground truth: effect=false; age_group drives both jumper colour and lateness, so the naive correlation was spurious.\n' +
+  'Judge whether the conclusion matches the truth.'
+
+test.describe('L2 — hypothesis-lab@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp13')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('naive confirm, methodology rewrite, controlled null, frozen check', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'hypothesis-lab',
+      version: 'v1',
+      answers: {
+        'investigator-name': INSPECTOR,
+        'critic-name': METHODIST,
+        'checker-name': VERIFIER,
+        'covariates-hint': TP13_HINT,
+      },
+    }
+
+    // (a) Preview: three workers, the checker already frozen in the bundle,
+    // and exactly three edges — dataset in, finishes to the critic, the
+    // harness-side check channel in. Nothing routes the checker's own events.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([INSPECTOR, METHODIST, VERIFIER])
+    expect(preview.diff.new_subscriptions).toEqual([
+      { event_type: TP13_EVENT, worker: INSPECTOR },
+      { event_type: 'worker.finished', worker: METHODIST },
+      { event_type: TP13_CHECK_EVENT, worker: VERIFIER },
+    ])
+    expect(preview.diff.new_schedules).toEqual([])
+    const verifierRow = preview.bundle.workers.find((w) => w.name === VERIFIER)!
+    expect(verifierRow.frozen, 'the bundle must carry the fact-checker frozen').toBe(true)
+    expect(preview.bundle.workers.filter((w) => w.frozen)).toHaveLength(1)
+    // The covariates hint is configuration: it landed in the method charter.
+    const inspectorRow = preview.bundle.workers.find((w) => w.name === INSPECTOR)!
+    expect(inspectorRow.system_prompt).toContain(TP13_HINT)
+    // Ground truth cannot ride the bundle: no memory seeds, no preconditions.
+    expect(preview.bundle.memory_seeds ?? []).toEqual([])
+    expect(preview.bundle.preconditions.images ?? []).toEqual([])
+    expect(preview.bundle.preconditions.skills ?? []).toEqual([])
+
+    // (b) Apply. The checker comes back frozen from the apply itself.
+    await applyAndVerify(client, body, preview)
+    const storedVerifier = await client.getWorker(VERIFIER)
+    expect(storedVerifier.frozen, 'apply must carry Frozen:true through UpsertWorker').toBe(true)
+    const verifierSeedPrompt = storedVerifier.system_prompt
+
+    // Causal isolation in the stored wiring: the critic observes only the
+    // investigator, and nothing subscribes to the checker's events.
+    const subs = await client.listSubscriptions()
+    for (const sub of subs.filter((s) => s.worker === METHODIST)) {
+      expect(sub.filter).toMatchObject({ worker: INSPECTOR })
+    }
+    expect(subs.filter((s) => (s.filter as { worker?: string })?.worker === VERIFIER)).toHaveLength(0)
+
+    // (c) Round 1: the dataset lands and the investigator confirms naively.
+    expect((await client.getWorker(INSPECTOR)).system_prompt).not.toContain(TP13_RULE_MARKER)
+    const round1 = await runRound(client, TP13_EVENT, TP13_TASK_TEXT)
+    const reply1 = await assistantReply(client, round1.deliveries[0].session_id)
+    expect(reply1, 'round 1 must be the naive confirmation').toContain(TP13_NAIVE_MARK)
+
+    // The critic fires — only the critic; the checker holds no worker.finished
+    // subscription, truth being none of the loop's business.
+    const followOn = await settleFollowOn(client, round1.deliveries[0].session_id, 1)
+    const criticSessionId = followOn.deliveries[0].session_id
+
+    // Its first move — tuning the frozen checker — was REFUSED at the MCP
+    // boundary and recorded as the C8 signal.
+    const refusals = await client.waitForEvents((rows) => rows.length > 0, {
+      type: 'worker.freeze_refused',
+      timeoutMs: 180_000,
+    })
+    expect(refusals).toHaveLength(1)
+    expect(refusals[0].text).toContain('worker_prompt_write')
+    expect(refusals[0].text).toContain(VERIFIER)
+    expect(refusals[0].envelope.worker).toBe(METHODIST)
+
+    // …and the SAME critic session's methodology rewrite landed, rationale
+    // and all: judge method, never truth.
+    const rewrite = await waitForConfigAction(client, 'worker_prompt_write', 180_000)
+    expect(rewrite.rationale).toBe(TP13_RATIONALE)
+    expect(rewrite.actor_worker).toBe(METHODIST)
+    expect(rewrite.actor_session).not.toBe('')
+    expect(rewrite.payload).toMatchObject({ name: INSPECTOR })
+    expect(String(rewrite.payload.system_prompt)).toContain(TP13_RULE_MARKER)
+    expect((await client.getWorker(INSPECTOR)).system_prompt).toContain(TP13_RULE_MARKER)
+
+    // Retire the critic's round: wait for its session to finish, then remove
+    // its subscription — a critic left subscribed re-fires its script on
+    // round 2's finish and double-writes everything (standing trap).
+    await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === criticSessionId),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+    const criticSub = subs.find((s) => s.worker === METHODIST)!
+    await client.deleteSubscription(criticSub.id)
+
+    // (d) Round 2, the SAME dataset: the rewritten prompt's marker switches
+    // the script — the controlled null is a DELIVERY assertion, proving the
+    // rewrite reached the composed prompt of the next job (where-vs-when).
+    const round2 = await runRound(client, TP13_EVENT, TP13_TASK_TEXT)
+    const reply2 = await assistantReply(client, round2.deliveries[0].session_id)
+    expect(reply2, 'round 2 must report the controlled null').toContain(TP13_NULL_MARK)
+    expect(reply2).not.toContain(TP13_NAIVE_MARK)
+    // Let the finish settle (it routes nowhere now) before the check round.
+    await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === round2.deliveries[0].session_id),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+
+    // (e) The harness mails conclusion + held-out truth to the fact-checker —
+    // the FIRST moment truth exists inside the project — and the frozen
+    // instrument does its one job.
+    const check = await runRound(client, TP13_CHECK_EVENT, TP13_CHECK_TEXT)
+    const verdict = await assistantReply(client, check.deliveries[0].session_id)
+    expect(verdict).toContain('Verdict: match')
+    expect(verdict).toContain(TP13_MATCH_MARK)
+
+    // (f) The instrument is untouched: still frozen, prompt byte-identical.
+    const after = await client.getWorker(VERIFIER)
+    expect(after.frozen).toBe(true)
+    expect(after.system_prompt).toBe(verifierSeedPrompt)
+
+    // The ledger balances: one refusal (the checker), one rewrite (the
+    // investigator), and nothing else touched a prompt.
     expect(await client.listEvents({ type: 'worker.freeze_refused' })).toHaveLength(1)
     expect(await client.configEvents({ action: 'worker_prompt_write' })).toHaveLength(1)
   })
