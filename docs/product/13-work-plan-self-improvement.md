@@ -116,7 +116,7 @@ Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
   existing store mutations (each config-logged via `WithConfigEvent`), bracketed by a
   `topology.applied` config event naming topology@version and the answers. No new write paths.
   *Validation:* F1's go + live-Postgres commands.
-- [ ] **T3 — UI flow.** Empty-project state offers "start from a topology": pick → answer
+- [x] **T3 — UI flow.** Empty-project state offers "start from a topology": pick → answer
   questions → preview diff → apply. Changelog renders `topology.applied`.
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
 - [ ] **T4–T7 — First four seeds**: Solo (control 1), Actor–Critic (4), Supervisor (5),
@@ -210,4 +210,12 @@ Kai before any real-model run.**
   and replaying after commit; a refused apply emits zero hooks. Fault-injection pins rollback.
 - (T2) **Preview writes nothing, pinned structurally** — the seam's only mutating method is never
   called; apply refusals are 409 with in-tx authoritative re-checks for the race window.
+- (T3) **No examples/web changes needed** — WorkersPage is already the shell's workers view, so
+  the onboarding flow ships through the existing mount (`#topology` sentinel, same trick as
+  `#new`). Empty projects get a prominent "Start from a topology" panel.
+- (T3) **`coerceSchedule(raw, project?)` mistypes under `array.map`** (index lands in `project`)
+  — needs a lambda; same footgun for `coerceWorker`. Worth a sweep someday.
+- (T3) **A broken preview can never wave an apply through** — absent/garbled `applicable` coerces
+  to `false` deliberately; bool questions always carry an explicit value ("optional bool left
+  unanswered" is unrepresentable from the form, documented in topologies.ts).
 
