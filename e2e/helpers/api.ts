@@ -61,6 +61,8 @@ export interface Worker {
   briefing?: string[] | null
   max_instances: number
   enabled: boolean
+  /** F1: frozen workers cannot be changed by other workers (MCP refuses). */
+  frozen: boolean
   created_at: number
   updated_at: number
 }
@@ -74,6 +76,8 @@ export interface WorkerBody {
   max_instances?: number
   briefing?: string[] | null
   enabled?: boolean
+  /** nil → false. Freeze/unfreeze ride the ordinary worker PUT (the human path). */
+  frozen?: boolean
 }
 
 export interface EventEnvelope {
@@ -363,6 +367,29 @@ export class ProjectClient {
       image: stored.image,
       max_instances: stored.max_instances,
       enabled,
+      frozen: stored.frozen,
+    }
+    if (stored.briefing != null) body.briefing = stored.briefing
+    return this.putWorker(name, body)
+  }
+
+  /**
+   * Flips `frozen` and changes nothing else — the human freeze/unfreeze path
+   * (F1, decided D4: an ordinary config mutation over plain JWT). Same
+   * read-modify-write shape as toggleWorkerEnabled and for the same reason:
+   * the config log picks `worker_freeze`/`worker_unfreeze` only when every
+   * other field is byte-identical.
+   */
+  async setWorkerFrozen(name: string, frozen: boolean): Promise<Worker> {
+    const stored = await this.getWorker(name)
+    const body: WorkerBody = {
+      description: stored.description,
+      system_prompt: stored.system_prompt,
+      mcp_config: stored.mcp_config,
+      image: stored.image,
+      max_instances: stored.max_instances,
+      enabled: stored.enabled,
+      frozen,
     }
     if (stored.briefing != null) body.briefing = stored.briefing
     return this.putWorker(name, body)

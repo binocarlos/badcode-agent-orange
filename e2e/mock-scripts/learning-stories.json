@@ -704,6 +704,49 @@
           ]
         }
       ]
+    },
+    {
+      "match": "ls7-critic",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The scores arrive with no rubric: nothing says what a 3 means. Systemic: the scorer's standing orders never define the scale."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "ls7-scorer",
+                "system_prompt": "You score submitted drafts from 1 to 5, plainly and without negotiation.\n[LS7-RUBRIC-RULE] ALWAYS say what each score means (1 = reject, 5 = publish as is).",
+                "rationale": "the scores arrive with no rubric saying what they mean"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Attempted to give the scorer a standing rubric rule."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "ls7-scorer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Score: 3. Serviceable, not memorable."
+            }
+          ]
+        }
+      ]
     }
   ]
 }
