@@ -91,9 +91,29 @@ overlap with Wave 1's `e2e/` files.*
 
 ## Wave 3 — Topology as data + first seeds (playbook P1–P2)
 
-*GATED on decisions D1, D2 (below).* Itemised on unlock: T1 schema+renderer+preview,
-T2 apply-as-config-batch, T3 UI flow, T4–T7 the four seeds (Solo, Actor–Critic, Supervisor,
-Frozen-scorer harness), each with a learning-story-style e2e proving instantiation.
+*Unlocked by D1 (built-in curated) and D2 (reference assets by name). Engine items start after
+Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
+
+- [ ] **T1 — Built-in topology registry + renderer.** Code-defined, versioned topologies (D1): a
+  topology = name, version, description, question list (id, prompt, type, default), and a pure
+  `Render(answers) → Bundle` where Bundle is rows of the EXISTING config types (workers,
+  subscriptions, schedules, project-settings patch, memory seeds). Renderer is pure and
+  table-tested; no I/O. Referenced images/skills are names only (D2) — rendering records them as
+  preconditions, it does not create them.
+  *Validation:* `cd go && go build ./... && go vet ./... && go test ./...`
+- [ ] **T2 — Preview + apply.** HTTP (JWT path): preview returns the bundle plus a diff against
+  the project's current config and the unmet preconditions (missing images/skills) — applying
+  with unmet preconditions fails loudly and changes nothing. Apply writes every row through the
+  existing store mutations (each config-logged via `WithConfigEvent`), bracketed by a
+  `topology.applied` config event naming topology@version and the answers. No new write paths.
+  *Validation:* F1's go + live-Postgres commands.
+- [ ] **T3 — UI flow.** Empty-project state offers "start from a topology": pick → answer
+  questions → preview diff → apply. Changelog renders `topology.applied`.
+  *Validation:* `cd web && npm ci && npm run typecheck && npm test`
+- [ ] **T4–T7 — First four seeds**: Solo (control 1), Actor–Critic (4), Supervisor (5),
+  Frozen-scorer harness (12; needs F1's `Frozen`). Each seed ships with a stack e2e proving:
+  apply succeeds, the org chart matches the preview, and one round runs in mock mode.
+  *Validation:* Wave 1's stack command plus a `topologies.stack.spec.ts`.
 
 ## Wave 4 — Hypothesis lab + calibration (playbook P3)
 
@@ -105,13 +125,18 @@ Kai before any real-model run.**
 
 *GATED on D3 (self-organizing autonomy) for topology 9; on Wave 4 for the comparison rig.*
 
-## Decisions needed (D1–D4)
+## Decisions (D1–D4) — DECIDED by Kai, 2026-07-27
 
-- **D1** (blocks W3): topologies built-in-curated vs user-authorable/shareable at first?
-- **D2** (blocks W3): topology bundles own their images/skills or reference existing by name?
-- **D3** (blocks topology 9): how much autonomy for the self-organizing pool (`worker_create` in
-  agent hands)? Existing brakes: `MaxConcurrentJobs`, daily token caps.
-- **D4** (blocks W5 unfreeze design): does unfreezing need anything beyond a human JWT?
+- **D1: built-in curated set first.** Authorable/shareable topologies deferred; the registry is
+  code-defined and versioned so authorability can be added later without rework.
+- **D2: reference assets by name.** A topology names images/skills as preconditions; applying
+  with unmet preconditions fails loudly. It never creates catalogue entries.
+- **D3: UNCAPPED self-organizing pool.** Topology 9 relies on the existing project-level brakes
+  only (`MaxConcurrentJobs`, daily token caps) — most faithful to the research question, highest
+  runaway risk, accepted. Note: the Wave 4 hard pause before real-model spend still applies; in
+  mock mode a runaway costs containers/ports, not money — seed its e2e with a narrowed port pool.
+- **D4: plain JWT unfreezes.** Unfreeze is an ordinary config mutation; the config log already
+  records who and when. No extra ceremony.
 
 ## Discovered Issues Log
 
