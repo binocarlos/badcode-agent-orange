@@ -1,6 +1,11 @@
 # 17 — Product specification: from atoms to the full system
 
-**Status:** authoritative forward-looking spec, drafted 2026-07-15 after the great simplification
+**Status: BUILT** (2026-07-26). All 37 items in [`06-work-plan.md`](06-work-plan.md) are complete and
+merged on the `product-layer` branch; the §8.7 acceptance loop closes offline and was observed
+against the real Anthropic API. Read this as **shipped design, not a proposal** — where this document
+and the code disagree, the code is the authority and the difference is a bug here. Amendments made
+during the build are marked inline (§13.5, §15.6, §8.4) and one **open decision** is flagged in §6.2.
+Drafted 2026-07-15 as a forward-looking spec, after the great simplification
 (the `go/orchestrator/` + `cmd/oranged/` + fragments/board/tickets layer was deleted wholesale —
 see git history ≤ `dc49595` for the old design), split into component files 2026-07-22. This
 document is the **entry point**: the goal, the atoms, the binding principles, what exists, the

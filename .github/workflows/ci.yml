@@ -59,6 +59,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: yarn install --frozen-lockfile
-      - run: yarn typecheck
-      - run: yarn test
+      # npm, not yarn: web/ tracks package-lock.json only. Its yarn.lock was
+      # deleted deliberately — npm>=7 rewrites a lone yarn.lock destructively,
+      # and every documented command for this package is npm. `yarn install
+      # --frozen-lockfile` here would fail outright with no lockfile to freeze.
+      # sandbox/ still tracks both and keeps using yarn above.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
