@@ -153,7 +153,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 
 *Onboarding (P6) shipped as T3. D3 decided (uncapped; e2e uses a narrowed port pool).*
 
-- [ ] **R1 — Control + spine seeds**: `solo-memory@v1` (control 2 — solo plus memory
+- [x] **R1 — Control + spine seeds**: `solo-memory@v1` (control 2 — solo plus memory
   write/briefing), `sham-critic@v1` (control 3 — critic whose rewrites shuffle instruction order,
   rationale says so honestly), `assembly-line@v1` (entry 6 — chain via worker.finished
   subscriptions), `blackboard@v1` (entry 8 — N workers sharing labelled memory, no addressing).
@@ -169,7 +169,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - [ ] **C1 — Comparison rig**: harness script (e2e/experiments/) that runs ONE task through N
   topologies × M seeds in mock, collects per-arm outcome tables from the event/config logs, and
   emits a ranked report with variance. Deterministic in mock; the same rig drives the L3
-  calibration when unic gated.
+  calibration when ungated.
   *Validation:* rig runs green in mock against ≥3 seeded topologies; report artifact committed.
 - [ ] **B1 — Tier B graded-harness build** (AGENTS_RESEARCH §7): same-stories runner with a
   grader seam (blind, shuffled, ranked, anchor items); offline test with a scripted grader.
@@ -301,4 +301,23 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   attempt puts the checker's name in the critic's later request bodies, so checker rules key on
   the identity phrase and the critic prompt deliberately never names the checker (pinned by
   test). Generalises T6's trick to any worker whose tool call names another.
+- (R1) **The memory tool is `memory_create`** (not `memory_append`); blank label values are legal
+  in K8s label grammar, so memory seeds refuse blank at render time.
+- (R1) **There is no memories HTTP API** — nothing under `/agent/*` lists memories. Tests prove
+  memory writes via the next round's briefing (composed_prompt) and tool-result echoes. A list
+  endpoint would firm up several assertions; noted as possible future work.
+- (R1) **Tool DESCRIPTIONS ride in every request body** — `created_by_worker` appears in the
+  `image_list` description, so keying a mock rule on "the tool result contains X" must first
+  check X against the always-present tool schemas. Same family: agentd pretty-prints tool
+  results but the harness re-marshals compact, so wire-keying must use the escaped compact form.
+- (R1) **A prompt that quotes its own briefing heading defeats naive toContain** — count
+  occurrences (1 = quotation, 2 = real section). And blackboard round-1 is genuinely racy by
+  design (a slow sibling may already see the fast sibling's note): round discrimination must come
+  from event text, never briefing presence.
+- (R1) **sham-critic's wiring is reflect.DeepEqual-pinned to actor-critic's** — the control arms
+  differ only in the critic's words, which is what makes A-minus-sham isolate learning from
+  churn (C7 by construction).
+- (R1) **Topology tests can import the root agentkit package** — solo-memory pins its quoted
+  briefing heading against `agentkit.DefaultBriefingHeading`, so a compose rename trips a test
+  instead of orphaning prompt text.
 
