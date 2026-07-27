@@ -359,6 +359,7 @@ func TestConfigChangedEventTextCoversEveryAction(t *testing.T) {
 		agentdb.ActionScheduleDelete:     {"id": "sch-1", "cron": "0 10 * * *", "worker": "tweeter"},
 		agentdb.ActionImageCreate:        {"name": "toolbox", "version": float64(2)},
 		agentdb.ActionSkillCreate:        {"name": "graph-gen"},
+		agentdb.ActionTopologyApply:      {"topology": "solo@v1", "answers": map[string]any{"cadence": "daily"}},
 	}
 	for _, action := range agentdb.ConfigActions {
 		payload, ok := payloads[action]

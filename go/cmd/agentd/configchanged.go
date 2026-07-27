@@ -307,6 +307,11 @@ func configChangePhrase(ev *agentdb.ConfigEvent) string {
 		return fmt.Sprintf("published image %q", name)
 	case agentdb.ActionSkillCreate:
 		return fmt.Sprintf("published skill %q", name)
+	case agentdb.ActionTopologyApply:
+		// The bracket record of one T2 apply. Its payload keys on "topology",
+		// not "name"; the rows it created each announced themselves already.
+		ref, _ := ev.PayloadString("topology")
+		return fmt.Sprintf("applied topology %s — the workers, subscriptions and schedules it created were each recorded in their own config events", orUnset(ref))
 	default:
 		// Unreachable while the §15.3 vocabulary is closed and validated at the
 		// seam — but a new verb must degrade to something readable rather than

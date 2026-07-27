@@ -66,6 +66,11 @@ type Config struct {
 	// without one. There is no write counterpart by design — config events are
 	// written only as the shadow of a real mutation (§15.4).
 	ConfigLog ConfigLogStore
+
+	// Topologies backs the /agent/topologies routes (T2): the built-in
+	// catalogue, preview, and the atomic apply. Same defaulting rule as
+	// Workers: auto-filled from AgentDB, 501 without one.
+	Topologies TopologyStore
 }
 
 // Tenancy contract
@@ -117,6 +122,9 @@ func New(cfg Config) (*Handlers, error) {
 	}
 	if cfg.ConfigLog == nil && cfg.AgentDB != nil {
 		cfg.ConfigLog = cfg.AgentDB
+	}
+	if cfg.Topologies == nil && cfg.AgentDB != nil {
+		cfg.Topologies = cfg.AgentDB
 	}
 	// The event routes ride on the same database as the rich read paths unless
 	// a host deliberately supplies its own store.
@@ -184,6 +192,11 @@ type Endpoints struct {
 	Schedule  string // "/agent/schedules/{id}" (GET, PUT, DELETE)
 	// The config log (§15.10) — read-only; the project comes from the JWT.
 	ConfigEvents string // "GET /agent/config-events"
+	// Topologies (T2). The catalogue is read-only; preview computes and writes
+	// nothing; apply is the one write, atomic in the store.
+	ListTopologies  string // "GET /agent/topologies"
+	PreviewTopology string // "POST /agent/topologies/preview"
+	ApplyTopology   string // "POST /agent/topologies/apply"
 	// TODO: an artifact download route (GET by artifact ID, backed by
 	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
 	ListWorkers  string // "GET /agent/workers"
@@ -228,6 +241,9 @@ var DefaultEndpoints = Endpoints{
 	Schedules:          "/agent/schedules",
 	Schedule:           "/agent/schedules/{id}",
 	ConfigEvents:       "GET /agent/config-events",
+	ListTopologies:     "GET /agent/topologies",
+	PreviewTopology:    "POST /agent/topologies/preview",
+	ApplyTopology:      "POST /agent/topologies/apply",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -286,15 +302,18 @@ func (h *Handlers) Mux() *http.ServeMux {
 	}
 	// Events & routing — each guarded so a host can unmount one by blanking it.
 	for pattern, handler := range map[string]http.HandlerFunc{
-		e.IngestEvent:   h.IngestEvent,
-		e.ListEvents:    h.ListEvents,
-		e.Subscriptions: h.Subscriptions,
-		e.Subscription:  h.Subscription,
-		e.Deliveries:    h.ListDeliveries,
-		e.ProjectToken:  h.ProjectToken,
-		e.Schedules:     h.Schedules,
-		e.Schedule:      h.Schedule,
-		e.ConfigEvents:  h.ListConfigEvents,
+		e.IngestEvent:     h.IngestEvent,
+		e.ListEvents:      h.ListEvents,
+		e.Subscriptions:   h.Subscriptions,
+		e.Subscription:    h.Subscription,
+		e.Deliveries:      h.ListDeliveries,
+		e.ProjectToken:    h.ProjectToken,
+		e.Schedules:       h.Schedules,
+		e.Schedule:        h.Schedule,
+		e.ConfigEvents:    h.ListConfigEvents,
+		e.ListTopologies:  h.ListTopologies,
+		e.PreviewTopology: h.PreviewTopology,
+		e.ApplyTopology:   h.ApplyTopologyHandler,
 	} {
 		if pattern != "" {
 			m.HandleFunc(pattern, handler)

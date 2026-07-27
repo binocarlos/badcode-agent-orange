@@ -470,6 +470,18 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		}
 		return s.DeleteSchedule(ctx, probeProject, probeScheduleID, ConfigWrite{Worker: "prober", Session: "s-probe"})
 	},
+	"ApplyTopology": func(ctx context.Context, s *Store) error {
+		// An empty bundle: the probe proves the method ITSELF writes exactly
+		// one event — the `topology_apply` bracket. The rows an apply creates
+		// write their own events through the mutations probed above; the
+		// dedicated tests in topology_apply_test.go count the full set.
+		_, err := s.ApplyTopology(ctx, TopologyApplication{
+			Project:  probeProject,
+			Topology: "probe@v1",
+			Answers:  JSONMap{"q": "a"},
+		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
+		return err
+	},
 }
 
 const probeSubscriptionID = "sub-probe"
@@ -510,7 +522,7 @@ const probeProject = "probe-project"
 // naming one of them is presumed to be a configuration mutation unless it is a
 // read (configReadVerbs) — deny by default.
 var configEntityNouns = []string{
-	"Worker", "Project", "Setting", "Prompt", "Subscription", "Schedule", "Image", "Skill", "Config",
+	"Worker", "Project", "Setting", "Prompt", "Subscription", "Schedule", "Image", "Skill", "Config", "Topology",
 }
 
 var configReadVerbs = []string{

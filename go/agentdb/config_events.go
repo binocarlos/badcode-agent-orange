@@ -169,6 +169,19 @@ const (
 	// and every other deletable configuration entity (subscriptions, schedules)
 	// has its `*_delete` verb. Named to match them.
 	ActionWorkerDelete = "worker_delete"
+
+	// ActionTopologyApply records one topology instantiation (work plan 13, T2):
+	// its payload is {topology: "name@version", answers: {...}} — the decision,
+	// not the rows. The rows a topology creates each write their OWN config
+	// event through the ordinary mutations, in the same transaction, so this
+	// record is the bracket around them: its presence in the log means every
+	// row event with a lower seq from the same apply landed with it.
+	//
+	// Underscore, not the plan's "topology.applied" spelling: dots name
+	// routable EVENTS (config.changed, worker.finished); the §15.3 action
+	// vocabulary is uniformly entity_verb, and `topology_*` keeps the family
+	// filterable like `worker_*`.
+	ActionTopologyApply = "topology_apply"
 )
 
 // ConfigActions is the complete §15.3 vocabulary, in spec order.
@@ -191,6 +204,7 @@ var ConfigActions = []string{
 	ActionScheduleDelete,
 	ActionImageCreate,
 	ActionSkillCreate,
+	ActionTopologyApply,
 }
 
 // rationaleRequired lists the actions whose rationale may not be empty (§15.5).
@@ -726,6 +740,16 @@ var ConfigMutations = []ConfigMutation{
 		Method:  "CreateCustomImage",
 		Actions: []string{ActionImageCreate},
 		Tables:  []string{"agent_custom_images"},
+	},
+	{
+		// T2's transactional topology instantiation. Every ROW it creates goes
+		// through the ordinary mutations above (each writing its own event on
+		// the same transaction); the one event THIS method writes itself is the
+		// `topology_apply` bracket. The tables are listed because the method
+		// does cause writes to them — through the seam, so the guard passes.
+		Method:  "ApplyTopology",
+		Actions: []string{ActionTopologyApply},
+		Tables:  []string{"workers", "subscriptions", "schedules", "project_settings"},
 	},
 	{
 		// The §14 catalogue write (I3). Teaching the project a capability is a
