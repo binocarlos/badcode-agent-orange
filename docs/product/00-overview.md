@@ -1,4 +1,17 @@
-# Spec — Overview: the shape of what we're building
+# Spec — Overview: the shape of what we built
+
+> **Status (2026-07-26): built.** All 37 work-plan items are complete and merged on the
+> `product-layer` branch. The §8.7 acceptance loop — a worker rewriting *another worker's* system
+> prompt, with a rationale, and the next job running with the improved prompt — closes offline in
+> the e2e suite, and was observed against the real Anthropic API. So read this as **shipped design,
+> not a proposal**: where the two ever disagree, the code is the authority and the difference is a
+> bug in this document.
+>
+> Two things a reader should know before trusting any section: the amendments made *during* the
+> build are marked inline (§13.5, §15.6, §8.4, and an **open decision** in §6.2 about the
+> untrusted-data markers), and [`06-work-plan.md`](06-work-plan.md)'s **Discovered Issues Log** —
+> ~100 entries — is the honest record of what surprised us, including what the evidence does *not*
+> prove.
 
 **Start here.** This page is the quick map: the shape, the status, and where every piece of
 detail lives. Everything about this plan — spec, tickets, research trail, execution record —

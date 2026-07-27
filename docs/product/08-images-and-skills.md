@@ -81,6 +81,15 @@ Workers gain an `image` column (§6.1, [`02-workers.md`](02-workers.md)): empty,
 > **Image = `worker.image` (resolved per §13.3) > `project_settings.base_image` > global
 > `Policy.BaseImage`.**
 
+**Both** `worker.image` and `project_settings.base_image` are resolved per §13.3 — the same string
+must not mean two different things in two columns — with one deliberate asymmetry: a `base_image`
+naming no catalogue image is a **literal registry reference** and is used verbatim, whereas one that
+names a catalogue image which cannot be produced **fails the launch**, naming the setting and the
+value. (Amended 2026-07-26. The original text annotated only the worker pointer as resolved, and the
+implementation followed it literally: writing a curated image name into `base_image` — exactly what
+this section tells an operator to do — was accepted, read back correctly, and then stopped every
+session in the project from launching.)
+
 Adoption is a **visible act**, never a side effect. Burning a new version of `marketing-tools`
 changes what floating pointers resolve to; it does not, by itself, repoint any worker that was
 pinned, and it never *creates* a pointer. Moving a worker onto an image is

@@ -142,7 +142,14 @@ validator.
 ### 15.6 Point-in-time replay
 
 The project's configuration at any historical instant T is reconstructible by folding `config_events`
-from t₀ to T: iterate in `created_at`/`id` order, keep the newest payload per
+from t₀ to T: iterate in **`seq` order** — the monotonic per-project sequence allocated inside the
+config-event transaction (migration 027). `seq` order is commit order and is *total*, which
+`created_at`/`id` is not: `created_at` is a millisecond wall clock and `id` is a random uuid, so two
+writes to the same key inside one millisecond would fold in an arbitrary order and the fold could
+contradict the projection table it exists to reproduce. `created_at` remains what an instant T is
+measured against — "the configuration as it stood on Tuesday" is a question about the clock, not
+about the sequence. (Amended 2026-07-26; the original said `created_at`/`id` order.) Keep the newest
+payload per
 `(entity kind, entity key)` — worker name, subscription id, schedule id, image `name:version`, skill
 name, or the singleton project-settings/project-prompt keys — and treat delete actions as tombstones
 that remove the key. The result is exactly the projection tables as they stood at T.

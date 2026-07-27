@@ -106,6 +106,13 @@ purpose):
    at-least-once with an idempotency guard on (event_id, subscription_id). `status` takes
    `pending|running|ok|failed|awaiting_human|rate_limited`; with the `started_at`/
    `ended_at` timestamps (bigint) this tuple is the job-history spine the UI renders.
+   **`awaiting_human` is produced by exactly one condition** (added 2026-07-26; the vocabulary
+   named the value but never said what set it): the turn succeeded *and* the job left an open
+   `request_human_attention` (§9). It is a **pause, not an end** — `ended_at` stays 0, and the
+   delivery is not counted as active, so a parked job holds no `max_instances` slot. Known gap:
+   nothing moves a delivery *out* of `awaiting_human` when the human replies; the session resumes
+   as §9 intends and the job-history row stays parked. Closing that would mean re-growing the
+   approval state machine §9 deliberately deletes, so it is recorded rather than fixed.
 3. **Loop safety (the one hard floor, P1-compatible because it's resource safety, not
    opinion):** each event carries `depth` (triggering job's depth + 1, external = 0); the
    router refuses depth > 8 and logs loudly. Plus a per-project concurrent-jobs cap
