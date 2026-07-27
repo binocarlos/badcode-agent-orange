@@ -60,7 +60,6 @@ func (s stubRunner) Stop(ctx context.Context, ref agentkit.SessionRef) error {
 	}
 	return nil
 }
-func (s stubRunner) Suspend(context.Context, agentkit.SessionRef) error { return nil }
 func (s stubRunner) Resume(ctx context.Context, ref agentkit.SessionRef) (*agentkit.SessionHandle, error) {
 	if s.resumeFn != nil {
 		return s.resumeFn(ctx, ref)
