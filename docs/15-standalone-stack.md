@@ -86,9 +86,20 @@ unset → a local sqlite file, kept for zero-dependency demos. The compose stack
 sets it, and the image is `pgvector/pgvector:pg16` so `CREATE EXTENSION vector` works
 without an image swap.
 
-Migrations run at boot and are **not concurrency-safe**: `runMigrations` checks whether a
-migration is applied and then inserts, with no lock, so two `agentd` processes booting against
-one database can collide on the primary key. One replica at a time, or migrate out of band.
+Migrations run at boot and are **safe under concurrent boots** (since 2026-07-26). `agentdb`
+takes a Postgres session-level advisory lock — key `fnv64a("agentdb:migrations")` — on one pinned
+connection, and holds it across the whole read-and-apply: creating the tracking table, reading the
+applied set, and running what is missing. Replicas starting together therefore serialise; the ones
+that wait re-read the applied set on the far side of the lock, find their work already done, and
+boot having applied nothing. A replica that waits logs `another process is migrating this
+database`, and gives up after 5 minutes rather than hanging silently. The lock is released on every
+exit path, including a migration that fails mid-way — a leaked one would wedge every later boot.
+
+Before that change the check-then-insert had no lock at all, and two processes booting together
+would both decide the same migration was pending: the loser died on
+`agentdb_migrations_pkey`, or earlier on `pg_type_typname_nsp_index` from two concurrent
+`CREATE TABLE IF NOT EXISTS`. The same race also hit `go test ./agentdb/... ./cmd/agentd/...`,
+which runs one binary per package in parallel against one database.
 
 **`DATABASE_URL` is the switch for the entire product layer**, not just for memory.
 Everything in `docs/18-workers-memory-events.md` lives in the product-layer tables, so on

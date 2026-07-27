@@ -3,8 +3,11 @@ package agentdb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"hash/fnv"
 	"log"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -699,15 +702,107 @@ var agentMigrations = []migration{
 	},
 }
 
+// migrationLockKey is the Postgres advisory-lock key that serialises migration
+// application. Every process that migrates this schema must compute the same
+// number, so it is derived deterministically from a fixed string rather than
+// picked by hand — and TestMigrationLockKeyIsStable pins the value, because a
+// key that silently changed between two agentd versions would mean two booting
+// replicas no longer exclude each other and the race is back.
+//
+// Masked to 63 bits so the key is positive: it keeps the halves that appear in
+// pg_locks (classid = key>>32, objid = key) straightforward to reason about.
+var migrationLockKey = func() int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("agentdb:migrations"))
+	return int64(h.Sum64() & 0x7fffffffffffffff)
+}()
+
+// migrationLockWait bounds how long a booting process will wait for a peer that
+// is mid-migration. Generous, because the wait is legitimate — the peer is
+// applying DDL to the same database — but finite, because a boot that hangs
+// forever with no output is harder to diagnose than one that fails saying why.
+const migrationLockWait = 5 * time.Minute
+
 // runMigrations creates the tracking table and applies pending migrations.
-func runMigrations(gdb *gorm.DB) error {
+func runMigrations(gdb *gorm.DB) error { return applyMigrations(gdb, agentMigrations) }
+
+// applyMigrations is runMigrations with the list injectable, so tests can drive
+// it with a deliberately broken migration.
+//
+// # Why the whole read-and-apply is under a lock
+//
+// The original shape was: create the tracking table, SELECT the applied set,
+// then apply whatever is missing. With no lock anywhere, two processes starting
+// together both read the same set, both conclude the same migration is pending,
+// and both run it. The loser dies on
+// `duplicate key value violates unique constraint "agentdb_migrations_pkey"`
+// and Open fails. That is not theoretical: `go test ./agentdb/... ./cmd/agentd/...`
+// runs one binary per package in parallel against one database, and it bit us
+// twice in a single day (migrations 032 and 033), both times on a new
+// migration's very first application. In production the same race is two agentd
+// replicas booting together, one of which crashes on start.
+//
+// `CREATE TABLE IF NOT EXISTS` is inside the locked region too, not before it.
+// IF NOT EXISTS is not a concurrency primitive: two sessions that both find the
+// table absent both proceed to create it, and the loser fails on
+// `pg_type_typname_nsp_index`. That was the *first* error the reproduction
+// produced, before it ever reached the pkey collision.
+//
+// # Why a session lock and not pg_advisory_xact_lock
+//
+// pg_advisory_xact_lock releases at the end of its transaction, so covering the
+// read-and-apply with one would mean wrapping every migration in a single
+// transaction. That changes failure semantics for the worse: today a failure in
+// migration 30 leaves 1–29 committed and applied, and the next boot resumes
+// from there; under one big transaction the failure would roll all of them back
+// and every boot would redo the lot. So: a session-level lock, held across the
+// whole loop, with each migration keeping its own transaction.
+//
+// # Why the loser applies nothing rather than failing
+//
+// pg_advisory_lock blocks rather than erroring, and the applied set is read
+// *after* acquisition. The loser therefore wakes to the winner's committed
+// state, finds nothing pending, and boots. That is exactly what a starting
+// replica wants — succeed, having done no work — and it is why moving the SELECT
+// inside the lock matters as much as taking the lock at all. Serialising only
+// the INSERT would leave the loser re-running the migration body.
+//
+// # Why everything runs on one pinned connection
+//
+// A session-level advisory lock belongs to the backend session that took it, so
+// it has to be taken on a specific *sql.Conn rather than on the pool — ask the
+// pool to unlock and it may hand back a different connection, leaving the lock
+// held forever. Having pinned one connection for the lock, the migrations run on
+// that same connection rather than borrowing more from the pool: a pool capped
+// at one connection would otherwise deadlock against its own lock holder, which
+// is a worse boot failure than the race. One connection, one session, one lock.
+func applyMigrations(gdb *gorm.DB, migrations []migration) error {
 	ctx := context.Background()
 	sqlDB, err := gdb.DB()
 	if err != nil {
 		return fmt.Errorf("agentdb: get sql.DB: %w", err)
 	}
 
-	_, err = sqlDB.ExecContext(ctx, `
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("agentdb: migration connection: %w", err)
+	}
+	// Registered before the unlock below, so it runs after it: release the
+	// lock, then hand the connection back.
+	defer conn.Close()
+
+	if usesAdvisoryLocks(gdb) {
+		if err := lockMigrations(ctx, conn); err != nil {
+			return err
+		}
+		// Runs on every exit including a migration that errors mid-way and a
+		// panic out of the loop. A leaked session-level advisory lock would
+		// wedge every subsequent boot on this database — a permanent outage
+		// traded for an intermittent race, which is no trade at all.
+		defer unlockMigrations(conn)
+	}
+
+	_, err = conn.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS agentdb_migrations (
 			name VARCHAR(255) PRIMARY KEY,
 			applied_at TIMESTAMPTZ DEFAULT NOW()
@@ -718,24 +813,29 @@ func runMigrations(gdb *gorm.DB) error {
 	}
 
 	applied := map[string]bool{}
-	rows, err := sqlDB.QueryContext(ctx, "SELECT name FROM agentdb_migrations")
+	rows, err := conn.QueryContext(ctx, "SELECT name FROM agentdb_migrations")
 	if err != nil {
 		return fmt.Errorf("agentdb: query applied migrations: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
+			rows.Close()
 			return err
 		}
 		applied[name] = true
 	}
+	err = rows.Err()
+	rows.Close() // explicit: the pinned connection is unusable until it closes
+	if err != nil {
+		return fmt.Errorf("agentdb: read applied migrations: %w", err)
+	}
 
-	for _, m := range agentMigrations {
+	for _, m := range migrations {
 		if applied[m.Name] {
 			continue
 		}
-		if err := runOneMigration(sqlDB, m); err != nil {
+		if err := runOneMigration(ctx, conn, m); err != nil {
 			return fmt.Errorf("agentdb: migration %s failed: %w", m.Name, err)
 		}
 		log.Printf("[agentdb] applied migration %s", m.Name)
@@ -743,17 +843,83 @@ func runMigrations(gdb *gorm.DB) error {
 	return nil
 }
 
-func runOneMigration(db *sql.DB, m migration) error {
-	tx, err := db.Begin()
+// usesAdvisoryLocks is the dialect gate: only Postgres has advisory locks.
+//
+// sqlite has no equivalent and needs none. The sqlite stores in this repo are
+// per-test temp files opened by a single process — there is no second writer to
+// exclude — and sqlite serialises the writers it does have at the file level.
+// Reaching for pg_advisory_lock there would fail on a function sqlite has never
+// heard of, and breaking every sqlite-backed test would be a worse outcome than
+// the race this is fixing.
+//
+// Today the gate is purely defensive: Open() constructs a Postgres dialector and
+// is the only caller of runMigrations, and the tracking table's own
+// `TIMESTAMPTZ DEFAULT NOW()` is not sqlite-parseable anyway. It is here so that
+// if a sqlite-backed caller ever does appear, it meets the old unlocked path
+// rather than an unknown-function error — and so the reason is written down.
+//
+// gorm.DB embeds *gorm.Config, so Dialector is a promoted field and reading it
+// off a zero-value DB panics — hence the Config check before the Dialector one.
+func usesAdvisoryLocks(gdb *gorm.DB) bool {
+	if gdb == nil || gdb.Config == nil || gdb.Dialector == nil {
+		return false
+	}
+	return gdb.Dialector.Name() == "postgres"
+}
+
+// lockMigrations takes the exclusive advisory lock on the given pinned
+// connection, blocking (up to migrationLockWait) if a peer holds it.
+func lockMigrations(ctx context.Context, conn *sql.Conn) error {
+	// Try first so the common case (nobody else booting) costs one round trip
+	// and says nothing, and the uncommon case explains the pause in the log
+	// instead of looking like a hang.
+	var got bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", migrationLockKey).Scan(&got); err != nil {
+		return fmt.Errorf("agentdb: acquire migration lock: %w", err)
+	}
+	if got {
+		return nil
+	}
+
+	log.Printf("[agentdb] another process is migrating this database; waiting up to %s", migrationLockWait)
+	waitCtx, cancel := context.WithTimeout(ctx, migrationLockWait)
+	defer cancel()
+	if _, err := conn.ExecContext(waitCtx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		return fmt.Errorf("agentdb: wait for migration lock (a peer has held it for over %s): %w", migrationLockWait, err)
+	}
+	log.Printf("[agentdb] migration lock acquired")
+	return nil
+}
+
+// unlockMigrations releases the advisory lock, and makes sure the connection
+// cannot go back into the pool still holding it.
+func unlockMigrations(conn *sql.Conn) {
+	// context.Background(), never a caller's: a cancelled context must not be
+	// able to skip the release.
+	if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+		// The unlock did not land. Either the backend is already gone — in
+		// which case Postgres has released every lock it held — or the session
+		// is in a state we cannot reason about. Returning driver.ErrBadConn
+		// from Raw marks the *sql.Conn bad so Close destroys the backend
+		// session instead of returning it to the pool still locked. Ending the
+		// session releases the lock either way; that is the guarantee this
+		// falls back on.
+		log.Printf("[agentdb] releasing migration lock: %v (discarding the connection)", err)
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+}
+
+func runOneMigration(ctx context.Context, conn *sql.Conn, m migration) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(m.SQL); err != nil {
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("INSERT INTO agentdb_migrations (name) VALUES ($1)", m.Name); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO agentdb_migrations (name) VALUES ($1)", m.Name); err != nil {
 		return err
 	}
 	return tx.Commit()
