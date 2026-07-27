@@ -94,7 +94,7 @@ overlap with Wave 1's `e2e/` files.*
 - [x] **F2 — UI.** Lock badge on frozen workers ("Frozen — cannot be changed by other workers"),
   freeze/unfreeze control on the worker settings page, changelog renders freeze/unfreeze events.
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
-- [ ] **S7 — Frozen-scorer story** (after F1+F2 merge + stack rebuild): critic attempts to rewrite
+- [x] **S7 — Frozen-scorer story** (after F1+F2 merge + stack rebuild): critic attempts to rewrite
   a frozen worker; refused; prompt byte-identical; `worker.freeze_refused` event recorded.
   *Validation:* Wave 1's command (spec file includes S7).
 
@@ -218,4 +218,14 @@ Kai before any real-model run.**
 - (T3) **A broken preview can never wave an apply through** — absent/garbled `applicable` coerces
   to `false` deliberately; bool questions always carry an explicit value ("optional bool left
   unanswered" is unrepresentable from the form, documented in topologies.ts).
+- (S7) **The frozen flag alone differentiates the critic's two firings** — both serve the
+  identical scripted tool call; frozen decides its fate. The refusal round doubles as proof the
+  MCP `isError` path does not wedge a scripted session.
+- (S7) **`toggleWorkerEnabled` in e2e/helpers/api.ts was silently thawing** — its
+  read-modify-write body omitted `frozen`, so any enable/disable toggle on a frozen worker would
+  have unfrozen it (PUT replaces). Fixed in passing; nothing was green-by-accident since no
+  earlier test froze workers. The generalisation: every read-modify-write helper must carry ALL
+  fields, and each new worker field must sweep the helpers.
+- (S7) **A human edit logs with empty `actor_worker`** — asserted, contrasting with the critic's
+  rewrite record naming the actor. The config log distinguishes people from workers for free.
 
