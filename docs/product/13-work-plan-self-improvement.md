@@ -110,7 +110,7 @@ Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
   table-tested; no I/O. Referenced images/skills are names only (D2) — rendering records them as
   preconditions, it does not create them.
   *Validation:* `cd go && go build ./... && go vet ./... && go test ./...`
-- [ ] **T2 — Preview + apply.** HTTP (JWT path): preview returns the bundle plus a diff against
+- [x] **T2 — Preview + apply.** HTTP (JWT path): preview returns the bundle plus a diff against
   the project's current config and the unmet preconditions (missing images/skills) — applying
   with unmet preconditions fails loudly and changes nothing. Apply writes every row through the
   existing store mutations (each config-logged via `WithConfigEvent`), bracketed by a
@@ -200,4 +200,14 @@ Kai before any real-model run.**
   read-current → overlay non-zero → write whole. Corollary: zero-is-meaningful settings
   (`daily_tokens_*`, `snapshot_ttl_days`) are unreachable through this patch shape; no current
   seed needs them, but it is a real limit.
+- (T2) **The action verb is `topology_apply`, not the plan's `topology.applied`** — dots name
+  routable events; §15.3 vocabulary is uniformly `entity_verb`. T3's changelog work is already
+  done in T2's commit (19-action pin, entity kind `topology`, filter preset).
+- (T2) **One-transaction apply via a tx-bound Store clone**: every existing mutation nests as a
+  gorm SAVEPOINT, so rows go through the unmodified store methods — no new write path. The
+  `topology_apply` bracket is written LAST (highest seq proves every row event landed). The real
+  hazard was post-commit hooks firing on savepoint release — solved by collecting during the tx
+  and replaying after commit; a refused apply emits zero hooks. Fault-injection pins rollback.
+- (T2) **Preview writes nothing, pinned structurally** — the seam's only mutating method is never
+  called; apply refusals are 409 with in-tx authoritative re-checks for the race window.
 
