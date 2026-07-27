@@ -33,13 +33,14 @@ const ev = (over: Partial<ConfigEvent> = {}): ConfigEvent =>
   })
 
 describe('the §15.3 vocabulary', () => {
-  it('carries all eighteen actions, including the freeze toggle F1 gained', () => {
-    expect(CONFIG_ACTIONS).toHaveLength(18)
+  it('carries all nineteen actions, including the topology bracket T2 gained', () => {
+    expect(CONFIG_ACTIONS).toHaveLength(19)
     expect(CONFIG_ACTIONS).toContain('worker_delete')
     expect(CONFIG_ACTIONS).toContain('worker_prompt_write')
     expect(CONFIG_ACTIONS).toContain('worker_freeze')
     expect(CONFIG_ACTIONS).toContain('worker_unfreeze')
     expect(CONFIG_ACTIONS).toContain('image_create')
+    expect(CONFIG_ACTIONS).toContain('topology_apply')
   })
 
   it('renders freeze and unfreeze as their own verbs, keyed to the worker', () => {
@@ -49,6 +50,18 @@ describe('the §15.3 vocabulary', () => {
       'Froze worker “quality-scorer”',
     )
     expect(configEntity(ev({ action: 'worker_unfreeze' })).key).toBe('worker:email-answerer')
+  })
+
+  it('renders a topology apply as its own verb, keyed to name@version', () => {
+    expect(describeConfigAction('topology_apply')).toBe('Applied topology')
+    const applied = ev({
+      action: 'topology_apply',
+      payload: { topology: 'solo@v1', answers: { cadence: 'daily' } },
+    })
+    expect(configEntity(applied).key).toBe('topology:solo@v1')
+    expect(changelogTitle(applied)).toBe('Applied topology “solo@v1”')
+    // The bracket's payload is {topology, answers} — no prompt, so no diff.
+    expect(configPromptText(applied)).toBeNull()
   })
 
   it('a freeze entry carries the full row but no prompt diff — the prompt did not change', () => {

@@ -71,6 +71,7 @@ export const CONFIG_ACTIONS = [
   'schedule_delete',
   'image_create',
   'skill_create',
+  'topology_apply',
 ] as const
 export type ConfigAction = (typeof CONFIG_ACTIONS)[number]
 
@@ -126,6 +127,7 @@ export type ConfigEntityKind =
   | 'schedule'
   | 'image'
   | 'skill'
+  | 'topology'
   | 'unknown'
 
 /**
@@ -163,6 +165,8 @@ export function configEntity(ev: Pick<ConfigEvent, 'action' | 'payload'>): Confi
     return make('image', label)
   }
   if (ev.action === 'skill_create') return make('skill', name('name'))
+  // T2's apply bracket keys on the applied name@version, not on a row name.
+  if (ev.action === 'topology_apply') return make('topology', name('topology'))
   return make('unknown', '')
 }
 
@@ -206,6 +210,10 @@ export function describeConfigAction(action: string): string {
       return 'Published image'
     case 'skill_create':
       return 'Published skill'
+    case 'topology_apply':
+      // The bracket record of one topology apply (T2): the rows it created
+      // each have their own entries; this one names the org chart itself.
+      return 'Applied topology'
     default:
       return action
   }

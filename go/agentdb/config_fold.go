@@ -88,6 +88,11 @@ const (
 	EntitySkill           EntityKind = "skill"
 	EntityProjectSettings EntityKind = "project-settings"
 	EntityProjectPrompt   EntityKind = "project-prompt"
+	// EntityTopology keys `topology_apply` records by the applied name@version
+	// (T2). It is a record of a decision rather than a projection row: nothing
+	// folds it back into a table, but leaving it unmapped would make the whole
+	// fold fail loudly on any project that ever applied a topology.
+	EntityTopology EntityKind = "topology"
 )
 
 // EntityRef identifies one folded entity: its kind plus the key that is unique
@@ -120,6 +125,7 @@ var EntityKinds = []EntityKind{
 	EntitySkill,
 	EntityProjectSettings,
 	EntityProjectPrompt,
+	EntityTopology,
 }
 
 // ParseEntityRef reads the rendered form back — "worker:email-answerer",
@@ -202,6 +208,7 @@ var entityKindForAction = map[string]EntityKind{
 	ActionScheduleDelete:     EntitySchedule,
 	ActionImageCreate:        EntityImage,
 	ActionSkillCreate:        EntitySkill,
+	ActionTopologyApply:      EntityTopology,
 }
 
 // deleteActions are the tombstones: the record stays, the key goes (§15.3
@@ -269,6 +276,15 @@ func EntityRefFor(ev *ConfigEvent) (EntityRef, error) {
 			return EntityRef{}, err
 		}
 		return EntityRef{Kind: kind, Key: name}, nil
+	case EntityTopology:
+		// T2's apply record keys on the applied name@version — the payload is
+		// {topology, answers}, not a projection row, so "topology" is its
+		// identity field.
+		ref, err := payloadKeyField(ev, "topology")
+		if err != nil {
+			return EntityRef{}, err
+		}
+		return EntityRef{Kind: kind, Key: ref}, nil
 	default: // subscriptions and schedules are keyed by their generated id
 		id, err := payloadKeyField(ev, "id")
 		if err != nil {
