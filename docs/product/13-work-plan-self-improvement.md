@@ -130,13 +130,13 @@ Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
 real-model run without Kai's explicit go (credential mode is also his call: api-key spend vs
 subscription-OAuth terms, AGENTS_RESEARCH §1).*
 
-- [ ] **L1 — Synthetic dataset generator + trap taxonomy.** Deterministic given a seed: datasets
+- [x] **L1 — Synthetic dataset generator + trap taxonomy.** Deterministic given a seed: datasets
   (CSV/JSON) + a held-out ground-truth answer per hypothesis. Traps: planted nulls (no effect),
   confounds (naive correlation says yes, controlled analysis says no), underpowered samples.
   Unit-tested properties: same seed → same bytes; traps actually trap (a naive estimator run on
   the generated data reaches the wrong conclusion; a correct one doesn't).
   *Validation:* whatever suite hosts it (go test or vitest), green + deterministic.
-- [ ] **L2 — hypothesis-lab@v1 topology seed** (catalogue entry 13): investigator +
+- [x] **L2 — hypothesis-lab@v1 topology seed** (catalogue entry 13): investigator +
   methodology-critic (holds worker_prompt_write on the investigator) + FROZEN fact-checker whose
   prompt says it compares conclusions against held-out truth it is given (never generates it).
   Ground truth lives outside the project (harness-side), per AGENTS_RESEARCH §4. Mock e2e in
@@ -263,4 +263,18 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   prompt is byte-identical (pinned by test), so any behavioural difference between the two
   topologies in an experiment is attributable to the scorer's presence. The comparison-rig
   property, established by construction.
+- (L1) **Verdict is a separate return, never a Dataset field** — no rendering of a dataset can
+  leak the answer; pinned by `TestDatasetBytesCarryNoVerdict`. The bundle likewise carries no
+  truth channel (3 workers, 3 subscriptions, nothing else).
+- (L1) **math/rand is not a determinism guarantee across Go releases** — hypolab carries its own
+  splitmix64 with golden-byte tests enforcing the decision.
+- (L1) **A small fixture can fail to carry its own trap** — the first N=40 confound sample had
+  naive NOT significant; settled on N=120/seed 13 (naive z=+3.65 confirms, controlled z=−0.48
+  nulls), with `TestE2EFixtureBytes` pinning the e2e CSV to generator output AND re-proving the
+  trap property on those exact bytes. Trap-property tests run on pinned documented seeds, not
+  "any seed" — the honest instrument shows its α (planted-null seed 9 hits z=+2.87).
+- (L2) **A scripted tool call is a contamination channel to its TARGET** — the critic's freeze
+  attempt puts the checker's name in the critic's later request bodies, so checker rules key on
+  the identity phrase and the critic prompt deliberately never names the checker (pinned by
+  test). Generalises T6's trick to any worker whose tool call names another.
 
