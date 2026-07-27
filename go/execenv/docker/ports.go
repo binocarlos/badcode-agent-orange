@@ -21,7 +21,9 @@ import (
 // "available" ports and a map of session→port for adopted/allocated leases.
 //
 // The pool is the hard ceiling on live sessions per host — one port each, held
-// until the session is deleted, and nothing reaps them. That ceiling is a
+// until the session is deleted or a host reclaims its idle container (agentd
+// does, via agentkit.Policy.ArchiveTimeout; a host that sets no timeout gets
+// the old behaviour, where nothing ever gave a port back). That ceiling is a
 // legitimate limit, so exhaustion is not a bug; being unable to TELL that it is
 // what happened is. Hence the range is remembered and every exhaustion error
 // names it (see Allocate) and wraps execenv.ErrNoCapacity.

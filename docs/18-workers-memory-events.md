@@ -457,11 +457,16 @@ Stated plainly because each one will otherwise be discovered the hard way.
 - **`POST /agent/session` accepts a `systemPrompt` and does nothing with it.** The field is
   decoded and forwarded, but for a session with no worker it is never persisted or used. Nothing
   in-tree sends one; do not build on it.
-- **Sessions hold a running container until the session is deleted.** Nothing reaps them on a
-  timer. They accumulate, and past roughly a hundred a stack starts failing to provision new
-  sessions. That used to read as "session has no running instance and no snapshot", which looks
-  exactly like a product bug and is not one; it now says the host is at capacity and names the
-  port pool. Delete sessions you are finished with — see `docs/15-standalone-stack.md`.
+- **Sessions hold a running container until they are deleted *or* go idle for 30 minutes.**
+  Since 2026-07-26 `agentd` runs the Runner's archive loop
+  (`AGENTKIT_SESSION_IDLE_TIMEOUT`, default `30m`): an idle session's container is snapshotted
+  and released, which returns its host port to the pool. The session row survives and the next
+  message restores it, so this is reclamation, not deletion — but a session with a turn in
+  flight is never archived. Before that nothing reaped anything on a timer, containers
+  accumulated, and past roughly a hundred a stack stopped provisioning; that used to read as
+  "session has no running instance and no snapshot", which looks exactly like a product bug and
+  is not one — it now says the host is at capacity and names the port pool. Still delete
+  sessions you are finished with: archiving keeps the row, the events and a snapshot blob.
 - **Deleting a session mid-create is now safe, but stale orphans are still not swept.** A delete
   that lands while the create is still pulling or provisioning used to leave the container
   behind holding a port, invisible to everything that starts from the database; the create now
@@ -550,6 +555,8 @@ commentary; this is the product-layer subset.
 | `AGENTKIT_EMBEDDING_BACKEND` | `none` (default) or `mock`. A typo is a boot error, never a silent fall back. Forwarded by `docker-compose.yml`, so setting it in `.env` reaches agentd — it did not until 2026-07-26, and until then setting it did nothing at all while the docs said it would |
 | `TZ` | the zone every cron expression is evaluated in; unset = UTC. **`docker-compose.yml` does not forward it**, so setting it in `.env` alone changes nothing — see [`15-standalone-stack.md`](15-standalone-stack.md) § "Stack environment variables" |
 | `AGENTKIT_PORT_RANGE_START` / `_END` | The host port pool session containers lease from — its size **is** the concurrent-session ceiling for the host, because one live session holds one port until it is deleted. Default `30001` / `30100` (100 sessions), unchanged from when it was hardcoded. Set both or neither; a non-numeric bound, start above end, a port outside `1024-65535`, or a range wider than 10000 ports is a **boot error**, never a pool that starts and then fails every session. Logged at boot as `session port pool=<range>`. Narrow it (e.g. `40000`/`40002`) to exercise pool exhaustion deliberately — see [`15-standalone-stack.md`](15-standalone-stack.md) |
+| `AGENTKIT_SESSION_IDLE_TIMEOUT` | How long a session may sit idle before its container is snapshotted and released, returning its host port to the pool above. Default `30m`; `off` disables it (which is what agentd did before 2026-07-26, when nothing reclaimed anything on a timer). **Reclamation, not deletion**: the row survives and the next message restores the container from its snapshot. A turn in flight is never archived. Below `1m`, above `720h`, or a bare number with no unit is a **boot error**. Logged at boot |
+| `AGENTKIT_SNAPSHOT_REAP_INTERVAL` | How often the §13.7 snapshot TTL reaper sweeps the image catalogue for versions whose stamped `expires_at` has passed — bytes deleted, record kept as a tombstone. Default `6h`; `off` disables it. The expiry itself is per project (`project_settings.snapshot_ttl_days`, 0 = never), so this is only how often we look. Needs `DATABASE_URL` (the catalogue is Postgres-only); same validation as above |
 | `AGENTKIT_MOCK_MODEL_SCRIPT` / `_FILE` | Mock-model script, read **only** in mock mode (both model credentials blank) and only at boot. Without it the mock serves one canned text turn and can never emit a `tool_use`. Rules match on a substring of the raw model request (a worker name is the natural key — it appears in every composed prompt); the turn is chosen by the assistant-message count, so it is stateless and parallel sessions cannot contaminate each other. A malformed script fails the boot |
 
 Each variable listed in `AGENTKIT_MCP_ENV` must also *reach* agentd: compose cannot forward a

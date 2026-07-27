@@ -3,8 +3,10 @@ package main
 // portrange.go — the host's session port pool, as configuration.
 //
 // Every live session leases one host port from a fixed pool, and holds it until
-// the session is DELETED (nothing reaps them on a timer). The size of that pool
-// is therefore the hard ceiling on concurrent sessions per host: at zero free,
+// the session is deleted or its container is reclaimed for idleness (gc.go —
+// AGENTKIT_SESSION_IDLE_TIMEOUT, 30 minutes by default; before that existed,
+// nothing gave a port back on a timer at all). The size of that pool is the
+// hard ceiling on CONCURRENT sessions per host: at zero free,
 // every further session on the host fails with execenv.ErrNoCapacity and the
 // operator-facing "host port pool is exhausted" diagnostic
 // (go/execenv/docker/ports.go).

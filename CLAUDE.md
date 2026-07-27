@@ -106,8 +106,12 @@ docker compose up --build     # then open http://localhost:8080
 - **The product layer is wired only when `DATABASE_URL` is set.** On the sqlite fallback the
   router never routes, schedules never fire, the core MCP server is not mounted and project
   settings do not apply — and nothing fails at use time. Compose always sets it.
-- **Sessions hold a running container — and one host port — until deleted**; nothing reaps them on
-  a timer. The port pool is the hard ceiling on concurrent sessions per host: 100 by default,
+- **Sessions hold a running container — and one host port — until deleted or idle**. Since
+  2026-07-26 `agentd` runs the archive loop: a session idle for `AGENTKIT_SESSION_IDLE_TIMEOUT`
+  (default 30m) is snapshotted and its container released, and the next message restores it —
+  reclamation, not deletion (`go/cmd/agentd/gc.go`). The snapshot TTL reaper runs too
+  (`AGENTKIT_SNAPSHOT_REAP_INTERVAL`, default 6h).
+  The port pool is still the hard ceiling on *concurrent* sessions per host: 100 by default,
   configurable with `AGENTKIT_PORT_RANGE_START`/`_END` (`go/cmd/agentd/portrange.go`, set both or
   neither). At zero free, every further session fails with "host port pool is exhausted". Delete
   sessions you finish with; `./e2e/run-stack-e2e.sh clean` clears leftovers and restarts `agentd`

@@ -99,7 +99,10 @@ Per-mode logs land in `e2e/stack-e2e-logs-<mode>.txt`, written by `down`.
 `go/`, `sandbox/` and `web/` only; the stack e2e is a thing a human runs.
 
 **Sessions hold a running container — and one host port — until the session is
-deleted**; nothing reaps them on a timer. The port pool is the hard ceiling on
+deleted or goes idle**: `agentd` snapshots and releases the container of a
+session idle for `AGENTKIT_SESSION_IDLE_TIMEOUT` (default 30m) and the next
+message restores it, so this frees the port without ending the conversation.
+The port pool is the hard ceiling on
 concurrent sessions per host: **100 by default** (`AGENTKIT_PORT_RANGE_START`
 /`_END`, set both or neither). At zero free, every further session fails with
 "host port pool is exhausted", naming the pool, its size and what holds it —
