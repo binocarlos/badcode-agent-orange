@@ -28,8 +28,11 @@ import { waitForConfigAction } from '../helpers/configlog'
 // their unique identity phrase ("You are tp6-hand-N" — the dispatcher's
 // roster lists names but never that phrase; the hypothesis lab's fact-checker
 // is keyed the same way, because the critic's tool call names it), and every
-// name carries a per-seed prefix (tp4-/tp5-/tp6-/tp7-/tp13-, and R1's
-// tp8-/tp9-/tp10-/tp11-) with no name a substring of another.
+// name carries a per-seed prefix (tp4-/tp5-/tp6-/tp7-/tp13-, R1's
+// tp8-/tp9-/tp10-/tp11-, and R2's tp14-/tp15-/tp16-) with no name a
+// substring of another. (R2's fourth seed, self-organizing@v1, lives in its
+// own spec — self-organizing.stack.spec.ts — because its e2e runs under
+// --port-pool, which the runner refuses to combine with --mock-script.)
 //
 // R1 adds one rule with a subtler key, worth naming here because it is a new
 // trick: memory-create SUCCESS is keyed on `\"embedded\":false` — the
@@ -1264,5 +1267,384 @@ test.describe('R1 — blackboard@v1', () => {
       expect(headings, `${worker}'s briefing must carry the board section`).toBe(2)
       expect(session.composed_prompt ?? '').toMatch(TP11_NOTE_RE)
     }
+  })
+})
+
+// ── R2 / tp14 — debate@v1 (entry 7) ─────────────────────────────────────────
+
+// The committee: one question event wakes BOTH debaters at once (unfiltered
+// shared subscription — independence is structural, and neither prompt names
+// the other); the aggregator holds one equality-filtered worker.finished edge
+// PER debater. What is asserted, and the honest shape of it: the aggregator
+// fires N times per question — once per debater's finish — and each of its
+// jobs receives a SINGLE debater's transcript, because worker.finished is the
+// only routable worker output and nothing hands the judge the whole panel at
+// once. The relay proof is the mock keying itself: each aggregator reply rule
+// matches the ARGUMENT MARKER from one debater's reply, a string that can
+// only reach the aggregator's request through that debater's relayed
+// transcript. Asserted per edge, for both edges.
+
+const DEBATERS = ['tp14-debater-1', 'tp14-debater-2']
+const CHAIR = 'tp14-chair'
+const TP14_EVENT = 'tp14.question'
+const TP14_MISSION = 'You settle questions about orchard storage.'
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP14_ARGS: Record<string, string> = {
+  [DEBATERS[0]!]: 'TP14-ARG-ONE',
+  [DEBATERS[1]!]: 'TP14-ARG-TWO',
+}
+const TP14_VERDICTS: Record<string, string> = {
+  [DEBATERS[0]!]: 'TP14-VERDICT-ONE',
+  [DEBATERS[1]!]: 'TP14-VERDICT-TWO',
+}
+
+test.describe('R2 — debate@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp14')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('one question, two independent arguments, one judgment per finish', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'debate',
+      version: 'v1',
+      answers: {
+        'debater-prefix': 'tp14-debater',
+        'debater-count': '2',
+        'aggregator-name': CHAIR,
+        'inbound-event-type': TP14_EVENT,
+        mission: TP14_MISSION,
+      },
+    }
+
+    // (a) Preview: both debaters unfiltered on the shared question type, and
+    // one filtered review edge per debater — 2N subscriptions for N debaters.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([...DEBATERS, CHAIR])
+    expect(preview.diff.new_subscriptions).toEqual([
+      { event_type: TP14_EVENT, worker: DEBATERS[0] },
+      { event_type: TP14_EVENT, worker: DEBATERS[1] },
+      { event_type: 'worker.finished', worker: CHAIR },
+      { event_type: 'worker.finished', worker: CHAIR },
+    ])
+    expect(preview.diff.new_schedules).toEqual([])
+    // Independence in the bundle: debater edges unfiltered, chair edges cover
+    // each debater exactly once, and no debater prompt names the other.
+    for (const s of preview.bundle.subscriptions.filter((s) => s.worker !== CHAIR)) {
+      expect(s.filter ?? {}).toEqual({})
+    }
+    const chairEdges = preview.bundle.subscriptions.filter((s) => s.worker === CHAIR)
+    expect(chairEdges.map((s) => (s.filter as { worker?: string }).worker).sort()).toEqual([...DEBATERS].sort())
+    for (const d of DEBATERS) {
+      const row = preview.bundle.workers.find((w) => w.name === d)!
+      const other = DEBATERS.find((x) => x !== d)!
+      expect(row.system_prompt, 'independence: debaters never name each other').not.toContain(other)
+    }
+    // The N-firings honesty is really in the stored charter.
+    const chairRow = preview.bundle.workers.find((w) => w.name === CHAIR)!
+    expect(chairRow.system_prompt).toContain('once per debater')
+    expect(chairRow.system_prompt).toContain("a SINGLE debater's full finished transcript")
+
+    // (b) Apply.
+    await applyAndVerify(client, body, preview)
+
+    // Join deliveries to workers through the subscription rows (T6 pattern).
+    const subs = await client.listSubscriptions()
+    const workerOf = new Map(subs.map((s) => [s.id, s.worker]))
+    const chairSubOf = new Map(
+      subs
+        .filter((s) => s.worker === CHAIR)
+        .map((s) => [(s.filter as { worker?: string }).worker!, s.id]),
+    )
+
+    // (c) One question: BOTH debaters fire — one event, two deliveries — and
+    // each argues with its scripted marker.
+    const round = await runRound(
+      client,
+      TP14_EVENT,
+      'A question for the committee: how should the orchard store its apples?',
+      2,
+    )
+    expect(round.deliveries.map((d) => workerOf.get(d.subscription_id)).sort()).toEqual([...DEBATERS].sort())
+    const debaterSession: Record<string, string> = {}
+    for (const d of round.deliveries) {
+      const worker = workerOf.get(d.subscription_id)!
+      debaterSession[worker] = d.session_id
+      const reply = await assistantReply(client, d.session_id)
+      expect(reply, `${worker} must argue with its scripted marker`).toContain(TP14_ARGS[worker])
+    }
+
+    // (d) The judge fires ONCE PER FINISH — the honest N-firings shape. For
+    // each debater: its finish triggers exactly one delivery, to the chair's
+    // edge filtered to that debater, and the chair job's scripted reply is
+    // keyed off THAT debater's argument marker — the transcript relay, proven
+    // per edge.
+    const chairSessions: string[] = []
+    for (const worker of DEBATERS) {
+      const followOn = await settleFollowOn(client, debaterSession[worker]!, 1)
+      expect(followOn.deliveries).toHaveLength(1)
+      const delivery = followOn.deliveries[0]!
+      expect(delivery.subscription_id).toBe(chairSubOf.get(worker))
+      const verdict = await assistantReply(client, delivery.session_id)
+      expect(verdict, `the chair's judgment of ${worker} keys off that debater's marker`).toContain(
+        TP14_VERDICTS[worker],
+      )
+      chairSessions.push(delivery.session_id)
+    }
+    // Two chair firings for two debaters — N firings, not one grand synthesis.
+    expect(new Set(chairSessions).size).toBe(2)
+
+    // The chair's own finishes route nowhere; let them settle so teardown is
+    // not racing containers.
+    for (const sessionId of chairSessions) {
+      await client.waitForEvents(
+        (rows) => rows.some((e) => e.envelope.session_id === sessionId),
+        { type: 'worker.finished', timeoutMs: 120_000 },
+      )
+    }
+  })
+})
+
+// ── R2 / tp15 — temporal-hierarchy@v1 (entry 10) ────────────────────────────
+
+// Operators on fast events, a strategist on a slow schedule. The review
+// channel is memory, not events: schedules deliver only their own Input text
+// and wiring the strategist to worker.finished would put it on the work's
+// timescale — so the operator files a kind=tp15-reports note after each task
+// and the strategist's briefing selector carries the newest one. The
+// strategist's only clock is cron (unwaitable), so its round is driven by an
+// operator-added poke subscription — the T4 pattern for schedule-only seeds.
+// The rewrite is proven twice over: as a config-log record (with rationale,
+// naming the strategist as actor) and as BEHAVIOUR — round 2's operator reply
+// switches on the [TP15-TIMEBOX-RULE] marker reaching its composed prompt.
+
+const OPERATOR = 'tp15-op-1'
+const STRATEGIST = 'tp15-strategist'
+const TP15_EVENT = 'tp15.work'
+const TP15_POKE = 'tp15.poke'
+const TP15_LABEL = 'tp15-reports'
+const TP15_SELECTOR = `kind=${TP15_LABEL}`
+const TP15_HEADING = `Your memory briefing: ${TP15_SELECTOR}`
+const TP15_MISSION = 'You keep the orchard intake moving.'
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP15_REPORT_MARK = 'TP15-REPORT'
+const TP15_CONFIRM = 'MEM-WRITE-CONFIRMED'
+const TP15_MARKER = 'TP15-TIMEBOX-RULE'
+const TP15_SWITCH = 'TP15-SWITCH'
+const TP15_RATIONALE = "the operator's reports show it never timeboxes its work"
+
+test.describe('R2 — temporal-hierarchy@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp15')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('the slow layer reads the reports and rewrites the fast layer', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'temporal-hierarchy',
+      version: 'v1',
+      answers: {
+        'operator-prefix': 'tp15-op',
+        'operator-count': '1',
+        'strategist-name': STRATEGIST,
+        'inbound-event-type': TP15_EVENT,
+        'memory-label': TP15_LABEL,
+        mission: TP15_MISSION,
+      },
+    }
+
+    // (a) Preview: the timescale separation is visible in the wiring — the
+    // operator holds the only subscription, the strategist the only schedule
+    // (weekly by default: the hierarchy is temporal), and the memory channel's
+    // two ends are in the rows.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([OPERATOR, STRATEGIST])
+    expect(preview.diff.new_subscriptions).toEqual([{ event_type: TP15_EVENT, worker: OPERATOR }])
+    expect(preview.diff.new_schedules).toHaveLength(1)
+    expect(preview.diff.new_schedules[0]).toMatchObject({ cron: '0 9 * * 1', worker: STRATEGIST })
+    const opRow = preview.bundle.workers.find((w) => w.name === OPERATOR)!
+    expect(opRow.system_prompt).toContain('memory_create')
+    expect(opRow.system_prompt).toContain(TP15_SELECTOR)
+    expect(opRow.system_prompt, 'reports go to a label, not an address').not.toContain(STRATEGIST)
+    expect(opRow.briefing ?? []).toEqual([])
+    const stratRow = preview.bundle.workers.find((w) => w.name === STRATEGIST)!
+    expect(stratRow.briefing).toEqual([TP15_SELECTOR])
+    expect(stratRow.system_prompt).toContain('worker_prompt_write')
+    expect(stratRow.system_prompt).toContain(OPERATOR)
+
+    // (b) Apply — and the briefing selector survives the write path.
+    const bracket = await applyAndVerify(client, body, preview)
+    expect(bracket.payload.answers).toMatchObject({ 'strategist-cadence': 'weekly', 'memory-label': TP15_LABEL })
+    expect((await client.getWorker(STRATEGIST)).briefing).toEqual([TP15_SELECTOR])
+
+    // (c) Round 1 — the fast layer: the operator handles the task and files
+    // its report; the confirm line is keyed on memory_create's success echo,
+    // so its presence proves the labelled note landed in the store.
+    const round1 = await runRound(client, TP15_EVENT, 'Sort the morning intake, please.')
+    const reply1 = await assistantReply(client, round1.deliveries[0].session_id)
+    expect(reply1, 'round 1 must confirm the filed report').toContain(TP15_CONFIRM)
+    expect(reply1).not.toContain(TP15_SWITCH)
+    // Its finish routes nowhere (the strategist holds no subscription — that
+    // is the point); let it settle before the review round.
+    await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === round1.deliveries[0].session_id),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+
+    // (d) The review — the slow layer, poked on demand: the strategist's own
+    // clock is cron, so drive it through an operator-added subscription. Its
+    // composed prompt must carry the briefing section with the operator's
+    // report — the upward channel, witnessed end to end. (The prompt itself
+    // QUOTES the heading once; the real section is the second occurrence —
+    // the tp8 lesson.)
+    await client.createSubscription({ event_type: TP15_POKE, worker: STRATEGIST })
+    const review = await runRound(client, TP15_POKE, 'Weekly review: read the newest report and retune.')
+    const reviewSession = await client.getSession(review.deliveries[0].session_id)
+    const headingCount = (reviewSession.composed_prompt ?? '').split(TP15_HEADING).length - 1
+    expect(headingCount, "the strategist's briefing must carry the report section").toBe(2)
+    expect(reviewSession.composed_prompt ?? '').toContain(TP15_REPORT_MARK)
+
+    // The rewrite landed, with its rationale, from the strategist's session.
+    const rewrite = await waitForConfigAction(client, 'worker_prompt_write', 180_000)
+    expect(rewrite.rationale).toBe(TP15_RATIONALE)
+    expect(rewrite.actor_worker).toBe(STRATEGIST)
+    expect(rewrite.actor_session).not.toBe('')
+    expect(rewrite.payload).toMatchObject({ name: OPERATOR })
+    expect(String(rewrite.payload.system_prompt)).toContain(TP15_MARKER)
+    expect((await client.getWorker(OPERATOR)).system_prompt).toContain(TP15_MARKER)
+    // Let the strategist settle (its finish routes nowhere).
+    await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === review.deliveries[0].session_id),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+
+    // (e) Round 2 — the fast layer, improved: the operator's reply switches
+    // on the rewritten prompt's marker being in its composed prompt. Where-vs-
+    // when: behaviour proves delivery, not just storage.
+    const round2 = await runRound(client, TP15_EVENT, 'Sort the afternoon intake, please.')
+    const reply2 = await assistantReply(client, round2.deliveries[0].session_id)
+    expect(reply2, 'round 2 must run under the strategist-amended prompt').toContain(TP15_SWITCH)
+    expect(reply2).not.toContain(TP15_CONFIRM)
+
+    // The ledger balances: exactly one rewrite, and it names the operator.
+    expect(await client.configEvents({ action: 'worker_prompt_write' })).toHaveLength(1)
+  })
+})
+
+// ── R2 / tp16 — escalation@v1 (entry 11) ────────────────────────────────────
+
+// One worker, two cases, two outcomes. The routine case settles `ok` with no
+// attention requested; the risky case calls request_human_attention and the
+// delivery PARKS at `awaiting_human` with no ended_at — a pause, not an end
+// (S4's assertion pattern: delivery status + the §9 envelope stamp, never the
+// reply text alone). Round discrimination is event text (TP16-CASE-ROUTINE /
+// TP16-CASE-RISKY): the two jobs are separate sessions of the same worker,
+// and the case text is the only thing that differs.
+
+const WARDEN = 'tp16-warden'
+const TP16_EVENT = 'tp16.case'
+const TP16_MISSION = 'You run the records desk for the orchard.'
+// Byte-for-byte with e2e/mock-scripts/topologies.json:
+const TP16_ROUTINE_TASK = 'TP16-CASE-ROUTINE: file the daily stock count.'
+const TP16_RISKY_TASK = 'TP16-CASE-RISKY: purge the entire archive.'
+const TP16_HANDLED = 'TP16-HANDLED'
+
+test.describe('R2 — escalation@v1', () => {
+  test.describe.configure({ mode: 'serial' })
+  test.setTimeout(300_000)
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-tp16')
+  })
+
+  test.afterEach(async () => {
+    await client.cleanup()
+  })
+
+  test('routine settles ok; the risky case parks for a human', async () => {
+    test.skip(!process.env.STACK_MOCK_SCRIPT, NEEDS_SCRIPT)
+
+    const body: TopologyBody = {
+      name: 'escalation',
+      version: 'v1',
+      answers: { 'worker-name': WARDEN, 'inbound-event-type': TP16_EVENT, mission: TP16_MISSION },
+    }
+
+    // (a) Preview: the smallest working shape — one worker, one inbound edge,
+    // no schedules — and the valve is really in the charter.
+    const preview = await client.previewTopology(body)
+    expect(preview.applicable).toBe(true)
+    expect(preview.diff.new_workers).toEqual([WARDEN])
+    expect(preview.diff.new_subscriptions).toEqual([{ event_type: TP16_EVENT, worker: WARDEN }])
+    expect(preview.diff.new_schedules).toEqual([])
+    const row = preview.bundle.workers[0]!
+    expect(row.system_prompt).toContain('request_human_attention')
+    expect(row.system_prompt).toContain('the correct outcome, not a failure')
+
+    // (b) Apply.
+    await applyAndVerify(client, body, preview)
+
+    // (c) The routine case: handled to completion — delivery ok, scripted
+    // handled marker, and the envelope says no attention was requested.
+    const routine = await runRound(client, TP16_EVENT, TP16_ROUTINE_TASK)
+    const routineReply = await assistantReply(client, routine.deliveries[0].session_id)
+    expect(routineReply).toContain(TP16_HANDLED)
+    const finishedRoutine = await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === routine.deliveries[0].session_id),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+    expect(
+      finishedRoutine.find((e) => e.envelope.session_id === routine.deliveries[0].session_id)!.envelope
+        .attention_requested,
+    ).toBe(false)
+
+    // (d) The risky case: no runRound here — that helper waits for `ok`, and
+    // the whole point is that this delivery must NOT reach `ok`. It parks.
+    const event = await client.postEvent({ type: TP16_EVENT, text: TP16_RISKY_TASK })
+    const parked = await client.waitForDeliveries(
+      (rows) => rows.some((d) => d.status === 'awaiting_human'),
+      { event_id: event.id, timeoutMs: 180_000 },
+    )
+    const waiting = parked.find((d) => d.status === 'awaiting_human')!
+    // A pause, not an end (§8.4): parked open-ended, by a fresh job.
+    expect(waiting.ended_at).toBe(0)
+    expect(waiting.session_id).not.toBe(routine.deliveries[0].session_id)
+
+    // …and the §9 stamp marks the work knowingly half-done.
+    const finishedRisky = await client.waitForEvents(
+      (rows) => rows.some((e) => e.envelope.session_id === waiting.session_id),
+      { type: 'worker.finished', timeoutMs: 120_000 },
+    )
+    expect(
+      finishedRisky.find((e) => e.envelope.session_id === waiting.session_id)!.envelope.attention_requested,
+    ).toBe(true)
+
+    // The ledger balances: one ok delivery, one parked, nothing else.
+    expect((await client.listDeliveries({ status: 'ok' })).length).toBe(1)
+    expect((await client.listDeliveries({ status: 'awaiting_human' })).length).toBe(1)
   })
 })

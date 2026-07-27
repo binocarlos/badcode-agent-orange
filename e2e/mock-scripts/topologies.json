@@ -460,6 +460,163 @@
           ]
         }
       ]
+    },
+    {
+      "match": "TP14-ARG-ONE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-VERDICT-ONE: weighed debater one's cold-store argument; verdict as it stands: store the apples cold. This argument pushes the verdict toward yes; no dissent from it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP14-ARG-TWO",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-VERDICT-TWO: weighed debater two's drying-rack argument; verdict as it stands: still the cold store, with debater two's dissent noted explicitly."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp14-debater-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-ARG-ONE: my position is the cold store — apples keep longest at low temperature. My whole case is in this reply."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp14-debater-2,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-ARG-TWO: my position is drying racks — dried apples never rot. My whole case is in this reply."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp15-strategist,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The newest operator report shows unbounded time on a task. Retuning the operator's standing orders."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp15-op-1",
+                "system_prompt": "You are tp15-op-1, operator 1 of 1 — the fast, tactical layer.\n[TP15-TIMEBOX-RULE] Timebox every task and say so in your reply.",
+                "rationale": "the operator's reports show it never timeboxes its work"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Amended the operator's standing orders; the next task runs improved."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP15-TIMEBOX-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP15-SWITCH: task done inside a timebox, per my standing orders."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp15-op-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Task handled. Filing my report for the long-horizon layer."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP15-REPORT: handled the intake task but spent unbounded time on it; no timebox was set.",
+                "labels": { "kind": "tp15-reports" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP16-CASE-RISKY",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "This case asks me to purge the archive — irreversible and outside policy. Stopping to ask."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__request_human_attention",
+              "input": {
+                "message": "The tp16 case asks for an archive purge, which is irreversible. Confirm before I act; nothing is purged until you answer."
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Paused for a human decision; nothing was done."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP16-CASE-ROUTINE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP16-HANDLED: filed the stock count under the usual policy; fully reversible, no escalation needed."
+            }
+          ]
+        }
+      ]
     }
   ]
 }
