@@ -24,6 +24,12 @@ DinD daemon). The pre-built HTTP host is `go/cmd/agentd` — see [15 — Standal
 3. **Plugins** — in-image tool plugins ([07](07-in-image-agent.md)) and browser render plugins
    ([05](05-event-streaming.md#rendering-in-the-web-package)), plus the base image the sessions launch from.
 
+> **This document describes the engine only.** Agent Orange also ships a **product layer** — projects,
+> workers, memory, events, schedules, named images and skills — which sits on these seams rather than
+> beside them. It is entirely optional to a host, and where it plugs in is collected under
+> *[Product-layer seams](#product-layer-seams)* below. The spec is [`docs/product/`](product/); the
+> operator's guide is [18](18-workers-memory-events.md). Do not read this file as the whole system.
+
 For placing sessions across more than one worker (sticky placement, horizontal scale), see
 [13 — Fleet placement](13-fleet-placement.md); this doc constructs a single-worker Runner and notes
 where the fleet seam takes over.
@@ -36,15 +42,20 @@ where the fleet seam takes over.
 |---|---|---|---|---|
 | `RunnerStore` | `agentkit` | **Yes** | `agentdb.Store` (Postgres, `agentdb.Open`) · `extension/sqlitestore` (`sqlitestore.Open`, dev) | `agentkittest.NewMemStore()` |
 | `extension.BlobStore` | `extension` | **Yes** (byte backend for artifacts + snapshots) | `extension/filesblob` (`filesblob.NewBlobStore`) · `extension/gcsblob` (`gcsblob.NewBlobStore`) | `agentkittest.NewMemBlobs()` |
-| `extension.BlobStoreFactory` | `extension` | Only when building user images (`Deps.Blobs`) | `extension/gcsblob` (`gcsblob.NewBlobStoreFactory`) | `agentkittest.NewMemBlobsFactory()` |
+| `extension.BlobStoreFactory` | `extension` | No — `Deps.Blobs` is vestigial (see below) | `extension/gcsblob` (`gcsblob.NewBlobStoreFactory`) | `agentkittest.NewMemBlobsFactory()` |
 | `extension.ScopedClaimsIssuer` | `extension` | **Yes** | `extension/devclaims` (`devclaims.New`) — dev only | `agentkittest.StaticClaims{Token: "..."}` |
 | `artifacts.ArtifactStore` | `artifacts` | **Yes** | `extension/blobartifacts` (`blobartifacts.New`) · `filesblob.NewArtifactStore` | `artifacts.NewMock()` |
 | `execenv.ExecutionEnvironment` | `execenv` | **Yes** (Fleet OR Env) | `execenv/docker` (`dockerdind.NewDinD`) | `execenv.NewMock()` |
 | `imageregistry.ImageRegistry` | `imageregistry` | **Yes** | `imageregistry/blobarchive` (`blobarchive.New`) · `imageregistry/ociregistry` (`ociregistry.New`) | `imageregistry.NewMock()` |
-| `extension.SessionContextProvider` | `extension` | No — default `""` | host-written | leave `nil` |
+| `extension.SessionContextProvider` | `extension` | No — default `""` | `go/cmd/agentd/sessioncontext.go` | leave `nil` |
 | `extension.TokenUsageLogger` | `extension` | No — no-op | host-written | leave `nil` |
 | `extension.ArtifactEnricher` | `extension` | No — identity | host-written | leave `nil` |
 | `extension.Metrics` | `extension` | No — no-op | host-written | leave `nil` |
+| `agentkit.ImageResolver` (`Deps.Images`) | `agentkit` | No — but see below | `go/cmd/agentd/imageresolver.go` | a stub returning a fixed ref |
+| `agentkit.WorkerEventStore` (`Deps.WorkerEvents`) | `agentkit` | No — no internal events | `agentdb.Store` | leave `nil` |
+| `agentkit.SnapshotCatalog` (`Deps.Snapshots`) | `agentkit` | No — no snapshot reaping | `agentdb.Store` | leave `nil` |
+| `agentkit.CustomImageCatalog` (`Deps.CustomImages`) | `agentkit` | No — launch ids ignored | host-written | leave `nil` |
+| `agentkit.SkillCatalog` (`Deps.SkillCatalog`) | `agentkit` | No — hoisted skills not catalogued | host-written | leave `nil` |
 
 **Required?** is grounded in `NewRunner` nil-handling in `go/agentkit.go`:
 
@@ -52,17 +63,27 @@ where the fleet seam takes over.
   wrapped as a one-worker fleet automatically (the shim).
 - `Registry`, `Store`, `Artifacts`, `Claims` — no explicit nil-guard in `NewRunner`, but any nil here
   panics at first use. Treat as required.
-- `Blobs` (the `BlobStoreFactory`) — required only when the Runner builds **user images**
-  (`BuildUserImage`); nil otherwise disables artifact copy-in for user images.
+- `Blobs` (the `BlobStoreFactory`) — vestigial today. It was for user-image artifact copy-in, and
+  the `Runner` interface has **no `BuildUserImage` method** to exercise it (see
+  [03](03-image-registry.md#user-images--curated-artifacts-built-via-snapshot-roadmap)). `nil` is
+  correct for every current host.
 - `SessionContext`, `TokenLogger`, `Enricher`, `Metrics` — documented in `Deps` as optional; the
   runner skips them when nil (contributes `""` / no-op / identity).
 - `Events` — optional; nil builds a `Store`-backed event sink.
 - `HTTPClient` — optional; nil is replaced with `&http.Client{}` (no timeout, correct for SSE).
+- **`Images`** — optional, but conditionally fatal. Nil means "this host has no image catalogue",
+  which is fine *until* a `SessionContext` arrives carrying a `WorkerImage`: the Runner then fails the
+  launch with `ErrLaunchImageUnresolvable` rather than falling back to the base image. If your
+  `SessionContextProvider` can ever set `WorkerImage`, you must wire `Images`.
+- **`Snapshots`** — optional; nil disables the snapshot TTL reaper whatever `Policy.SnapshotReapInterval`
+  says. It must be a store **without** `agentdb.InstallConfigEventGuard` armed: the reaper tombstones
+  a guarded projection table outside the config-event seam on purpose (storage GC is not a
+  configuration decision).
 
 Note that the plain `extension.BlobStore` is **not** itself a `Deps` field. It is a building block:
 you pass one into `filesblob.NewArtifactStore`/`blobartifacts.New` (the artifact store) and into
 `blobarchive.New` (the snapshot registry). The `BlobStoreFactory` is the only blob type wired
-directly into `Deps` (as `Deps.Blobs`).
+directly into `Deps` (as `Deps.Blobs`), and nothing in the Runner reads it today.
 
 ---
 
@@ -81,7 +102,7 @@ runner, err := agentkit.NewRunner(agentkit.Deps{
 	Artifacts: artStore,  // artifacts.ArtifactStore
 	Claims:    claims,    // extension.ScopedClaimsIssuer
 
-	// Blob factory — required only for user-image builds; nil otherwise.
+	// Blob factory — vestigial (no BuildUserImage on Runner). nil.
 	Blobs: nil, // extension.BlobStoreFactory
 
 	// Optional; nil falls back to the documented default.
@@ -90,11 +111,19 @@ runner, err := agentkit.NewRunner(agentkit.Deps{
 	Enricher:       nil, // extension.ArtifactEnricher       → identity
 	Metrics:        nil, // extension.Metrics               → no-op
 
+	// Product-layer seams; all optional, all nil on a bare engine host.
+	Images:       nil, // agentkit.ImageResolver     → no §13 catalogue (see above)
+	WorkerEvents: nil, // agentkit.WorkerEventStore  → no worker.finished/failed events
+	Snapshots:    nil, // agentkit.SnapshotCatalog   → no snapshot TTL reaping
+	CustomImages: nil, // agentkit.CustomImageCatalog → CustomImageID ignored
+	SkillCatalog: nil, // agentkit.SkillCatalog       → hoisted skills not catalogued
+
 	Policy: agentkit.Policy{
 		BaseImage:      "agentkit-sandbox:dev",
 		AgentPort:      3010,             // in-image agent port (default 3010)
 		ArchiveTimeout: 24 * time.Hour,   // 0 disables the idle snapshot+destroy loop
 		MaxConcurrent:  20,
+		SnapshotReapInterval: 0,          // >0 + Deps.Snapshots runs the TTL reaper
 		SessionEnv: map[string]string{    // model-provider config for the in-image agent
 			"ANTHROPIC_BASE_URL": "http://model-proxy:4000",
 		},
@@ -194,8 +223,10 @@ to pre-populate an `agentdb.Session` row.
 **Purpose.** Byte backend for artifacts and snapshot archives. Keys are opaque strings scoped to one
 namespace (a session or a global bucket); the interface is intentionally minimal so it maps cleanly to
 GCS, S3, Azure Blob Storage, or a local filesystem. A `BlobStoreFactory` mints namespace-scoped
-`BlobStore`s — one per session, or one for a named global namespace — and is what the Runner uses for
-user-image artifact copy-in.
+`BlobStore`s — one per session, or one for a named global namespace. It was added for user-image
+artifact copy-in; with no `BuildUserImage` on the `Runner`, `Deps.Blobs` has no live caller and `nil`
+is correct. The plain `BlobStore` is very much in use — it backs the artifact store and the snapshot
+registry.
 
 ```go
 // BlobStore is the byte backend for a single scoped namespace (a session or a
@@ -309,7 +340,7 @@ every call.
 **Source:** `go/artifacts/artifacts.go`
 
 **Purpose.** Persists and retrieves individual user-facing files the agent produces (reports, charts,
-generated web apps). Distinct from session snapshots (whole-filesystem images for suspend/resume); see
+generated web apps). Distinct from session snapshots (whole-filesystem images for archive/restore); see
 [06 — Artifacts](06-artifacts.md) for the full state machine.
 
 ```go
@@ -358,6 +389,7 @@ type Artifact struct {
 	MimeType     string
 	FileSize     int64
 	Source       string            // "tool" | "auto" | "upload" — write-once
+	IsDir        bool              // when true, BlobPath is a PREFIX and bytes are one-blob-per-file
 	Meta         map[string]string // host-specific fields live here to keep the type portable
 }
 ```
@@ -381,8 +413,9 @@ lost      → [terminal] 410 Gone
 - `MarkLost` is called by the runner on `Destroy`. It must promote rather than lose if a `BlobPath`
   already exists (bytes are safe).
 - `Load` returns `(art, nil, nil)` for metadata-only artifacts (status `lost`, no bytes).
-- `CaptureFolder` is a building block for user images: it saves a tar stream as one artifact entry so
-  the runner can seed a new container image from the blob.
+- `CaptureFolder` saves a tar stream as one artifact entry (`IsDir` true, `BlobPath` a prefix). It
+  was designed as the seeding half of user-image builds, which do not exist on the `Runner` today —
+  treat it as the folder-slurp primitive ([06](06-artifacts.md)) and nothing more.
 
 **Gotchas.**
 
@@ -406,7 +439,7 @@ never-regress / write-once rules.
 
 **Purpose.** Runs agent sessions inside container images. The orchestration core above it is
 engine-agnostic; only this interface and its concrete adapter know about Docker, K8s, or any other
-runtime. All session lifecycle operations (provision, suspend, resume, snapshot, exec, destroy) flow
+runtime. All session lifecycle operations (provision, exec, snapshot, destroy, status, recover) flow
 through it.
 
 ```go
@@ -415,13 +448,6 @@ type ExecutionEnvironment interface {
 	// returns a handle including the address to reach its HTTP server. The image
 	// must already be present (see ImageRegistry.EnsurePresent).
 	Provision(ctx context.Context, spec ProvisionSpec) (*Instance, error)
-
-	// Suspend stops the instance while preserving its filesystem so Resume can
-	// bring it back cheaply. Idempotent if already suspended.
-	Suspend(ctx context.Context, id InstanceID) error
-
-	// Resume restarts a suspended instance and blocks until its agent is healthy.
-	Resume(ctx context.Context, id InstanceID) (*Instance, error)
 
 	// Exec runs a one-off command inside the instance (workspace listing, secret
 	// scan, snapshot prep) — not the agent turn itself.
@@ -436,8 +462,10 @@ type ExecutionEnvironment interface {
 	// Status reports the live runtime state of an instance.
 	Status(ctx context.Context, id InstanceID) (*InstanceStatus, error)
 
-	// Recover lists instances this environment still manages (e.g. labelled
-	// containers that survived a host restart) for re-adoption on startup.
+	// Recover lists the RUNNING instances this environment still manages (e.g.
+	// labelled containers that survived a host restart) for re-adoption on
+	// startup. Managed containers found stopped are reclaimed (destroyed)
+	// rather than returned.
 	Recover(ctx context.Context) ([]*Instance, error)
 
 	// OnDestroy registers a callback fired when any instance is destroyed.
@@ -453,7 +481,6 @@ type ExecutionEnvironment interface {
 ```go
 // Capabilities lets the orchestration core adapt policy to the engine.
 type Capabilities struct {
-	SupportsSuspend  bool
 	SupportsSnapshot bool
 	SupportsExec     bool
 
@@ -469,13 +496,16 @@ type Capabilities struct {
 **Contract / lifecycle.**
 
 - `Provision` must block until the in-image agent is healthy at `Instance.Address` and return an
-  `*Instance` whose `Address` is reachable from the host.
-- `Suspend` is optional (`Capabilities.SupportsSuspend`). If unsupported, return `nil` — the runner
-  falls back to snapshot-and-destroy.
-- `Resume` must re-provision from a suspended state and again block until healthy.
+  `*Instance` whose `Address` is reachable from the host. Set `Instance.Image` to the image actually
+  launched: the Runner reads it back as the snapshot's diff base.
+- **There is no `Suspend`/`Resume` on this interface.** The lifecycle is Running-or-Archived, with no
+  warm suspended state: `agentkit.Runner.Resume` either finds a live container or restores the
+  session from its snapshot handle and provisions a fresh one. Nothing to implement.
 - `Exec` backs workspace listing, secret scanning, and artifact capture (via tar). If `SupportsExec`
   is false, snapshot-prep and folder capture are unavailable.
 - `Snapshot` captures the *running* filesystem; the result is passed to `ImageRegistry.Persist`.
+  `Runner.Snapshot` refuses outright on a `TenancyShared` worker or one reporting
+  `SupportsSnapshot: false`.
 - `OnDestroy` callbacks fire in (or just after) `Destroy`. The runner registers one to call
   `ArtifactStore.MarkLost`.
 - `Recover` is called by `Runner.Start` to re-adopt orphaned instances from a previous process.
@@ -485,6 +515,34 @@ type Capabilities struct {
 when `Env` is auto-wrapped) prevents shared-tenancy environments (`TenancyShared`) from running where
 `Policy.TrustedWorkload` is false unless `IsolationTier >= TierVM`. Violating it returns an error from
 `NewRunner`.
+
+### `execenv.CapacityReporter` — optional, and worth implementing
+
+An environment whose provisioning is bounded by a finite host resource should also implement:
+
+```go
+// ErrNoCapacity means the environment cannot provision another session right now
+// because a finite HOST resource is fully committed — not because anything about
+// the session is wrong.
+var ErrNoCapacity = errors.New("execution environment is at capacity")
+
+type CapacityReporter interface {
+	// Capacity returns nil when another session could be provisioned, and an error
+	// wrapping ErrNoCapacity — in the environment's own vocabulary — when it could not.
+	Capacity() error
+}
+```
+
+The point is that "this session is lost, re-create it" and "this host is full" read identically from
+above and are operationally opposite: the first invites a retry, the second says every retry fails
+until something is deleted. Conflating them cost a day of misdiagnosis. `Provision` failures that are
+capacity failures must wrap `ErrNoCapacity` so `errors.Is` finds it; `Capacity()` lets a caller ask
+*without* attempting a provision. The Runner uses both: `recordCreateOutcome` refuses to write a
+capacity failure onto the session row as a "why it failed" reason (it stops being true the moment
+another session is deleted), and `restoreToWorker` asks `Capacity()` **before** telling a caller a
+session is lost — which is exactly the misdiagnosis this seam was added to stop. `docker.DinD`
+implements it over its host-port pool; an environment that does not implement it is simply never
+asked, and callers must not infer capacity from its absence.
 
 **Shipped reference.** `execenv/docker.DinD` — Docker-in-Docker adapter, provisions per-session
 containers over TCP. Construct with `dockerdind.NewDinD(dockerdind.DinDConfig{DockerHost,
@@ -500,7 +558,7 @@ PortRangeStart, PortRangeEnd, GatewayIP, ...})`. See `go/execenv/docker/dind.go`
 **Source:** `go/imageregistry/registry.go`
 
 **Purpose.** Makes images available to the execution environment and durably persists images produced
-by running sessions (snapshots for suspend/resume, user images for personalisation). Orthogonal to
+by running sessions (snapshots for archive/restore, and the product layer's named images). Orthogonal to
 `ExecutionEnvironment` — the two are composed, not merged.
 
 ```go
@@ -565,11 +623,18 @@ type Capabilities struct {
 
 - `EnsurePresent` is called before every `Provision`. Idempotent and cheap when the image is already
   present. For `blobarchive` this is a no-op (the image is loaded by `Materialize`).
-- `Build` produces user images on a cache miss and must yield a runnable ref accessible to the engine.
+- `Build` is **not implemented by either shipped adapter** (both error, both report
+  `SupportsBuild: false`); images are built by the host's own Dockerfiles. Implement it only if you
+  have a builder; nothing in the Runner calls it today.
 - `Resolve` is the cache-hit fast path. If the content-hash tag exists (locally or in the registry),
   return it with `ok=true` so `Build` is skipped.
-- `Persist` / `Materialize` are the snapshot round-trip for suspend/resume. The returned `Handle` is
-  stored via `RunnerStore.SetSnapshotHandle` and passed back to `Materialize` on `Resume`.
+- `Persist` / `Materialize` are the snapshot round-trip for archive/restore. The returned `Handle` is
+  stored via `RunnerStore.SetSnapshotHandle` and passed back to `Materialize` on `Resume`. The
+  product layer's `image_create` reuses the same pair through `Runner.Snapshot`, storing the handle
+  on a catalogue row instead ([03](03-image-registry.md#the-named-image-catalogue-product-layer-13)),
+  so `Remove` is also what the snapshot TTL reaper calls to delete bytes.
+- `SupportsDiff` is honoured but no shipped adapter sets it: `blobarchive.Persist` is a full
+  `docker save` → gzip → blob. Do not size storage assuming deltas.
 - `PortableHandles` must be `true` for multi-worker fleets ([13](13-fleet-placement.md)).
 
 **Gotchas.**
@@ -596,31 +661,67 @@ type Capabilities struct {
 
 **Source:** `go/extension/extension.go`
 
-**Purpose.** Resolves the per-session context (system prompt append and base image) for a turn. The
-runner appends the returned `SystemPrompt` to the session system prompt before sending the message to
-the in-image agent; it never interprets the content.
+**Purpose.** Resolves a session's **defaults**: its system prompt, its image chain, and its MCP
+servers. This is the single seam through which the product layer's project/worker configuration
+reaches the engine — `agentd`'s implementation is `go/cmd/agentd/sessioncontext.go`, which reads
+`project_settings` and `workers`.
 
 ```go
 // SessionContext carries the resolved per-session context.
 type SessionContext struct {
 	SystemPrompt string
-	BaseImage    string
+
+	// BaseImage is the host's resolved image chain: the WINNER of
+	// worker image > project base_image > the host's own global default.
+	// May hold an unresolved §13 pointer (see WorkerImage).
+	BaseImage string
+
+	// ProjectBaseImage is `project_settings.base_image` — carried separately so
+	// the Runner can tell WHICH layer won. Consulted only when it equals
+	// BaseImage. A §13 catalogue name resolves per §13.3; anything the catalogue
+	// does not know is used verbatim, as this setting always behaved.
+	ProjectBaseImage string
+
+	// WorkerImage is the worker's §13 image pointer — a bare `name` (latest) or
+	// `name:version` (pinned) — carried UNRESOLVED, because resolution belongs to
+	// the image catalogue and not to this seam. When set, the Runner resolves it
+	// through Deps.Images and a failure FAILS THE LAUNCH.
+	WorkerImage string
+
+	// MCPServers is the project ∪ worker MCP configuration the host resolved.
+	// These are DEFAULTS: the Runner merges them UNDER the create request's
+	// servers, so a request entry wins a name collision.
+	MCPServers agentdb.MCPServers
 }
 
-// SessionContextProvider assembles the per-session context for a turn. The Runner
-// appends the result to systemPrompt and never interprets it. Default (nil)
+// SessionContextProvider assembles the per-session context. Default (nil)
 // contributes "".
 type SessionContextProvider interface {
 	Resolve(ctx context.Context, scope ContextScope) (*SessionContext, error)
 }
 ```
 
-**Required?** No. Pass `nil` in `Deps.SessionContext`; the runner contributes an empty context
-segment.
+`extension` imports `agentdb` for `MCPServers`; that is the one place the seam package depends on the
+store package.
 
-**Contract.** Must be fast (called on the hot path of every `SendMessage`). Return an empty
-`SystemPrompt` if there is nothing to add — do not error for missing config. Errors propagate to the
-caller as a 500-equivalent.
+**Required?** No. Pass `nil` in `Deps.SessionContext`; the runner contributes an empty context
+segment, no MCP defaults, and no image pointer — the pre-product-layer path exactly.
+
+**Contract / lifecycle.** It is called in two different places, for two different reasons:
+
+- **Once per `CreateSession`**, before anything is provisioned. That call supplies `MCPServers` (which
+  are then merged and persisted onto the session row) *and* the image chain. A **provider error fails
+  the create** — a session that silently launched without the project's tools, or from a different
+  environment than it was pointed at, is the failure this seam exists to prevent.
+- **Per turn in `SendMessage`**, but *only* for its `SystemPrompt`, and *only* when the session row
+  carries no `composed_prompt`. A session created from a composed worker job uses that stored string
+  verbatim for its whole life and never consults this provider again — see `turnSystemPrompt` in
+  `go/runner.go`. For a plain interactive session the provider's `SystemPrompt` **is** the system
+  prompt sent to the sandbox; the Runner does not append it to anything. (The sandbox in turn passes
+  it as `append` to Claude Code's stock preset — [07](07-in-image-agent.md) §4.)
+
+Must be fast: the per-turn call is on the hot path of every `SendMessage`. Return an empty
+`SystemPrompt` if there is nothing to add — do not error for missing config.
 
 ---
 
@@ -699,6 +800,64 @@ verbatim.
 
 ---
 
+## Product-layer seams
+
+The interfaces above are the whole engine. **They are not the whole system.** On top of the Runner
+sits a product layer — projects, workers, labeled memory, an event spine with subscriptions and cron
+schedules, named images and skills, and a config log — specified in [`docs/product/`](product/) and
+operated per [18](18-workers-memory-events.md). It is implemented in `go/agentdb` (Postgres only) and
+`go/cmd/agentd`, and it reaches the engine through four `Deps` fields and one existing seam.
+
+A host that wants only the runtime can ignore this section entirely: every field below is nil-safe,
+and nil means "this host has no product layer".
+
+| `Deps` field | Interface | What the product layer puts there | nil means |
+|---|---|---|---|
+| `SessionContext` | `extension.SessionContextProvider` | `agentd`'s reader of `project_settings` + `workers` — the prompt, image chain and MCP union | no project/worker defaults |
+| `Images` | `agentkit.ImageResolver` | `agentd`'s `catalogueImageResolver` — §13 name/version → materialised launch ref | no image catalogue; a `WorkerImage` then **fails the launch** |
+| `WorkerEvents` | `agentkit.WorkerEventStore` | `*agentdb.Store` — appends `worker.finished` / `worker.failed` when a session is a worker job | no internal events emitted |
+| `Snapshots` | `agentkit.SnapshotCatalog` | `*agentdb.Store` — the catalogue the snapshot TTL reaper sweeps | no reaping |
+
+```go
+// One resolver, bound in two places, deliberately: a worker JOB and an
+// interactive chat with the same worker must not launch from different images.
+type ImageResolver interface {
+	Resolve(ctx context.Context, project, ref string) (string, error)
+}
+
+// ErrImageRefNotInCatalogue: "that string names no image of mine" — as opposed to
+// "it names one of mine and I cannot produce it". Only the first may fall through
+// to using the string as a literal registry reference, and only for
+// project_settings.base_image. See 03.
+var ErrImageRefNotInCatalogue = errors.New("image reference names no catalogue image")
+```
+
+`WorkerEventStore` is `WorkerJobStore` (the read half: resolve the session's project, worker and
+triggering event) plus `CreateProjectEvent` and `SetSessionAttentionRequested`. `*agentdb.Store`
+satisfies it. `SnapshotCatalog` is `ListCatalogueProjects` + `GetProjectSettings` +
+`ListCustomImageVersions` + `MarkCustomImageReaped`.
+
+### The `agentdb` config-event guard
+
+`agentdb.Store` is not merely a `RunnerStore` implementation any more; it carries the product layer's
+whole store surface (workers, memories, project events, subscriptions, schedules, project settings,
+images, skills, leases, config events). One invariant matters to anyone embedding or extending it:
+
+**Every configuration mutation writes its `config_events` row in the same transaction as the change
+itself**, via `Store.WithConfigEvent` (`go/agentdb/config_events.go`). `ConfigMutations` registers
+which store methods mutate which projection tables; a conformance test fails the build if a
+registered mutation method can bypass the seam, and `agentdb.InstallConfigEventGuard(gdb)` installs
+GORM callbacks that reject any INSERT/UPDATE/DELETE against a guarded table made outside a
+config-event transaction. The guard is **opt-in** — tests arm it; production does not, because a hard
+runtime failure on an unadopted write would take the process down instead of the build. Emission of
+the routable `config.changed` event is a post-commit hook, not part of the transaction.
+
+Two writes are deliberately **outside** the seam because they are runtime facts, not configuration
+decisions: `MarkCustomImageReaped` (storage GC) and `MarkCustomImageResumed` (telemetry). That is why
+`Deps.Snapshots` must be a store with the guard **not** armed.
+
+---
+
 ## Plugin seams
 
 Beyond the Go interfaces, two plugin surfaces let a product extend behaviour end to end:
@@ -754,8 +913,9 @@ not change between shapes.
 The cheapest setup, and the default for unit and integration tests: `execenv.NewMock()` +
 `imageregistry.NewMock()` + `agentkittest.NewMemStore()` + `artifacts.NewMock()` +
 `agentkittest.StaticClaims{}`. No Docker, no database, runs in milliseconds. A local dev loop can
-instead point a single Docker daemon at a shared container; suspend is off and snapshots (if used) are
-local. This is the wiring in the "tests swap every adapter for its mock" snippet above.
+instead point a single Docker daemon at a shared container; snapshots (if used) are local. This is the
+wiring in the "tests swap every adapter for its mock" snippet above. All product-layer `Deps` are nil
+here, so no image catalogue, no worker events and no snapshot reaping.
 
 ### B — DinD + blob archive (what runs today)
 
@@ -777,12 +937,19 @@ This is what `agentd` and the standalone stack run **today**. Real adapters:
 `GCP_REGION`+`GCP_PROJECT`+`GCP_AR_REPO`); defaults preserve the local fs stack. See
 `go/cmd/agentd/backends.go` and [15 — Standalone stack](15-standalone-stack.md).
 
+`agentd` is also where the **product layer** is wired, and only when `DATABASE_URL` names a Postgres
+(`extension/sqlitestore` cannot carry it): `SessionContext` ← `sessioncontext.go`, `Images` ←
+`imageresolver.go`, `WorkerEvents`/`Snapshots` ← `agentdb.Store`, plus the router, the scheduler,
+their shared dispatch gate, and the core MCP server on `POST /mcp`. On the SQLite fallback the router
+never routes and schedules never fire — nothing errors at use time, so the absence is silent. That is
+a property of `agentd`, not of the Runner. See [18](18-workers-memory-events.md).
+
 ### C — Kubernetes + remote registry (future)
 
 The shape the architecture is designed to make possible, but which has **no shipped
-`ExecutionEnvironment` adapter yet**. Each session would be a Pod (`Provision` creates it,
-`Suspend`/`Resume` scale it, `Destroy` deletes it); addressing is by Service/pod-IP, so the DinD port
-pool is simply absent. The registry half already exists: `ociregistry` gives remote push/pull
+`ExecutionEnvironment` adapter yet**. Each session would be a Pod (`Provision` creates it, `Destroy`
+deletes it); addressing is by Service/pod-IP, so the DinD port pool is simply absent — and with it the
+capacity limit `CapacityReporter` exists to report. The registry half already exists: `ociregistry` gives remote push/pull
 (`EnsurePresent` = pull, `Persist` = push) with portable handles, so a fleet spanning K8s workers is
 supported the moment a pod-based environment adapter is written. Snapshotting on K8s is the open
 question ([02 — Execution environment](02-execution-environment.md)): workspace-only volume snapshots,
@@ -819,6 +986,7 @@ runner, _ := agentkit.NewRunner(agentkit.Deps{
 	Artifacts: artStore,
 	Claims:    claims,
 	// Blobs, SessionContext, TokenLogger, Enricher, Metrics: nil → defaults
+	// Images, WorkerEvents, Snapshots: nil → no product layer (see above)
 	Policy: agentkit.Policy{
 		BaseImage: "agentkit-sandbox:dev",
 		AgentPort: 3010,
@@ -836,9 +1004,19 @@ api, _ := httpapi.New(httpapi.Config{
 	Store:     store,
 	Artifacts: artStore,
 	Identity:  identityFromRequest, // host maps the request to an Identity
+	// AgentDB: pgStore — optional, but it is what fills in every product-layer
+	// route below. Only Runner, Store and Identity are actually required.
 })
 http.ListenAndServe(":8099", authMiddleware(api.Mux()))
 ```
+
+`httpapi.Config` also carries the product layer's read/write routes: `ProjectSettings`, `Workers`,
+`Schedules`, `Events`, `ConfigLog`, `ProjectTokenIssuer`, plus `ChatClient` (titlebot) and an
+`ImageResolver` func that maps a host "installation" name to a launch image. Each defaults from
+`AgentDB` when that is set and **answers `501` when left nil with no `AgentDB`** — which is how the
+SQLite fallback degrades. Note the tenancy contract documented on the type: handlers that act on an
+existing session by ID do **not** verify the principal owns it; the host must authorize the session ID
+in its own middleware before the request reaches them.
 
 For tests, swap every adapter for its mock and leave optional fields nil (see the "tests swap"
 snippet under *Constructing the Runner* above).
@@ -852,6 +1030,8 @@ snippet under *Constructing the Runner* above).
 - [02 — Execution environment](02-execution-environment.md) — `ExecutionEnvironment` in depth.
 - [03 — Image registry](03-image-registry.md) — `ImageRegistry` in depth.
 - [06 — Artifacts](06-artifacts.md) — `ArtifactStore` state machine and extraction patterns.
+- [07 — In-image agent](07-in-image-agent.md) — the sandbox contract, including the `mcp_servers`
+  create payload and `POST /skills/install`.
+- [18 — Workers, memory, events](18-workers-memory-events.md) and [`docs/product/`](product/) — the
+  product layer that sits on these seams.
 - `installations/README.md` — installations and image layering (derived-image tree, overlays, `imagetree`).
-</content>
-</invoke>

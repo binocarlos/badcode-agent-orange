@@ -15,6 +15,9 @@ The sandbox has three cleanly separated concerns, each a section below:
 3. **The tool registry** — the in-image plugin seam that decides which tools a turn may call and
    how app-handled tool calls become SSE events.
 
+Two later sections cover what the *host* installs into a session at runtime rather than at build
+time: **MCP servers** (§6) and **skills** (§7).
+
 Its single responsibility:
 
 > Host **N concurrent sessions** keyed by session ID; for each, boot the **harness** named in its
@@ -40,9 +43,10 @@ The control server is TypeScript, but that is not a vendoring decision:
   `child_process`, so the server's language is independent of theirs.
 - It runs *inside* the image regardless of engine, so its language is independent of the host's (Go).
 
-The server is thin generic plumbing. Product-specific behaviour enters only through two seams: the
-**harness** (§4) and the **tool registry** (§5), both populated at build/startup time by the image,
-never by editing the core.
+The server is thin generic plumbing. Product-specific behaviour enters only through three seams: the
+**harness** (§4) and the **tool registry** (§5), both populated at build/startup time by the image;
+and per-session config from the host — **MCP servers** (§6) and **installed skills** (§7), which
+arrive over HTTP at runtime. None of them means editing the core.
 
 ---
 
@@ -55,7 +59,7 @@ implementations in `sandbox/src/routes/`.
 
 | Method · Path | Purpose | Called by |
 |---|---|---|
-| `POST /sessions` `{sessionId, harness?, model?, maxTurns?}` | **Create a session**: boot the named harness + credential pre-check (§4). Idempotent if it already exists with the same harness | Runner `CreateSession` |
+| `POST /sessions` `{sessionId, harness?, model?, maxTurns?, mcp_servers?}` | **Create a session**: validate `mcp_servers`, boot the named harness + credential pre-check (§4). Idempotent if it already exists with the same harness — and re-supplies the MCP config, which is how re-provision refreshes it | Runner `CreateSession` |
 | `DELETE /sessions/:sessionId` | Tear down a session in-process (abort its turns, dispose harness, free maps) | Runner `Destroy` |
 | `GET /health` | Liveness; reports `{status, sessions:[...]}` | Runner health checks, Resume wait |
 | `POST /sessions/:sessionId/query-stream` | Submit a turn **and** stream its SSE in one response (no race window) | Runner `SendMessage` |
@@ -66,10 +70,12 @@ implementations in `sandbox/src/routes/`.
 | `GET /workspace/files`, `GET /workspace/files/*` | List/download workspace files (+ folder slurp for artifacts/user images — [06](06-artifacts.md)) | host artifact extraction |
 | `POST /workspace/scan-secrets` | Scan workspace for secrets | host publish flow |
 | `POST /workspace/snapshot`, `POST /workspace/diff` | Filesystem metadata snapshot/diff | host (optional) |
+| `POST /skills/install` `{name, markdown, install_sh?}` | Write `<skillsDir>/<name>/SKILL.md` and run the install script (§6) | `agentd`'s `skill_install` MCP tool |
 
-All routing is session-scoped: there are no flat single-session routes. `POST
+Session routing is session-scoped: there are no flat single-session routes. `POST
 /sessions/:id/query-stream` lazily creates the session with defaults if it does not yet exist, so a
-turn can arrive before an explicit `POST /sessions`.
+turn can arrive before an explicit `POST /sessions`. `/health`, `/workspace/*` and `/skills/install`
+are container-scoped, not session-scoped.
 
 ### The `query-stream` request shape
 
@@ -127,17 +133,26 @@ single-session design moves into the session/turn layer. `SessionManager`
   before registering the new one; cross-session turns run fully in parallel. Cancelling session A
   never touches session B. `destroy()` aborts all turns, disposes the harness, and calls
   `streamService.closeSession(sessionId)` to free that session's replay buffers.
-- **The outbound proxy header (the tricky part):** the sandbox patches `globalThis.fetch` to stamp
-  `x-session-id` on calls to `ANTHROPIC_BASE_URL`, so the host's model proxy can route each call to
-  the right per-session context. With N sessions in one process a single global value cannot know
-  *which* session is calling. The fix is **`AsyncLocalStorage`** (`sandbox/src/session-context.ts`):
-  the control server runs each turn inside `sessionContext.run({sessionId}, () =>
-  harness.runTurn(...))`, and the patched `fetch` reads `sessionContext.getStore()?.sessionId`
-  (falling back to `config.SESSION_ID` for single-session mode). `ANTHROPIC_BASE_URL` stays
-  process-level; only the header is per-session. CLI harnesses instead get the session ID via spawn
-  env, so this trick is only needed for *in-process* harnesses like the SDK.
-- The fetch patch is installed only when `ANTHROPIC_BASE_URL` is set (see `index.ts`); in
-  direct-API mode there is no proxy to route to.
+- **The outbound proxy header (the tricky part):** the host's model proxy needs to know *which*
+  session each upstream call belongs to, and with N sessions in one process a process-global value
+  cannot say. There are **two** mechanisms, because there are two kinds of caller:
+  - **In-process `fetch`.** The sandbox patches `globalThis.fetch` to stamp `x-session-id` on calls
+    to `ANTHROPIC_BASE_URL`, reading the id from **`AsyncLocalStorage`**
+    (`sandbox/src/session-context.ts`): the control server runs each turn inside
+    `sessionContext.run({sessionId}, () => harness.runTurn(...))`, and the patched `fetch` reads
+    `sessionContext.getStore()?.sessionId` (falling back to `config.SESSION_ID` for single-session
+    mode). The patch is installed only when `ANTHROPIC_BASE_URL` is set (see `index.ts`); in
+    direct-API mode there is no proxy to route to.
+  - **The `claude-code` subprocess.** The shipped SDK harness is *not* fully in-process: the Agent
+    SDK spawns a `claude` subprocess that makes its own API calls and never touches the patched
+    `fetch`. So `ClaudeAgentSdkHarness` starts a **per-turn localhost HTTP proxy**
+    (`startSessionProxy` in `claude-agent-sdk.ts`) that forwards to the real
+    `ANTHROPIC_BASE_URL` — preserving any path prefix — injecting `x-session-id` on every forwarded
+    request, and overrides `ANTHROPIC_BASE_URL` in the subprocess env to point at it. If the proxy
+    fails to start the turn continues without it (untagged), rather than failing.
+
+  `ANTHROPIC_BASE_URL` stays process-level in both cases; only the header is per-session. Future
+  CLI harnesses can take the simpler route and receive the session ID via spawn env.
 
 `StreamService` (`sandbox/src/services/stream-service.ts`) delivers SSE, keeps a bounded replay
 buffer, and coalesces `tool_input_delta`. Streams are keyed by `${sessionId}:${queryId}` so
@@ -205,8 +220,22 @@ refuses **the session**, not the turn. `424 Failed Dependency` is the chosen cod
 `ClaudeAgentSdkHarness` (`claude-agent-sdk.ts`) is the SDK `query()` loop with its Pre/PostToolUse
 hooks, conversation history, and attachment processing behind the interface: it emits via `ctx.emit`,
 honours `ctx.signal`, and keeps history instance-local. It builds the SDK options block from
-`ctx.resolved` — `model` (defaulting to `config.DEFAULT_MODEL`), `disallowedTools`, `mcpServers`,
-`permissionMode: 'bypassPermissions'`. Its credential spec accepts **any one** model credential:
+`ctx.resolved` — `model` (defaulting to `config.DEFAULT_MODEL`), `allowedTools`, `disallowedTools`,
+the merged `mcpServers` (§5), `cwd: '/workspace'`, `settingSources: ['project']`,
+`permissionMode: 'bypassPermissions'`, and the `env` the subprocess is spawned with.
+
+**The composed system prompt is an `append`, not *the* system prompt.** `req.systemPrompt` — the
+string the Runner sends, which for a worker job is the whole composed prompt — is passed as
+`{ type: 'preset', preset: 'claude_code', append: req.systemPrompt }`. Claude Code's stock preset is
+therefore always in front of it. The image's own `/workspace` content is a third, separate layer:
+`cwd: '/workspace'` plus `settingSources: ['project']` is what makes `/workspace/.claude/` project
+settings and skills live (see the app image contract in
+[14](14-host-adapters.md#the-app-image-contract)). No layer is merged into another. When
+`req.systemPrompt` is empty the option is omitted entirely and the bare preset applies.
+
+In direct-subscription mode (`CLAUDE_CODE_OAUTH_TOKEN` set, no `ANTHROPIC_BASE_URL`) the harness
+deletes `ANTHROPIC_API_KEY` from the subprocess env so a leftover dummy or session JWT cannot shadow
+the OAuth token. Its credential spec accepts **any one** model credential:
 
 ```ts
 credentials: {
@@ -233,8 +262,14 @@ Future CLI adapters translate their binary's native event stream into our SSE vo
 `…GeminiCLI`, `…Codex`) and a per-session `Harness` field on `CreateSessionRequest` (empty ⇒ default).
 Harness is fixed at session creation, so `CreateSession` sends it in the `POST /sessions` body after
 Provision + health; `SendMessage`/`Stream`/`Stop` use the session-scoped paths and never re-send it.
-The `UNKNOWN_HARNESS` / `HARNESS_CREDENTIALS_MISSING` responses map to a typed Go error so the host
-can clean up the orphan session row.
+`CreateSessionRequest` also carries `MCPServers map[string]MCPServerConfig` (§6), an alias of
+`agentdb.MCPServers` — the Go types are the source of truth for validation semantics and the TS
+mirrors in `sandbox/src/tools/registry.ts` must be kept in step with them.
+
+The `UNKNOWN_HARNESS` / `HARNESS_CREDENTIALS_MISSING` responses map to `*ErrHarnessUnavailable` so
+the host can clean up the orphan session row; a `400` carrying `INVALID_MCP_SERVERS` maps to
+`*ErrInvalidMCPServers` instead, because "your MCP config is wrong" is a different thing for a host
+to report than "that harness does not exist".
 
 ---
 
@@ -284,7 +319,7 @@ export interface ToolPlugin {
 export interface ToolRegistry {
   builtins(): ToolPlugin[];                 // ask_user, write_file, view_image, screenshot_url
   register(p: ToolPlugin): void;            // product plugins
-  resolve(allowed?: string[]): ResolvedTools;
+  resolve(allowed?: string[], sessionMCPServers?: SessionMCPServers): ResolvedTools;
 }
 ```
 
@@ -295,6 +330,12 @@ resolves the request's allowlist (empty → SDK defaults `Bash`/`WebSearch`/`Web
 tools + `Skill`), and collects every plugin's `MarkerSpec`. Library defaults:
 `disallowedTools = ['Task', 'Write']` (Task = sub-agents; Write is replaced by the safer `write_file`
 builtin) and `permissionMode: 'bypassPermissions'`.
+
+`resolve()` also takes the session's MCP servers (§6). It does **not** resolve or connect them — it
+returns them untouched on `ResolvedTools.sessionMCPServers`, and extends `allowedTools` with one
+`mcp__<name>__*` entry per server, because a server's tool names are not knowable until it connects.
+If a session server shadows an in-image server name, the now-dead per-tool `mcp__<name>__…` entries
+for that name are dropped first, since the harness's spread will replace that server outright.
 
 ### The four builtins
 
@@ -328,14 +369,76 @@ At startup `index.ts` calls `loadProductPlugins(config.PRODUCT_PLUGINS_DIR, tool
 
 ---
 
-## 6. Forward gaps
+## 6. Per-session MCP servers
 
-**Per-session MCP config is not yet plumbed (spec §4, gap G1).** The sandbox currently resolves tools
-**only** from its in-image registry — the four builtins plus whatever `PRODUCT_PLUGINS_DIR` loads.
-There is no way for the *host* to hand a session a set of MCP servers at create time:
-`CreateSessionRequest` has no MCP surface. The spec's §4 closes this by adding
-`MCPServers map[string]MCPServerConfig` to `CreateSessionRequest`, extending the `POST /sessions`
-payload with a snake_case `mcp_servers`, storing it on the session record, and merging those servers
-(never replacing) with the in-image registry when a turn resolves its tools. `Env`/`Headers` values
-support a single whole-value `${VAR}` substitution resolved from the container env at MCP-process
-spawn, failing loudly on an unset variable. See `docs/product/17-product-spec.md` §4 for the full design.
+The sandbox no longer resolves tools only from its in-image registry. The **host** hands a session a
+set of MCP servers at create time, and they are merged over the registry. Design:
+[docs/product/01-session-config.md](product/01-session-config.md) §4 — this section documents the
+in-image half only.
+
+**The wire.** `POST /sessions` accepts `mcp_servers`, snake_case because its inner shape is exactly
+the JSON tags of Go's `agentdb.MCPServerConfig` — a plain marshal is the wire format, no adapter.
+Create is the **only** place this config crosses into the container; a re-provision posts create
+again with the config read back off the session row, and the idempotent-create path refreshes it.
+
+**One transport per server**, validated on create (`validateSessionMCPServers` in
+`sandbox/src/tools/registry.ts`, mirroring `MCPServerConfig.Validate()` in Go):
+
+| Transport | Fields | Becomes |
+|---|---|---|
+| stdio | `command`, `args?`, `env?` | `{ type: 'stdio', command, args?, env? }` |
+| http | `url`, `headers?` | `{ type: 'http', url, headers? }` |
+
+Setting both, or setting `args`/`env` without `command`, or `headers` without `url`, is a `400
+{code: "INVALID_MCP_SERVERS"}` from the create — never a surprise at turn time. Server names must
+match `^[A-Za-z0-9][A-Za-z0-9_-]*$`, because the harness derives `mcp__<name>__*` tool names from
+them.
+
+**Credentials are names, not values.** A value in `env` or `headers` may be a **whole-value**
+`${VAR}` reference — the *name* of an environment variable of the session container. Nothing else:
+`"Bearer ${TOKEN}"` is rejected at validation, because partial interpolation would reach the MCP
+server as a literal string. That restriction is what makes this config safe to persist and display.
+Resolution happens at **spawn time**, in `resolveSessionMCPServers`, against the environment the MCP
+processes will actually inherit — and an unset **or empty** variable throws
+`MCPEnvResolutionError`, which the harness turns into a loud error event. It never spawns a server
+with an unresolved credential. (The value reaches the container from `agentd`'s own environment
+through the `AGENTKIT_MCP_ENV` allowlist — host side, see `go/cmd/agentd/mcpenv.go`.)
+
+**Merge order.** `toolRegistry.resolve(body.tools, sess.mcpServers)` carries the session servers
+through untouched; the harness resolves them and spreads them **last**:
+`{ ...resolved.mcpServers, ...sessionMcpServers }`. Session config therefore wins a name collision
+with the in-image `ui` server. Upstream of this, the Runner has already merged the host's project ∪
+worker defaults *under* the create request's own servers, so a request entry wins there
+(`mergeSessionMCPServers` in `go/runner.go`).
+
+## 7. Installing a skill into a running session
+
+`POST /skills/install` writes `<skillsDir>/<name>/SKILL.md` — `SKILLS_DIR = /workspace/.claude/skills`,
+which is where `cwd: '/workspace'` + `settingSources: ['project']` makes the harness look — and then
+runs the skill's `install_sh`. Spec:
+[docs/product/08-images-and-skills.md](product/08-images-and-skills.md) §14.2.
+
+The route deliberately does **not** look a skill up: there is no database client in the image and
+there must not be one, because "which project's skills may this session read?" is exactly the
+question a session cannot be trusted to answer about itself. `agentd` owns the catalogue and the
+tenancy boundary and POSTs the already-resolved markdown and script down.
+
+What the implementation (`sandbox/src/tools/skill-install.ts`) guarantees:
+
+- **The document is written first and stays written**, even when the script fails — knowing how to do
+  something is useful even when the software did not install, and the caller is told which half
+  worked. Failing to write the document fails the install outright and the script is not attempted.
+- **The script is a file run as `bash <file>` with stdin at `/dev/null`**, not piped to a shell —
+  a script that reads stdin would otherwise consume its own source. An interactive prompt fails
+  rather than hanging.
+- **It runs in its own process group** so a timeout (`INSTALL_TIMEOUT_MS`, 14 minutes — just under
+  `agentd`'s client timeout, so the side that can see the output reports it) kills the whole tree.
+- **Nothing is swallowed.** A non-zero exit, a timeout, or a spawn failure comes back as a `200` with
+  `ok: false` and the captured streams (head + tail kept, `MAX_STREAM_CHARS`). Only a malformed
+  *request* is a `4xx`. A failed install must be a visible failure a worker can react to.
+- The skill name is re-validated against `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` here as well as in Go: it
+  becomes a directory name, and a traversing component would write an arbitrary file into the
+  container.
+
+An installed skill lives only in that container's filesystem. Making it durable means burning the
+session into a catalogue image (`image_create` — [03](03-image-registry.md#the-named-image-catalogue-product-layer-13)).
