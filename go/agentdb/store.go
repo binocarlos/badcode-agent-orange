@@ -57,5 +57,15 @@ func MustOpen(postgresURL string) *Store {
 	return s
 }
 
+// NewStore wraps an already-open *gorm.DB. It runs NO migrations: the caller
+// owns the schema. Open is what production uses.
+//
+// This exists so packages OUTSIDE agentdb can exercise store-backed code
+// against a throwaway sqlite database instead of requiring a live Postgres —
+// extension/dbartifacts' restart test is the first such caller, and proving
+// that artifact metadata survives a restart is worth less if the proof only
+// runs on the machines that have a database.
+func NewStore(gdb *gorm.DB) *Store { return &Store{gdb: gdb} }
+
 // DB returns the underlying *gorm.DB for advanced queries.
 func (s *Store) DB() *gorm.DB { return s.gdb }

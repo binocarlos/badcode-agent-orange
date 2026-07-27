@@ -133,6 +133,11 @@ func (b *BlobStore) List(_ context.Context, prefix string) ([]string, error) {
 // backend-agnostic blobartifacts store (the historical filesystem-specific copy
 // was removed in favour of one shared, tested implementation). Constructor name
 // preserved for the examples/server reference.
+//
+// "Metadata in memory" means NOT DURABLE: the index is lost on restart and its
+// bytes are orphaned. For a metadata-durable store pair any BlobStore with
+// extension/dbartifacts, which is what cmd/agentd wires when DATABASE_URL is
+// set. See docs/06-artifacts.md.
 func NewArtifactStore(blobs *BlobStore) *blobartifacts.ArtifactStore {
 	return blobartifacts.New(blobs)
 }

@@ -34,9 +34,11 @@ import (
 
 	agentkit "github.com/binocarlos/badcode-agent-orange"
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
+	"github.com/binocarlos/badcode-agent-orange/artifacts"
 	dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
 	"github.com/binocarlos/badcode-agent-orange/extension"
 	"github.com/binocarlos/badcode-agent-orange/extension/blobartifacts"
+	"github.com/binocarlos/badcode-agent-orange/extension/dbartifacts"
 	"github.com/binocarlos/badcode-agent-orange/extension/devclaims"
 	"github.com/binocarlos/badcode-agent-orange/extension/embedding"
 	"github.com/binocarlos/badcode-agent-orange/extension/sqlitestore"
@@ -95,7 +97,28 @@ func main() {
 	blobs, closeBlobs, err := newBlobs(ctx, blobCfg)
 	must(err)
 	defer closeBlobs() //nolint:errcheck
-	artStore := blobartifacts.New(blobs)
+
+	// ── Artifact store ───────────────────────────────────────────────────────────
+	// Bytes always go to the BlobStore. The METADATA index is durable only on
+	// Postgres (extension/dbartifacts → `agent_artifacts`): restart agentd and
+	// the rows are still there.
+	//
+	// On the sqlite fallback there is no such table, so the index stays the
+	// in-process map (extension/blobartifacts) it has always been — artifacts
+	// written by this process are listable while it lives and are lost, bytes
+	// orphaned in the bucket, when it exits. That is the pre-existing behaviour,
+	// kept deliberately rather than failing to boot, but it is a real data-loss
+	// mode: it is logged loudly here because nothing later in the run will
+	// mention it. Compose always sets DATABASE_URL.
+	var artStore artifacts.ArtifactStore
+	if agentDB != nil {
+		artStore = dbartifacts.New(agentDB, blobs)
+		log.Printf("[agentd] artifacts=postgres+blob (metadata survives restart)")
+	} else {
+		artStore = blobartifacts.New(blobs)
+		log.Printf("[agentd] artifacts=in-process index — NOT durable: " +
+			"artifact metadata is lost on restart and its bytes orphaned. Set DATABASE_URL.")
+	}
 
 	// ── Claims issuer ────────────────────────────────────────────────────────────
 	// Two secrets, deliberately: jwtSecret verifies API callers and may be empty
