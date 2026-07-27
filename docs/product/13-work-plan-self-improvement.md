@@ -126,9 +126,27 @@ Wave 2 merges (shared files: `cmd/agentd`, `agentdb`, `web`).*
 
 ## Wave 4 — Hypothesis lab + calibration (playbook P3)
 
-*GATED on Wave 3 and on the real-model spend decision (D4 context).* Itemised on unlock:
-dataset generator + trap taxonomy, lab topology seed, calibration run design. **Hard pause for
-Kai before any real-model run.**
+*Wave 3 done. L1/L2 are offline (mock) and proceed; L3's EXECUTION is the hard pause — no
+real-model run without Kai's explicit go (credential mode is also his call: api-key spend vs
+subscription-OAuth terms, AGENTS_RESEARCH §1).*
+
+- [ ] **L1 — Synthetic dataset generator + trap taxonomy.** Deterministic given a seed: datasets
+  (CSV/JSON) + a held-out ground-truth answer per hypothesis. Traps: planted nulls (no effect),
+  confounds (naive correlation says yes, controlled analysis says no), underpowered samples.
+  Unit-tested properties: same seed → same bytes; traps actually trap (a naive estimator run on
+  the generated data reaches the wrong conclusion; a correct one doesn't).
+  *Validation:* whatever suite hosts it (go test or vitest), green + deterministic.
+- [ ] **L2 — hypothesis-lab@v1 topology seed** (catalogue entry 13): investigator +
+  methodology-critic (holds worker_prompt_write on the investigator) + FROZEN fact-checker whose
+  prompt says it compares conclusions against held-out truth it is given (never generates it).
+  Ground truth lives outside the project (harness-side), per AGENTS_RESEARCH §4. Mock e2e in
+  topologies.stack.spec.ts style: apply, one investigation round, critic rewrite lands, frozen
+  boundary holds.
+  *Validation:* go suite + the topologies stack command + learning-stories regression.
+- [ ] **L3 — Calibration runbook + EXECUTION (GATED on Kai).** The Tier B protocol
+  (AGENTS_RESEARCH §7) specialised to the lab: N hypotheses with known answers, accuracy on late
+  vs early hypotheses, planted-null false-confirmation rate, run recording. Writing the runbook
+  is unblocked; RUNNING it against a real model is not.
 
 ## Wave 5+ — Remaining seeds, comparison rig, onboarding, Tier B (playbook P4–P7)
 
