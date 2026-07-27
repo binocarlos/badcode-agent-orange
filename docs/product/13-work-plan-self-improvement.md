@@ -27,6 +27,15 @@ Format and rules follow [`06-work-plan.md`](./06-work-plan.md), which carried 37
   whole request body, which replays prior turns — a marker emitted in a tool call matches later
   requests. Partition rules by worker name first; split before/after with `absent`; distinct
   non-substring worker names.
+- **Contamination flows actor→critic through the transcript** (H0): `worker.finished` event text
+  is the actor's ENTIRE transcript, so the critic's first user message contains the actor's name
+  and full output. The critic's rules must sit ABOVE the actor's in the table — name partitioning
+  alone is not enough; rule order carries it. (Flow is one-directional; the actor never sees the
+  critic's text.)
+- **A critic left subscribed re-fires its script on later rounds** (H0): a fresh critic session
+  starts at turn 0 and serves the same scripted tool_use again, double-writing the rewrite.
+  Retire the critic's subscription once its round settles, or give each round a differentiable
+  critic rule. Bites any story counting config-log entries (S6, S8, S9).
 - **Assert on happens-after signals, never sleeps.** Poll the delivery/event/config-log record.
 - **Port pool**: every job holds a container + host port (ceiling 100). Delete sessions in
   teardown; `./e2e/run-stack-e2e.sh clean` clears leftovers.
@@ -45,7 +54,7 @@ Format and rules follow [`06-work-plan.md`](./06-work-plan.md), which carried 37
 *Spec: [`11-learning-stories.md`](./11-learning-stories.md). Model: `go/modelproxy/script.go`.*
 *Pattern to build on: `e2e/features/acceptance-loop.spec.ts` (seeds a §8.7 org already).*
 
-- [ ] **H0 — Harness + control + canonical story.** One composite mock script
+- [x] **H0 — Harness + control + canonical story.** One composite mock script
   `e2e/mock-scripts/learning-stories.json` (worker-name-partitioned rule blocks); spec file
   `e2e/features/learning-stories.stack.spec.ts` with shared helpers (seed actor+critic+
   subscriptions into a run-scoped project; drive rounds by emitting events via `POST
@@ -145,3 +154,10 @@ Kai before any real-model run.**
   model after, refusing malformed scripts loudly. Wave 1 needs no runner changes.
 - **The scheduler already fires through the event spine** (`CreateProjectEvent` + shared dispatch
   gate), so simulated time needed nothing built. Recorded as standing rule C6.
+- (H0) **`e2e/mock-scripts/README.md` contradicted the mechanism the suite runs on** — it still
+  said system-prompt markers never match, but the 2026-07-26 fix-prompt repair resolved that, and
+  S1's round-1 switch depends on exactly that matching. README fixed in tree; the green run is
+  the proof.
+- (H0) **Transcript contamination and critic re-firing** — promoted to Standing traps above.
+- (H0) **Scriptless runs skip cleanly** — the suite gates on `STACK_MOCK_SCRIPT`, so an ordinary
+  `test mock` run reports 2 skipped and stays green; the stories cost nothing when not asked for.
