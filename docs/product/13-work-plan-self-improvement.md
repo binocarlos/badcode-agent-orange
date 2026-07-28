@@ -144,7 +144,16 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   boundary holds.
   *Validation:* go suite + the topologies stack command + learning-stories regression.
 - [x] **L3 — Calibration runbook** — written: [`14-calibration-runbook.md`](./14-calibration-runbook.md).
-  **EXECUTION remains GATED on Kai** (credential mode + token ceiling are the go-decision).** The Tier B protocol
+  **EXECUTION APPROVED by Kai (2026-07-28): subscription OAuth, attended runs only** (token in
+  `.env`; both credentials coexist — the e2e mode argument selects per run, precedence unchanged).
+  Orchestrator sets `daily_tokens_hard` per arm project (rate-limit guard, not billing).
+- [ ] **L3R — Calibration runner build**: extends the C1 rig to the runbook's protocol —
+  `go/cmd` hypolab dataset generator CLI, arms A/B(/C), per-hypothesis loop with harness-side
+  truth, VERDICT-line convention for parseable conclusions, metrics from the logs (accuracy
+  early-vs-late, planted-null false-confirm rate, confound escape rate, lineage, freeze_refused,
+  tokens). Mock smoke proves mechanics; the real run is orchestrator+Kai, attended.
+- [ ] **L3X — The calibration run itself** (attended, subscription mode): arms A+B minimum on 30
+  hypotheses; results land as a dated record under docs/product/runs/ + a summary in the runbook. The Tier B protocol
   (AGENTS_RESEARCH §7) specialised to the lab: N hypotheses with known answers, accuracy on late
   vs early hypotheses, planted-null false-confirmation rate, run recording. Writing the runbook
   is unblocked; RUNNING it against a real model is not.
@@ -369,4 +378,12 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   determinism holds across environments, not just across the executor's own double run.
 - (C1) **Wanted: a `run-stack-e2e.sh script load/unload` verb** — the rig duplicates the
   load/restore mechanism because `--mock-script` is bolted to the playwright `test` command.
+
+## Publishing (decided 2026-07-28)
+
+- [ ] **PUB — Publish the experiments.** Kai: the calibration and tournament results belong in
+  the README — "we don't know the best org chart; here are the experiments we ran" is the
+  project's honest pitch. After L3X: a Results section in README.md linking the dated records,
+  the rig, and the runbook. The tournament framing to build toward: given a hypothesis and a
+  token budget, which org chart performs best (budget maps to `daily_tokens_*` per arm).
 
