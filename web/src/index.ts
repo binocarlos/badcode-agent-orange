@@ -313,11 +313,15 @@ export {
   SpineRail,
   SpineRow,
   SpineGap,
+  CONSOLE_TOKENS,
   consoleColor,
+  consoleTint,
+  consoleTokenColor,
   spineGlyphColor,
   spineRailColor,
 } from './spine.js'
 export type {
+  ConsoleTokenName,
   SpineGlyphName,
   SpineGlyphProps,
   SpineRailProps,
@@ -328,6 +332,80 @@ export type {
 // Motion's one gate (doc 21 §4.1): CSS cannot pause SMIL, so every animation
 // in the console asks this hook, not a media query.
 export { usePrefersReducedMotion, REDUCED_MOTION_QUERY } from './useReducedMotion.js'
+
+// Feed liveness (W4, doc 21 §4.2 / §5-M4). One integer per (operator, surface)
+// derives the waterline, the "N new" count and what animates; the staging
+// buffer decides what is an arrival; the highlight module decides what an
+// arrival looks like (and what it looks like instead, under reduced motion);
+// the ticker decides which durations are allowed to tick at all.
+export {
+  countNewSince,
+  newItemsSummary,
+  partitionByWatermark,
+  readWatermark,
+  useFeedWatermark,
+  waterlineIndex,
+  waterlineLabel,
+  watermarkKey,
+  writeWatermark,
+} from './watermark.js'
+export type { FeedSurface, FeedWatermark } from './watermark.js'
+export {
+  HIGHLIGHT_CAP,
+  HIGHLIGHT_ENTRANCE_MS,
+  HIGHLIGHT_FADE_MS,
+  HIGHLIGHT_HOLD_MS,
+  HIGHLIGHT_TINT_ALPHA,
+  HIGHLIGHT_TOTAL_MS,
+  NEW_MARKER_LABEL,
+  STATUS_CROSSFADE_MS,
+  STATUS_PULSE_MS,
+  diffStatuses,
+  highlightMarker,
+  highlightSx,
+  statusCrossfadeSx,
+  statusPulseSx,
+} from './feedhighlight.js'
+export type { ConsoleSx, HighlightOptions, HighlightTone } from './feedhighlight.js'
+export {
+  default as useStagedFeed,
+  emptyStagedFeed,
+  flushStagedFeed,
+  stageFeed,
+} from './useStagedFeed.js'
+export type {
+  StagedFeed,
+  StagedFeedState,
+  StageOptions,
+  UseStagedFeedOptions,
+} from './useStagedFeed.js'
+export {
+  default as useElapsedTicker,
+  ageEscalation,
+  coarseAgeLabel,
+  tickIntervalForRows,
+  tickIntervalMs,
+  COARSE_LABEL_REFRESH_MS,
+  ESCALATE_AMBER_SECONDS,
+  ESCALATE_FAULT_SECONDS,
+  TICK_COARSE_AFTER_SECONDS,
+  TICK_COARSE_MS,
+  TICK_FAST_MS,
+} from './useElapsedTicker.js'
+export type { AgeEscalation, UseElapsedTickerOptions } from './useElapsedTicker.js'
+export {
+  FeedWaterline,
+  NewItemsPill,
+  PauseLiveUpdates,
+  useAtHead,
+  useDefaultPaused,
+  PILL_DEBOUNCE_MS,
+} from './components/FeedLiveness.js'
+export type {
+  FeedWaterlineProps,
+  NewItemsPillProps,
+  PauseLiveUpdatesProps,
+} from './components/FeedLiveness.js'
 
 // The Desk fold (DK1) — asks, changes, trouble, computed read-time (§5.2).
 export {
@@ -345,6 +423,7 @@ export {
   deskChangeVerb,
   deskChangeSubject,
   frozenTargetFromText,
+  DESK_EARLIER_CHANGES_LIMIT,
 } from './desk.js'
 export type {
   AttentionRequest,
@@ -363,6 +442,7 @@ export { default as useAttentionRequests } from './useAttentionRequests.js'
 export type { UseAttentionRequestsOptions, AttentionRequestsApi } from './useAttentionRequests.js'
 export {
   default as useDesk,
+  DESK_SURFACE,
   deskLastSeenKey,
   deliveriesAsRequests,
   readDeskLastSeen,
@@ -555,7 +635,7 @@ export { default as TopologyOnboarding } from './components/TopologyOnboarding.j
 export type { TopologyOnboardingProps } from './components/TopologyOnboarding.js'
 
 // Observability + changelog components (F1, owning J4)
-export { default as EventsPage } from './components/EventsPage.js'
+export { default as EventsPage, EVENTS_SURFACE } from './components/EventsPage.js'
 export type { EventsPageProps } from './components/EventsPage.js'
 export { default as EventList } from './components/EventList.js'
 export type { EventListProps } from './components/EventList.js'

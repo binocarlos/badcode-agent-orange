@@ -10,17 +10,24 @@
 // through the History API, so a host that already has a router passes
 // `selected` + `onSelect` and this component never touches the URL.
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Alert, Box, Divider, Stack, Tab, Tabs, Typography } from '@mui/material'
 import useEventsOverview, { type UseEventsOverviewOptions } from '../useEvents.js'
-import { buildEventSearch, eventFromSearch } from '../events.js'
+import { buildEventSearch, deliveryDurationSeconds, eventFromSearch } from '../events.js'
 import type { ConfigEventFetcher } from '../configLog.js'
+import { useFeedWatermark } from '../watermark.js'
+import useElapsedTicker, { tickIntervalForRows } from '../useElapsedTicker.js'
+import usePrefersReducedMotion from '../useReducedMotion.js'
 import EventList from './EventList.js'
 import EventDetail from './EventDetail.js'
 import EventJobHistory from './EventJobHistory.js'
 import EventReplayPanel from './EventReplayPanel.js'
 import ChangelogView from './ChangelogView.js'
 import BenchReportView from './BenchReportView.js'
+import { PauseLiveUpdates } from './FeedLiveness.js'
+
+/** The surface name this page's watermark is stored under (watermark.ts). */
+export const EVENTS_SURFACE = 'events'
 
 export interface EventsPageProps extends UseEventsOverviewOptions {
   /** Project id — scopes the session permalinks this page builds. */
@@ -49,6 +56,14 @@ export interface EventsPageProps extends UseEventsOverviewOptions {
    * not exist (J2/J3). Omit once the route is mounted.
    */
   fetchConfigEvents?: ConfigEventFetcher
+  /**
+   * Poll the lists every N ms. 0 (the default) never polls — a library
+   * component that starts fetching on a timer because it was mounted is a
+   * surprise, so a host that wants a live tail asks for one.
+   */
+  refreshMs?: number
+  /** Show the "Pause live updates" toggle. Default: only while polling. */
+  showPauseToggle?: boolean
 }
 
 type TabKey = 'events' | 'jobs' | 'replay' | 'changelog' | 'bench'
@@ -63,9 +78,57 @@ export default function EventsPage({
   enableBench = true,
   tokenAutoLoad,
   fetchConfigEvents,
+  refreshMs = 0,
+  showPauseToggle,
   ...options
 }: EventsPageProps) {
-  const { events, subscriptions, jobs, loading, error, truncated } = useEventsOverview(options)
+  const reduced = usePrefersReducedMotion()
+  // A reduced-motion operator starts paused: the request is not only about
+  // animation, it is about not being chased down the page.
+  const [paused, setPaused] = useState(reduced)
+  const overview = useEventsOverview(options)
+  const { events, deliveries, subscriptions, jobs, loading, error, truncated } = overview
+
+  // The mark for THIS surface — the same integer scheme the Desk uses, under a
+  // different surface name (watermark.ts), never a second storage scheme.
+  const watermark = useFeedWatermark(EVENTS_SURFACE, projectId)
+
+  // One ticker for the page, at the cadence its own rows ask for: per second
+  // while something is young and running, per minute after, and no timer at
+  // all once everything has finished.
+  const [tickMs, setTickMs] = useState(0)
+  // A caller that pinned `nowSeconds` pinned the whole page's clock, ticker
+  // included — a table of durations must not tick against a different `now`
+  // from the one its rows were joined with.
+  const nowMs = useElapsedTicker({
+    intervalMs: tickMs,
+    paused,
+    nowMs: options.nowSeconds === undefined ? undefined : options.nowSeconds * 1000,
+  })
+  const nowSeconds = Math.floor(nowMs / 1000)
+  const wantedTick = useMemo(
+    () =>
+      tickIntervalForRows(
+        deliveries.map((d) => ({
+          status: d.status,
+          elapsedSeconds: deliveryDurationSeconds(d, nowSeconds) ?? 0,
+        })),
+      ),
+    [deliveries, nowSeconds],
+  )
+  useEffect(() => setTickMs(wantedTick), [wantedTick])
+
+  // The poll, held in a ref so its interval is created once per cadence rather
+  // than rebuilt every render (`reload`'s identity changes with the hook's).
+  const reloadRef = useRef(overview.reload)
+  reloadRef.current = overview.reload
+  useEffect(() => {
+    if (refreshMs <= 0 || paused) return
+    const id = setInterval(() => void reloadRef.current(), refreshMs)
+    return () => clearInterval(id)
+  }, [paused, refreshMs])
+
+  const showPause = showPauseToggle ?? refreshMs > 0
 
   const controlled = controlledSelected !== undefined
   const hasWindow = typeof window !== 'undefined'
@@ -121,6 +184,11 @@ export default function EventsPage({
         <Tab value="replay" label="Replay" />
         {enableChangelog && <Tab value="changelog" label="Changelog" />}
         {enableBench && <Tab value="bench" label="Bench" />}
+        {showPause && (
+          <Box sx={{ ml: 'auto', alignSelf: 'center', pr: 2 }}>
+            <PauseLiveUpdates paused={paused} onChange={setPaused} />
+          </Box>
+        )}
       </Tabs>
       <Divider />
 
@@ -147,6 +215,9 @@ export default function EventsPage({
                 selected={selected}
                 loading={loading}
                 onSelect={select}
+                lastSeenMs={watermark.markMs}
+                nowMs={nowMs}
+                paused={paused}
               />
             </Box>
             <Box sx={{ flex: 1, minWidth: 0, overflowY: 'auto' }}>
@@ -179,6 +250,7 @@ export default function EventsPage({
               title="Job history"
               truncated={truncated}
               tokenAutoLoad={tokenAutoLoad}
+              nowSeconds={nowSeconds}
               {...apiOptions}
             />
           </Box>

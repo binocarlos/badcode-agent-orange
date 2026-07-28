@@ -432,3 +432,31 @@ describe('changelog view', () => {
     expect(await screen.findByText('Created subscription “sub-1”')).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// W4 — feed liveness on the events surface (doc 21 §4.2)
+// ---------------------------------------------------------------------------
+
+describe('liveness (W4)', () => {
+  it('makes the event list a role="log"', async () => {
+    renderPage()
+    await screen.findByText('email.received')
+    expect(screen.getByRole('log', { name: 'Events' })).toBeInTheDocument()
+    expect(screen.queryAllByRole('feed')).toHaveLength(0)
+  })
+
+  it('keeps one always-mounted status region for the pill to announce into', async () => {
+    renderPage()
+    await screen.findByText('email.received')
+    // Mounted while empty on purpose: a live region inserted at the moment it
+    // gains text is a live region that may never be announced.
+    expect(screen.getAllByRole('status').length).toBeGreaterThan(0)
+    expect(screen.queryByTestId('new-items-pill')).toBeNull()
+  })
+
+  it('shows no pause toggle until something actually polls', async () => {
+    renderPage()
+    await screen.findByText('email.received')
+    expect(screen.queryByRole('checkbox', { name: 'Pause live updates' })).toBeNull()
+  })
+})

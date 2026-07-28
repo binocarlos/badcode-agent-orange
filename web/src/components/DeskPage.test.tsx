@@ -299,3 +299,75 @@ describe('degraded and empty', () => {
     expect(screen.getByText('Nothing has failed.')).toBeInTheDocument()
   })
 })
+
+// ---------------------------------------------------------------------------
+// W4 — feed liveness (doc 21 §4.2)
+// ---------------------------------------------------------------------------
+
+describe('liveness', () => {
+  it('hangs each stack off a role="log", not a role="feed"', async () => {
+    renderDesk()
+    await screen.findByText('email-reviewer rewrote email-answerer')
+    const logs = screen.getAllByRole('log')
+    expect(logs.map((l) => l.getAttribute('aria-label'))).toEqual(
+      expect.arrayContaining(['Asks', 'Changes', 'Trouble']),
+    )
+    // `feed` drags in an article-navigation keyboard contract we do not
+    // implement; `log` is chronological and implicitly polite.
+    expect(screen.queryAllByRole('feed')).toHaveLength(0)
+  })
+
+  it('draws a labelled waterline with the already-read changes beneath it', async () => {
+    // A mark AFTER the fixture's config events: everything is "already read",
+    // so the line has something to divide.
+    window.localStorage.setItem(deskLastSeenKey('acme'), String(NOW_MS))
+    renderDesk()
+    const changes = await screen.findByRole('region', { name: 'Changes' })
+    // The window is still the window — the empty line stays honest…
+    expect(
+      within(changes).getByText('Nothing has changed since you last looked.'),
+    ).toBeInTheDocument()
+    // …and the divider now says WHEN, with the change underneath it.
+    const rule = await within(changes).findByRole('separator')
+    expect(rule.getAttribute('aria-label')).toMatch(/^New since /)
+    expect(within(changes).getByText('email-reviewer rewrote email-answerer')).toBeInTheDocument()
+  })
+
+  it('carries no waterline on a first visit — a line above everything says nothing', async () => {
+    renderDesk()
+    const changes = await screen.findByRole('region', { name: 'Changes' })
+    expect(within(changes).queryByRole('separator')).toBeNull()
+  })
+
+  it('offers the pause toggle exactly where something is actually polling', async () => {
+    renderDesk()
+    await screen.findByText('email-reviewer rewrote email-answerer')
+    // Nothing polls by default, so there is nothing to pause and no switch.
+    expect(screen.queryByRole('checkbox', { name: 'Pause live updates' })).toBeNull()
+  })
+
+  it('shows the toggle when the host asked for a live Desk', async () => {
+    renderDesk({ refreshMs: 60_000 })
+    await screen.findByText('email-reviewer rewrote email-answerer')
+    expect(screen.getByRole('checkbox', { name: 'Pause live updates' })).toBeInTheDocument()
+  })
+
+  it('reports its ask count up, so the shell badge need not fetch again (X7)', async () => {
+    const onAsksCount = vi.fn()
+    renderDesk({ onAsksCount })
+    await screen.findByText('email-answerer · awaiting_human · 2h 40m')
+    await waitFor(() => expect(onAsksCount).toHaveBeenCalledWith(1))
+  })
+
+  it('announces an ask coarsely while its ticking headline stays aria-hidden', async () => {
+    renderDesk()
+    const headline = await screen.findByText('email-answerer · awaiting_human · 2h 40m')
+    // The digits change every second; a screen reader must not read them out.
+    expect(headline).toHaveAttribute('aria-hidden')
+    expect(
+      screen.getByText('email-answerer · awaiting_human · waiting about 2 hours'),
+    ).toBeInTheDocument()
+    // And past an hour it says so in words, not only in colour.
+    expect(screen.getByText('waiting over 1h')).toBeInTheDocument()
+  })
+})

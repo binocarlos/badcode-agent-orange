@@ -665,11 +665,24 @@ describe('trouble', () => {
 
 describe('the whole fold', () => {
   it('answers the three questions in order, and nothing else', () => {
-    expect(Object.keys(buildDesk(input({})))).toEqual(['asks', 'changes', 'trouble'])
+    // `earlierChanges` is the waterline's tail (W4): the changes the operator
+    // had already read, kept so "since you last looked" can be a visible line
+    // rather than only a filter.
+    expect(Object.keys(buildDesk(input({})))).toEqual([
+      'asks',
+      'changes',
+      'earlierChanges',
+      'trouble',
+    ])
   })
 
   it('is empty on an empty project — the first-run state is the page\'s job, not the fold\'s', () => {
-    expect(buildDesk(input({}))).toEqual({ asks: [], changes: [], trouble: [] })
+    expect(buildDesk(input({}))).toEqual({
+      asks: [],
+      changes: [],
+      earlierChanges: [],
+      trouble: [],
+    })
   })
 
   it('is pure: the same input twice gives deep-equal output', () => {

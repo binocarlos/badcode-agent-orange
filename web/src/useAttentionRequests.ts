@@ -25,6 +25,11 @@ export interface UseAttentionRequestsOptions extends ConfigApiOptions {
   state?: 'open' | 'all'
   /** Rows to ask for; 0 leaves the server's own default alone. */
   limit?: number
+  /**
+   * Fetch at all. Default true. `false` mounts without issuing a request, so
+   * two components wanting the same list do not both ask for it (X7).
+   */
+  enabled?: boolean
 }
 
 export interface AttentionRequestsApi {
@@ -53,11 +58,11 @@ function looksUnwired(message: string): boolean {
 export default function useAttentionRequests(
   options: UseAttentionRequestsOptions = {},
 ): AttentionRequestsApi {
-  const { endpoint = ATTENTION_ENDPOINTS.list, state = 'open', limit = 0 } = options
+  const { endpoint = ATTENTION_ENDPOINTS.list, state = 'open', limit = 0, enabled = true } = options
   const { request } = useConfigApi(options)
 
   const [requests, setRequests] = useState<AttentionRequest[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState<string | null>(null)
   const [available, setAvailable] = useState(true)
 
@@ -87,7 +92,7 @@ export default function useAttentionRequests(
   // fetch per distinct query, and an unstable `request` identity cannot loop.
   const loadedFor = useRef<string | null>(null)
   const key = `${state} ${limit} ${endpoint}`
-  if (loadedFor.current !== key) {
+  if (enabled && loadedFor.current !== key) {
     loadedFor.current = key
     void reload()
   }

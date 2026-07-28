@@ -316,11 +316,27 @@ export interface BuildDeskInput {
   lastSeenMs: number
   /** Used to build actor-session permalinks, as buildChangelog does. */
   projectId?: string
+  /**
+   * How many already-seen changes to keep BELOW the waterline. Default 10.
+   *
+   * §3's critique of this screen: "since you last looked" was a filter, not a
+   * visible line — the operator could see what was new but never what it was
+   * new relative to. The window is still the window (`changes` is unchanged);
+   * these are the few rows underneath it that give the divider something to
+   * divide.
+   */
+  earlierChangesLimit?: number
 }
 
 export interface Desk {
   asks: DeskAsk[]
   changes: DeskChange[]
+  /**
+   * Changes at or before the mark, newest first, capped. Empty when the
+   * operator has never looked — a waterline at the top of the list, with
+   * everything below it, says nothing.
+   */
+  earlierChanges: DeskChange[]
   trouble: DeskTrouble[]
 }
 
@@ -344,9 +360,11 @@ export interface Desk {
  * is a signal rather than a fault.
  */
 export function buildDesk(input: BuildDeskInput): Desk {
+  const { fresh, earlier } = buildDeskChangeStacks(input)
   return {
     asks: buildDeskAsks(input),
-    changes: buildDeskChanges(input),
+    changes: fresh,
+    earlierChanges: earlier,
     trouble: buildDeskTrouble(input),
   }
 }
@@ -444,10 +462,26 @@ function buildDeskAsks(input: BuildDeskInput): DeskAsk[] {
   return asks.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id))
 }
 
+/** The default depth of the "earlier" tail under the waterline. */
+export const DESK_EARLIER_CHANGES_LIMIT = 10
+
+function buildDeskChangeStacks(input: BuildDeskInput): {
+  fresh: DeskChange[]
+  earlier: DeskChange[]
+} {
+  const { lastSeenMs, earlierChangesLimit = DESK_EARLIER_CHANGES_LIMIT } = input
+  const all = buildDeskChanges(input)
+  const fresh = all.filter((change) => change.createdAt > lastSeenMs)
+  // Never looked ⇒ everything is "new", so there is nothing for a line to
+  // separate and no tail to show. Same rule `waterlineIndex` applies.
+  if (lastSeenMs <= 0) return { fresh: all, earlier: [] }
+  const earlier = all.filter((change) => change.createdAt <= lastSeenMs)
+  return { fresh, earlier: earlierChangesLimit <= 0 ? [] : earlier.slice(0, earlierChangesLimit) }
+}
+
 function buildDeskChanges(input: BuildDeskInput): DeskChange[] {
-  const { configEvents, lastSeenMs, projectId = '' } = input
+  const { configEvents, projectId = '' } = input
   return buildChangelog(configEvents, { projectId })
-    .filter((entry) => entry.createdAt > lastSeenMs)
     .map((entry): DeskChange => {
       const byAgent = entry.actorWorker !== ''
       const actor = byAgent ? entry.actorWorker : 'you'
