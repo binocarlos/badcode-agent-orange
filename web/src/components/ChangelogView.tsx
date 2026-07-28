@@ -19,6 +19,7 @@
 // this view says plainly that the log is written but not served there, rather
 // than rendering an empty history that reads as "nothing has changed".
 
+import type React from 'react'
 import { useState } from 'react'
 import {
   Alert,
@@ -31,8 +32,12 @@ import {
   Stack,
   TextField,
   Typography,
+  type Theme,
 } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import useConfigLog, { type UseConfigLogOptions } from '../useConfigLog.js'
+import { consoleColor } from '../spine.js'
+import { usePrefersReducedMotion } from '../useReducedMotion.js'
 import { formatConfigTimestamp, type ChangelogEntry, type DiffLine } from '../configLog.js'
 
 export interface ChangelogViewProps extends Omit<UseConfigLogOptions, 'query'> {
@@ -199,10 +204,13 @@ function ChangelogEntryCard({
 
       {entry.diff && (
         <Box sx={{ mt: 1.5 }}>
-          <Typography variant="caption" color="text.secondary">
-            +{entry.diff.added} −{entry.diff.removed} against the previous version
-          </Typography>
-          <DiffBlock lines={entry.diff.lines} />
+          <DiffBlock
+            lines={entry.diff.lines}
+            collapsible
+            added={entry.diff.added}
+            removed={entry.diff.removed}
+            summaryNote="against the previous version"
+          />
         </Box>
       )}
 
@@ -236,10 +244,66 @@ function ChangelogEntryCard({
   )
 }
 
+/** The design's §3.3 tokens, per mode — the fallback when the host theme has
+ *  no named entries, copied here for the same reason `spine.tsx` copies them:
+ *  `web/` is a component library and cannot import the host's augmentation. */
+const DIFF_TOKENS = {
+  light: { ember: '#B3541E', fault: '#8F2B2B' },
+  dark: { ember: '#E0873F', fault: '#D96C6C' },
+} as const
+
+/** A diff line's tint: a wash of the named colour, never the raw colour.
+ *  The band is the *secondary* cue — the +/− gutter glyph carries the meaning
+ *  on its own, so the diff survives greyscale, a still screenshot and a
+ *  colour-blind reader (§4.1 rule 4). */
+function diffTint(theme: Theme, kind: 'add' | 'del'): { bg: string; fg: string } {
+  const dark = theme.palette.mode === 'dark'
+  const token = kind === 'add' ? 'ember' : 'fault'
+  const base = consoleColor(theme, token, DIFF_TOKENS[dark ? 'dark' : 'light'][token])
+  return { bg: alpha(base, dark ? 0.22 : 0.12), fg: base }
+}
+
+/** The first changed line, shortened — the summary's "what kind of change". */
+function firstHunk(lines: DiffLine[]): string {
+  const line = lines.find((l) => l.type !== 'ctx')
+  if (!line) return ''
+  const glyph = line.type === 'add' ? '+' : '-'
+  const text = line.text.trim()
+  return glyph + (text.length > 56 ? `${text.slice(0, 55)}…` : text)
+}
+
+export interface DiffBlockProps {
+  lines: DiffLine[]
+  /** Collapse behind a `+n −m` summary (every feed does; §4.2 disclosure). */
+  collapsible?: boolean
+  /** Counts for the summary line. Derived from `lines` when omitted. */
+  added?: number
+  removed?: number
+  /** Trailing words on the summary after the counts. */
+  summaryNote?: string
+  /** Start open (a diff the operator navigated to, not one in a feed). */
+  defaultOpen?: boolean
+}
+
 /** The diff, rendered the way a diff is read: +/− gutters, monospaced.
- *  Exported because the worker lineage (design §7.1) renders the same diff. */
-export function DiffBlock({ lines }: { lines: DiffLine[] }) {
-  return (
+ *  Exported because the worker lineage (design §7.1) renders the same diff.
+ *
+ *  In a feed it is `collapsible`: a `<details>`/`<summary>` — which buys the
+ *  whole keyboard and screen-reader contract for free — whose body opens on
+ *  the `grid-template-rows: 0fr → 1fr` trick (the child MUST carry
+ *  `min-height: 0`, or it never collapses). 200ms; snap under reduced motion. */
+export function DiffBlock({
+  lines,
+  collapsible = false,
+  added,
+  removed,
+  summaryNote = '',
+  defaultOpen = false,
+}: DiffBlockProps) {
+  const reduced = usePrefersReducedMotion()
+  const [open, setOpen] = useState(defaultOpen)
+
+  const body = (
     <Paper
       variant="outlined"
       aria-label="Prompt diff"
@@ -248,16 +312,10 @@ export function DiffBlock({ lines }: { lines: DiffLine[] }) {
       {lines.map((line, i) => (
         <Box
           key={i}
-          sx={{
-            px: 1,
-            whiteSpace: 'pre-wrap',
-            bgcolor:
-              line.type === 'add'
-                ? 'success.light'
-                : line.type === 'del'
-                  ? 'error.light'
-                  : 'transparent',
-            opacity: line.type === 'ctx' ? 0.7 : 1,
+          sx={(theme: Theme) => {
+            if (line.type === 'ctx') return { px: 1, whiteSpace: 'pre-wrap', opacity: 0.7 }
+            const tint = diffTint(theme, line.type)
+            return { px: 1, whiteSpace: 'pre-wrap', bgcolor: tint.bg, color: tint.fg }
           }}
         >
           {line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' '}
@@ -265,6 +323,49 @@ export function DiffBlock({ lines }: { lines: DiffLine[] }) {
         </Box>
       ))}
     </Paper>
+  )
+
+  if (!collapsible) return body
+
+  const plus = added ?? lines.filter((l) => l.type === 'add').length
+  const minus = removed ?? lines.filter((l) => l.type === 'del').length
+  const hunk = firstHunk(lines)
+
+  return (
+    <Box component="details" open={open} sx={{ mt: 0.5 }}>
+      <Box
+        component="summary"
+        onClick={(e: React.MouseEvent) => {
+          // Controlled, so the body can animate instead of the browser
+          // snapping the element open.
+          e.preventDefault()
+          setOpen((v) => !v)
+        }}
+        sx={{
+          cursor: 'pointer',
+          listStyle: 'none',
+          fontSize: 12,
+          color: 'text.secondary',
+          '&::-webkit-details-marker': { display: 'none' },
+        }}
+      >
+        {/* One text node on purpose: testing-library reads direct text
+            children, and this line is asserted verbatim. */}
+        {`${open ? '▾' : '▸'} +${plus} −${minus}${summaryNote !== '' ? ` ${summaryNote}` : ''}${
+          hunk !== '' ? ` · ${hunk}` : ''
+        }`}
+      </Box>
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateRows: open ? '1fr' : '0fr',
+          transition: reduced ? 'none' : 'grid-template-rows 200ms ease',
+        }}
+      >
+        {/* min-height:0 is the half of the 0fr→1fr trick everyone forgets. */}
+        <Box sx={{ overflow: 'hidden', minHeight: 0 }}>{body}</Box>
+      </Box>
+    </Box>
   )
 }
 

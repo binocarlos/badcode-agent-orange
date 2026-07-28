@@ -313,6 +313,10 @@ export type {
   SpineGapProps,
 } from './spine.js'
 
+// Motion's one gate (doc 21 §4.1): CSS cannot pause SMIL, so every animation
+// in the console asks this hook, not a media query.
+export { usePrefersReducedMotion, REDUCED_MOTION_QUERY } from './useReducedMotion.js'
+
 // The Desk fold (DK1) — asks, changes, trouble, computed read-time (§5.2).
 export {
   ATTENTION_ENDPOINTS,
@@ -535,7 +539,7 @@ export type { EventJobHistoryProps } from './components/EventJobHistory.js'
 export { default as EventReplayPanel } from './components/EventReplayPanel.js'
 export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
 export { default as ChangelogView, ACTION_FILTERS, DiffBlock } from './components/ChangelogView.js'
-export type { ChangelogViewProps } from './components/ChangelogView.js'
+export type { ChangelogViewProps, DiffBlockProps } from './components/ChangelogView.js'
 
 // The bench — the comparison rig's report, read from a dropped file (BR1).
 export {

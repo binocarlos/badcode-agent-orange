@@ -8,8 +8,10 @@
 // appends a new prompt write like any other. There is no revert path, because
 // the log has no undo and pretending otherwise would be a lie about history.
 
+import { useEffect, useState } from 'react'
 import { Alert, Box, Button, Paper, Stack, Typography } from '@mui/material'
 import { formatConfigTimestamp } from '../configLog.js'
+import { usePrefersReducedMotion } from '../useReducedMotion.js'
 import type { LineageVersion } from './WorkerLineage.js'
 
 export interface WorkerPromptVersionProps {
@@ -32,6 +34,21 @@ export default function WorkerPromptVersion({
   onRestore,
   onClose,
 }: WorkerPromptVersionProps) {
+  // Folding to a version used to teleport: the live prompt was replaced with a
+  // different prompt in the same box, and the operator lost their place. The
+  // history slides out from under the banner instead — 150ms, the shortest
+  // duration that reads as "this came from up there" (§5 / doc 21 §3).
+  const reduced = usePrefersReducedMotion()
+  const [entered, setEntered] = useState(false)
+  useEffect(() => {
+    if (reduced || typeof requestAnimationFrame !== 'function') {
+      setEntered(true)
+      return
+    }
+    const id = requestAnimationFrame(() => setEntered(true))
+    return () => cancelAnimationFrame(id)
+  }, [reduced])
+
   return (
     <Box sx={{ p: 3, maxWidth: 880 }}>
       <Alert severity="info" sx={{ mb: 2 }} data-testid="version-banner">
@@ -39,6 +56,16 @@ export default function WorkerPromptVersion({
         the live prompt
       </Alert>
 
+      <Box
+        data-testid="version-fold"
+        data-entered={entered ? 'true' : 'false'}
+        sx={{
+          overflow: 'hidden',
+          opacity: entered ? 1 : 0,
+          transform: entered ? 'translateY(0)' : 'translateY(-8px)',
+          transition: reduced ? 'none' : 'opacity 150ms ease-out, transform 150ms ease-out',
+        }}
+      >
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
         The system prompt of <code>{workerName}</code>, as this version wrote it.
       </Typography>
@@ -68,6 +95,7 @@ export default function WorkerPromptVersion({
         Restoring writes this text forward as a new version, with a reason naming the change it
         came from. Nothing is erased.
       </Typography>
+      </Box>
     </Box>
   )
 }

@@ -239,10 +239,16 @@ function LineageRow({
 
           {entry.diff && (
             <Box sx={{ mt: 1.5 }}>
-              <Typography variant="caption" color="text.secondary">
-                +{entry.diff.added} −{entry.diff.removed} against the previous version
-              </Typography>
-              <DiffBlock lines={entry.diff.lines} />
+              {/* Collapsed by default: the rationale is the point of the
+                  lineage, and it is never folded — the diff is the detail
+                  behind it (§4.2 disclosure). */}
+              <DiffBlock
+                lines={entry.diff.lines}
+                collapsible
+                added={entry.diff.added}
+                removed={entry.diff.removed}
+                summaryNote="against the previous version"
+              />
             </Box>
           )}
 
