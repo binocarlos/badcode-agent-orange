@@ -7,7 +7,7 @@
 // than an invented endpoint.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { useConfigApi, withRationale, type ConfigApiOptions } from './configApi.js'
 import { DEFAULT_ENDPOINTS } from './plugins.js'
 import { coerceWorker, WORKER_ENDPOINTS, workerBody, type Worker, type WorkerDraft } from './workers.js'
 import type { AgentSessionListItem } from './types.js'
@@ -25,11 +25,13 @@ export interface WorkersApi {
   /** Load/save/delete failure, as the server phrased it. */
   error: string | null
   reload: () => Promise<void>
-  /** PUT a worker. Returns the stored row the server echoed back, or null on
-   *  failure (the reason lands in `error`). */
-  save: (draft: WorkerDraft) => Promise<Worker | null>
-  /** DELETE a worker. Returns true on success. */
-  remove: (name: string) => Promise<boolean>
+  /** PUT a worker, with the operator's one-line reason (design B3 / K2).
+   *  Returns the stored row the server echoed back, or null on failure (the
+   *  reason lands in `error`). */
+  save: (draft: WorkerDraft, rationale?: string) => Promise<Worker | null>
+  /** DELETE a worker. The route has no body, so the reason rides
+   *  `?rationale=`. Returns true on success. */
+  remove: (name: string, rationale?: string) => Promise<boolean>
 }
 
 export default function useWorkers(options: UseWorkersOptions = {}): WorkersApi {
@@ -65,13 +67,13 @@ export default function useWorkers(options: UseWorkersOptions = {}): WorkersApi 
   }
 
   const save = useCallback(
-    async (draft: WorkerDraft): Promise<Worker | null> => {
+    async (draft: WorkerDraft, rationale = ''): Promise<Worker | null> => {
       setError(null)
       try {
         const stored = await request<unknown>(workerEndpoint(draft.name), {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(workerBody(draft)),
+          body: JSON.stringify(workerBody(draft, rationale)),
         })
         const worker = coerceWorker(stored)
         // Replace in place when it already exists so the list does not reorder
@@ -93,10 +95,10 @@ export default function useWorkers(options: UseWorkersOptions = {}): WorkersApi 
   )
 
   const remove = useCallback(
-    async (name: string): Promise<boolean> => {
+    async (name: string, rationale = ''): Promise<boolean> => {
       setError(null)
       try {
-        await request<void>(workerEndpoint(name), { method: 'DELETE' })
+        await request<void>(withRationale(workerEndpoint(name), rationale), { method: 'DELETE' })
         setWorkers((prev) => prev.filter((w) => w.name !== name))
         return true
       } catch (err) {

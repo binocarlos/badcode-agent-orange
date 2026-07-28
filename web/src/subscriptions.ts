@@ -52,21 +52,27 @@ export function newSubscriptionDraft(project = ''): SubscriptionDraft {
  *  `max_firings_per_hour` and `enabled` are pointers on the wire, where an
  *  absent field means "unchanged/default" — so both are ALWAYS sent. Omitting
  *  `enabled` to mean false is exactly how a disabled subscription silently
- *  comes back on. */
-export function subscriptionBody(s: SubscriptionDraft): {
+ *  comes back on.
+ *
+ *  `rationale` is the operator's one-line reason, threaded into the config
+ *  event (design B3 / K2), and omitted when empty so an absent reason reads as
+ *  absent — the same contract `scheduleBody` has. */
+export function subscriptionBody(s: SubscriptionDraft, rationale = ''): {
   event_type: string
   filter: Record<string, unknown>
   worker: string
   max_firings_per_hour: number
   enabled: boolean
+  rationale?: string
 } {
-  return {
+  const body = {
     event_type: s.event_type.trim(),
     filter: s.filter,
     worker: s.worker.trim(),
     max_firings_per_hour: s.max_firings_per_hour,
     enabled: s.enabled,
   }
+  return rationale.trim() === '' ? body : { ...body, rationale: rationale.trim() }
 }
 
 /** Field name → human-readable problem. Filter entries key as `filter.<key>`.

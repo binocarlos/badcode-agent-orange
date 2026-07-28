@@ -52,6 +52,15 @@ func (h *Handlers) GetProjectSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, ps)
 }
 
+// projectSettingsBody is the settings row plus the operator's optional reason
+// (design B3). Embedded rather than listed field-by-field so the settings shape
+// stays defined in exactly one place: encoding/json promotes the embedded
+// struct's fields, so the wire shape is the row's fields plus `rationale`.
+type projectSettingsBody struct {
+	agentdb.ProjectSettings
+	Rationale string `json:"rationale"`
+}
+
 // PutProjectSettings writes the whole settings object (§5: no patch semantics).
 // A `project` field in the body is ignored: the JWT decides the project.
 func (h *Handlers) PutProjectSettings(w http.ResponseWriter, r *http.Request) {
@@ -59,15 +68,16 @@ func (h *Handlers) PutProjectSettings(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var body agentdb.ProjectSettings
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var wire projectSettingsBody
+	if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	body := wire.ProjectSettings
 	body.Project = project // identity wins for tenancy, as on every other write
 	body.UpdatedAt = 0     // stamped by the store, never by the caller
 
-	ps, err := store.PutProjectSettings(r.Context(), &body, humanEdit())
+	ps, err := store.PutProjectSettings(r.Context(), &body, humanEditBecause(wire.Rationale))
 	if err != nil {
 		writeProjectSettingsError(w, err)
 		return

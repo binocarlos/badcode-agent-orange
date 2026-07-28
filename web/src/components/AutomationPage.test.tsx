@@ -118,6 +118,12 @@ function renderPage(props: Partial<React.ComponentProps<typeof AutomationPage>> 
   )
 }
 
+// K2: a subscription edit carries a reason, so the save button stays disabled
+// until the "Why?" field has one. (The schedule editor's own reason field is
+// older and still optional — it is labelled "Rationale".)
+const explain = (why = 'the reviewer should see every answered mail') =>
+  userEvent.type(screen.getByLabelText('Why?'), why)
+
 describe('AutomationPage — subscriptions', () => {
   it('lists them and opens one into the editor', async () => {
     renderPage()
@@ -133,13 +139,18 @@ describe('AutomationPage — subscriptions', () => {
     const type = await screen.findByLabelText('Event type')
     await userEvent.clear(type)
     await userEvent.type(type, 'email.*')
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save subscription/i }))
 
     await waitFor(() => expect(writes()).toHaveLength(1))
     const [write] = writes()
     expect(write.method).toBe('PUT')
     expect(write.url).toContain('/agent/subscriptions/sub-1')
-    expect(write.body).toMatchObject({ event_type: 'email.*', enabled: true })
+    expect(write.body).toMatchObject({
+      event_type: 'email.*',
+      enabled: true,
+      rationale: 'the reviewer should see every answered mail',
+    })
     // Absent means "unchanged" on the wire, so both must always be present.
     expect(Object.keys(write.body)).toEqual(
       expect.arrayContaining(['event_type', 'filter', 'worker', 'max_firings_per_hour', 'enabled']),
@@ -151,12 +162,19 @@ describe('AutomationPage — subscriptions', () => {
     await userEvent.click(await screen.findByRole('button', { name: /new subscription/i }))
     await userEvent.type(await screen.findByLabelText('Event type'), 'invoice.received')
     await userEvent.type(screen.getByLabelText('Worker'), 'book-keeper')
+    // Complete in every other respect, and still refused without a reason (K2).
+    expect(screen.getByRole('button', { name: /create subscription/i })).toBeDisabled()
+    await explain('invoices were piling up unread')
     await userEvent.click(screen.getByRole('button', { name: /create subscription/i }))
 
     await waitFor(() => expect(writes()).toHaveLength(1))
     expect(writes()[0].method).toBe('POST')
     expect(writes()[0].url).toMatch(/\/agent\/subscriptions$/)
-    expect(writes()[0].body).toMatchObject({ event_type: 'invoice.received', worker: 'book-keeper' })
+    expect(writes()[0].body).toMatchObject({
+      event_type: 'invoice.received',
+      worker: 'book-keeper',
+      rationale: 'invoices were piling up unread',
+    })
   })
 
   it('will not save a pattern the router cannot express', async () => {
@@ -165,6 +183,7 @@ describe('AutomationPage — subscriptions', () => {
     const type = await screen.findByLabelText('Event type')
     await userEvent.clear(type)
     await userEvent.type(type, 'e*mail')
+    await explain()
     expect(await screen.findByText(/trailing wildcard/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save subscription/i })).toBeDisabled()
   })

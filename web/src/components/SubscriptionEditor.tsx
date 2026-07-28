@@ -50,10 +50,11 @@ export interface SubscriptionEditorProps {
   /** The subscription being edited. Omit (with isNew) to create one. */
   subscription?: Subscription | null
   isNew?: boolean
-  /** Save handler — the parent owns the API call (useSubscriptions().save). */
-  onSave: (draft: SubscriptionDraft) => void | Promise<unknown>
+  /** Save handler — the parent owns the API call (useSubscriptions().save).
+   *  The second argument is the operator's one-line reason (design B3 / K2). */
+  onSave: (draft: SubscriptionDraft, rationale: string) => void | Promise<unknown>
   /** Delete handler. Omitted ⇒ no delete button. */
-  onDelete?: (id: string) => void | Promise<unknown>
+  onDelete?: (id: string, rationale: string) => void | Promise<unknown>
   error?: string | null
   saving?: boolean
   /** Known worker names for the picker. Free text without them. */
@@ -85,6 +86,7 @@ export default function SubscriptionEditor({
   const [draft, setDraft] = useState<SubscriptionDraft>(seed)
   const [filterText, setFilterText] = useState(() => formatJsonObject(seed().filter))
   const [filterError, setFilterError] = useState<string | null>(null)
+  const [rationale, setRationale] = useState('')
   const [dirty, setDirty] = useState(false)
 
   // Re-seed on identity change, render-phase (see WorkerEditor's note).
@@ -96,6 +98,7 @@ export default function SubscriptionEditor({
     setDraft(next)
     setFilterText(formatJsonObject(next.filter))
     setFilterError(null)
+    setRationale('')
     setDirty(false)
   }
 
@@ -105,7 +108,12 @@ export default function SubscriptionEditor({
   }
 
   const fieldErrors = useMemo(() => validateSubscription(draft), [draft])
-  const canSave = !saving && filterError === null && Object.keys(fieldErrors).length === 0 && dirty
+  const canSave =
+    !saving &&
+    filterError === null &&
+    Object.keys(fieldErrors).length === 0 &&
+    rationale.trim() !== '' &&
+    dirty
   const filterProblems = Object.entries(fieldErrors).filter(([k]) => k.startsWith('filter.'))
 
   // The dry run: which of the recent events this row would have woken a worker
@@ -136,7 +144,7 @@ export default function SubscriptionEditor({
       setFilterError(parsed.error)
       return
     }
-    void onSave({ ...draft, filter: parsed.value })
+    void onSave({ ...draft, filter: parsed.value }, rationale)
     setDirty(false)
   }
 
@@ -286,12 +294,29 @@ export default function SubscriptionEditor({
 
         <Divider />
 
+        <Box>
+          <TextField
+            label="Why?"
+            fullWidth
+            size="small"
+            value={rationale}
+            placeholder="the reviewer should see every answered mail"
+            onChange={(e) => setRationale(e.target.value)}
+            inputProps={{ 'aria-label': 'Why?' }}
+          />
+          <FormHelperText>
+            {rationale.trim() === ''
+              ? 'Required. One line, stored with the change in the config log — the changelog reads it next to who made it.'
+              : 'Stored with the change in the config log, and shown in the changelog next to who made it.'}
+          </FormHelperText>
+        </Box>
+
         <Stack direction="row" spacing={2} alignItems="center">
           <Button variant="contained" disabled={!canSave} onClick={handleSave}>
             {saving ? 'Saving…' : isNew ? 'Create subscription' : 'Save subscription'}
           </Button>
           {onDelete && !isNew && draft.id !== '' && (
-            <Button color="error" disabled={saving} onClick={() => void onDelete(draft.id)}>
+            <Button color="error" disabled={saving} onClick={() => void onDelete(draft.id, rationale)}>
               Delete
             </Button>
           )}

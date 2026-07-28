@@ -48,8 +48,9 @@ export interface ScheduleEditorProps {
   isNew?: boolean
   /** Save handler — the parent owns the API call (useSchedules().save). */
   onSave: (draft: ScheduleDraft, rationale: string) => void | Promise<unknown>
-  /** Delete handler. Omitted ⇒ no delete button. */
-  onDelete?: (id: string) => void | Promise<unknown>
+  /** Delete handler. Omitted ⇒ no delete button. The second argument is the
+   *  rationale typed below, which the DELETE carries as `?rationale=`. */
+  onDelete?: (id: string, rationale: string) => void | Promise<unknown>
   /** Save/delete failure from the parent. */
   error?: string | null
   saving?: boolean
@@ -232,7 +233,7 @@ export default function ScheduleEditor({
             {saving ? 'Saving…' : isNew ? 'Create schedule' : 'Save schedule'}
           </Button>
           {onDelete && !isNew && draft.id !== '' && (
-            <Button color="error" disabled={saving} onClick={() => void onDelete(draft.id)}>
+            <Button color="error" disabled={saving} onClick={() => void onDelete(draft.id, rationale)}>
               Delete
             </Button>
           )}

@@ -71,6 +71,35 @@ describe('loading', () => {
   })
 })
 
+// K2: a settings edit carries a reason, so the save button stays disabled
+// until the "Why?" field has one.
+const explain = (why = 'the morning queue was backing up') =>
+  userEvent.type(screen.getByLabelText('Why?'), why)
+
+describe('the reason (K2)', () => {
+  it('refuses an otherwise valid save until a reason is given, and sends it', async () => {
+    render(<ProjectSettingsPage />)
+    await userEvent.type(await screen.findByLabelText(/base image/i), '2')
+    expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled()
+
+    await explain('pinning the newer core image')
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }))
+
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(puts()[0]!.body).toMatchObject({ rationale: 'pinning the newer core image' })
+  })
+
+  it('clears the reason after a save, so the next edit writes its own', async () => {
+    render(<ProjectSettingsPage />)
+    await userEvent.type(await screen.findByLabelText(/base image/i), '2')
+    await explain()
+    await userEvent.click(screen.getByRole('button', { name: /save settings/i }))
+
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    await waitFor(() => expect(screen.getByLabelText('Why?')).toHaveValue(''))
+  })
+})
+
 describe('MCP JSON validation', () => {
   it('shows the parse error inline and refuses to save', async () => {
     render(<ProjectSettingsPage />)
@@ -104,6 +133,7 @@ describe('MCP JSON validation', () => {
     fireEvent.change(editor, { target: { value: '{}' } })
     await waitFor(() => expect(screen.queryByText(/invalid json/i)).not.toBeInTheDocument())
 
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }))
     await waitFor(() => expect(puts()).toHaveLength(1))
     expect(puts()[0]!.body).toMatchObject({ mcp_config: {} })
@@ -135,6 +165,7 @@ describe('budget/cap fields', () => {
   it('sends the whole object on save, including a zero the human chose', async () => {
     render(<ProjectSettingsPage />)
     fireEvent.change(await screen.findByLabelText(/snapshot ttl/i), { target: { value: '0' } })
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }))
 
     await waitFor(() => expect(puts()).toHaveLength(1))
@@ -152,6 +183,7 @@ describe('budget/cap fields', () => {
     render(<ProjectSettingsPage />)
     const soft = await screen.findByLabelText(/daily token budget — soft/i)
     fireEvent.change(soft, { target: { value: '-5' } })
+    await explain()
     expect(await screen.findByText(/must not be negative/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled()
   })
@@ -164,6 +196,7 @@ describe('dirty tracking', () => {
     expect(screen.getByRole('button', { name: /save settings/i })).toBeDisabled()
 
     await userEvent.type(screen.getByLabelText(/base image/i), '2')
+    await explain()
     expect(screen.getByRole('button', { name: /save settings/i })).toBeEnabled()
 
     await userEvent.click(screen.getByRole('button', { name: /save settings/i }))

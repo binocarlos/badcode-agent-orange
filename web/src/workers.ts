@@ -221,8 +221,12 @@ export function validateWorker(w: WorkerDraft): WorkerFieldErrors {
  * comes from the JWT and the name from the path, so echoing them back would
  * suggest the body could change them (it cannot). The image is trimmed —
  * trailing whitespace in an image pointer is a silent resolution failure.
+ *
+ * `rationale` is the operator's one-line reason, threaded into the config event
+ * (design B3 / K2). Omitted when empty rather than sent blank, so an absent
+ * reason reads as absent — the same contract `scheduleBody` has.
  */
-export function workerBody(w: WorkerDraft): {
+export function workerBody(w: WorkerDraft, rationale = ''): {
   description: string
   system_prompt: string
   mcp_config: Record<string, unknown>
@@ -231,8 +235,9 @@ export function workerBody(w: WorkerDraft): {
   briefing: string[] | null
   enabled: boolean
   frozen: boolean
+  rationale?: string
 } {
-  return {
+  const body = {
     description: w.description,
     system_prompt: w.system_prompt,
     mcp_config: w.mcp_config ?? {},
@@ -244,6 +249,7 @@ export function workerBody(w: WorkerDraft): {
     // reads as false server-side — an accidental unfreeze, silently.
     frozen: w.frozen,
   }
+  return rationale.trim() === '' ? body : { ...body, rationale: rationale.trim() }
 }
 
 // ---------------------------------------------------------------------------

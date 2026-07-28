@@ -104,9 +104,9 @@ export default function WorkersPage({
   const emptyProject = !loading && workers.length === 0
 
   const handleSave = useCallback(
-    async (draft: WorkerDraft) => {
+    async (draft: WorkerDraft, rationale: string) => {
       setSaving(true)
-      const stored = await save(draft)
+      const stored = await save(draft, rationale)
       setSaving(false)
       if (stored) select(stored.name)
     },
@@ -114,9 +114,9 @@ export default function WorkersPage({
   )
 
   const handleDelete = useCallback(
-    async (name: string) => {
+    async (name: string, rationale: string) => {
       setSaving(true)
-      const ok = await remove(name)
+      const ok = await remove(name, rationale)
       setSaving(false)
       if (ok) select(null)
     },

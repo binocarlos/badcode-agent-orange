@@ -158,4 +158,13 @@ describe('projectSettingsBody', () => {
     expect('updated_at' in body).toBe(false)
     expect(body.base_image).toBe('')
   })
+
+  it('carries the operator\u2019s reason, and omits an empty one', () => {
+    const settings = defaultProjectSettings('acme')
+    expect(projectSettingsBody(settings, '  the queue was backing up  ')).toMatchObject({
+      rationale: 'the queue was backing up',
+    })
+    expect(projectSettingsBody(settings)).not.toHaveProperty('rationale')
+    expect(projectSettingsBody(settings, '   ')).not.toHaveProperty('rationale')
+  })
 })

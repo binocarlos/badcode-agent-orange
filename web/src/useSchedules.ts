@@ -8,7 +8,7 @@
 // (§15.10) and any `config.changed` subscriber will read.
 
 import { useCallback, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { useConfigApi, withRationale, type ConfigApiOptions } from './configApi.js'
 import {
   coerceSchedule,
   scheduleBody,
@@ -32,12 +32,10 @@ export interface SchedulesApi {
   /** Create (empty id) or update (id set), with an optional rationale. */
   save: (draft: ScheduleDraft, rationale?: string) => Promise<Schedule | null>
   /**
-   * Delete a schedule. There is deliberately no rationale parameter: the
-   * DELETE route carries no body and reads no `?rationale=`, so it always
-   * writes its `schedule_delete` config event with an empty why. Accepting one
-   * here would be a lie the caller could not see through.
+   * Delete a schedule. The route carries no body, so the reason rides
+   * `?rationale=` (design B3 — it did not read one before that item).
    */
-  remove: (id: string) => Promise<boolean>
+  remove: (id: string, rationale?: string) => Promise<boolean>
 }
 
 export default function useSchedules(options: UseSchedulesOptions = {}): SchedulesApi {
@@ -103,10 +101,10 @@ export default function useSchedules(options: UseSchedulesOptions = {}): Schedul
   )
 
   const remove = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string, rationale = ''): Promise<boolean> => {
       setError(null)
       try {
-        await request<void>(scheduleEndpoint(id), { method: 'DELETE' })
+        await request<void>(withRationale(scheduleEndpoint(id), rationale), { method: 'DELETE' })
         setSchedules((prev) => prev.filter((s) => s.id !== id))
         return true
       } catch (err) {

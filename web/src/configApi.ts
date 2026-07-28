@@ -29,6 +29,18 @@ export interface ConfigApi {
   request: <T>(path: string, init?: RequestInit) => Promise<T>
 }
 
+/**
+ * `path` with the operator's reason appended as `?rationale=` — how a DELETE,
+ * which carries no body, says why (design B3 / K2). An empty reason leaves the
+ * path untouched rather than sending a blank parameter, so an absent reason
+ * reads as absent in the config log. Pure; exported for the hooks and for test.
+ */
+export function withRationale(path: string, rationale: string): string {
+  const trimmed = rationale.trim()
+  if (trimmed === '') return path
+  return `${path}${path.includes('?') ? '&' : '?'}rationale=${encodeURIComponent(trimmed)}`
+}
+
 export function useConfigApi(options: ConfigApiOptions = {}): ConfigApi {
   const ctx = useAgentChatContextOptional()
   const apiBaseUrl = options.apiBaseUrl ?? ctx?.config.apiBaseUrl ?? ''

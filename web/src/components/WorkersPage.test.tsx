@@ -159,6 +159,12 @@ describe('topology onboarding entry (T3)', () => {
   })
 })
 
+// K2: every human edit carries a reason, so the save button stays disabled
+// until the "Why?" field has one. Any test that means to reach the network
+// types one first.
+const explain = (why = 'the walkthrough asked for it') =>
+  userEvent.type(screen.getByLabelText('Why?'), why)
+
 describe('worker editor', () => {
   it('saves the §6.1 fields the walkthrough added', async () => {
     renderPage()
@@ -173,6 +179,7 @@ describe('worker editor', () => {
     // Exact label: the row's remove button is "Remove briefing selector 1".
     await userEvent.type(await screen.findByLabelText('Briefing selector 1'), 'kind=house-style')
 
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
     await waitFor(() => expect(puts()).toHaveLength(1))
 
@@ -196,6 +203,7 @@ describe('worker editor', () => {
       screen.getByText(/Frozen — cannot be changed by other workers\./),
     ).toBeInTheDocument()
 
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
     await waitFor(() => expect(puts()).toHaveLength(1))
     expect(puts()[0]!.body).toMatchObject({ frozen: true })
@@ -209,6 +217,7 @@ describe('worker editor', () => {
     expect(screen.getByText(/cannot be changed by other workers/)).toBeInTheDocument()
 
     await userEvent.click(screen.getByLabelText('Frozen'))
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
     await waitFor(() => expect(puts()).toHaveLength(1))
     expect(puts()[0]!.body).toMatchObject({ frozen: false })
@@ -230,6 +239,7 @@ describe('worker editor', () => {
     renderPage()
     await userEvent.click(await screen.findByText('email-answerer'))
     await userEvent.type(await screen.findByLabelText('Image'), 'Bad Image')
+    await explain()
     expect(await screen.findByText(/must be `name`/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save worker/i })).toBeDisabled()
     expect(puts()).toHaveLength(0)
@@ -241,6 +251,7 @@ describe('worker editor', () => {
     const editor = await screen.findByLabelText(/MCP servers \(worker\)/i)
     await userEvent.clear(editor)
     await userEvent.type(editor, '{{oops')
+    await explain()
     expect(await screen.findByText(/invalid json/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /save worker/i })).toBeDisabled()
   })
@@ -256,6 +267,7 @@ describe('worker editor', () => {
 
     // Make the form dirty in a way that still validates, then save.
     await userEvent.type(screen.getByLabelText('Description'), '!')
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
     await waitFor(() => expect(puts()).toHaveLength(1))
     expect((puts()[0]!.body as Record<string, unknown>).briefing).toBeNull()
@@ -284,9 +296,41 @@ describe('worker editor', () => {
 
     await userEvent.clear(name)
     await userEvent.type(name, 'new-worker')
+    await explain()
     await userEvent.click(screen.getByRole('button', { name: /create worker/i }))
     await waitFor(() => expect(puts()).toHaveLength(1))
     expect(puts()[0]!.url).toContain('/agent/workers/new-worker')
+  })
+
+  it('will not save an edit without a reason, and sends the one it is given', async () => {
+    renderPage()
+    await userEvent.click(await screen.findByText('email-answerer'))
+    await screen.findByLabelText(/system prompt/i)
+
+    await userEvent.type(screen.getByLabelText('Description'), '!')
+    // Valid in every other respect, and still refused: K2 says an edit carries
+    // a reason.
+    expect(screen.getByRole('button', { name: /save worker/i })).toBeDisabled()
+
+    await explain('customers complained the replies were long')
+    await userEvent.click(screen.getByRole('button', { name: /save worker/i }))
+    await waitFor(() => expect(puts()).toHaveLength(1))
+    expect(puts()[0]!.body).toMatchObject({
+      rationale: 'customers complained the replies were long',
+    })
+  })
+
+  it('carries the reason on a delete, where there is no body to put it in', async () => {
+    renderPage()
+    await userEvent.click(await screen.findByText('email-answerer'))
+    await screen.findByLabelText(/system prompt/i)
+
+    await explain('superseded by the triage worker')
+    await userEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+
+    await waitFor(() => expect(requests.some((r) => r.method === 'DELETE')).toBe(true))
+    const del = requests.find((r) => r.method === 'DELETE')!
+    expect(del.url).toContain('rationale=superseded%20by%20the%20triage%20worker')
   })
 
   it('deletes a worker and clears the selection', async () => {
