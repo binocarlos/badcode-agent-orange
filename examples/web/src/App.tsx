@@ -5,10 +5,12 @@ import {
   AgentChat,
   AgentSessionList,
   AutomationPage,
+  DeskPage,
   EventsPage,
   ProjectSettingsPage,
   WorkersPage,
   projectIdFromLocation,
+  useAttentionRequests,
   useSessionPermalink,
   useWorkers,
 } from "@agentkit/chat-ui";
@@ -23,7 +25,11 @@ const API = import.meta.env.VITE_API ?? ""; // "" → same origin (nginx proxy)
 // What a project view can show. Deliberately a state machine and not a router:
 // the library must not impose react-router on hosts, and the permalink hook
 // already owns the one URL that matters (the session).
-type View = "chat" | "workers" | "events" | "automation" | "settings";
+// Desk is first because it is the landing view (design decision K1): the
+// question "does anything want me?" is the one an operator arrives with.
+// Chart joins this union when OC2 lands; the nav order already reserves its
+// place between Desk and Workers.
+type View = "desk" | "chat" | "workers" | "events" | "automation" | "settings";
 
 // App state machine: loading → dev (legacy /dev/token, straight to chat)
 //                            → login → project picker → chat (per-project JWT)
@@ -195,13 +201,18 @@ function ProjectWorkspace({
   onCreateProject: (projectID: string) => Promise<void>;
   onSignOut: () => void;
 }) {
-  const [view, setView] = useState<View>("chat");
+  const [view, setView] = useState<View>("desk");
 
   // Worker names for the subscription/schedule pickers. Fetched here because
   // AutomationPage takes them as a prop — a library page never fetches another
   // page's collection for itself.
   const { workers } = useWorkers();
   const workerOptions = useMemo(() => workers.map((w) => w.name), [workers]);
+
+  // The only number in the chrome (design §3.5): how many things are asking for
+  // you. Read here rather than lifted out of DeskPage so the badge is right
+  // whichever view is open.
+  const { requests: openAsks } = useAttentionRequests();
 
   // URL ⇄ active session, both directions: a pasted /p/<project>/s/<session>
   // resumes that session, and whatever session is open is already permalinked.
@@ -221,7 +232,7 @@ function ProjectWorkspace({
   return (
     <Box sx={{ display: "flex", height: "100vh" }}>
       <Box sx={{ width: 280, borderRight: 1, borderColor: "divider", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <ViewNav view={view} onChange={setView} />
+        <ViewNav view={view} onChange={setView} asks={openAsks.length} />
         {/* The sidebar stays mounted in every view: it carries the project
             switcher and the session list, which are how you leave a view. */}
         <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -230,6 +241,14 @@ function ProjectWorkspace({
       </Box>
 
       <Box sx={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
+        {view === "desk" && (
+          <DeskPage
+            projectId={project}
+            onOpenSession={showSession}
+            onStartFromTopology={() => setView("workers")}
+            onOpenChat={() => setView("chat")}
+          />
+        )}
         {view === "chat" && <AgentChat />}
         {view === "workers" && <WorkersPage projectId={project} onOpenSession={showSession} />}
         {/* No fetchConfigEvents: GET /agent/config-events is mounted, so the
@@ -242,9 +261,9 @@ function ProjectWorkspace({
   );
 }
 
-/** The view switch. */
-function ViewNav({ view, onChange }: { view: View; onChange: (v: View) => void }) {
-  const item = (key: View, label: string) => (
+/** The view switch. Desk first, and it carries the one badge in the chrome. */
+function ViewNav({ view, onChange, asks }: { view: View; onChange: (v: View) => void; asks: number }) {
+  const item = (key: View, label: string, badge = 0) => (
     <Button
       key={key}
       size="small"
@@ -253,11 +272,12 @@ function ViewNav({ view, onChange }: { view: View; onChange: (v: View) => void }
       data-testid={`nav-${key}`}
       sx={{ textTransform: "none", flex: 1, minWidth: 0 }}
     >
-      {label}
+      {badge > 0 ? `${label} ${badge}` : label}
     </Button>
   );
   return (
     <Stack direction="row" spacing={0.5} sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
+      {item("desk", "Desk", asks)}
       {item("chat", "Chat")}
       {item("workers", "Workers")}
       {item("events", "Events")}
