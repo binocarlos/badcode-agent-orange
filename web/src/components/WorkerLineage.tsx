@@ -21,6 +21,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material'
+import { useState } from 'react'
 import useConfigLog from '../useConfigLog.js'
 import type { ConfigApiOptions } from '../configApi.js'
 import {
@@ -29,6 +30,7 @@ import {
   type LineageEntry,
 } from '../configLog.js'
 import { DiffBlock } from './ChangelogView.js'
+import BeforeAfterView from './BeforeAfterView.js'
 
 /** What the page needs to fold the Configuration tab to a past version. */
 export interface LineageVersion {
@@ -140,6 +142,7 @@ export default function WorkerLineage({
               selected={selectedEventId === row.entry.id}
               onOpenSession={onOpenSession}
               onSelectVersion={onSelectVersion}
+              apiOptions={apiOptions}
             />
           ))}
         </Stack>
@@ -153,13 +156,19 @@ function LineageRow({
   selected,
   onOpenSession,
   onSelectVersion,
+  apiOptions,
 }: {
   row: LineageEntry
   selected: boolean
   onOpenSession?: (sessionId: string) => void
   onSelectVersion?: (version: LineageVersion) => void
+  apiOptions: ConfigApiOptions
 }) {
   const { entry } = row
+  // §7.2 hangs off the rewrite it explains — opened per row, never all at once:
+  // each one reads the events route.
+  const [showBeforeAfter, setShowBeforeAfter] = useState(false)
+  const isPromptWrite = entry.action === 'worker_prompt_write'
   return (
     <Paper
       component="li"
@@ -234,6 +243,27 @@ function LineageRow({
                 +{entry.diff.added} −{entry.diff.removed} against the previous version
               </Typography>
               <DiffBlock lines={entry.diff.lines} />
+            </Box>
+          )}
+
+          {isPromptWrite && (
+            <Box sx={{ mt: 1 }}>
+              <Link
+                component="button"
+                type="button"
+                variant="caption"
+                onClick={() => setShowBeforeAfter((v) => !v)}
+              >
+                {showBeforeAfter ? 'hide before / after' : 'what ran before / after'}
+              </Link>
+              {showBeforeAfter && (
+                <BeforeAfterView
+                  {...apiOptions}
+                  configEvent={entry.event}
+                  diff={entry.diff}
+                  onOpenSession={onOpenSession}
+                />
+              )}
             </Box>
           )}
         </Box>
