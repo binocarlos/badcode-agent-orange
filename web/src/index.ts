@@ -369,6 +369,12 @@ export {
   PROPAGATION_NOTHING_SUBSCRIBES,
   PROPAGATION_STOP_LINE,
   propagateEvent,
+  // The conventions overlay (OC3, §6.6, K4) — opt-in, labelled, quoting its
+  // source line. A heuristic that announces itself.
+  CONVENTION_CAVEAT,
+  ROUTE_TO_MARKER,
+  inferConventions,
+  mentionsWorkerName,
 } from './orgchart.js'
 export type {
   OrgChartLayout,
@@ -377,15 +383,26 @@ export type {
   OrgChartClock,
   OrgChartPip,
   OrgChartPoint,
+  OrgChartConvention,
   Propagation,
   PropagationHop,
   PropagationWake,
 } from './orgchart.js'
 
-// The chart's page (OC2) — read-only SVG in the schematic style, plus the
-// propagation panel and its depth ruler. OC4 adds direct manipulation.
-export { default as OrgChartPage, stateLine } from './components/OrgChartPage.js'
-export type { OrgChartPageProps } from './components/OrgChartPage.js'
+// The chart's page (OC2) — SVG in the schematic style, the propagation panel
+// and its depth ruler, the conventions overlay (OC3) and direct manipulation
+// (OC4: wire + freeze only, every gesture a proposal carrying a reason).
+export {
+  default as OrgChartPage,
+  stateLine,
+  WIRE_EVENT_TYPE,
+  wireFilter,
+  wireSentence,
+  cutWireTitle,
+  toggleTitle,
+  toggleSentence,
+} from './components/OrgChartPage.js'
+export type { OrgChartPageProps, WireProposal } from './components/OrgChartPage.js'
 
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
