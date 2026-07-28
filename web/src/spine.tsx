@@ -40,13 +40,37 @@ export const SPINE_GLYPH_MEANINGS: Record<SpineGlyphName, string> = {
 
 /** The design's §3.3 tokens, per mode — the fallback when a host theme has no
  *  named entries. The authority is the token table; this is a copy of it that
- *  cannot import from `examples/web`. */
-const TOKENS = {
+ *  cannot import from `examples/web`.
+ *
+ *  Exported (W3's log note: the table had been copied into a third file, and
+ *  W4's highlight tints would have been a fourth) so every console module tints
+ *  from one table. The remaining hand-copies in ChangelogView/OrgChartPage are
+ *  older and left alone deliberately — they are other items' files. */
+export const CONSOLE_TOKENS = {
   light: { ember: '#B3541E', steel: '#2F6272', rose: '#A6376A', fault: '#8F2B2B', ink: '#12161A' },
   dark: { ember: '#E0873F', steel: '#6FA6B8', rose: '#DF7BA4', fault: '#D96C6C', ink: '#E8EAEC' },
 } as const
 
-type TokenName = keyof (typeof TOKENS)['light']
+const TOKENS = CONSOLE_TOKENS
+
+export type ConsoleTokenName = keyof (typeof CONSOLE_TOKENS)['light']
+type TokenName = ConsoleTokenName
+
+/**
+ * A named console colour under a theme: the host's palette entry where it has
+ * one, the design token otherwise. `ink` is text rather than a palette entry,
+ * exactly as `spineGlyphColor` treats it.
+ */
+export function consoleTokenColor(theme: Theme, token: ConsoleTokenName): string {
+  const fallback = TOKENS[theme.palette.mode === 'dark' ? 'dark' : 'light'][token]
+  if (token === 'ink') return theme.palette.text.primary || fallback
+  return consoleColor(theme, token, fallback)
+}
+
+/** `#RRGGBB`/`rgb()` plus an alpha — the tint helper, shared (see `withAlpha`). */
+export function consoleTint(theme: Theme, token: ConsoleTokenName, alpha: number): string {
+  return withAlpha(consoleTokenColor(theme, token), alpha)
+}
 
 /** The named colour a glyph carries. */
 const GLYPH_TOKEN: Record<SpineGlyphName, TokenName> = {
@@ -198,6 +222,13 @@ export interface SpineRailProps {
   hideRail?: boolean
   component?: ElementType
   sx?: SxProps<Theme>
+  /**
+   * ARIA role for the rail. The Desk's stacks pass `"log"` (doc 21 §4.2:
+   * chronological and implicitly polite — deliberately NOT `"feed"`, whose
+   * keyboard contract we do not implement).
+   */
+  role?: string
+  'aria-label'?: string
 }
 
 /**
@@ -206,10 +237,19 @@ export interface SpineRailProps {
  * time — so the line is drawn once by the container and masked by the glyphs,
  * never segment by segment.
  */
-export function SpineRail({ children, hideRail = false, component = 'div', sx }: SpineRailProps) {
+export function SpineRail({
+  children,
+  hideRail = false,
+  component = 'div',
+  sx,
+  role,
+  'aria-label': ariaLabel,
+}: SpineRailProps) {
   return (
     <Box
       component={component}
+      role={role}
+      aria-label={ariaLabel}
       sx={[
         {
           position: 'relative',

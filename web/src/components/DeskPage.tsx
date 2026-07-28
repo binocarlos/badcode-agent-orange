@@ -10,8 +10,8 @@
 // "nothing to show", it is shown the two ways in: the org chart the topology
 // flow builds, and chat.
 
-import type { ReactNode } from 'react'
-import { Alert, Box, Button, Link, Paper, Stack, Typography } from '@mui/material'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Alert, Box, Button, Chip, Link, Paper, Stack, Typography } from '@mui/material'
 import useDesk, { type UseDeskOptions } from '../useDesk.js'
 import {
   DESK_ASKS_CAVEAT,
@@ -22,8 +22,25 @@ import {
 import { formatTimestamp } from '../events.js'
 import { formatConfigTimestamp } from '../configLog.js'
 import { SpineGlyph, SpineRail, SpineRow } from '../spine.js'
+import { newItemsSummary, waterlineLabel } from '../watermark.js'
+import {
+  highlightSx,
+  highlightMarker,
+  NEW_MARKER_LABEL,
+  type HighlightTone,
+} from '../feedhighlight.js'
+import { ageEscalation, coarseAgeLabel } from '../useElapsedTicker.js'
+import usePrefersReducedMotion from '../useReducedMotion.js'
+import useStagedFeed from '../useStagedFeed.js'
+import { FeedWaterline, NewItemsPill, PauseLiveUpdates } from './FeedLiveness.js'
 
 export interface DeskPageProps extends UseDeskOptions {
+  /**
+   * Show the "Pause live updates" toggle. Default: only when the Desk is
+   * actually polling (`refreshMs > 0`) — a switch that pauses nothing is a lie,
+   * and WCAG 2.2.2's obligation only exists where content updates on its own.
+   */
+  showPauseToggle?: boolean
   /** Project id — the high-water mark's key, and the permalink builder's. */
   projectId: string
   /** Open a session thread (typically useSessionPermalink().openSession). */
@@ -34,10 +51,29 @@ export interface DeskPageProps extends UseDeskOptions {
   onOpenChat?: () => void
   /** Heading. Pass '' for none. */
   title?: string
+  /**
+   * Reports how many asks this Desk is showing, whenever that changes.
+   *
+   * The shell's badge is that number (X7). Before W4 the shell fetched the two
+   * lists again through `useAsksCount` while the Desk had them already; now the
+   * Desk hands its count up and the shell stands the second reader down. One
+   * fetch, and — still the point of X7 — one definition of "an ask".
+   */
+  onAsksCount?: (count: number) => void
 }
 
 /** Identifiers are mono, content is prose (§3.4). */
 const MONO = { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }
+
+/** Off-screen but announced — the coarse label beside an `aria-hidden` age. */
+const VISUALLY_HIDDEN = {
+  position: 'absolute',
+  width: 1,
+  height: 1,
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+} as const
 
 export default function DeskPage({
   projectId,
@@ -45,12 +81,34 @@ export default function DeskPage({
   onStartFromTopology,
   onOpenChat,
   title = 'Desk',
+  showPauseToggle,
+  onAsksCount,
   ...deskOptions
 }: DeskPageProps) {
-  const { desk, loading, error, asksHaveMessages, workerCount, lastSeenMs, markSeen } = useDesk({
-    ...deskOptions,
-    projectId,
-  })
+  const reduced = usePrefersReducedMotion()
+  // A reduced-motion operator lands on a paused surface: the setting is about
+  // motion, but the operator asking for it is asking not to be chased.
+  const [paused, setPaused] = useState(reduced)
+  const { desk, loading, error, asksHaveMessages, workerCount, lastSeenMs, markSeen, nowMs } =
+    useDesk({
+      ...deskOptions,
+      projectId,
+      paused: deskOptions.paused ?? paused,
+    })
+
+  const askCount = desk.asks.length
+  useEffect(() => {
+    onAsksCount?.(askCount)
+  }, [askCount, onAsksCount])
+
+  const polling = (deskOptions.refreshMs ?? 0) > 0
+  const showPause = showPauseToggle ?? polling
+
+  // Arrivals stage rather than insert. Both growing stacks go behind a pill;
+  // Trouble does not, because a failure appearing quietly is the one thing this
+  // screen must never do.
+  const changesFeed = useStagedFeed(desk.changes, (c) => c.id, { paused })
+  const asksFeed = useStagedFeed(desk.asks, (a) => a.id, { paused })
 
   const firstRun = !loading && workerCount === 0
   const nothingAtAll =
@@ -60,11 +118,14 @@ export default function DeskPage({
     <Box sx={{ p: 3, maxWidth: 900 }}>
       <Stack direction="row" alignItems="baseline" justifyContent="space-between" sx={{ mb: 2 }}>
         {title !== '' && <Typography variant="h6">{title}</Typography>}
-        {desk.changes.length > 0 && (
-          <Link component="button" type="button" variant="caption" onClick={markSeen}>
-            Mark these changes as seen
-          </Link>
-        )}
+        <Stack direction="row" spacing={2} alignItems="center">
+          {showPause && <PauseLiveUpdates paused={paused} onChange={setPaused} />}
+          {desk.changes.length > 0 && (
+            <Link component="button" type="button" variant="caption" onClick={markSeen}>
+              Mark these changes as seen
+            </Link>
+          )}
+        </Stack>
       </Stack>
 
       {error !== null && (
@@ -89,8 +150,19 @@ export default function DeskPage({
                 asks show without the sentence the worker wrote. Open the thread to read it.
               </Alert>
             )}
-            {desk.asks.map((ask) => (
-              <AskRow key={ask.id} ask={ask} onOpenSession={onOpenSession} />
+            <NewItemsPill
+              count={asksFeed.stagedCount}
+              summary={newItemsSummary(asksFeed.stagedCount, 'ask')}
+              onShow={asksFeed.flush}
+            />
+            {asksFeed.visible.map((ask) => (
+              <AskRow
+                key={ask.id}
+                ask={ask}
+                onOpenSession={onOpenSession}
+                arrived={asksFeed.arrivals.has(ask.id)}
+                reduced={reduced}
+              />
             ))}
             {desk.asks.length > 0 && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
@@ -102,6 +174,22 @@ export default function DeskPage({
           <Section
             label="Changes"
             count={desk.changes.length}
+            after={
+              desk.earlierChanges.length > 0 ? (
+                // The waterline and the few changes the operator had already
+                // read. Outside the stack's own count deliberately: "Nothing
+                // has changed since you last looked" is still the honest line
+                // when nothing has, and these sit under it as context.
+                <>
+                  <FeedWaterline label={waterlineLabel(lastSeenMs, nowMs)} />
+                  <SpineRail component="ol">
+                    {desk.earlierChanges.map((change) => (
+                      <ChangeRow key={change.id} change={change} onOpenSession={onOpenSession} />
+                    ))}
+                  </SpineRail>
+                </>
+              ) : undefined
+            }
             caption={lastSeenMs === 0 ? 'everything recorded so far' : 'since you last looked'}
             empty={
               lastSeenMs === 0
@@ -109,8 +197,19 @@ export default function DeskPage({
                 : 'Nothing has changed since you last looked.'
             }
           >
-            {desk.changes.map((change) => (
-              <ChangeRow key={change.id} change={change} onOpenSession={onOpenSession} />
+            <NewItemsPill
+              count={changesFeed.stagedCount}
+              summary={newItemsSummary(changesFeed.stagedCount, 'change')}
+              onShow={changesFeed.flush}
+            />
+            {changesFeed.visible.map((change) => (
+              <ChangeRow
+                key={change.id}
+                change={change}
+                onOpenSession={onOpenSession}
+                arrived={changesFeed.arrivals.has(change.id)}
+                reduced={reduced}
+              />
             ))}
           </Section>
 
@@ -144,12 +243,16 @@ function Section({
   caption,
   empty,
   children,
+  after,
 }: {
   label: string
   count: number
   caption: string
   empty: string
   children?: ReactNode
+  /** Rendered below the stack, inside the same region — the waterline and the
+   *  already-read tail beneath it (doc 21 §4.2). */
+  after?: ReactNode
 }) {
   return (
     <Box component="section" aria-label={label}>
@@ -171,19 +274,60 @@ function Section({
           {empty}
         </Typography>
       ) : (
-        <SpineRail component="ol">{children}</SpineRail>
+        // role="log", not role="feed" (§4.2): a chronological list that grows,
+        // which is implicitly polite. `feed` would drag in a keyboard contract
+        // (article navigation) the Desk does not implement.
+        <SpineRail component="ol" role="log" aria-label={label}>
+          {children}
+        </SpineRail>
       )}
+      {after}
     </Box>
   )
 }
 
-function AskRow({ ask, onOpenSession }: { ask: DeskAsk; onOpenSession?: (id: string) => void }) {
+function AskRow({
+  ask,
+  onOpenSession,
+  arrived = false,
+  reduced = false,
+}: {
+  ask: DeskAsk
+  onOpenSession?: (id: string) => void
+  arrived?: boolean
+  reduced?: boolean
+}) {
+  // §4.2: an ask's age ticks, and escalates — the number is an SLA on the
+  // operator, not a progress bar. The escalation is a word AND a colour on top
+  // of the number, never instead of it.
+  const escalation = ageEscalation(ask.waitingSeconds)
+  const ageColor =
+    escalation === 'fault' ? 'error.main' : escalation === 'amber' ? 'warning.main' : undefined
   return (
-    <SpineRow glyph="attention" component="li" glyphLabel="waiting for you">
+    <SpineRow
+      glyph="attention"
+      component="li"
+      glyphLabel="waiting for you"
+      sx={highlightSx({ active: arrived, tone: 'ask', reduced })}
+    >
       <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
-        <Typography variant="body2" sx={MONO}>
+        {/* The headline carries the ticking age, so it is hidden from screen
+            readers; the coarse label beside it says the same thing without
+            announcing every second (§4.2). */}
+        <Typography variant="body2" sx={MONO} aria-hidden>
           {ask.headline}
         </Typography>
+        <Box sx={VISUALLY_HIDDEN}>
+          {`${ask.worker === '' ? 'a worker' : ask.worker} · ${ask.status} · waiting ${coarseAgeLabel(ask.waitingSeconds)}`}
+        </Box>
+        {ageColor !== undefined && (
+          <Typography variant="caption" sx={{ color: ageColor }}>
+            {escalation === 'fault' ? 'waiting over 4h' : 'waiting over 1h'}
+          </Typography>
+        )}
+        {highlightMarker({ active: arrived, tone: 'ask', reduced }) && (
+          <Chip size="small" variant="outlined" label={NEW_MARKER_LABEL} />
+        )}
         {ask.expiresLabel !== '' && (
           <Typography variant="caption" color="text.secondary">
             {ask.expiresLabel}
@@ -205,15 +349,22 @@ function AskRow({ ask, onOpenSession }: { ask: DeskAsk; onOpenSession?: (id: str
 function ChangeRow({
   change,
   onOpenSession,
+  arrived = false,
+  reduced = false,
 }: {
   change: DeskChange
   onOpenSession?: (id: string) => void
+  arrived?: boolean
+  reduced?: boolean
 }) {
+  // Authorship decides the tint, exactly as it decides the glyph (§3.2).
+  const tone: HighlightTone = change.byAgent ? 'agent' : 'human'
   return (
     <SpineRow
       glyph={change.glyph}
       component="li"
       glyphLabel={change.byAgent ? 'a worker did this' : 'you did this'}
+      sx={highlightSx({ active: arrived, tone, reduced })}
     >
       <Stack direction="row" spacing={1} alignItems="baseline" flexWrap="wrap" useFlexGap>
         <Typography variant="body2" sx={MONO}>
@@ -226,6 +377,9 @@ function ChangeRow({
           <Typography variant="caption" sx={MONO} color="text.secondary">
             {change.diffLabel}
           </Typography>
+        )}
+        {highlightMarker({ active: arrived, tone, reduced }) && (
+          <Chip size="small" variant="outlined" label={NEW_MARKER_LABEL} />
         )}
       </Stack>
       <Typography

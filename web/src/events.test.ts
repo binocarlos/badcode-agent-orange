@@ -181,6 +181,40 @@ describe('buildJobRows', () => {
     expect(rows[0]!.event).toBeNull()
     expect(rows[0]!.eventType).toBe('')
   })
+
+  // The two properties doc 21 §4.2 names as PRECONDITIONS for animating a
+  // status at all. Both already held; both are pinned now, because both are
+  // one careless sort away from breaking and the symptom (the row an operator
+  // is watching teleports as it finishes) is blamed on the animation.
+  it('is a projection: one row per delivery id, whatever the status history', () => {
+    const rows = buildJobRows(
+      [
+        delivery({ id: 'd1', status: 'running' }),
+        delivery({ id: 'd2', status: 'ok' }),
+        delivery({ id: 'd3', status: 'failed' }),
+      ],
+      [event()],
+      [sub()],
+      2000,
+    )
+    expect(rows).toHaveLength(3)
+    expect(new Set(rows.map((r) => r.delivery.id)).size).toBe(3)
+  })
+
+  it('sorts by CREATED, never by updated — a row never moves because it changed', () => {
+    const rows = buildJobRows(
+      [
+        delivery({ id: 'old-but-just-finished', created_at: 10, started_at: 900, ended_at: 1999 }),
+        delivery({ id: 'newer', created_at: 20, started_at: 15, ended_at: 30 }),
+      ],
+      [event()],
+      [sub()],
+      2000,
+    )
+    // Sorting by recent activity would put the just-finished row on top and
+    // teleport the exact row the operator was watching.
+    expect(rows.map((r) => r.delivery.id)).toEqual(['newer', 'old-but-just-finished'])
+  })
 })
 
 describe('event-type patterns (§8.3)', () => {

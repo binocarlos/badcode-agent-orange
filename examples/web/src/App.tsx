@@ -212,11 +212,16 @@ function ProjectWorkspace({
   const workerOptions = useMemo(() => workers.map((w) => w.name), [workers]);
 
   // The only number in the chrome (design §3.5): how many things are asking for
-  // you. Read here rather than lifted out of DeskPage so the badge is right
-  // whichever view is open — but through useAsksCount, which applies the very
-  // join the Asks stack applies (doc 21, X7). The badge used to count open
-  // attention requests, a superset: it read 2 above a stack of 1.
-  const { count: openAsks } = useAsksCount();
+  // you — through useAsksCount, which applies the very join the Asks stack
+  // applies (doc 21, X7). The badge used to count open attention requests, a
+  // superset: it read 2 above a stack of 1.
+  //
+  // While the Desk is open it already holds both lists, so it reports its own
+  // count up and this hook stands down (W4 collapsing X7's duplicate fetch).
+  const onDesk = view === "desk";
+  const [deskAsks, setDeskAsks] = useState(0);
+  const { count: fetchedAsks } = useAsksCount({ enabled: !onDesk });
+  const openAsks = onDesk ? deskAsks : fetchedAsks;
 
   // URL ⇄ active session, both directions: a pasted /p/<project>/s/<session>
   // resumes that session, and whatever session is open is already permalinked.
@@ -249,6 +254,7 @@ function ProjectWorkspace({
           <DeskPage
             projectId={project}
             onOpenSession={showSession}
+            onAsksCount={setDeskAsks}
             onStartFromTopology={() => setView("workers")}
             onOpenChat={() => setView("chat")}
           />

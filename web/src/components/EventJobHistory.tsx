@@ -15,7 +15,7 @@
 // Session links use buildSessionPath (F3), so a job is shareable, and a host
 // with its own router intercepts the click with onOpenSession.
 
-import React from 'react'
+import React, { useRef } from 'react'
 import {
   Alert,
   Box,
@@ -29,6 +29,7 @@ import {
   Typography,
 } from '@mui/material'
 import {
+  deliveryDurationSeconds,
   deliveryStatusSeverity,
   formatDuration,
   formatTimestamp,
@@ -39,6 +40,9 @@ import DeliveryStatusChip from './DeliveryStatusChip.js'
 import { buildSessionPath } from '../permalink.js'
 import { useSessionTokens } from '../useEvents.js'
 import type { ConfigApiOptions } from '../configApi.js'
+import { diffStatuses, statusPulseSx } from '../feedhighlight.js'
+import { coarseAgeLabel } from '../useElapsedTicker.js'
+import usePrefersReducedMotion from '../useReducedMotion.js'
 
 export interface EventJobHistoryProps extends ConfigApiOptions {
   jobs: JobRow[]
@@ -50,6 +54,13 @@ export interface EventJobHistoryProps extends ConfigApiOptions {
   tokenAutoLoad?: number
   /** Shown above the table when the fetched page was full. */
   truncated?: boolean
+  /**
+   * The page's shared clock, in unix SECONDS. When given, an unfinished row's
+   * duration is recomputed against it, so a `running` job counts and a finished
+   * one does not (doc 21 §4.2 — a ticking clock on a finished thing is a bug).
+   * Omitted, the row shows whatever `buildJobRows` computed at fetch time.
+   */
+  nowSeconds?: number
 }
 
 export default function EventJobHistory({
@@ -59,8 +70,24 @@ export default function EventJobHistory({
   title = 'Jobs',
   tokenAutoLoad = 10,
   truncated = false,
+  nowSeconds,
   ...apiOptions
 }: EventJobHistoryProps) {
+  const reduced = usePrefersReducedMotion()
+
+  // The table is already a PROJECTION — `buildJobRows` emits one row per
+  // delivery id and sorts by `created_at`, never by "recently updated" — which
+  // is §4.2's precondition for animating a status at all: the row stays where
+  // it is and its chip changes in place. What was missing was the transition
+  // itself, so this holds the previous status per delivery and pulses the rows
+  // that landed somewhere new.
+  const previous = useRef(new Map<string, string>())
+  const { next, changed } = diffStatuses(
+    previous.current,
+    jobs.map((job) => ({ id: job.delivery.id, status: job.status })),
+  )
+  previous.current = next
+
   return (
     <Box>
       {title !== '' && (
@@ -100,6 +127,9 @@ export default function EventJobHistory({
                 projectId={projectId}
                 onOpenSession={onOpenSession}
                 autoLoadTokens={index < tokenAutoLoad}
+                nowSeconds={nowSeconds}
+                justChanged={changed.has(job.delivery.id)}
+                reduced={reduced}
                 {...apiOptions}
               />
             ))}
@@ -115,6 +145,9 @@ interface JobHistoryRowProps extends ConfigApiOptions {
   projectId: string
   onOpenSession?: (sessionId: string) => void
   autoLoadTokens: boolean
+  nowSeconds?: number
+  justChanged?: boolean
+  reduced?: boolean
 }
 
 function JobHistoryRow({
@@ -122,11 +155,22 @@ function JobHistoryRow({
   projectId,
   onOpenSession,
   autoLoadTokens,
+  nowSeconds,
+  justChanged = false,
+  reduced = false,
   ...apiOptions
 }: JobHistoryRowProps) {
   const running = job.status === 'running' || job.status === 'awaiting_human'
+  // Recompute against the shared clock when there is one, so an open-ended job
+  // counts. A terminal row has `ended_at`, so this returns the same total every
+  // tick and the row stays still — the discipline is in the data, not in a
+  // per-status branch here.
+  const durationSeconds =
+    nowSeconds === undefined
+      ? job.durationSeconds
+      : deliveryDurationSeconds(job.delivery, nowSeconds)
   return (
-    <TableRow hover>
+    <TableRow hover sx={statusPulseSx(justChanged ? job.status : '', reduced)}>
       <TableCell sx={{ fontFamily: 'monospace' }}>
         {job.eventType || <Muted>outside this page</Muted>}
       </TableCell>
@@ -134,14 +178,18 @@ function JobHistoryRow({
       <TableCell>
         {formatTimestamp(job.delivery.started_at) || <Muted>not started</Muted>}
       </TableCell>
-      <TableCell>
-        {formatDuration(job.durationSeconds)}
-        {running && job.durationSeconds !== null && (
-          <Typography component="span" variant="caption" color="text.secondary">
-            {' '}
-            (so far)
-          </Typography>
-        )}
+      {/* The digits tick; a screen reader hears the coarse label instead, which
+          changes every few minutes rather than every second (§4.2). */}
+      <TableCell aria-label={running ? `running for ${coarseAgeLabel(durationSeconds ?? 0)}` : undefined}>
+        <Box component="span" aria-hidden={running ? true : undefined}>
+          {formatDuration(durationSeconds)}
+          {running && durationSeconds !== null && (
+            <Typography component="span" variant="caption" color="text.secondary">
+              {' '}
+              (so far)
+            </Typography>
+          )}
+        </Box>
       </TableCell>
       <TableCell>
         <DeliveryStatusChip status={job.status} />

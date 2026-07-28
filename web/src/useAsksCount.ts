@@ -26,6 +26,17 @@ import { deliveriesAsRequests } from './useDesk.js'
 export interface UseAsksCountOptions extends ConfigApiOptions {
   /** Parked deliveries to read per poll. Default 100 (the route's page). */
   limit?: number
+  /**
+   * Fetch at all. Default true.
+   *
+   * W4's collapse of X7's duplicate: while the Desk is open, `useDesk` already
+   * has both lists and the badge is the same join over them, so the shell hands
+   * the count DOWN from the Desk (`DeskPage.onAsksCount`) and stands this hook
+   * down. Off the Desk, this is the only reader and it fetches. Either way the
+   * lists are fetched once, and — the point of X7 — by one definition of "an
+   * ask", never two.
+   */
+  enabled?: boolean
 }
 
 export interface AsksCountApi {
@@ -40,11 +51,11 @@ export interface AsksCountApi {
 }
 
 export default function useAsksCount(options: UseAsksCountOptions = {}): AsksCountApi {
-  const { limit } = options
+  const { limit, enabled = true } = options
   // Only the parked rows: the badge has no use for the rest of the page, and a
   // narrower query is a smaller answer on a busy project.
-  const overview = useEventsOverview({ ...options, limit, status: 'awaiting_human' })
-  const attention = useAttentionRequests(options)
+  const overview = useEventsOverview({ ...options, limit, status: 'awaiting_human', enabled })
+  const attention = useAttentionRequests({ ...options, enabled })
 
   const count = useMemo(
     () =>
