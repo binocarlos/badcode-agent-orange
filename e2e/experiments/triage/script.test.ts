@@ -82,6 +82,19 @@ describe('the committed mock script', () => {
     }
   })
 
+  it('keys only on phrases that survive JSON encoding', () => {
+    // The proxy substring-matches the RAW request body, which is JSON. A key
+    // containing a quote, a backslash or a newline appears escaped on the wire,
+    // so the rule becomes quietly always-false — a tripwire that can never fire,
+    // and a green run that measured nothing. (Handed over by the DR1 executor,
+    // who hit it; cheap enough to pin here forever.)
+    for (const rule of rules) {
+      for (const key of [rule.match, rule.absent].filter((k): k is string => typeof k === 'string' && k !== '')) {
+        assert.equal(JSON.stringify(key), `"${key}"`, `key ${key} does not survive JSON encoding`)
+      }
+    }
+  })
+
   it('orders the table auditor → critic → queues → dispatcher', () => {
     // Every body below the line contains the marker every body above it keys on,
     // so this order is load-bearing rather than tidy:
