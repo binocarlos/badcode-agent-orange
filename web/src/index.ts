@@ -364,6 +364,13 @@ export {
   markBackEdges,
   cronHours,
   wireLabel,
+  // The chart's rendering fixes (doc 21 §2 X2/X3/X10): label lanes so two
+  // riding labels never overprint, the gutter column a dial is docked in, and
+  // the five-strike rule that makes a clock dead rather than merely off.
+  SCHEDULE_STRIKE_LIMIT,
+  assignLabelLanes,
+  clockGutterWidth,
+  labelWidth,
   PROPAGATION_MAX_DEPTH,
   PROPAGATION_CAVEAT,
   PROPAGATION_NOTHING_SUBSCRIBES,
@@ -383,6 +390,7 @@ export type {
   OrgChartClock,
   OrgChartPip,
   OrgChartPoint,
+  OrgChartLabelBox,
   OrgChartConvention,
   Propagation,
   PropagationHop,
@@ -395,6 +403,7 @@ export type {
 export {
   default as OrgChartPage,
   stateLine,
+  HALTED_CLOCK_SENTENCE,
   WIRE_EVENT_TYPE,
   wireFilter,
   wireSentence,

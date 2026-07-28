@@ -57,7 +57,20 @@ export const ORG_CHART_METRICS = {
   marginY: 16,
   /** Extra width claimed on the right when a back edge needs a return lane. */
   backLane: 44,
+  /** One riding label's line height — also the pitch of the label lanes. */
+  labelLineHeight: 12,
+  /** Estimated advance width of one mono character at the label's size. Only
+   *  ever used to keep two labels apart, so an estimate is enough — but it must
+   *  be an over-estimate rather than an under-estimate. */
+  labelCharWidth: 6,
 } as const
+
+/** The gutter column reserved to the left of every plate for its dials (X3).
+ *  A dial drawn here can never land on a neighbouring plate, because no plate
+ *  is ever drawn in it. Zero when the project has no schedules to dock. */
+export function clockGutterWidth(hasClocks: boolean): number {
+  return hasClocks ? ORG_CHART_METRICS.clockSize + ORG_CHART_METRICS.clockGap : 0
+}
 
 // ---------------------------------------------------------------------------
 // The shapes
@@ -109,7 +122,13 @@ export interface OrgChartWire {
   /** The text that rides the wire (§3.7): the event type, plus its filter. */
   label: string
   labelX: number
+  /** Already offset by `labelLane` — the renderer draws at this y and nowhere
+   *  else, so what the tests assert is what the canvas shows. */
   labelY: number
+  /** Which label lane this label sits in, 0 = on the wire. Two wires sharing a
+   *  run (the same event fanning out to two workers) would otherwise overprint
+   *  each other into garbage (§2 X2). */
+  labelLane: number
 }
 
 /** A schedule, as a 24-hour dial docked to its worker's plate (§3.7). */
@@ -123,10 +142,17 @@ export interface OrgChartClock {
    *  the dial then shows no ticks rather than the wrong ones. */
   hoursKnown: boolean
   enabled: boolean
+  /** The dispatcher gave up on this clock: disabled after five failed
+   *  provisions (§2 X10). A dead clock must not read as a normal one. */
+  halted: boolean
   x: number
   y: number
   size: number
 }
+
+/** How many failed provisions in a row disable a schedule — the engine's
+ *  five-strike rule, restated here so the dial can say the clock is dead. */
+export const SCHEDULE_STRIKE_LIMIT = 5
 
 /** An event type that enters the project from outside it (§6.1). */
 export interface OrgChartPip {
@@ -134,6 +160,10 @@ export interface OrgChartPip {
   /** True when an event of this type appears in `recentEvents` with an
    *  `external` source — i.e. it has actually happened, not just been wired. */
   external: boolean
+  /** True when at least one wire leaves this pip. Such a wire already carries
+   *  the event type as its riding label, so the pip's own caption would be the
+   *  same text twice, 60px apart (§2 X4) — the renderer drops it. */
+  wired: boolean
   x: number
   y: number
 }
@@ -339,9 +369,14 @@ export function layoutOrgChart(
   }
 
   // --- 4. Coordinates -----------------------------------------------------
+  // Every plate reserves a gutter column on its left for its dials (X3). It is
+  // reserved for ALL plates, not only the scheduled ones, so the ranks stay on
+  // one grid — and because no plate is ever drawn in a gutter, a dial can never
+  // land on a neighbouring plate.
+  const gutter = clockGutterWidth(schedules.some((s) => known.has(s.worker)))
+  const slot = M.nodeWidth + gutter
   const widest = ranks.reduce((m, row) => Math.max(m, row.length), 0)
-  const contentWidth =
-    widest === 0 ? M.nodeWidth : widest * M.nodeWidth + (widest - 1) * M.hGap
+  const contentWidth = widest === 0 ? slot : widest * slot + (widest - 1) * M.hGap
   let width = M.marginX * 2 + contentWidth
   const rankTop = (r: number): number =>
     M.marginY + M.pipHeight + M.vGap + r * (M.nodeHeight + M.vGap)
@@ -349,7 +384,7 @@ export function layoutOrgChart(
   const byName = new Map(sortedWorkers.map((w) => [w.name, w]))
   const nodes: OrgChartNode[] = []
   ranks.forEach((row, r) => {
-    const rowWidth = row.length * M.nodeWidth + (row.length - 1) * M.hGap
+    const rowWidth = row.length * slot + (row.length - 1) * M.hGap
     const startX = Math.round((width - rowWidth) / 2)
     row.forEach((name, index) => {
       const worker = byName.get(name) as Worker
@@ -358,7 +393,7 @@ export function layoutOrgChart(
         description: worker.description,
         rank: r,
         order: index,
-        x: startX + index * (M.nodeWidth + M.hGap),
+        x: startX + gutter + index * (slot + M.hGap),
         y: rankTop(r),
         width: M.nodeWidth,
         height: M.nodeHeight,
@@ -384,6 +419,7 @@ export function layoutOrgChart(
       return {
         type,
         external: externalSeen.has(type),
+        wired: targets.length > 0,
         x: targets.length === 0 ? M.marginX + index * M.pipGap : Math.round(mean(targets)),
         y: pipY,
       }
@@ -419,6 +455,9 @@ export function layoutOrgChart(
       hours,
       hoursKnown,
       enabled: schedule.enabled,
+      // The engine disables a schedule after five failed provisions; a clock
+      // that is off *because* of that is dead, not merely paused (X10).
+      halted: !schedule.enabled && (schedule.provision_failures ?? 0) >= SCHEDULE_STRIKE_LIMIT,
       x: node.x - M.clockGap - M.clockSize,
       y: node.y + index * (M.clockSize + 6),
       size: M.clockSize,
@@ -431,6 +470,7 @@ export function layoutOrgChart(
   const laneX = width - Math.round(M.backLane / 2)
   const pipBottom = pipY + M.pipHeight
 
+  const anchors: OrgChartPoint[] = []
   const wires: OrgChartWire[] = raw.map((w) => {
     const target = nodeAt.get(w.to) as OrgChartNode
     const isBack = back.has(edgeKey(w))
@@ -455,6 +495,7 @@ export function layoutOrgChart(
       }
     }
     const anchor = longestSegmentMidpoint(points)
+    anchors.push(anchor)
     return {
       id: w.key,
       subscriptionId: w.subscription.id,
@@ -469,7 +510,21 @@ export function layoutOrgChart(
       label: wireLabel(w.subscription),
       labelX: anchor.x,
       labelY: anchor.y,
+      labelLane: 0,
     }
+  })
+
+  // Label lanes (X2). Two subscriptions that share a rank — `worker.finished
+  // {worker: email-answerer}` waking BOTH the archivist and the reviewer — land
+  // their riding labels on the same elbow lane, at almost the same point, and
+  // overprint into unreadable soup. Each label is pushed down one line until it
+  // is clear of every label already placed.
+  const lanes = assignLabelLanes(
+    wires.map((w, index) => ({ x: w.labelX, y: anchors[index].y, width: labelWidth(w.label) })),
+  )
+  wires.forEach((wire, index) => {
+    wire.labelLane = lanes[index]
+    wire.labelY = anchors[index].y + lanes[index] * M.labelLineHeight
   })
 
   const height =
@@ -478,6 +533,59 @@ export function layoutOrgChart(
       : rankTop(ranks.length - 1) + M.nodeHeight + M.marginY
 
   return { nodes, wires, clocks, entryPips: pips, width, height }
+}
+
+// ---------------------------------------------------------------------------
+// Label lanes (§2 X2)
+// ---------------------------------------------------------------------------
+
+/** One label's footprint: the point it is centred on, and how wide it is. */
+export interface OrgChartLabelBox {
+  /** Centre x — labels are drawn `text-anchor: middle`. */
+  x: number
+  /** Baseline y BEFORE any lane offset is applied. */
+  y: number
+  width: number
+}
+
+/** An over-estimate of a mono label's drawn width. Deliberately generous: the
+ *  cost of over-estimating is a label one line lower than it needed to be, and
+ *  the cost of under-estimating is the overprinted soup this exists to stop. */
+export function labelWidth(
+  text: string,
+  charWidth: number = ORG_CHART_METRICS.labelCharWidth,
+): number {
+  return text.length * charWidth
+}
+
+/**
+ * Assign each label the lowest lane in which it touches nothing already placed.
+ *
+ * Lane `n` means "drawn `n × lineHeight` below the point it rides", so two
+ * labels can only collide when their final baselines are within one line height
+ * of each other AND their horizontal extents overlap. First come, first served,
+ * in the order given — so the caller's order (which is the layout's own
+ * deterministic wire order) fixes the result, and the chart never reshuffles.
+ */
+export function assignLabelLanes(
+  labels: readonly OrgChartLabelBox[],
+  lineHeight: number = ORG_CHART_METRICS.labelLineHeight,
+): number[] {
+  const placed: { left: number; right: number; y: number }[] = []
+  return labels.map((label) => {
+    const left = label.x - label.width / 2
+    const right = label.x + label.width / 2
+    for (let lane = 0; ; lane += 1) {
+      const y = label.y + lane * lineHeight
+      const clash = placed.some(
+        (other) => Math.abs(other.y - y) < lineHeight && left < other.right && other.left < right,
+      )
+      if (!clash) {
+        placed.push({ left, right, y })
+        return lane
+      }
+    }
+  })
 }
 
 /** What rides the wire (§3.7): the event type, and its filter when it has one. */

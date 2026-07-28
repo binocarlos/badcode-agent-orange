@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AgentChatProvider } from '../AgentChatProvider.js'
 import OrgChartPage, {
+  HALTED_CLOCK_SENTENCE,
   stateLine,
   toggleSentence,
   toggleTitle,
@@ -173,6 +174,95 @@ describe('the schematic', () => {
     expect(within(plate).getByLabelText('frozen — only a human may change it')).toBeTruthy()
   })
 
+  // -------------------------------------------------------------------------
+  // doc 21 §2 — the defects the populated walkthrough found (W1)
+  // -------------------------------------------------------------------------
+
+  it('draws the lock in SVG user units, never as a nested <svg> (X1)', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('node-fee-scorer')).toBeTruthy())
+    const plate = screen.getByTestId('node-fee-scorer')
+    // The bug: `SpineGlyph` is a `Box component="svg"` sized by CSS, and CSS
+    // sizing does not apply to an <svg> nested inside an <svg> — it rendered
+    // at the 300×150 default, a giant clipped disc in the canvas corner.
+    expect(plate.querySelectorAll('svg')).toHaveLength(0)
+    const lock = within(plate).getByLabelText('frozen — only a human may change it')
+    expect(lock.tagName.toLowerCase()).toBe('g')
+    expect(lock.getAttribute('transform')).toMatch(/scale\(/)
+    expect(lock.querySelector('path')).toBeTruthy()
+  })
+
+  it('drops a wired pip caption — the wire already carries the same text (X4)', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('pip-email.received')).toBeTruthy())
+    expect(screen.queryByTestId('pip-caption-email.received')).toBeNull()
+    // The wire leaving it names the event, once.
+    expect(screen.getByTestId('label-s1#@email.received').textContent).toBe('email.received')
+  })
+
+  it('keeps the caption on a pip nothing subscribes to (X4)', async () => {
+    subscriptions = []
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('pip-email.received')).toBeTruthy())
+    expect(screen.getByTestId('pip-caption-email.received').textContent).toBe('email.received')
+  })
+
+  it('draws every riding label in one layer above the plates (X2)', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-labels')).toBeTruthy())
+    const labels = screen.getByTestId('org-chart-labels')
+    // Last child of the transform group: wires run UNDER the plates, so a
+    // label painted with its wire disappears beneath the plate it points at.
+    expect(labels.parentElement?.lastElementChild).toBe(labels)
+    expect(labels.querySelectorAll('text')).toHaveLength(2)
+    // The label layer is not a second wire — the wire count is unchanged.
+    expect(document.querySelectorAll('[data-testid^="wire-"]')).toHaveLength(2)
+  })
+
+  it('marks a plate holding an unanswered ask, in rose, on the state line (X9)', async () => {
+    deliveries.push({
+      id: 'd2',
+      project: 'acme',
+      event_id: 'e1',
+      subscription_id: 's2',
+      session_id: 'sess-2',
+      status: 'awaiting_human',
+      started_at: NOW - 600,
+      ended_at: 0,
+      created_at: NOW - 600,
+      updated_at: NOW - 600,
+    })
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('node-email-reviewer')).toBeTruthy())
+    const plate = screen.getByTestId('node-email-reviewer')
+    // It read `idle 0/2` before: a parked ask was invisible on the chart.
+    expect(within(plate).getByText('◆ awaiting human 1')).toBeTruthy()
+    expect(within(plate).getByLabelText('email-reviewer is waiting for a human')).toBeTruthy()
+    expect(within(screen.getByTestId('node-email-answerer')).queryByLabelText(
+      'email-answerer is waiting for a human',
+    )).toBeNull()
+  })
+
+  it('crosses out a clock the five-strike rule killed (X10)', async () => {
+    schedules[0].enabled = false
+    schedules[0].provision_failures = 5
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('clock-sch-1')).toBeTruthy())
+    const clock = screen.getByTestId('clock-sch-1')
+    expect(within(clock).getByLabelText("fee-scorer's clock is dead")).toBeTruthy()
+    expect(clock.querySelector('title')?.textContent).toContain(HALTED_CLOCK_SENTENCE)
+  })
+
+  it('leaves a merely-disabled clock a clock, not a corpse (X10)', async () => {
+    schedules[0].enabled = false
+    schedules[0].provision_failures = 2
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('clock-sch-1')).toBeTruthy())
+    const clock = screen.getByTestId('clock-sch-1')
+    expect(within(clock).queryByLabelText("fee-scorer's clock is dead")).toBeNull()
+    expect(clock.querySelector('title')?.textContent).not.toContain(HALTED_CLOCK_SENTENCE)
+  })
+
   it('says positions are derived, never stored (§6.3)', async () => {
     renderChart()
     await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
@@ -224,6 +314,22 @@ describe('the conventions overlay (OC3)', () => {
     expect(screen.getByTestId('conventions-caveat').textContent).toMatch(
       /convention — written in a prompt, not enforced by the engine/,
     )
+  })
+
+  it('captions the dashed edge in its own lane, above the plates (X2)', async () => {
+    const user = userEvent.setup()
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await user.click(screen.getByLabelText('Show conventions'))
+
+    const label = await screen.findByTestId('label-convention-email-reviewer→fee-scorer')
+    expect(label.textContent).toBe('ROUTE-TO ⇢')
+    // In the label layer, not in the edge's own group: drawn with the edge it
+    // slid under the plate it points at.
+    expect(label.parentElement?.getAttribute('data-testid')).toBe('org-chart-labels')
+    expect(
+      screen.getByTestId('convention-email-reviewer→fee-scorer').querySelector('text'),
+    ).toBeNull()
   })
 
   it('says so plainly when no prompt names another worker', async () => {
@@ -513,14 +619,30 @@ describe('the canvas copy (OC4)', () => {
 })
 
 describe('stateLine', () => {
-  const cases: [string, { enabled: boolean; frozen: boolean; maxInstances: number }, number, string][] = [
-    ['running', { enabled: true, frozen: false, maxInstances: 2 }, 1, '● running 1/2'],
-    ['idle', { enabled: true, frozen: false, maxInstances: 2 }, 0, 'idle 0/2'],
-    ['frozen', { enabled: true, frozen: true, maxInstances: 1 }, 0, 'frozen 0/1'],
-    ['disabled', { enabled: false, frozen: false, maxInstances: 1 }, 0, 'disabled'],
-    ['disabled beats everything', { enabled: false, frozen: true, maxInstances: 1 }, 3, 'disabled'],
+  type Node = { enabled: boolean; frozen: boolean; maxInstances: number }
+  const cases: [string, Node, number, number, string][] = [
+    ['running', { enabled: true, frozen: false, maxInstances: 2 }, 1, 0, '● running 1/2'],
+    ['idle', { enabled: true, frozen: false, maxInstances: 2 }, 0, 0, 'idle 0/2'],
+    ['frozen', { enabled: true, frozen: true, maxInstances: 1 }, 0, 0, 'frozen 0/1'],
+    ['disabled', { enabled: false, frozen: false, maxInstances: 1 }, 0, 0, 'disabled'],
+    ['disabled beats everything', { enabled: false, frozen: true, maxInstances: 1 }, 3, 2, 'disabled'],
+    // X9: an unanswered ask outranks idle and frozen, and is ADDITIVE with
+    // running — both are true, and the operator needs both.
+    ['awaiting', { enabled: true, frozen: false, maxInstances: 1 }, 0, 1, '◆ awaiting human 1'],
+    ['awaiting beats frozen', { enabled: true, frozen: true, maxInstances: 1 }, 0, 2, '◆ awaiting human 2'],
+    [
+      'running and awaiting at once',
+      { enabled: true, frozen: false, maxInstances: 2 },
+      1,
+      1,
+      '● running 1/2 · ◆ awaiting human 1',
+    ],
   ]
-  for (const [label, node, running, want] of cases) {
-    it(label, () => expect(stateLine(node, running)).toBe(want))
+  for (const [label, node, running, awaiting, want] of cases) {
+    it(label, () => expect(stateLine(node, running, awaiting)).toBe(want))
   }
+
+  it('still reads as it did when nothing is parked', () => {
+    expect(stateLine({ enabled: true, frozen: false, maxInstances: 2 }, 0)).toBe('idle 0/2')
+  })
 })
