@@ -160,7 +160,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   Each: go/topology definition + table tests + one e2e (apply, org matches preview, one mock
   round) in topologies.stack.spec.ts.
   *Validation:* go suite + both stack commands (topologies + learning-stories regression).
-- [ ] **R2 — Remaining work seeds**: `debate@v1` (entry 7 — N debaters subscribe to the same
+- [x] **R2 — Remaining work seeds**: `debate@v1` (entry 7 — N debaters subscribe to the same
   event, aggregator judges), `self-organizing@v1` (entry 9 — workers hold worker_create;
   UNCAPPED per D3; its e2e runs with `--port-pool` narrowed), `temporal-hierarchy@v1` (entry 10 —
   strategist on a slow schedule rewrites operator prompts), `escalation@v1` (entry 11 — worker +
@@ -320,4 +320,17 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - (R1) **Topology tests can import the root agentkit package** — solo-memory pins its quoted
   briefing heading against `agentkit.DefaultBriefingHeading`, so a compose rename trips a test
   instead of orphaning prompt text.
+- (R2) **The 13-seed library is complete.** Debate's aggregator fires once per debater finish
+  (worker.finished is the only routable output, so one transcript per firing — 2N subscriptions,
+  the charter states the limit); temporal-hierarchy's review channel is memory by necessity
+  (schedules deliver only Input text); escalation needed nothing built — the seed is one prompt.
+- (R2) **Honesty-by-disclaimer needs count-based pins** — self-organizing's prompt must SAY
+  "there is no worker_delete tool", so tests assert exactly one occurrence, not absence. Same
+  shape as R1's quoted-heading lesson.
+- (R2) **A scripted rewrite's system_prompt payload smuggles the TARGET's identity phrase** —
+  the strategist's tool call carries "You are tp15-op-1,", so identity-phrase keys are
+  contaminated the same way names are (L2 trap, generalised). Rule order carries it again.
+- (R2) **self-organizing@v1 ships uncapped (D3): SettingsPatch nil is PINNED as the decision** —
+  and its offline e2e proves autonomy-without-a-model is inert (founder runs, 0 worker_create
+  events, narrowed pool clean).
 
