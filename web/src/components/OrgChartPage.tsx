@@ -40,7 +40,14 @@
 // when it has them (`consoleColor`) and fall back to the design's own tokens,
 // so `web/` never depends on `examples/web`'s palette augmentation.
 
-import { useCallback, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import {
   Alert,
   Box,
@@ -72,6 +79,7 @@ import {
   EVENT_DRAFT_TEMPLATE,
   blankEnvelope,
   parseEventDraft,
+  type JobRow,
   type MatchableEvent,
 } from '../events.js'
 import {
@@ -94,6 +102,39 @@ import {
   type OrgChartWire,
 } from '../orgchart.js'
 import { consoleColor } from '../spine.js'
+import usePrefersReducedMotion from '../useReducedMotion.js'
+import {
+  BREATHE_MIN_OPACITY,
+  BREATHE_PERIOD_MS,
+  FLASH_IN_MS,
+  FLASH_OUT_MS,
+  PULSE_EASING,
+  PULSE_KEY_SPLINES,
+  TRACE_DIM_OPACITY,
+  TRACE_HOP_STAGGER_MS,
+  chevronFor,
+  coalesceFlashStart,
+  coarseElapsed,
+  flashLifetimeMs,
+  formatElapsed,
+  hopGlyph,
+  offsetPathSupported,
+  planArrivalPulses,
+  planReplayPulses,
+  polylineLength,
+  polylinePath,
+  pulseDurationSeconds,
+  pulseEndMs,
+  runningSince,
+  tickIntervalMs,
+  traceDrawDelayMs,
+  traceHopDepths,
+  trafficLabel,
+  wireTraffic,
+  type ChartPulse,
+  type FlashKind,
+  type WireTraffic,
+} from '../chartmotion.js'
 
 /** Identifiers are mono, content is prose (§3.4). */
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
@@ -179,6 +220,49 @@ export default function OrgChartPage({
     return counts
   }, [overview.jobs])
 
+  // --- Motion (W5, doc 21 §4.1 / §5 M0–M3) --------------------------------
+  // One gate, read in JS, because CSS cannot pause SMIL (§4.1's SMIL trap).
+  // Everything below degrades to M0: chevrons and `↳ ×n` counts, which are
+  // drawn unconditionally and are the still screenshot the chart must answer
+  // from before any animation is allowed to exist.
+  const reducedMotion = usePrefersReducedMotion()
+
+  /** What each wire has carried, out of the deliveries already fetched. */
+  const traffic = useMemo(
+    () => wireTraffic(layout.wires, overview.jobs),
+    [layout.wires, overview.jobs],
+  )
+
+  const { pulses, flashes } = useChartMotion(
+    overview.jobs,
+    layout.wires,
+    overview.loading,
+    reducedMotion,
+  )
+
+  // The ticking status line (§5 M2). `nowSeconds` wins when a host or a test
+  // supplies it — and when it does, no interval is started at all, so the
+  // chart stays deterministic. NOTE for the merge: W4 builds one shared
+  // app-level elapsed ticker for Desk + Events; this local one follows the
+  // same discipline (tick, then coarsen to 60s) and should be folded into it
+  // rather than living twice.
+  const sinceByWorker = useMemo(() => runningSince(overview.jobs), [overview.jobs])
+  const [tick, setTick] = useState(() => Math.floor(Date.now() / 1000))
+  const now = nowSeconds ?? tick
+  const newestStart = useMemo(() => {
+    let newest: number | null = null
+    for (const started of sinceByWorker.values()) {
+      if (newest === null || started > newest) newest = started
+    }
+    return newest
+  }, [sinceByWorker])
+  const tickMs = newestStart === null ? null : tickIntervalMs(now - newestStart)
+  useEffect(() => {
+    if (nowSeconds !== undefined || tickMs === null) return
+    const id = setInterval(() => setTick(Math.floor(Date.now() / 1000)), tickMs)
+    return () => clearInterval(id)
+  }, [nowSeconds, tickMs])
+
   // --- Propagation (§6.5) -------------------------------------------------
   const [traced, setTraced] = useState<{ label: string; event: MatchableEvent } | null>(null)
   const [draft, setDraft] = useState('')
@@ -200,6 +284,10 @@ export default function OrgChartPage({
     for (const hop of propagation?.hops ?? []) for (const wake of hop.wakes) lit.add(wake.worker)
     return lit
   }, [propagation])
+  /** Each lit subscription's first depth — its hop number, and the step its
+   *  draw-in waits for (§5 M3). Hop numbers are what makes the trace
+   *  reconstructible from a screenshot, which motion never allows. */
+  const hopDepths = useMemo(() => traceHopDepths(propagation), [propagation])
 
   const tracePip = useCallback((pip: OrgChartPip) => {
     setDraftError(null)
@@ -324,6 +412,14 @@ export default function OrgChartPage({
           awaiting={awaiting}
           litWires={litSubscriptions}
           litWorkers={litWorkers}
+          hopDepths={hopDepths}
+          tracing={propagation !== null}
+          traffic={traffic}
+          pulses={pulses}
+          flashes={flashes}
+          reducedMotion={reducedMotion}
+          runningSince={sinceByWorker}
+          nowSeconds={now}
           tracedPip={traced?.label ?? null}
           onTracePip={tracePip}
           conventions={conventions}
@@ -412,6 +508,132 @@ export default function OrgChartPage({
 }
 
 // ---------------------------------------------------------------------------
+// The motion orchestrator (§5 M1) — the only stateful part of W5
+// ---------------------------------------------------------------------------
+
+/**
+ * Turn arriving deliveries into pulses and flashes.
+ *
+ * The arithmetic all lives in `chartmotion.ts`, under test; this hook is the
+ * timers and the two refs the arithmetic needs, and nothing else.
+ *
+ * Three rules it exists to enforce:
+ *
+ *   - **Arrival, not render.** `seen` is seeded on the first hydrated pass, so
+ *     opening the chart is a *replay*, and only genuinely new delivery ids
+ *     afterwards are *arrivals*. A re-render, a refetch that returns the same
+ *     rows, a pan or a zoom animate nothing.
+ *   - **Replay does not flash.** The flash means "just now"; the chart-open
+ *     replay is explicitly not now, so it gets dots and no flash. Under
+ *     reduced motion it is skipped entirely — history is what the `↳ ×n`
+ *     counts are for.
+ *   - **A fault flash never expires.** `flashLifetimeMs('fault')` is null and
+ *     no timer is scheduled for it; the wire is also painted fault from the
+ *     data (`traffic.lastStatus`), so the state survives a reload and a still
+ *     screenshot. Failure is a state, not an event.
+ */
+function useChartMotion(
+  jobs: JobRow[],
+  wires: OrgChartWire[],
+  loading: boolean,
+  reducedMotion: boolean,
+): { pulses: ChartPulse[]; flashes: Map<string, FlashKind> } {
+  const [pulses, setPulses] = useState<ChartPulse[]>([])
+  const [flashes, setFlashes] = useState<Map<string, FlashKind>>(() => new Map())
+  /** Null until the first hydrated pass — the seed, which is what makes the
+   *  first look a replay instead of a hundred simultaneous arrivals. */
+  const seen = useRef<Set<string> | null>(null)
+  const lastFlashAt = useRef<Map<string, number>>(new Map())
+  /** A mirror of `pulses` a dependency-free effect can read: the ≤3 cap is
+   *  counted against what is actually in flight. */
+  const inFlight = useRef<Map<string, number>>(new Map())
+  /** Every timer still owed a callback. A Set rather than an array because a
+   *  chart left open all afternoon would otherwise accumulate one dead handle
+   *  per delivery, forever. */
+  const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set())
+
+  useEffect(
+    () => () => {
+      for (const id of timers.current) clearTimeout(id)
+      timers.current.clear()
+    },
+    [],
+  )
+
+  useEffect(() => {
+    // Never animate off a half-loaded page: the entrance gate is hydration,
+    // exactly as §4.2 requires of the feed.
+    if (loading) return
+
+    const routeById = new Map(wires.map((wire) => [wire.id, wire]))
+    const after = (ms: number, fn: () => void) => {
+      const id = setTimeout(() => {
+        timers.current.delete(id)
+        fn()
+      }, Math.max(0, ms))
+      timers.current.add(id)
+    }
+
+    const flash = (wireId: string, kind: FlashKind) => {
+      const nowMs = Date.now()
+      // WCAG 2.3.1: three flashes a second, so a burst lands on the grid.
+      const startAt = coalesceFlashStart(lastFlashAt.current.get(wireId) ?? null, nowMs)
+      lastFlashAt.current.set(wireId, startAt)
+      after(startAt - nowMs, () => {
+        setFlashes((prev) => new Map(prev).set(wireId, kind))
+        const life = flashLifetimeMs(kind)
+        if (life === null) return // fault: it stays.
+        after(life, () =>
+          setFlashes((prev) => {
+            // A newer flash owns the wire now — leave it alone.
+            if (prev.get(wireId) !== kind) return prev
+            const next = new Map(prev)
+            next.delete(wireId)
+            return next
+          }),
+        )
+      })
+    }
+
+    const run = (planned: ChartPulse[], withFlash: boolean) => {
+      if (planned.length === 0) return
+      if (!reducedMotion) {
+        for (const pulse of planned) {
+          inFlight.current.set(pulse.wireId, (inFlight.current.get(pulse.wireId) ?? 0) + 1)
+        }
+        setPulses((prev) => [...prev, ...planned])
+        for (const pulse of planned) {
+          const wire = routeById.get(pulse.wireId)
+          const length = wire === undefined ? 0 : polylineLength(wire.points)
+          after(pulseEndMs(pulse, length), () => {
+            inFlight.current.set(
+              pulse.wireId,
+              Math.max(0, (inFlight.current.get(pulse.wireId) ?? 0) - 1),
+            )
+            setPulses((prev) => prev.filter((other) => other.key !== pulse.key))
+          })
+        }
+      }
+      // The flash is a colour change, not a position change, which is why it
+      // IS the reduced-motion substitute rather than something dropped.
+      if (withFlash) for (const pulse of planned) flash(pulse.wireId, pulse.kind)
+    }
+
+    if (seen.current === null) {
+      seen.current = new Set(jobs.map((job) => job.delivery.id))
+      if (!reducedMotion) run(planReplayPulses(jobs, wires), false)
+      return
+    }
+
+    const plan = planArrivalPulses(jobs, wires, seen.current, inFlight.current)
+    for (const id of plan.seen) seen.current.add(id)
+    run(plan.pulses, true)
+  }, [jobs, loading, reducedMotion, wires])
+
+  return { pulses, flashes }
+}
+
+// ---------------------------------------------------------------------------
 // The canvas
 // ---------------------------------------------------------------------------
 
@@ -422,6 +644,19 @@ interface CanvasProps {
   awaiting: Map<string, number>
   litWires: Set<string>
   litWorkers: Set<string>
+  /** Subscription id → its first hop depth, when a trace is running (§5 M3). */
+  hopDepths: Map<string, number>
+  /** True while a propagation is traced: everything unlit dims to 0.22. */
+  tracing: boolean
+  /** Wire id → what it has carried (§5 M0's `↳ ×n`). */
+  traffic: Map<string, WireTraffic>
+  pulses: ChartPulse[]
+  flashes: Map<string, FlashKind>
+  reducedMotion: boolean
+  /** Worker → when its oldest running delivery started, unix seconds. */
+  runningSince: Map<string, number>
+  /** The clock the elapsed line reads, unix seconds. */
+  nowSeconds: number
   tracedPip: string | null
   onTracePip: (pip: OrgChartPip) => void
   conventions: OrgChartConvention[]
@@ -432,6 +667,20 @@ interface CanvasProps {
   onToggleWorker: (name: string, field: 'enabled' | 'frozen') => void
   onOpenAutomation?: (scheduleId: string, worker: string) => void
 }
+
+/** The breathe (§5 M2) and the trace draw-in (§5 M3), as one stylesheet.
+ *  `org-chart-breathe` is opacity-only and `org-chart-draw` moves a dash
+ *  offset on a `pathLength="1"` route — no geometry moves in either. */
+const ORG_CHART_KEYFRAMES = `
+@keyframes org-chart-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: ${BREATHE_MIN_OPACITY}; }
+}
+@keyframes org-chart-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+`
 
 const ZOOM_STEP = 1.25
 const ZOOM_MIN = 0.4
@@ -444,6 +693,14 @@ function Canvas({
   awaiting,
   litWires,
   litWorkers,
+  hopDepths,
+  tracing,
+  traffic,
+  pulses,
+  flashes,
+  reducedMotion,
+  runningSince: sinceByWorker,
+  nowSeconds,
   tracedPip,
   onTracePip,
   conventions,
@@ -611,6 +868,12 @@ function Canvas({
               <path d="M0 0 L8 4 L0 8 z" fill={ember} />
             </marker>
           </defs>
+          {/* The two keyframes W5 needs, scoped to this chart by name. Both
+              are opacity/dashoffset only — no scale, no glow, no filter (§4.1:
+              SVG filters are expensive and kill the schematic). Neither is
+              ever attached under reduced motion; the gate is in JS, because
+              CSS cannot pause the SMIL the pulses fall back to. */}
+          <style>{ORG_CHART_KEYFRAMES}</style>
           <g transform={`translate(${view.x} ${view.y}) scale(${view.scale})`}>
             {layout.wires.map((wire) => (
               <Wire
@@ -618,9 +881,24 @@ function Canvas({
                 wire={wire}
                 theme={theme}
                 lit={litWires.has(wire.subscriptionId)}
+                dimmed={tracing && !litWires.has(wire.subscriptionId)}
+                hopDepth={hopDepths.get(wire.subscriptionId) ?? null}
+                traffic={traffic.get(wire.id) ?? null}
+                flash={flashes.get(wire.id) ?? null}
+                reducedMotion={reducedMotion}
                 onCut={() => onCutWire(wire)}
               />
             ))}
+            {/* One dot per delivery, once (§5 M1). Above the wires so it is
+                never lost under one, below the plates so it disappears behind
+                the worker it arrives at rather than over its name. */}
+            <g data-testid="org-chart-pulses">
+              {pulses.map((pulse) => {
+                const wire = layout.wires.find((w) => w.id === pulse.wireId)
+                if (wire === undefined) return null
+                return <PulseDot key={pulse.key} pulse={pulse} wire={wire} theme={theme} />
+              })}
+            </g>
             {showConventions &&
               conventions.map((convention) => (
                 <ConventionEdge
@@ -670,6 +948,9 @@ function Canvas({
                 running={running.get(node.name) ?? 0}
                 awaiting={awaiting.get(node.name) ?? 0}
                 lit={litWorkers.has(node.name)}
+                dimmed={tracing && !litWorkers.has(node.name)}
+                elapsedSeconds={elapsedFor(sinceByWorker, node.name, nowSeconds)}
+                reducedMotion={reducedMotion}
                 wiring={wiringFrom !== null}
                 isWiringSource={wiringFrom === node.name}
                 onStartWiring={() => startWiring(node)}
@@ -686,6 +967,27 @@ function Canvas({
               {layout.wires.map((wire) => (
                 <WireLabel key={wire.id} wire={wire} theme={theme} lit={litWires.has(wire.subscriptionId)} />
               ))}
+              {/* §5 M0: the traffic a wire carried, as text. Its own element,
+                  one line under the riding label — never appended to the
+                  label's text node, which is a single node other tests match
+                  on whole. This is the count that takes over when the ≤3 cap
+                  stops the dots, and it is drawn whether or not anything ever
+                  animated. */}
+              {layout.wires.map((wire) => (
+                <TrafficCount
+                  key={wire.id}
+                  wire={wire}
+                  theme={theme}
+                  traffic={traffic.get(wire.id) ?? null}
+                />
+              ))}
+              {/* §5 M3: mono hop numbers, so the trace survives a screenshot. */}
+              {tracing &&
+                layout.wires.map((wire) => {
+                  const depth = hopDepths.get(wire.subscriptionId)
+                  if (depth === undefined) return null
+                  return <HopNumber key={wire.id} wire={wire} theme={theme} depth={depth} />
+                })}
               {showConventions &&
                 conventionLabels.map((label) => (
                   <ConventionLabel key={label.convention.id} {...label} theme={theme} />
@@ -770,20 +1072,56 @@ function Wire({
   wire,
   theme,
   lit,
+  dimmed,
+  hopDepth,
+  traffic,
+  flash,
+  reducedMotion,
   onCut,
 }: {
   wire: OrgChartWire
   theme: Theme
   lit: boolean
+  dimmed: boolean
+  hopDepth: number | null
+  traffic: WireTraffic | null
+  flash: FlashKind | null
+  reducedMotion: boolean
   onCut: () => void
 }) {
   const ember = token(theme, 'ember')
-  const stroke = lit ? ember : theme.palette.divider
+  const fault = token(theme, 'fault')
+  // A failure is a STATE (§4.1): the newest delivery down this wire having
+  // failed paints it fault from the DATA, so it survives a reload, a re-render
+  // and a still screenshot. The flash below only makes it briefly thicker.
+  const faulted = traffic?.lastStatus === 'failed'
+  const stroke =
+    flash === 'fault' || faulted
+      ? fault
+      : flash === 'ember' || lit
+        ? ember
+        : theme.palette.divider
+  const strokeWidth = flash !== null ? 2.5 : lit ? 2 : 1
   const points = wire.points.map((p) => `${p.x},${p.y}`).join(' ')
+  const chevron = chevronFor(wire.points)
+  // Fast in (60ms), slow out (450ms) — the decay is the transition that is
+  // running when nothing is flashing. Under reduced motion the colour still
+  // changes; it just arrives instantly (§4.1: substitute, don't delete).
+  const decay = reducedMotion
+    ? undefined
+    : flash !== null
+      ? `stroke ${FLASH_IN_MS}ms linear, stroke-width ${FLASH_IN_MS}ms linear`
+      : `stroke ${FLASH_OUT_MS}ms ease-out, stroke-width ${FLASH_OUT_MS}ms ease-out`
+  // The draw-in (§5 M3) is the only motion the trace has, and dropping it
+  // loses nothing: the hop numbers and the dim carry the whole answer.
+  const drawIn =
+    lit && hopDepth !== null && !reducedMotion
+      ? `org-chart-draw ${TRACE_HOP_STAGGER_MS}ms ease-out ${traceDrawDelayMs(hopDepth)}ms both`
+      : undefined
   return (
     <g
       data-testid={`wire-${wire.id}`}
-      opacity={wire.enabled ? 1 : 0.4}
+      opacity={dimmed ? TRACE_DIM_OPACITY : wire.enabled ? 1 : 0.4}
       role="button"
       tabIndex={0}
       aria-label={`${cutWireTitle(wire)}…`}
@@ -805,13 +1143,181 @@ function Wire({
         points={points}
         fill="none"
         stroke={stroke}
-        strokeWidth={lit ? 2 : 1}
-        markerEnd={`url(#${lit ? 'org-chart-arrow-lit' : 'org-chart-arrow'})`}
+        strokeWidth={strokeWidth}
+        markerEnd={`url(#${lit || flash !== null || faulted ? 'org-chart-arrow-lit' : 'org-chart-arrow'})`}
+        {...(drawIn === undefined ? {} : { pathLength: 1, strokeDasharray: 1 })}
+        style={{ transition: decay, animation: drawIn }}
       />
       {/* A hairline is a hard thing to hit; this is the same route, fat and
           invisible, so the pointer target matches the drawing. */}
       <polyline points={points} fill="none" stroke="transparent" strokeWidth={12} />
+      {/* §5 M0: direction is a PERMANENT property of the wire, not something
+          you have to catch a dot to learn. The angle is snapped to a right
+          angle in `chevronFor` — never `rotate="auto"`, which on an orthogonal
+          patchbay snaps 90° at every corner and reads as a glitch. */}
+      {chevron !== null && (
+        <path
+          data-testid={`chevron-${wire.id}`}
+          d="M-3 -3 L3 0 L-3 3 Z"
+          fill={stroke}
+          transform={`translate(${chevron.x} ${chevron.y}) rotate(${chevron.angle})`}
+          style={{ pointerEvents: 'none' }}
+        />
+      )}
     </g>
+  )
+}
+
+/** The `↳ ×n` a wire wears (§5 M0). Its own text element, one lane under the
+ *  riding label: the label is matched as a whole text node elsewhere, and
+ *  appending to it would silently change what those matches see. */
+function TrafficCount({
+  wire,
+  theme,
+  traffic,
+}: {
+  wire: OrgChartWire
+  theme: Theme
+  traffic: WireTraffic | null
+}) {
+  const text = trafficLabel(traffic?.count ?? 0)
+  if (text === null) return null
+  return (
+    <text
+      data-testid={`traffic-${wire.id}`}
+      x={wire.labelX}
+      y={wire.labelY + ORG_CHART_METRICS.labelLineHeight - 4}
+      textAnchor="middle"
+      fontFamily={MONO}
+      fontSize={9}
+      fill={traffic?.lastStatus === 'failed' ? token(theme, 'fault') : theme.palette.text.secondary}
+      stroke={theme.palette.background.paper}
+      strokeWidth={3}
+      paintOrder="stroke"
+      style={{ pointerEvents: 'none' }}
+    >
+      {text}
+    </text>
+  )
+}
+
+/** The hop number a lit wire wears under a trace (§5 M3). Depth 0 is the event
+ *  that arrived, so the first wake is ①. */
+function HopNumber({
+  wire,
+  theme,
+  depth,
+}: {
+  wire: OrgChartWire
+  theme: Theme
+  depth: number
+}) {
+  const at = chevronFor(wire.points)
+  if (at === null) return null
+  return (
+    <text
+      data-testid={`hop-${wire.id}`}
+      x={at.x}
+      y={at.y - 8}
+      textAnchor="middle"
+      fontFamily={MONO}
+      fontSize={11}
+      fill={token(theme, 'ember')}
+      stroke={theme.palette.background.paper}
+      strokeWidth={3}
+      paintOrder="stroke"
+      style={{ pointerEvents: 'none' }}
+    >
+      {hopGlyph(depth + 1)}
+    </text>
+  )
+}
+
+/**
+ * One delivery, once, as a 3px dot travelling its wire (§5 M1).
+ *
+ * Two mechanisms, chosen by feature detection rather than by sniffing:
+ * WAAPI over CSS `offset-path` when the browser applies it to an SVG child
+ * (cancellable, and it has a `.finished`), otherwise SMIL `<animateMotion
+ * begin="indefinite">` fired with `beginElement()`, which every engine has.
+ * Either way `rotate` is pinned to 0 — see the chevron note above.
+ *
+ * The component is only ever mounted when motion is allowed; the reduced-
+ * motion gate is the hook that plans the pulses, in JS, because CSS cannot
+ * pause SMIL.
+ */
+function PulseDot({
+  pulse,
+  wire,
+  theme,
+}: {
+  pulse: ChartPulse
+  wire: OrgChartWire
+  theme: Theme
+}) {
+  const circleRef = useRef<SVGCircleElement | null>(null)
+  const motionRef = useRef<SVGAnimateMotionElement | null>(null)
+  const path = polylinePath(wire.points)
+  const seconds = pulseDurationSeconds(polylineLength(wire.points))
+  const waapi = offsetPathSupported()
+  const start = wire.points[0] ?? { x: 0, y: 0 }
+
+  useEffect(() => {
+    if (waapi) {
+      const el = circleRef.current
+      if (el === null || typeof el.animate !== 'function') return
+      const animation = el.animate(
+        [{ offsetDistance: '0%' }, { offsetDistance: '100%' }],
+        { duration: seconds * 1000, delay: pulse.delayMs, easing: PULSE_EASING, fill: 'forwards' },
+      )
+      return () => animation.cancel()
+    }
+    const el: Partial<SVGAnimateMotionElement> | null = motionRef.current
+    if (el === null) return
+    try {
+      if (pulse.delayMs > 0 && typeof el.beginElementAt === 'function') {
+        el.beginElementAt(pulse.delayMs / 1000)
+      } else if (typeof el.beginElement === 'function') {
+        el.beginElement()
+      }
+    } catch {
+      // jsdom, and any engine that parsed the element but has no SMIL clock:
+      // the dot simply never runs, and the flash and the count still say what
+      // happened. Motion is never the only carrier (§4.1 rule 4).
+    }
+    return
+  }, [pulse.delayMs, seconds, waapi])
+
+  return (
+    <circle
+      ref={circleRef}
+      data-testid={`pulse-${pulse.key}`}
+      data-motion={waapi ? 'waapi' : 'smil'}
+      r={3}
+      cx={waapi ? 0 : start.x}
+      cy={waapi ? 0 : start.y}
+      fill={token(theme, pulse.kind === 'fault' ? 'fault' : 'ember')}
+      aria-hidden="true"
+      style={
+        waapi
+          ? { offsetPath: `path("${path}")`, offsetRotate: '0deg', offsetDistance: '0%' }
+          : undefined
+      }
+    >
+      {!waapi && (
+        <animateMotion
+          ref={motionRef}
+          path={path}
+          dur={`${seconds}s`}
+          begin="indefinite"
+          calcMode="spline"
+          keyTimes="0;1"
+          keySplines={PULSE_KEY_SPLINES}
+          rotate="0"
+          fill="remove"
+        />
+      )}
+    </circle>
   )
 }
 
@@ -942,6 +1448,9 @@ function Plate({
   running,
   awaiting,
   lit,
+  dimmed,
+  elapsedSeconds,
+  reducedMotion,
   wiring,
   isWiringSource,
   onStartWiring,
@@ -954,6 +1463,11 @@ function Plate({
   running: number
   awaiting: number
   lit: boolean
+  dimmed: boolean
+  /** How long this worker's oldest running delivery has been going, or null
+   *  when nothing is running (§5 M2's ticking status line). */
+  elapsedSeconds: number | null
+  reducedMotion: boolean
   wiring: boolean
   isWiringSource: boolean
   onStartWiring: () => void
@@ -972,7 +1486,7 @@ function Plate({
   return (
     <g
       data-testid={`node-${node.name}`}
-      opacity={node.enabled ? 1 : 0.55}
+      opacity={dimmed ? TRACE_DIM_OPACITY : node.enabled ? 1 : 0.55}
       role="button"
       tabIndex={0}
       aria-label={`${node.name} — open actions, or drag to another worker to wire them`}
@@ -1060,17 +1574,64 @@ function Plate({
       >
         {truncate(node.description, 30)}
       </text>
+      {/* §5 M2: `running` breathes — slow, 2s, OPACITY ONLY, no scale and no
+          glow, and it stops when the state does, because a viewer's only way
+          to tell "running" from "stuck" is that the motion ends. `awaiting`
+          never breathes: a pause must look like a pause.
+
+          The whole line breathes rather than only the ● glyph. Splitting the
+          glyph out would make the state line two text nodes, and the line is
+          matched whole (`● running 1/1`) by the tests that pin it — a Wave A
+          lesson, restated. Nothing is lost: the animation is opacity-only and
+          the text is the thing carrying the meaning either way. */}
       <text
         x={node.x + 12}
         y={node.y + 58}
         fontFamily={MONO}
         fontSize={11}
         fill={awaiting > 0 ? rose : running > 0 ? ember : theme.palette.text.secondary}
+        data-testid={`state-${node.name}`}
+        style={
+          running > 0 && awaiting === 0 && !reducedMotion
+            ? { animation: `org-chart-breathe ${BREATHE_PERIOD_MS}ms ease-in-out infinite` }
+            : undefined
+        }
       >
         {stateLine(node, running, awaiting)}
       </text>
+      {/* The elapsed the breathe is NOT allowed to carry (§4.1 rule 4, and
+          Carbon's rule: shape and colour are status, motion is only "still
+          going"). Right-aligned on the state line's own baseline so the plate
+          keeps its three rows. The ticking text is hidden from the
+          accessibility tree behind a coarse label that changes at most once a
+          minute — a screen reader is not read a new number every second. */}
+      {elapsedSeconds !== null && (
+        <text
+          data-testid={`elapsed-${node.name}`}
+          role="img"
+          aria-label={`${node.name} has been running for ${coarseElapsed(elapsedSeconds)}`}
+          x={node.x + node.width - 12}
+          y={node.y + 58}
+          textAnchor="end"
+          fontFamily={MONO}
+          fontSize={11}
+          fill={ember}
+        >
+          {formatElapsed(elapsedSeconds)}
+        </text>
+      )}
     </g>
   )
+}
+
+/** How long this worker's oldest running delivery has been going, or null. */
+function elapsedFor(
+  since: Map<string, number>,
+  worker: string,
+  nowSeconds: number,
+): number | null {
+  const started = since.get(worker)
+  return started === undefined ? null : Math.max(0, nowSeconds - started)
 }
 
 /** The size of a plate's corner glyphs, in SVG user units — NOT CSS px, which

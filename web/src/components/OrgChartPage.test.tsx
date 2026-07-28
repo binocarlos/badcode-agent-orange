@@ -214,7 +214,10 @@ describe('the schematic', () => {
     // Last child of the transform group: wires run UNDER the plates, so a
     // label painted with its wire disappears beneath the plate it points at.
     expect(labels.parentElement?.lastElementChild).toBe(labels)
-    expect(labels.querySelectorAll('text')).toHaveLength(2)
+    // One riding label per wire. (W5 puts its `↳ ×n` traffic counts in this
+    // same layer, for the same reason the labels are here — so the pin is on
+    // the labels themselves rather than on every text node in the group.)
+    expect(labels.querySelectorAll('[data-testid^="label-"]')).toHaveLength(2)
     // The label layer is not a second wire — the wire count is unchanged.
     expect(document.querySelectorAll('[data-testid^="wire-"]')).toHaveLength(2)
   })
@@ -644,5 +647,328 @@ describe('stateLine', () => {
 
   it('still reads as it did when nothing is parked', () => {
     expect(stateLine({ enabled: true, frozen: false, maxInstances: 2 }, 0)).toBe('idle 0/2')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// W5 — chart motion (doc 21 §4.1, §5 M0–M3)
+//
+// What is asserted here is WHAT ANIMATES WHEN, in both reduced-motion
+// branches, and — more importantly — what is drawn when nothing animates at
+// all. The feel is a screenshot, and no jsdom test can hold it: jsdom has no
+// SMIL clock, so `beginElement()` is a no-op here by design, and the dot's
+// presence is what is under test rather than its travel.
+// ---------------------------------------------------------------------------
+
+/** Mock the one media query the gate reads (the pattern `useReducedMotion`'s
+ *  own callers established — jsdom has no reduced-motion support of its own). */
+function setReducedMotion(reduced: boolean) {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: reduced && query.includes('reduce'),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia
+}
+
+const testIds = (prefix: string): string[] =>
+  Array.from(document.querySelectorAll(`[data-testid^="${prefix}"]`)).map(
+    (el) => el.getAttribute('data-testid') ?? '',
+  )
+
+let originalMatchMedia: typeof window.matchMedia
+beforeEach(() => {
+  originalMatchMedia = window.matchMedia
+})
+afterEach(() => {
+  window.matchMedia = originalMatchMedia
+})
+
+describe('M0 — the still-screenshot floor (chevrons and counts)', () => {
+  it('draws a direction chevron on every wire, always', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    expect(testIds('chevron-')).toHaveLength(2)
+  })
+
+  it('draws the chevrons under reduced motion too — direction is not motion', async () => {
+    setReducedMotion(true)
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    expect(testIds('chevron-')).toHaveLength(2)
+  })
+
+  it('never rotates a chevron off a right angle', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    const chevrons = document.querySelectorAll('[data-testid^="chevron-"]')
+    expect(chevrons.length).toBeGreaterThan(0)
+    for (const chevron of Array.from(chevrons)) {
+      const transform = chevron.getAttribute('transform') ?? ''
+      const angle = Number(/rotate\((-?\d+(?:\.\d+)?)\)/.exec(transform)?.[1] ?? 'NaN')
+      expect(Number.isFinite(angle)).toBe(true)
+      expect(angle % 90).toBe(0)
+    }
+  })
+
+  it('rides the `↳ ×n` traffic count on the wire that carried it', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    // One delivery, on s1 (the pip → email-answerer wire). The other wire
+    // carried nothing and says nothing.
+    expect(screen.getByTestId('traffic-s1#@email.received').textContent).toBe('↳ ×1')
+    expect(testIds('traffic-')).toHaveLength(1)
+  })
+
+  it('counts the traffic under reduced motion — this IS the reduced rendering', async () => {
+    setReducedMotion(true)
+    deliveries.push({ ...deliveries[0], id: 'd2', status: 'ok' })
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('traffic-s1#@email.received')).toBeTruthy())
+    expect(screen.getByTestId('traffic-s1#@email.received').textContent).toBe('↳ ×2')
+  })
+
+  it('keeps the riding label a single text node, count and all', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    // The count is its OWN element: appending to the label would silently
+    // change what every whole-string match on it sees.
+    const label = screen.getByTestId('label-s1#@email.received')
+    expect(label.childNodes).toHaveLength(1)
+    expect(label.textContent).toBe('email.received')
+  })
+})
+
+describe('M1 — the pulse', () => {
+  it('replays the history on chart open, keyed as a replay', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await waitFor(() => expect(testIds('pulse-')).toHaveLength(1))
+    expect(testIds('pulse-')[0]).toBe('pulse-replay:d1@s1#@email.received')
+  })
+
+  it('pulses ONCE for a delivery that arrives, and never for one already seen', async () => {
+    const { rerender } = render(
+      <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+        <OrgChartPage projectId="acme" nowSeconds={NOW} limit={50} />
+      </AgentChatProvider>,
+    )
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await waitFor(() => expect(testIds('pulse-')).toHaveLength(1))
+
+    // A refetch that brings back ONE new delivery. `limit` is the events
+    // hook's own refetch key, so this is a real reload through the real hook.
+    deliveries.unshift({
+      id: 'd2',
+      project: 'acme',
+      event_id: 'e1',
+      subscription_id: 's2',
+      session_id: 'sess-2',
+      status: 'ok',
+      started_at: NOW - 5,
+      ended_at: NOW - 2,
+      created_at: NOW - 5,
+      updated_at: NOW - 2,
+    })
+    rerender(
+      <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+        <OrgChartPage projectId="acme" nowSeconds={NOW} limit={51} />
+      </AgentChatProvider>,
+    )
+
+    // Exactly one ARRIVAL pulse — for d2, down d2's wire. d1 was seen on the
+    // first hydrated pass and does not pulse again just because the component
+    // rendered (the arrival-not-render rule).
+    await waitFor(() =>
+      expect(testIds('pulse-').filter((id) => !id.includes('replay:'))).toEqual([
+        'pulse-d2@s2#email-answerer',
+      ]),
+    )
+  })
+
+  it('under reduced motion there is no dot at all — the flash and the count carry it', async () => {
+    setReducedMotion(true)
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('traffic-s1#@email.received')).toBeTruthy())
+    expect(testIds('pulse-')).toHaveLength(0)
+    expect(screen.getByTestId('org-chart-pulses').childNodes).toHaveLength(0)
+  })
+
+  it('falls back to SMIL when offset-path is not available on an SVG child', async () => {
+    // jsdom is exactly that browser, which is why the fallback is the branch
+    // the suite exercises: it is the one that has to work everywhere.
+    renderChart()
+    await waitFor(() => expect(testIds('pulse-')).toHaveLength(1))
+    const dot = screen.getByTestId('pulse-replay:d1@s1#@email.received')
+    expect(dot.getAttribute('data-motion')).toBe('smil')
+    const motion = dot.querySelector('animateMotion')
+    expect(motion?.getAttribute('begin')).toBe('indefinite')
+    // Never `rotate="auto"`: on an orthogonal patchbay it snaps 90° at every
+    // corner and reads as a glitch.
+    expect(motion?.getAttribute('rotate')).toBe('0')
+    expect(dot.getAttribute('aria-hidden')).toBe('true')
+  })
+})
+
+describe('a failure is a state, not an event', () => {
+  it('paints the wire fault and leaves it there', async () => {
+    deliveries.push({
+      id: 'd-fail',
+      project: 'acme',
+      event_id: 'e1',
+      subscription_id: 's2',
+      session_id: '',
+      status: 'failed',
+      started_at: NOW - 300,
+      ended_at: NOW - 299,
+      created_at: NOW - 300,
+      updated_at: NOW - 299,
+    })
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('wire-s2#email-answerer')).toBeTruthy())
+    const stroke = () =>
+      screen
+        .getByTestId('wire-s2#email-answerer')
+        .querySelector('polyline')
+        ?.getAttribute('stroke')
+    expect(stroke()).toBe('#8F2B2B')
+    // Long past any flash lifetime (60ms in + 450ms out): still fault. The
+    // colour comes from the DATA, not from a timer, so it survives a reload
+    // and a still screenshot.
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    expect(stroke()).toBe('#8F2B2B')
+  })
+
+  it('leaves a wire whose newest delivery succeeded alone', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('wire-s2#email-answerer')).toBeTruthy())
+    expect(
+      screen
+        .getByTestId('wire-s2#email-answerer')
+        .querySelector('polyline')
+        ?.getAttribute('stroke'),
+    ).not.toBe('#8F2B2B')
+  })
+})
+
+describe('M2 — running and waiting', () => {
+  it('breathes the running plate’s status line, slowly and opacity-only', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByText('● running 1/1')).toBeTruthy())
+    const line = screen.getByTestId('state-email-answerer')
+    expect(line.getAttribute('style')).toContain('org-chart-breathe')
+    expect(line.getAttribute('style')).toContain('2000ms')
+    // Opacity only: no scale, no glow, no filter (§4.1 — filters kill the
+    // schematic and cost frames).
+    const keyframes = document.querySelector('svg style')?.textContent ?? ''
+    expect(keyframes).toContain('opacity')
+    expect(keyframes).not.toContain('scale')
+    expect(keyframes).not.toContain('filter')
+  })
+
+  it('does not breathe an idle plate — motion must be caused, and must stop', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByText('idle 0/2')).toBeTruthy())
+    expect(screen.getByTestId('state-email-reviewer').getAttribute('style')).toBeNull()
+  })
+
+  it('does not breathe under reduced motion — the text carries it', async () => {
+    setReducedMotion(true)
+    renderChart()
+    await waitFor(() => expect(screen.getByText('● running 1/1')).toBeTruthy())
+    expect(screen.getByTestId('state-email-answerer').getAttribute('style')).toBeNull()
+  })
+
+  it('ticks the elapsed beside the state line, with a coarse label for a reader', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('elapsed-email-answerer')).toBeTruthy())
+    const elapsed = screen.getByTestId('elapsed-email-answerer')
+    // d1 started 60s before NOW.
+    expect(elapsed.textContent).toBe('1m 00s')
+    expect(elapsed.getAttribute('aria-label')).toBe(
+      'email-answerer has been running for 1 minute',
+    )
+  })
+
+  it('says nothing about elapsed on a plate with nothing running', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('node-email-reviewer')).toBeTruthy())
+    expect(screen.queryByTestId('elapsed-email-reviewer')).toBeNull()
+  })
+
+  it('renders the elapsed under reduced motion too — it is text, not motion', async () => {
+    setReducedMotion(true)
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('elapsed-email-answerer')).toBeTruthy())
+    expect(screen.getByTestId('elapsed-email-answerer').textContent).toBe('1m 00s')
+  })
+})
+
+describe('M3 — the trace', () => {
+  it('numbers the hops and dims everything the event does not reach', async () => {
+    const user = userEvent.setup()
+    // A worker nothing in this trace wakes, so there is something to dim.
+    subscriptions.push({
+      id: 's3',
+      project: 'acme',
+      event_type: 'invoice.received',
+      filter: {},
+      worker: 'fee-scorer',
+      max_firings_per_hour: 0,
+      enabled: true,
+    })
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await user.click(screen.getByTestId('pip-email.received'))
+
+    // Hop numbers make the trace reconstructible from a screenshot, which
+    // motion never allows. Depth 0 is the event that arrived, so ① is the
+    // first wake.
+    await waitFor(() => expect(screen.getByTestId('hop-s1#@email.received')).toBeTruthy())
+    expect(screen.getByTestId('hop-s1#@email.received').textContent).toBe('①')
+    expect(screen.getByTestId('hop-s2#email-answerer').textContent).toBe('②')
+    expect(screen.queryByTestId('hop-s3#@invoice.received')).toBeNull()
+
+    expect(screen.getByTestId('wire-s3#@invoice.received').getAttribute('opacity')).toBe('0.22')
+    expect(screen.getByTestId('node-fee-scorer').getAttribute('opacity')).toBe('0.22')
+    expect(screen.getByTestId('node-email-answerer').getAttribute('opacity')).toBe('1')
+  })
+
+  it('staggers the draw-in by hop', async () => {
+    const user = userEvent.setup()
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await user.click(screen.getByTestId('pip-email.received'))
+
+    await waitFor(() => expect(screen.getByTestId('hop-s2#email-answerer')).toBeTruthy())
+    const hop2 = screen
+      .getByTestId('wire-s2#email-answerer')
+      .querySelector('polyline')
+      ?.getAttribute('style')
+    expect(hop2).toContain('org-chart-draw')
+    expect(hop2).toContain('120ms')
+  })
+
+  it('drops ONLY the draw-in under reduced motion, losing no information', async () => {
+    setReducedMotion(true)
+    const user = userEvent.setup()
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await user.click(screen.getByTestId('pip-email.received'))
+
+    await waitFor(() => expect(screen.getByTestId('hop-s1#@email.received')).toBeTruthy())
+    // The hop numbers and the dim — the whole answer — are still here.
+    expect(screen.getByTestId('hop-s2#email-answerer').textContent).toBe('②')
+    const style =
+      screen
+        .getByTestId('wire-s2#email-answerer')
+        .querySelector('polyline')
+        ?.getAttribute('style') ?? ''
+    expect(style).not.toContain('org-chart-draw')
   })
 })

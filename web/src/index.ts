@@ -419,6 +419,53 @@ export type {
   PropagationWake,
 } from './orgchart.js'
 
+// The chart's motion, as arithmetic (W5, doc 21 §4.1 / §5 M0–M3). Pure: the
+// component decides WHEN to move, this decides what moving would mean — the
+// ≤3-per-wire cap, the 600px/s speed normalisation, the flash lifetimes (fault
+// = null, because a failure is a state), and the elapsed granularities.
+export {
+  MAX_CONCURRENT_PULSES,
+  PULSE_SPEED_PX_PER_SEC,
+  PULSE_MIN_SECONDS,
+  PULSE_MAX_SECONDS,
+  PULSE_EASING,
+  PULSE_KEY_SPLINES,
+  REPLAY_LIMIT,
+  REPLAY_STAGGER_MS,
+  FLASH_IN_MS,
+  FLASH_OUT_MS,
+  FLASH_MIN_GAP_MS,
+  TRACE_HOP_STAGGER_MS,
+  TRACE_DIM_OPACITY,
+  BREATHE_PERIOD_MS,
+  BREATHE_MIN_OPACITY,
+  CHEVRON_FRACTION,
+  ELAPSED_COARSEN_AFTER_SECONDS,
+  polylineLength,
+  polylinePath,
+  pulseDurationSeconds,
+  pointAlong,
+  chevronFor,
+  wireForJob,
+  wireTraffic,
+  trafficLabel,
+  flashKindFor,
+  flashLifetimeMs,
+  coalesceFlashStart,
+  planArrivalPulses,
+  planReplayPulses,
+  pulseEndMs,
+  offsetPathSupported,
+  tickIntervalMs,
+  formatElapsed,
+  coarseElapsed,
+  runningSince,
+  hopGlyph,
+  traceHopDepths,
+  traceDrawDelayMs,
+} from './chartmotion.js'
+export type { WireTraffic, FlashKind, ChartPulse, ArrivalPlan } from './chartmotion.js'
+
 // The chart's page (OC2) — SVG in the schematic style, the propagation panel
 // and its depth ruler, the conventions overlay (OC3) and direct manipulation
 // (OC4: wire + freeze only, every gesture a proposal carrying a reason).
