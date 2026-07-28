@@ -20,6 +20,7 @@ import EventDetail from './EventDetail.js'
 import EventJobHistory from './EventJobHistory.js'
 import EventReplayPanel from './EventReplayPanel.js'
 import ChangelogView from './ChangelogView.js'
+import BenchReportView from './BenchReportView.js'
 
 export interface EventsPageProps extends UseEventsOverviewOptions {
   /** Project id — scopes the session permalinks this page builds. */
@@ -36,6 +37,11 @@ export interface EventsPageProps extends UseEventsOverviewOptions {
   onOpenSession?: (sessionId: string) => void
   /** Render the changelog tab. Default true. */
   enableChangelog?: boolean
+  /**
+   * Render the bench tab — the comparison rig's report viewer (BR1). Default
+   * true. It has no backend at all: a report is a dropped file.
+   */
+  enableBench?: boolean
   /** How many job rows fetch their token totals unprompted. Default 10. */
   tokenAutoLoad?: number
   /**
@@ -45,7 +51,7 @@ export interface EventsPageProps extends UseEventsOverviewOptions {
   fetchConfigEvents?: ConfigEventFetcher
 }
 
-type TabKey = 'events' | 'jobs' | 'replay' | 'changelog'
+type TabKey = 'events' | 'jobs' | 'replay' | 'changelog' | 'bench'
 
 export default function EventsPage({
   projectId,
@@ -54,6 +60,7 @@ export default function EventsPage({
   syncUrl = true,
   onOpenSession,
   enableChangelog = true,
+  enableBench = true,
   tokenAutoLoad,
   fetchConfigEvents,
   ...options
@@ -113,6 +120,7 @@ export default function EventsPage({
         <Tab value="jobs" label="Jobs" />
         <Tab value="replay" label="Replay" />
         {enableChangelog && <Tab value="changelog" label="Changelog" />}
+        {enableBench && <Tab value="bench" label="Bench" />}
       </Tabs>
       <Divider />
 
@@ -190,6 +198,11 @@ export default function EventsPage({
               onOpenSession={onOpenSession}
               {...apiOptions}
             />
+          </Box>
+        )}
+        {tab === 'bench' && enableBench && (
+          <Box sx={{ height: '100%', overflowY: 'auto' }}>
+            <BenchReportView />
           </Box>
         )}
       </Box>

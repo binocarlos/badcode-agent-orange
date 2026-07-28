@@ -432,6 +432,33 @@ export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
 export { default as ChangelogView, ACTION_FILTERS, DiffBlock } from './components/ChangelogView.js'
 export type { ChangelogViewProps } from './components/ChangelogView.js'
 
+// The bench — the comparison rig's report, read from a dropped file (BR1).
+export {
+  parseBenchReport,
+  formatMeanSpread,
+  formatNumber,
+  describeRewrites,
+  CHURN_METRIC,
+} from './benchreport.js'
+export type {
+  BenchReport,
+  BenchRow,
+  BenchMetric,
+  BenchArm,
+  BenchTask,
+  BenchProperty,
+  BenchRun,
+  BenchRound,
+  BenchPromptWrite,
+} from './benchreport.js'
+export {
+  default as BenchReportView,
+  TIER_A_BANNER,
+  DEDUPE_NOTE,
+  SPREAD_ALARM,
+} from './components/BenchReportView.js'
+export type { BenchReportViewProps } from './components/BenchReportView.js'
+
 // Subscription + schedule editors (F2) — the two ways a worker is woken.
 export { default as AutomationPage } from './components/AutomationPage.js'
 export type { AutomationPageProps, AutomationTab } from './components/AutomationPage.js'
