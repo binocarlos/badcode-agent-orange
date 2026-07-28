@@ -536,7 +536,6 @@ export {
   planReplayPulses,
   pulseEndMs,
   offsetPathSupported,
-  tickIntervalMs,
   formatElapsed,
   coarseElapsed,
   runningSince,

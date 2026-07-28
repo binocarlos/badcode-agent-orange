@@ -8,6 +8,7 @@
 import { describe, it, expect } from 'vitest'
 import type { JobRow } from './events.js'
 import type { OrgChartPoint, OrgChartWire, Propagation } from './orgchart.js'
+import { tickIntervalMs, TICK_COARSE_AFTER_SECONDS } from './useElapsedTicker.js'
 import {
   BREATHE_MIN_OPACITY,
   ELAPSED_COARSEN_AFTER_SECONDS,
@@ -37,7 +38,6 @@ import {
   pulseDurationSeconds,
   pulseEndMs,
   runningSince,
-  tickIntervalMs,
   traceDrawDelayMs,
   traceHopDepths,
   trafficLabel,
@@ -469,10 +469,13 @@ describe('the offset-path feature gate', () => {
 
 describe('the ticking status line (§5 M2)', () => {
   it('ticks per second, then coarsens to a minute', () => {
-    expect(tickIntervalMs(0)).toBe(1000)
-    expect(tickIntervalMs(ELAPSED_COARSEN_AFTER_SECONDS - 1)).toBe(1000)
-    expect(tickIntervalMs(ELAPSED_COARSEN_AFTER_SECONDS)).toBe(60_000)
-    expect(tickIntervalMs(9999)).toBe(60_000)
+    // The cadence policy lives in useElapsedTicker (one authority); this pins
+    // that the chart's FORMATTING threshold still agrees with it.
+    expect(tickIntervalMs('running', 0)).toBe(1000)
+    expect(tickIntervalMs('running', ELAPSED_COARSEN_AFTER_SECONDS - 1)).toBe(1000)
+    expect(tickIntervalMs('running', ELAPSED_COARSEN_AFTER_SECONDS)).toBe(60_000)
+    expect(tickIntervalMs('running', 9999)).toBe(60_000)
+    expect(ELAPSED_COARSEN_AFTER_SECONDS).toBe(TICK_COARSE_AFTER_SECONDS)
   })
 
   it('shows seconds while they are still a decision, minutes after', () => {

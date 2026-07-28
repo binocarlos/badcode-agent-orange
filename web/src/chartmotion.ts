@@ -427,15 +427,18 @@ export function offsetPathSupported(
 // The ticking status line (§5 M2, on §4.2's discipline)
 // ---------------------------------------------------------------------------
 
-/** Past this many seconds an elapsed number stops ticking every second: the
- *  research is blunt that a per-second clock "accentuates the passing of each
- *  and every second", and past two minutes the seconds are not a decision. */
+/**
+ * Past this many seconds an elapsed number stops showing seconds: the research
+ * is blunt that a per-second clock "accentuates the passing of each and every
+ * second", and past two minutes the seconds are not a decision.
+ *
+ * This is a FORMATTING threshold only. The tick *cadence* policy — how often a
+ * row of a given status wants repainting — lives in exactly one place,
+ * `useElapsedTicker.tickIntervalMs`, and the chart calls it with `"running"`.
+ * The two constants agree by test (see chartmotion.test.ts); if they ever
+ * disagree, useElapsedTicker is the authority.
+ */
 export const ELAPSED_COARSEN_AFTER_SECONDS = 120
-
-/** How often an elapsed number of this age needs redrawing. */
-export function tickIntervalMs(elapsedSeconds: number): number {
-  return elapsedSeconds < ELAPSED_COARSEN_AFTER_SECONDS ? 1000 : 60_000
-}
 
 /**
  * `42s` · `1m 05s` · `4m` · `1h 12m`.

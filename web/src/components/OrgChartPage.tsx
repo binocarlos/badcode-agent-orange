@@ -102,6 +102,7 @@ import {
   type OrgChartWire,
 } from '../orgchart.js'
 import { consoleColor } from '../spine.js'
+import { tickIntervalMs } from '../useElapsedTicker.js'
 import usePrefersReducedMotion from '../useReducedMotion.js'
 import {
   BREATHE_MIN_OPACITY,
@@ -126,7 +127,6 @@ import {
   pulseDurationSeconds,
   pulseEndMs,
   runningSince,
-  tickIntervalMs,
   traceDrawDelayMs,
   traceHopDepths,
   trafficLabel,
@@ -256,7 +256,7 @@ export default function OrgChartPage({
     }
     return newest
   }, [sinceByWorker])
-  const tickMs = newestStart === null ? null : tickIntervalMs(now - newestStart)
+  const tickMs = newestStart === null ? null : tickIntervalMs('running', now - newestStart)
   useEffect(() => {
     if (nowSeconds !== undefined || tickMs === null) return
     const id = setInterval(() => setTick(Math.floor(Date.now() / 1000)), tickMs)
