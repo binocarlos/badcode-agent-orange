@@ -31,6 +31,15 @@ import {
 } from '../configLog.js'
 import { DiffBlock } from './ChangelogView.js'
 import BeforeAfterView from './BeforeAfterView.js'
+import { useFeedWatermark } from '../watermark.js'
+import {
+  cumulativeHeading,
+  cumulativeLineageDiff,
+  lineageHeadEventId,
+  useViewedVersions,
+  type CumulativeLineageDiff,
+} from '../lineageWaterline.js'
+import { consoleTokenColor } from '../spine.js'
 
 /** What the page needs to fold the Configuration tab to a past version. */
 export interface LineageVersion {
@@ -54,6 +63,13 @@ export interface WorkerLineageProps extends ConfigApiOptions {
   onSelectVersion?: (version: LineageVersion) => void
   /** The version currently folded to, so the row can mark itself. */
   selectedEventId?: string | null
+  /**
+   * The operator's watermark, unix ms — "when did you last look". Omitted, the
+   * Desk's own mark is read (`watermark.ts`), because there is exactly one
+   * answer to that question per operator and a second mark here would disagree
+   * with the Desk's about when the last look was.
+   */
+  watermarkMs?: number
 }
 
 /** Filled disc = an agent did this; hollow disc = a human did (§3, glyph set). */
@@ -87,6 +103,7 @@ export default function WorkerLineage({
   onOpenSession,
   onSelectVersion,
   selectedEventId = null,
+  watermarkMs,
   ...apiOptions
 }: WorkerLineageProps) {
   const log = useConfigLog({
@@ -95,6 +112,14 @@ export default function WorkerLineage({
     query: { entity: `worker:${workerName}` },
   })
   const lineage = workerLineage(log.entries, workerName)
+
+  // "Since you last looked", from the one mark (doc 21 §4.2). Frozen for the
+  // visit by useFeedWatermark, so the cumulative banner cannot vanish under an
+  // operator who is mid-read.
+  const watermark = useFeedWatermark('desk', projectId, watermarkMs)
+  const cumulative = cumulativeLineageDiff(lineage, watermark.markMs)
+  const headEventId = lineageHeadEventId(lineage)
+  const viewed = useViewedVersions(projectId, workerName, headEventId)
 
   return (
     <Box sx={{ p: 3, maxWidth: 880 }}>
@@ -135,20 +160,64 @@ export default function WorkerLineage({
             : 'Nothing to show.'}
         </Typography>
       ) : (
-        <Stack spacing={0} component="ol" sx={{ listStyle: 'none', p: 0, m: 0 }}>
-          {lineage.entries.map((row) => (
-            <LineageRow
-              key={row.entry.id}
-              row={row}
-              selected={selectedEventId === row.entry.id}
-              onOpenSession={onOpenSession}
-              onSelectVersion={onSelectVersion}
-              apiOptions={apiOptions}
-            />
-          ))}
-        </Stack>
+        <>
+          {cumulative && <CumulativeDiffBanner cumulative={cumulative} />}
+          <Stack spacing={0} component="ol" sx={{ listStyle: 'none', p: 0, m: 0 }}>
+            {lineage.entries.map((row) => (
+              <LineageRow
+                key={row.entry.id}
+                row={row}
+                selected={selectedEventId === row.entry.id}
+                onOpenSession={onOpenSession}
+                onSelectVersion={onSelectVersion}
+                apiOptions={apiOptions}
+                viewed={row.version !== null && viewed.isViewed(row.entry.id)}
+                onToggleViewed={row.version !== null ? () => viewed.toggle(row.entry.id) : undefined}
+              />
+            ))}
+          </Stack>
+        </>
       )}
     </Box>
+  )
+}
+
+/**
+ * "Changes since your last review" — GitHub's transplant (§4.2), shown ONLY
+ * when more than one rewrite landed after the watermark.
+ *
+ * With zero or one, the per-revision diffs below are already the right view and
+ * this would repeat one of them under a grander heading. It opens by default:
+ * an operator who has been away is here to read exactly this, and a diff they
+ * have to click for is a diff they will not read.
+ */
+function CumulativeDiffBanner({ cumulative }: { cumulative: CumulativeLineageDiff }) {
+  return (
+    <Paper
+      variant="outlined"
+      data-testid="lineage-cumulative"
+      sx={{
+        p: 2,
+        mb: 2,
+        borderColor: (t) => consoleTokenColor(t, 'ember'),
+      }}
+    >
+      <Typography variant="subtitle2" sx={{ color: (t) => consoleTokenColor(t, 'ember') }}>
+        {cumulativeHeading(cumulative)}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+        One diff from the prompt you last saw to the prompt running now. Each rewrite’s own diff,
+        and the reason given for it, is on its row below.
+      </Typography>
+      <DiffBlock
+        lines={cumulative.diff.lines}
+        collapsible
+        defaultOpen
+        added={cumulative.diff.added}
+        removed={cumulative.diff.removed}
+        summaryNote="since you last looked"
+      />
+    </Paper>
   )
 }
 
@@ -158,12 +227,16 @@ function LineageRow({
   onOpenSession,
   onSelectVersion,
   apiOptions,
+  viewed = false,
+  onToggleViewed,
 }: {
   row: LineageEntry
   selected: boolean
   onOpenSession?: (sessionId: string) => void
   onSelectVersion?: (version: LineageVersion) => void
   apiOptions: ConfigApiOptions
+  viewed?: boolean
+  onToggleViewed?: () => void
 }) {
   const { entry } = row
   // §7.2 hangs off the rewrite it explains — opened per row, never all at once:
@@ -174,7 +247,12 @@ function LineageRow({
     <Paper
       component="li"
       variant="outlined"
-      sx={{ p: 2, mb: 1.5, borderColor: selected ? 'primary.main' : 'divider' }}
+      sx={{
+        p: 2,
+        mb: 1.5,
+        borderColor: selected ? 'primary.main' : 'divider',
+        opacity: viewed && !selected ? 0.72 : 1,
+      }}
     >
       <Stack direction="row" spacing={1.5}>
         <ActorGlyph byWorker={row.byWorker} />
@@ -204,6 +282,23 @@ function LineageRow({
               <Typography variant="caption" color="text.secondary">
                 same text as the previous version
               </Typography>
+            )}
+            {onToggleViewed && (
+              // GitHub's "Viewed", and its invalidation (§4.2): the mark is
+              // stamped against the head prompt, so the next rewrite clears
+              // every mark rather than leaving a tick that has become a lie.
+              // The label is one text node and carries the state on its own —
+              // the dimming below is the secondary cue, not the only one.
+              <Link
+                component="button"
+                type="button"
+                variant="caption"
+                aria-pressed={viewed}
+                data-testid={`viewed-toggle-${row.entry.id}`}
+                onClick={onToggleViewed}
+              >
+                {viewed ? '✓ viewed' : 'mark viewed'}
+              </Link>
             )}
           </Stack>
 

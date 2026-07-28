@@ -407,6 +407,38 @@ export type {
   PauseLiveUpdatesProps,
 } from './components/FeedLiveness.js'
 
+// The waterline's tail (W6, doc 21 §4.2's GitHub transplants / §5-M5+M6).
+// Both read data the console already has: the cumulative diff reads the ONE
+// watermark above, and the long-job affordance reads the query-events response
+// the job table already fetches for its token totals — no backend field.
+export {
+  CUMULATIVE_MIN_REWRITES,
+  EMPTY_VIEWED,
+  cumulativeHeading,
+  cumulativeLineageDiff,
+  isVersionViewed,
+  lineageHeadEventId,
+  markVersionViewed,
+  readViewedState,
+  useViewedVersions,
+  viewedKey,
+  viewedVersions,
+  writeViewedState,
+} from './lineageWaterline.js'
+export type { CumulativeLineageDiff, ViewedState, ViewedVersionsApi } from './lineageWaterline.js'
+export {
+  EMPTY_JOB_PROGRESS,
+  LONG_JOB_AFTER_SECONDS,
+  PROGRESS_REFRESH_MS,
+  formatProduced,
+  formatStepLine,
+  isLongRunningJob,
+  progressAriaLabel,
+  progressRefreshKey,
+  summariseJobProgress,
+} from './jobprogress.js'
+export type { JobProgress } from './jobprogress.js'
+
 // The Desk fold (DK1) — asks, changes, trouble, computed read-time (§5.2).
 export {
   ATTENTION_ENDPOINTS,

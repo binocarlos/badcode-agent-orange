@@ -42,6 +42,13 @@ import { useSessionTokens } from '../useEvents.js'
 import type { ConfigApiOptions } from '../configApi.js'
 import { diffStatuses, statusPulseSx } from '../feedhighlight.js'
 import { coarseAgeLabel } from '../useElapsedTicker.js'
+import {
+  formatProduced,
+  formatStepLine,
+  isLongRunningJob,
+  progressAriaLabel,
+  progressRefreshKey,
+} from '../jobprogress.js'
 import usePrefersReducedMotion from '../useReducedMotion.js'
 
 export interface EventJobHistoryProps extends ConfigApiOptions {
@@ -169,6 +176,28 @@ function JobHistoryRow({
     nowSeconds === undefined
       ? job.durationSeconds
       : deliveryDurationSeconds(job.delivery, nowSeconds)
+
+  // The long-wait affordance (doc 21 §5-M6): past ten seconds, elapsed alone
+  // stops being an answer, so the row also says how many steps the session has
+  // taken and which one it is on. Never a percentage — agent work is unbounded
+  // and any fraction would be invented.
+  const long = isLongRunningJob(job.status, durationSeconds)
+  // One hook per row, not two: the token cell and the step line are two
+  // readings of the same query-events response. Lifting it here is what keeps
+  // the affordance free of extra requests — and bound by the SAME budget, so
+  // `tokenAutoLoad` still decides how many rows may fetch. A row past that
+  // budget shows its elapsed and nothing else until the operator asks for the
+  // tokens; a table that fired a request per row to show a step count would be
+  // the exact thing the token cell was built to avoid.
+  const session = useSessionTokens(job.sessionId, {
+    ...apiOptions,
+    auto: autoLoadTokens,
+    refreshKey: progressRefreshKey(job.status, nowSeconds === undefined ? undefined : nowSeconds * 1000),
+  })
+  const progress = session.progress
+  const produced = progress ? formatProduced(progress) : ''
+  const showSteps = long && (progress !== null || session.loading)
+
   return (
     <TableRow hover sx={statusPulseSx(justChanged ? job.status : '', reduced)}>
       <TableCell sx={{ fontFamily: 'monospace' }}>
@@ -190,12 +219,36 @@ function JobHistoryRow({
             </Typography>
           )}
         </Box>
+        {showSteps && (
+          // The digits above tick; this line changes every half minute at most,
+          // so it carries the readable sentence for a screen reader and the
+          // compact one for the eye (§4.2's ticking-text a11y rule).
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            data-testid="job-step-line"
+            aria-label={progress ? progressAriaLabel(progress) : 'starting up'}
+          >
+            <Box component="span" aria-hidden>
+              {progress ? formatStepLine(progress) : 'reading steps…'}
+            </Box>
+          </Typography>
+        )}
+        {!running && job.delivery.ended_at ? (
+          // A finished job reports when it stopped, not just how long it took —
+          // start, stop and elapsed, all static (§4.2: a ticking clock on a
+          // finished thing is a bug).
+          <Typography variant="caption" color="text.secondary" component="div" data-testid="job-span">
+            {`ended ${formatTimestamp(job.delivery.ended_at)}`}
+          </Typography>
+        ) : null}
       </TableCell>
       <TableCell>
         <DeliveryStatusChip status={job.status} />
       </TableCell>
       <TableCell align="right">
-        <JobTokensCell sessionId={job.sessionId} auto={autoLoadTokens} {...apiOptions} />
+        <JobTokensCell sessionId={job.sessionId} session={session} />
       </TableCell>
       <TableCell>
         {job.sessionId === '' ? (
@@ -214,18 +267,27 @@ function JobHistoryRow({
             open
           </Link>
         )}
+        {!running && produced !== '' && (
+          // NN/g's long-wait rule, and §4.2's: on completion say what was
+          // produced, never a generic "Done". The link beside it is how the
+          // operator reaches it.
+          <Typography variant="caption" color="text.secondary" component="div" data-testid="job-produced">
+            {`made ${produced}`}
+          </Typography>
+        )}
       </TableCell>
     </TableRow>
   )
 }
 
-interface JobTokensCellProps extends ConfigApiOptions {
+interface JobTokensCellProps {
   sessionId: string
-  auto: boolean
+  /** The row's one query-events read — see JobHistoryRow. */
+  session: ReturnType<typeof useSessionTokens>
 }
 
-function JobTokensCell({ sessionId, auto, ...apiOptions }: JobTokensCellProps) {
-  const { totals, loading, error, load } = useSessionTokens(sessionId, { ...apiOptions, auto })
+function JobTokensCell({ sessionId, session }: JobTokensCellProps) {
+  const { totals, loading, error, load } = session
 
   if (sessionId === '') return <Muted>—</Muted>
   if (error !== null) {
