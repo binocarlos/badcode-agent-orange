@@ -353,6 +353,40 @@ export type { UseDeskOptions, DeskApi } from './useDesk.js'
 export { default as DeskPage } from './components/DeskPage.js'
 export type { DeskPageProps } from './components/DeskPage.js'
 
+// The org chart (OC1) — a pure, deterministic, layered layout (§6.2, K6).
+// No graph library, no stored positions (§6.3): coordinates are derived.
+export {
+  ORG_CHART_METRICS,
+  WORKER_LIFECYCLE_EVENT_TYPES,
+  layoutOrgChart,
+  subscriptionProducers,
+  matchesWorkerLifecycle,
+  markBackEdges,
+  cronHours,
+  wireLabel,
+  PROPAGATION_MAX_DEPTH,
+  PROPAGATION_CAVEAT,
+  PROPAGATION_NOTHING_SUBSCRIBES,
+  PROPAGATION_STOP_LINE,
+  propagateEvent,
+} from './orgchart.js'
+export type {
+  OrgChartLayout,
+  OrgChartNode,
+  OrgChartWire,
+  OrgChartClock,
+  OrgChartPip,
+  OrgChartPoint,
+  Propagation,
+  PropagationHop,
+  PropagationWake,
+} from './orgchart.js'
+
+// The chart's page (OC2) — read-only SVG in the schematic style, plus the
+// propagation panel and its depth ruler. OC4 adds direct manipulation.
+export { default as OrgChartPage, stateLine } from './components/OrgChartPage.js'
+export type { OrgChartPageProps } from './components/OrgChartPage.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
