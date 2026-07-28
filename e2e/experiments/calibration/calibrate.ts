@@ -175,6 +175,12 @@ async function main(): Promise<void> {
       checker: a.checker,
       criticDisabled: a.disableCritic === true,
       criticShammed: a.criticPromptOverride !== undefined,
+      // Spread rather than `doctrine: a.doctrine` so the key is ABSENT (not
+      // `undefined`, not `"none"`) on an arm that injected none. JSON.stringify
+      // drops undefined either way, but being explicit here is what keeps the
+      // pre-doctrine reports — smoke-4's committed fixture above all — byte-for
+      // -byte identical after this field existed.
+      ...(a.doctrine ? { doctrine: a.doctrine } : {}),
     })),
     outcomes,
   })

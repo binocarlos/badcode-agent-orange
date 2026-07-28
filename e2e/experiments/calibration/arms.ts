@@ -8,6 +8,7 @@
 //   A  nothing                                  the loop as designed
 //   B  the critic's subscription is deleted     nothing wakes the critic
 //   C  the critic's prompt is replaced          the critic reshuffles instead of diagnosing
+//   A+doctrine  the project prompt is written   the org runs under doctrine-v1 (DR1, doc 20 §3)
 //
 // Worker names carry a per-arm prefix and no name is a substring of another —
 // the mock script is agentd-wide, and a rule keyed on a name that is also a
@@ -72,6 +73,32 @@ export const ARM_B: CalArm = {
   checker: 'calb-judge',
   disableCritic: true,
   note: "the same org with the critic's subscription deleted after apply: nothing wakes it, so nothing rewrites. Scorer variance and the no-learning baseline.",
+}
+
+/**
+ * Arm A + doctrine-v1 — the Wave 7 doctrine axis (DR1, doc 20 §3).
+ *
+ * Identical to ARM_A in every respect the topology can see: same seed, same
+ * answers, same live critic, same frozen checker, one worker-name prefix apart.
+ * The single difference is an operator mutation made after the apply — the
+ * doctrine-v1 block written into the project prompt — so the pair
+ * `A-critic-live` vs this one isolates "the org ran under common-sense
+ * operating rules" and nothing else. That is decision D5's whole claim: the
+ * A/B lever is a mutation withheld, and the engine needs no code for it.
+ *
+ * Not `optional`, because a doctrine config exists to run the pair; a
+ * doctrine ablation with the doctrine arm skipped by default would be a
+ * config that measures nothing unless someone remembered a flag.
+ */
+export const ARM_A_DOCTRINE_V1: CalArm = {
+  id: 'A-critic-live-doctrine-v1',
+  investigator: 'cald-invest',
+  critic: 'cald-critic',
+  checker: 'cald-judge',
+  doctrine: 'v1',
+  note:
+    'the same org as A with docs/product/doctrine/doctrine-v1.md written into the project prompt after ' +
+    "apply, so the block rides every worker's composed prompt. One operator mutation from A.",
 }
 
 /** Arm C — the sham. Optional: run it when the budget allows. */

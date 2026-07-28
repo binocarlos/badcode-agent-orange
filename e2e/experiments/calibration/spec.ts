@@ -18,6 +18,14 @@
 //
 // A and B are the minimum honest run. C is `optional: true` and is skipped
 // unless `--arms` names it.
+//
+// Wave 7 adds a fourth kind of difference on the same principle — the doctrine
+// axis (DR1, doc 20 §3): the same arm with an operations-doctrine block written
+// into its project prompt, versus withheld. It is still exactly one operator
+// mutation after the apply; it just lands on the settings row rather than on a
+// subscription or a worker.
+
+import type { DoctrineVersion } from './doctrine'
 
 /** One arm: a wiring of hypothesis-lab@v1, and what makes it differ. */
 export interface CalArm {
@@ -44,6 +52,21 @@ export interface CalArm {
    * the worker PUT — the topology is untouched.
    */
   criticPromptOverride?: string
+  /**
+   * Inject an operations-doctrine block as this arm's project prompt (DR1).
+   *
+   * The canonical bytes are `docs/product/doctrine/doctrine-<version>.md` below
+   * its marker line; the runner writes them through the whole-object settings
+   * PUT after the apply, exactly like `daily_tokens_hard`, which config-logs it
+   * for free (doc 20 §3, decision D5). `ProjectSettings.SystemPrompt` is
+   * composed into EVERY worker's job as the `project prompt` section, so the
+   * block rides the investigator, the critic and the frozen checker alike — an
+   * arm pair that differs only in this field is a clean common-sense ablation
+   * and nothing else.
+   *
+   * Undefined means withheld, which is the control side of that pair.
+   */
+  doctrine?: DoctrineVersion
   /** Skipped unless `--arms` names it explicitly. */
   optional?: boolean
   /** One line for the report's arm legend. */

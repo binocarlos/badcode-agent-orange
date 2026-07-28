@@ -10,9 +10,10 @@ experiment is this one and not a poetry tournament. A flat accuracy line here me
 not improve investigation"*, never *"the instrument is blind"* (runbook §1).
 
 ```sh
-# the mock smoke: free, offline, proves the machinery
+# the mock smokes: free, offline, prove the machinery
 ./e2e/run-stack-e2e.sh up mock
 ./e2e/experiments/calibration/run.sh run smoke-4
+./e2e/experiments/calibration/run.sh run doctrine-smoke-4   # the doctrine axis (DR1)
 
 # the offline unit layer, no stack
 ./e2e/experiments/calibration/run.sh test
@@ -105,10 +106,43 @@ than a harness failure.**
 | `A-critic-live` | none | the thing under test |
 | `B-critic-off` | the critic's subscription is deleted after apply | no-learning baseline (MR-3 at scale) |
 | `C-critic-sham` | the critic's prompt is replaced by `sham-critic@v1`'s charter | churn vs learning (playbook C7) |
+| `A-critic-live-doctrine-v1` | `doctrine-v1` is written into the project prompt after apply | common-sense operating rules (doc 20, DR1) |
 
-Each difference is one **ordinary operator mutation made after the apply**, so all three arms render
+Each difference is one **ordinary operator mutation made after the apply**, so all four arms render
 from the identical topology and differ in exactly one nameable way. B deletes the *subscription*
 rather than the worker, so even the composed prompts stay identical.
+
+## The doctrine axis (DR1)
+
+`docs/product/20-operations-doctrine.md` §3, decision D5: an operations doctrine is **versioned
+bytes**, not engine code. `ProjectSettings.SystemPrompt` already reaches every composed prompt as
+the `project prompt` section and already writes through a config-logged path, so an arm "runs under
+doctrine" by having the block written into that field after the apply — read current settings,
+overlay `system_prompt`, whole-object PUT, exactly as `daily_tokens_hard` is set. The A/B lever is
+that mutation withheld.
+
+- `doctrine.ts` reads the canonical file and cuts the block out of it: everything from the
+  `=== operations doctrine v1 ===` marker line (inclusive) to end of file, verbatim. **A missing
+  marker is a hard failure**, never a fallback to "the whole file" — the header above the marker is
+  editorial ("Status: every entry CANDIDATE") and must never reach a worker's prompt.
+- `configs/doctrine-smoke-4.ts` runs `A-critic-live` against `A-critic-live-doctrine-v1` over the
+  smoke's four hypotheses. Both score 4/4, and **the equality is the point**: an authored delta
+  between doctrine and no-doctrine would be a number about the mock script. Whether doctrine changes
+  how an org performs is a live question, and doc 20 §2 keeps every entry CANDIDATE until a real run
+  answers it.
+- The delivery assertion is a **tripwire**, not a delta. `cald-invest`'s rules are partitioned on its
+  identity phrase and that partition is split with `absent:` on a doctrine-v1 sentence: with the
+  block present the rule is skipped and the request falls through to the shared per-hypothesis
+  rules; with it missing the investigator returns prose with no contract line and the whole arm
+  records `unparseable`. So 4/4 with `unparseable` 0 is only reachable if the block was in the
+  **composed prompt** — reading the settings row back would have proved storage and nothing more.
+  Verified non-vacuous by disabling the injection and watching the arm collapse to 0/2.
+- The identity phrase has to be the partition and the doctrine phrase the split, never the reverse:
+  the block rides *every* worker in the arm, critic and frozen checker included, so a rule keyed on
+  a doctrine phrase alone would answer the checker's requests too.
+- The report names the version per arm (`doctrine v1` / `doctrine none`) — and says nothing at all
+  when a run has no doctrine axis, which is what keeps `smoke-4`'s committed artifacts a fixture
+  across this change.
 
 ## Ground truth, and where it is allowed to go
 
@@ -147,14 +181,15 @@ carry the same contract: a final line reading exactly `VERDICT: effect` or `VERD
 | Path | What |
 | --- | --- |
 | `spec.ts` | The config shape: arms, manifest, window, ceiling, mode. |
-| `arms.ts` | The three arms and the two strings both configs share. |
+| `arms.ts` | The arms and the two strings every config shares. |
+| `doctrine.ts` | **Pure-ish.** Reads `docs/product/doctrine/doctrine-<v>.md` and cuts the injectable block out of it at the marker line. |
 | `text.ts` | **Pure.** The dataset event and the check event — the only place truth is written into event text. |
 | `verdict.ts` | **Pure.** Verdict and checker-call parsing, and the event markers. |
 | `metrics.ts` | **Pure.** Every runbook §3 number, the tables, the artifact. Imports only `../report`'s arithmetic. |
 | `truths.ts` | Loads `truths.json` + the CSVs, refusing a directory that does not match its own checksums. |
 | `runner.ts` | The half that touches the stack: apply → ceiling → wire → per-hypothesis loop → sweep. |
 | `calibrate.ts` | CLI: load config, run arms sequentially, write artifacts, measure the port pool. |
-| `configs/` | `smoke-4` (mock) and `calibration-30` (live). `run.sh list` enumerates them. |
+| `configs/` | `smoke-4` + `doctrine-smoke-4` (mock) and `calibration-30` (live). `run.sh list` enumerates them. |
 | `manifest-30.json` | The runbook §2 scenario list with **every seed pinned** — the record. |
 | `manifest-smoke-4.json` | The smoke's four. |
 | `datasets/` | Generated by `run.sh`, gitignored. Deterministic from the manifests. |
@@ -179,7 +214,7 @@ C1↔B1 collision in the work plan's Discovered Issues Log is what that rule exi
 - **The mock script is restored on exit**, including failing runs — it is agentd-wide boot
   configuration.
 
-## Mock-script discipline (`e2e/mock-scripts/calibration-smoke.json`)
+## Mock-script discipline (`e2e/mock-scripts/calibration-smoke.json`, and its doctrine superset)
 
 Rule order is **checker → critic → investigator**, and it is load-bearing:
 
@@ -195,3 +230,10 @@ Rule order is **checker → critic → investigator**, and it is load-bearing:
   composed prompt is what flips them, which makes arm A's accuracy curve a **delivery** assertion.
 - The critic's freeze attempt names the checker but never its identity phrase, so it cannot
   contaminate the checker's rules (L2's finding, generalised).
+
+`e2e/mock-scripts/calibration-doctrine-smoke.json` is a **superset** of that file — every rule it
+has, plus the doctrine arm's critic rule and the doctrine tripwire, in that order. A separate file
+rather than an extension of the original, so `smoke-4` keeps running against bytes DR1 never
+touched. `doctrine.test.ts` pins the three-way agreement between the canonical doctrine file, the
+phrase `doctrine.ts` exports, and the rule in this script: if they drift, the tripwire silently
+stops being able to fire, and a delivery assertion that cannot fail is decoration.
