@@ -208,7 +208,7 @@ cross = failure, lock = freeze refusal.
   the depth ruler 0…8 with the stop line at 8; the not-modelled caveat line (rate limits,
   max_instances, budget) rendered once, verbatim. `examples/web`: `View` gains `"chart"`.
   *Validation:* OC1's command + `cd examples/web && yarn && yarn typecheck && yarn build`
-- [ ] **OC3 — Conventions overlay (decision K4).** Pure `inferConventions(workers)` in
+- [x] **OC3 — Conventions overlay (decision K4).** Pure `inferConventions(workers)` in
   `orgchart.ts`: scans each worker's `system_prompt` for (a) other workers' exact names and
   (b) `ROUTE-TO:` lines; emits dashed edges each carrying the matched prompt line verbatim.
   Rendered by OrgChartPage behind an **off-by-default** toggle labelled "Show conventions";
@@ -219,7 +219,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 5 — direct manipulation (after OC2 + E3 merge)
 
-- [ ] **OC4 — Wire + freeze on the canvas (decision K3).** Drag from node A to node B opens the
+- [x] **OC4 — Wire + freeze on the canvas (decision K3).** Drag from node A to node B opens the
   proposal card (design §6.4): sentence-form summary, exact `event_type`/`filter` fields shown in
   mono, **required** "Why are you wiring this?" — submitted through `useSubscriptions.save` with
   the E3 rationale, never a canvas-only path. Clicking a wire offers "Stop waking <worker> when
@@ -251,7 +251,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 7 — memory browser (after E2 merges)
 
-- [ ] **MB1 — Memory browser + briefing preview.** `web/src/memories.ts` (pure: selector-string
+- [x] **MB1 — Memory browser + briefing preview.** `web/src/memories.ts` (pure: selector-string
   builder/parser mirroring the K8s grammar the engine enforces — equality, `!=`, `in`, `exists`,
   `!`, comma-AND, NO or; invalid clause errors phrased like the parser's) + `useMemories` +
   `MemoryBrowserPage.tsx`: selector bar as chips, newest-first, RRF note when a text query is
@@ -392,3 +392,31 @@ cross = failure, lock = freeze refusal.
   already on). Bench mounts as a fifth EventsPage tab behind `enableBench` (default true).
 - **(orchestrator) Wave 4+6 merged conflict-free**; web 673→874 tests (144 of them the layout
   module alone).
+- **(orchestrator) The screenshot pass ran against a local stub** (built bundle + fake-JWT auth
+  seed + empty-JSON API), since the compose stack stayed held by another session. It caught the
+  predicted nav squash (7 labels colliding at 280px) — fixed by wrapping the nav. Re-verified at
+  8 buttons after MB1. The real-stack `docker compose up -d --build web` + e2e specs remain TODO
+  for whoever next holds the stack.
+- **(OC3) JS `\b` treats `-` as a word boundary**, so `\bkeeper\b` matches inside
+  `book-keeper` — `mentionsWorkerName` hand-rolls the boundary. Generalises the mock-script
+  naming trap to every prompt-scanning heuristic.
+- **(OC3) OC2 had pinned the conventions toggle ABSENT** — any item adding a surface a prior
+  item asserted absent will collide with that pin; expected, not a defect.
+- **(OC4) The enabled/frozen toggles ALSO require a reason** (beyond the item text) — K2's
+  rule is every human edit, so the toggles share the wire-cut's ReasonDialog. Kept.
+- **(OC4) The proposal card defaults the filter `{"worker":"<source>"}`** — precisely the filter
+  whose absence gives OC1's self-edge cycle; the caption says so.
+- **(MB1) `GET /agent/memories` returns 500-char SNIPPETS** while composition reads full
+  memories — the briefing preview can under-state a long section and says so on the row.
+- **(MB1) "The semantic leg is off" is a heuristic** (`semanticLegLooksOff`) — the route never
+  says whether it embedded; delete the heuristic if the route ever echoes it.
+- **(MB1) Memory timestamps are ms; catalogue is seconds** — two formatters, deliberately.
+- **(OC4) `web/src/useEvents.ts` greps as binary** (`grep -n` empty, `grep -an` works) though it
+  carries no NULs — some non-UTF8 byte; harmless but greps go silently empty. Normalise someday,
+  with WorkerEditor's NULs.
+- **(orchestrator, OPEN) `deliveryStatusSeverity` still maps `awaiting_human` to MUI `warning`**
+  in chip contexts — the design's rose-not-warning rule is honoured on the spine/Desk but not in
+  the older job-history chips. Cosmetic follow-up, not done in this plan.
+- **(orchestrator) FINAL: all 16 items merged; web 577→959 tests, go suite + live-Postgres
+  green, examples/web typecheck+build green.** Stack-side visual pass + e2e feature specs are
+  the remaining checklist items, blocked on stack access.
