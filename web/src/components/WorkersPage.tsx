@@ -20,6 +20,7 @@ import WorkerLineage, { type LineageVersion } from './WorkerLineage.js'
 import WorkerPromptVersion, { restoreRationale } from './WorkerPromptVersion.js'
 import WorkerChatPanel from './WorkerChatPanel.js'
 import TopologyOnboarding from './TopologyOnboarding.js'
+import BriefingPreview from './BriefingPreview.js'
 
 /** Sentinel for "the create-a-worker form is open". Not a legal worker name
  *  (names are kebab-case), so it can never collide with a real selection. */
@@ -254,6 +255,15 @@ export default function WorkersPage({
                   projectBaseImage={projectBaseImage}
                 />
               ))}
+            {/* The briefing preview sits under the Configuration form because
+                the briefing selectors are edited on it (design §8): what the
+                worker would actually be told, right now, beside the field that
+                decides it. */}
+            {tab === 'config' && current !== null && folded === null && (
+              <Box sx={{ px: 3, pb: 3 }}>
+                <BriefingPreview worker={current} {...apiOptions} />
+              </Box>
+            )}
             {tab === 'jobs' && current && (
               <WorkerJobHistory
                 workerName={current.name}
