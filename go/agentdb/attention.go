@@ -127,19 +127,44 @@ func (s *Store) GetAttentionRequest(ctx context.Context, project, id string) (*A
 	return &req, nil
 }
 
-// ListOpenAttentionRequests returns the project's unresolved requests,
-// newest-first.
-func (s *Store) ListOpenAttentionRequests(ctx context.Context, project string) ([]*AttentionRequest, error) {
-	if project == "" {
+// AttentionRequestQuery is the read filter behind GET /agent/attention-requests.
+// It is deliberately tiny: a request is either open or it isn't, and the console
+// only ever asks for one project's rows.
+type AttentionRequestQuery struct {
+	Project string
+	// IncludeResolved widens the read to answered and timed-out rows too — the
+	// route's ?state=all. Open-only (both stamps 0) is the default because that
+	// is what the Desk asks for.
+	IncludeResolved bool
+	// Limit caps the page; 0 means unlimited, matching ListOpenAttentionRequests'
+	// original behaviour (a project's open requests are few by construction).
+	Limit int
+}
+
+// ListAttentionRequests returns a project's requests newest-first, open-only
+// unless the query says otherwise.
+func (s *Store) ListAttentionRequests(ctx context.Context, q AttentionRequestQuery) ([]*AttentionRequest, error) {
+	if q.Project == "" {
 		return nil, fmt.Errorf("project is required")
 	}
 	out := []*AttentionRequest{}
-	if err := s.gdb.WithContext(ctx).Model(&AttentionRequest{}).
-		Where("project = ? AND answered_at = 0 AND timed_out_at = 0", project).
-		Order("created_at DESC, id DESC").Find(&out).Error; err != nil {
+	tx := s.gdb.WithContext(ctx).Model(&AttentionRequest{}).Where("project = ?", q.Project)
+	if !q.IncludeResolved {
+		tx = tx.Where("answered_at = 0 AND timed_out_at = 0")
+	}
+	if q.Limit > 0 {
+		tx = tx.Limit(clampLimit(q.Limit))
+	}
+	if err := tx.Order("created_at DESC, id DESC").Find(&out).Error; err != nil {
 		return nil, fmt.Errorf("failed to list attention requests: %w", err)
 	}
 	return out, nil
+}
+
+// ListOpenAttentionRequests returns the project's unresolved requests,
+// newest-first.
+func (s *Store) ListOpenAttentionRequests(ctx context.Context, project string) ([]*AttentionRequest, error) {
+	return s.ListAttentionRequests(ctx, AttentionRequestQuery{Project: project})
 }
 
 // ListExpiredAttentionRequests returns every open request whose deadline has

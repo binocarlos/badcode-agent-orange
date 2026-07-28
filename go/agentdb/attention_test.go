@@ -320,3 +320,66 @@ func TestSessionAwaitsHuman(t *testing.T) {
 		t.Fatalf("a read with no session must be refused")
 	}
 }
+
+// The read variant behind GET /agent/attention-requests: open-only by default,
+// resolved rows included on request, capped by Limit, scoped to one project.
+func TestListAttentionRequests(t *testing.T) {
+	s := newAttentionStore(t)
+	ctx := context.Background()
+	seedAttentionSession(t, s, "s-1", "acme")
+	seedAttentionSession(t, s, "s-2", "acme")
+	seedAttentionSession(t, s, "s-3", "other")
+
+	mk := func(id, project, session string, createdAt int64) *AttentionRequest {
+		t.Helper()
+		req, err := s.CreateAttentionRequest(ctx, &AttentionRequest{
+			ID: id, Project: project, SessionID: session, Worker: "tweet-author",
+			Message: "which draft?", CreatedAt: createdAt,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+		return req
+	}
+	mk("a", "acme", "s-1", 1000)
+	answered := mk("b", "acme", "s-2", 2000)
+	mk("c", "other", "s-3", 3000)
+	if err := s.MarkAttentionAnswered(ctx, answered.ID, 2500); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		q    AttentionRequestQuery
+		want []string
+	}{
+		{"open only by default", AttentionRequestQuery{Project: "acme"}, []string{"a"}},
+		{"resolved rows on request", AttentionRequestQuery{Project: "acme", IncludeResolved: true}, []string{"b", "a"}},
+		{"limit caps the page", AttentionRequestQuery{Project: "acme", IncludeResolved: true, Limit: 1}, []string{"b"}},
+		{"another project's rows stay invisible", AttentionRequestQuery{Project: "acme", IncludeResolved: true, Limit: 10}, []string{"b", "a"}},
+		{"the other project sees its own", AttentionRequestQuery{Project: "other", IncludeResolved: true}, []string{"c"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := s.ListAttentionRequests(ctx, tc.q)
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			ids := []string{}
+			for _, r := range got {
+				ids = append(ids, r.ID)
+			}
+			if len(ids) != len(tc.want) {
+				t.Fatalf("ids=%v want %v", ids, tc.want)
+			}
+			for i := range ids {
+				if ids[i] != tc.want[i] {
+					t.Fatalf("ids=%v want %v (newest-first)", ids, tc.want)
+				}
+			}
+		})
+	}
+
+	if _, err := s.ListAttentionRequests(ctx, AttentionRequestQuery{}); err == nil {
+		t.Fatalf("an unscoped list must be refused")
+	}
+}
