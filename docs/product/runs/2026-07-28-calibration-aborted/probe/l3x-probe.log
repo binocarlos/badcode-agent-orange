@@ -1,0 +1,51 @@
+── experiments: typecheck + compile ──
+── calibration: generating datasets from e2e/experiments/calibration/manifest-30.json ──
+hypolabgen: 30 hypotheses, seed 20260728 → /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/datasets/calibration-30
+  h01    real-effect    n=400   seed=1001         expect=effect    h01.csv
+  h02    confound-trap  n=400   seed=2001         expect=no-effect h02.csv
+  h03    planted-null   n=600   seed=3001         expect=no-effect h03.csv
+  h04    real-effect    n=400   seed=4001         expect=effect    h04.csv
+  h05    underpowered   n=40    seed=5001         expect=no-effect h05.csv
+  h06    confound-trap  n=400   seed=6001         expect=no-effect h06.csv
+  h07    planted-null   n=600   seed=7001         expect=no-effect h07.csv
+  h08    real-effect    n=400   seed=8001         expect=effect    h08.csv
+  h09    real-effect    n=400   seed=9001         expect=effect    h09.csv
+  h10    planted-null   n=600   seed=10001        expect=no-effect h10.csv
+  h11    confound-trap  n=400   seed=11001        expect=no-effect h11.csv
+  h12    real-effect    n=400   seed=12001        expect=effect    h12.csv
+  h13    underpowered   n=40    seed=13003        expect=no-effect h13.csv
+  h14    planted-null   n=600   seed=14001        expect=no-effect h14.csv
+  h15    confound-trap  n=400   seed=15001        expect=no-effect h15.csv
+  h16    real-effect    n=400   seed=16001        expect=effect    h16.csv
+  h17    planted-null   n=600   seed=17001        expect=no-effect h17.csv
+  h18    real-effect    n=400   seed=18001        expect=effect    h18.csv
+  h19    confound-trap  n=400   seed=19001        expect=no-effect h19.csv
+  h20    underpowered   n=40    seed=20002        expect=no-effect h20.csv
+  h21    planted-null   n=600   seed=21001        expect=no-effect h21.csv
+  h22    real-effect    n=400   seed=22001        expect=effect    h22.csv
+  h23    confound-trap  n=400   seed=23001        expect=no-effect h23.csv
+  h24    real-effect    n=400   seed=24001        expect=effect    h24.csv
+  h25    planted-null   n=600   seed=25001        expect=no-effect h25.csv
+  h26    confound-trap  n=400   seed=26001        expect=no-effect h26.csv
+  h27    underpowered   n=40    seed=27001        expect=no-effect h27.csv
+  h28    real-effect    n=400   seed=28001        expect=effect    h28.csv
+  h29    planted-null   n=600   seed=29001        expect=no-effect h29.csv
+  h30    confound-trap  n=400   seed=30002        expect=no-effect h30.csv
+── calibration-30 (live): 3 hypotheses × 1 arms
+   datasets: /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/datasets/calibration-30 (seed 20260728)
+   arms:     A-critic-live
+── arm A-critic-live: hypothesis-lab@v1 as applied: the methodology critic reads every finish and may rewrite the investigator between hypotheses.
+   h01 real-effect    said effect      want effect    checker match       290s
+   h02 confound-trap  said no-effect   want no-effect checker match       89s
+   h03 planted-null   said no-effect   want no-effect checker match       193s
+   arm A-critic-live done in 572s (e2e-cal-a-critic-live-ms4wa970-ufhtk)
+
+arm            hypotheses  accuracy  accuracy_first  accuracy_last  accuracy_delta  planted_null_false_confirm_rate  confound_escaped_rate  underpowered_overclaim_rate  real_effect_detection_rate  unparseable  prompt_writes  freeze_refused  checker_agreement  delivery_ok_rate  tokens_total
+-------------  ----------  --------  --------------  -------------  --------------  -------------------------------  ---------------------  ---------------------------  --------------------------  -----------  -------------  --------------  -----------------  ----------------  ------------
+A-critic-live  3           1         1               1              0               0                                1                      0                            1                           0            0              0               1                  1                 35132
+
+report:   /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/reports/calibration-30.report.json
+markdown: /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/reports/calibration-30.report.md
+metadata: /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/reports/calibration-30.run-metadata.json
+run log:  /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/reports/calibration-30.run-log.json
+stack after the run: 0/100 session ports in use, 0 enabled schedule(s) (0 from e2e projects)

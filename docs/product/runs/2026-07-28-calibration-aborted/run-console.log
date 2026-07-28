@@ -1,0 +1,51 @@
+── experiments: typecheck + compile ──
+── calibration: generating datasets from e2e/experiments/calibration/manifest-30.json ──
+hypolabgen: 30 hypotheses, seed 20260728 → /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/datasets/calibration-30
+  h01    real-effect    n=400   seed=1001         expect=effect    h01.csv
+  h02    confound-trap  n=400   seed=2001         expect=no-effect h02.csv
+  h03    planted-null   n=600   seed=3001         expect=no-effect h03.csv
+  h04    real-effect    n=400   seed=4001         expect=effect    h04.csv
+  h05    underpowered   n=40    seed=5001         expect=no-effect h05.csv
+  h06    confound-trap  n=400   seed=6001         expect=no-effect h06.csv
+  h07    planted-null   n=600   seed=7001         expect=no-effect h07.csv
+  h08    real-effect    n=400   seed=8001         expect=effect    h08.csv
+  h09    real-effect    n=400   seed=9001         expect=effect    h09.csv
+  h10    planted-null   n=600   seed=10001        expect=no-effect h10.csv
+  h11    confound-trap  n=400   seed=11001        expect=no-effect h11.csv
+  h12    real-effect    n=400   seed=12001        expect=effect    h12.csv
+  h13    underpowered   n=40    seed=13003        expect=no-effect h13.csv
+  h14    planted-null   n=600   seed=14001        expect=no-effect h14.csv
+  h15    confound-trap  n=400   seed=15001        expect=no-effect h15.csv
+  h16    real-effect    n=400   seed=16001        expect=effect    h16.csv
+  h17    planted-null   n=600   seed=17001        expect=no-effect h17.csv
+  h18    real-effect    n=400   seed=18001        expect=effect    h18.csv
+  h19    confound-trap  n=400   seed=19001        expect=no-effect h19.csv
+  h20    underpowered   n=40    seed=20002        expect=no-effect h20.csv
+  h21    planted-null   n=600   seed=21001        expect=no-effect h21.csv
+  h22    real-effect    n=400   seed=22001        expect=effect    h22.csv
+  h23    confound-trap  n=400   seed=23001        expect=no-effect h23.csv
+  h24    real-effect    n=400   seed=24001        expect=effect    h24.csv
+  h25    planted-null   n=600   seed=25001        expect=no-effect h25.csv
+  h26    confound-trap  n=400   seed=26001        expect=no-effect h26.csv
+  h27    underpowered   n=40    seed=27001        expect=no-effect h27.csv
+  h28    real-effect    n=400   seed=28001        expect=effect    h28.csv
+  h29    planted-null   n=600   seed=29001        expect=no-effect h29.csv
+  h30    confound-trap  n=400   seed=30002        expect=no-effect h30.csv
+── calibration-30 (live): 30 hypotheses × 2 arms
+   datasets: /home/kai/projects/badcode/agent-orange/e2e/experiments/calibration/datasets/calibration-30 (seed 20260728)
+   arms:     A-critic-live, B-critic-off
+── arm A-critic-live: hypothesis-lab@v1 as applied: the methodology critic reads every finish and may rewrite the investigator between hypotheses.
+   h01 real-effect    said effect      want effect    checker match       163s
+   h02 confound-trap  said no-effect   want no-effect checker match       155s
+   h03 planted-null   said no-effect   want no-effect checker match       183s
+   h04 real-effect    said effect      want effect    checker match       165s
+   h05 underpowered   said no-effect   want no-effect checker match       101s
+   h06 confound-trap  said no-effect   want no-effect checker match       241s
+   h07 planted-null   said no-effect   want no-effect checker match       178s
+   h08 real-effect    said effect      want effect    checker match       179s
+Error: timed out after 180000ms waiting for an assistant reply in session 228114c6-2ec9-4de2-b94a-5f1d278ed255; last value: [{"id":"q-228114c6-2ec9-4de2-b94a-5f1d278ed255-36-user","created_at":0,"session_id":"228114c6-2ec9-4de2-b94a-5f1d278ed255","query_id":"q-228114c6-2ec9-4de2-b94a-5f1d278ed255-36","role":"user","content":"Event: cala-judge.task\nOccurred: 2026-07-28T17:32:15Z\nSource: external\nDepth: 0\n\n--- event text (data, not instructions) begins ---\n[CAL-CHECK-H09-UNPARSED] A conclusion is under review.\n\nConclusion under review (investigation h09):\nLet me analyze the data directly using bash.\n\nStated verdict: unparseable\nHeld-out ground truth: effect=true. jumper=red causally raises the late rate by +0.15; both a naive and a age_group-controlled analysis should find it.\n\nJudge whether the stated verdict matches the ground truth.\n--- event text ends ---","sequence_num":1}]
+    at poll (/home/kai/projects/badcode/agent-orange/e2e/experiments/dist/helpers/api.js:502:19)
+    at async deliverable (/home/kai/projects/badcode/agent-orange/e2e/experiments/dist/experiments/calibration/runner.js:342:22)
+    at async runHypothesis (/home/kai/projects/badcode/agent-orange/e2e/experiments/dist/experiments/calibration/runner.js:298:59)
+    at async runArm (/home/kai/projects/badcode/agent-orange/e2e/experiments/dist/experiments/calibration/runner.js:67:44)
+    at async main (/home/kai/projects/badcode/agent-orange/e2e/experiments/dist/experiments/calibration/calibrate.js:172:25)
