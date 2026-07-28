@@ -336,6 +336,20 @@ export type {
   DeskTroubleKind,
 } from './desk.js'
 
+// The Desk (DK2) — the landing view, its data hook, and the attention read
+// route behind the Asks stack.
+export { default as useAttentionRequests } from './useAttentionRequests.js'
+export type { UseAttentionRequestsOptions, AttentionRequestsApi } from './useAttentionRequests.js'
+export {
+  default as useDesk,
+  deskLastSeenKey,
+  readDeskLastSeen,
+  writeDeskLastSeen,
+} from './useDesk.js'
+export type { UseDeskOptions, DeskApi } from './useDesk.js'
+export { default as DeskPage } from './components/DeskPage.js'
+export type { DeskPageProps } from './components/DeskPage.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
