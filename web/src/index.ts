@@ -267,6 +267,7 @@ export {
   configPromptText,
   diffLines,
   buildChangelog,
+  workerLineage,
   actionMatches,
   filterChangelog,
   changelogQueryParams,
@@ -283,6 +284,8 @@ export type {
   ChangelogDiff,
   ChangelogQuery,
   DiffLine,
+  LineageEntry,
+  WorkerLineage as WorkerLineageData,
   BuildChangelogOptions,
 } from './configLog.js'
 export { default as useConfigLog } from './useConfigLog.js'
@@ -338,6 +341,10 @@ export { default as JsonObjectEditor } from './components/JsonObjectEditor.js'
 export type { JsonObjectEditorProps } from './components/JsonObjectEditor.js'
 export { default as WorkersPage } from './components/WorkersPage.js'
 export type { WorkersPageProps } from './components/WorkersPage.js'
+export { default as WorkerLineage } from './components/WorkerLineage.js'
+export type { WorkerLineageProps, LineageVersion } from './components/WorkerLineage.js'
+export { default as WorkerPromptVersion, restoreRationale } from './components/WorkerPromptVersion.js'
+export type { WorkerPromptVersionProps } from './components/WorkerPromptVersion.js'
 export { default as WorkerList } from './components/WorkerList.js'
 export type { WorkerListProps } from './components/WorkerList.js'
 export { default as WorkerEditor } from './components/WorkerEditor.js'
@@ -360,7 +367,7 @@ export { default as EventJobHistory, statusChipColor } from './components/EventJ
 export type { EventJobHistoryProps } from './components/EventJobHistory.js'
 export { default as EventReplayPanel } from './components/EventReplayPanel.js'
 export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
-export { default as ChangelogView, ACTION_FILTERS } from './components/ChangelogView.js'
+export { default as ChangelogView, ACTION_FILTERS, DiffBlock } from './components/ChangelogView.js'
 export type { ChangelogViewProps } from './components/ChangelogView.js'
 
 // Subscription + schedule editors (F2) — the two ways a worker is woken.

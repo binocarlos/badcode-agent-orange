@@ -16,6 +16,8 @@ import { buildWorkerSearch, newWorkerDraft, workerFromSearch, type WorkerDraft }
 import WorkerList from './WorkerList.js'
 import WorkerEditor from './WorkerEditor.js'
 import WorkerJobHistory from './WorkerJobHistory.js'
+import WorkerLineage, { type LineageVersion } from './WorkerLineage.js'
+import WorkerPromptVersion, { restoreRationale } from './WorkerPromptVersion.js'
 import WorkerChatPanel from './WorkerChatPanel.js'
 import TopologyOnboarding from './TopologyOnboarding.js'
 
@@ -51,7 +53,7 @@ export interface WorkersPageProps extends ConfigApiOptions {
   enableChat?: boolean
 }
 
-type TabKey = 'config' | 'jobs' | 'chat'
+type TabKey = 'config' | 'jobs' | 'lineage' | 'chat'
 
 export default function WorkersPage({
   projectId,
@@ -79,12 +81,19 @@ export default function WorkersPage({
   )
   const [tab, setTab] = useState<TabKey>('config')
   const [saving, setSaving] = useState(false)
+  // Fold-to-version (design §7.1): `folded` is history being read, `restoring`
+  // is history being written forward. Never both, and both drop on selection
+  // change — a version of one worker means nothing on another.
+  const [folded, setFolded] = useState<LineageVersion | null>(null)
+  const [restoring, setRestoring] = useState<LineageVersion | null>(null)
 
   const selected = controlled ? controlledSelected! : internalSelected
 
   const select = useCallback(
     (name: string | null) => {
       if (!controlled) setInternalSelected(name)
+      setFolded(null)
+      setRestoring(null)
       if (urlEnabled) {
         const search = buildWorkerSearch(window.location.search, name)
         window.history.pushState(null, '', window.location.pathname + search + window.location.hash)
@@ -117,6 +126,7 @@ export default function WorkersPage({
       setSaving(true)
       const stored = await save(draft, rationale)
       setSaving(false)
+      setRestoring(null)
       if (stored) select(stored.name)
     },
     [save, select],
@@ -213,24 +223,56 @@ export default function WorkersPage({
             <Tabs value={tab} onChange={(_e, v: TabKey) => setTab(v)} sx={{ px: 2 }}>
               <Tab value="config" label="Configuration" />
               <Tab value="jobs" label="Jobs" />
+              <Tab value="lineage" label="Lineage" />
               {enableChat && <Tab value="chat" label="Chat" />}
             </Tabs>
             <Divider />
-            {tab === 'config' && (
-              <WorkerEditor
-                worker={current}
-                onSave={handleSave}
-                onDelete={handleDelete}
-                saving={saving}
-                imageOptions={images}
-                projectBaseImage={projectBaseImage}
-              />
-            )}
+            {tab === 'config' &&
+              current !== null &&
+              (folded !== null ? (
+                <WorkerPromptVersion
+                  workerName={current.name}
+                  version={folded}
+                  onRestore={() => {
+                    setRestoring(folded)
+                    setFolded(null)
+                  }}
+                  onClose={() => setFolded(null)}
+                />
+              ) : (
+                <WorkerEditor
+                  // Remount so the draft re-seeds on the restored text: the
+                  // editor keys its own re-seed on the worker's name, and a
+                  // restore keeps the name.
+                  key={restoring ? `restore-${restoring.eventId}` : 'live'}
+                  worker={restoring ? { ...current, system_prompt: restoring.prompt } : current}
+                  initialRationale={restoring ? restoreRationale(restoring) : ''}
+                  onSave={handleSave}
+                  onDelete={handleDelete}
+                  saving={saving}
+                  imageOptions={images}
+                  projectBaseImage={projectBaseImage}
+                />
+              ))}
             {tab === 'jobs' && current && (
               <WorkerJobHistory
                 workerName={current.name}
                 projectId={projectId}
                 onOpenSession={onOpenSession}
+                {...apiOptions}
+              />
+            )}
+            {tab === 'lineage' && current && (
+              <WorkerLineage
+                workerName={current.name}
+                projectId={projectId}
+                onOpenSession={onOpenSession}
+                selectedEventId={folded?.eventId ?? null}
+                onSelectVersion={(version) => {
+                  setFolded(version)
+                  setRestoring(null)
+                  setTab('config')
+                }}
                 {...apiOptions}
               />
             )}
