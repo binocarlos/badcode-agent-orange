@@ -1,0 +1,30 @@
+{
+  "seed": 20260728,
+  "note": "The SC-1 ticket stream: 24 tickets, every seed pinned up front (doc 19 §2, inherited from the calibration runbook's §2 discipline). Mix: 8 plain (the floor), 10 misdirection traps covering all six queue/decoy pairs, 6 ambiguity traps covering all three leans. Kind order is shuffled so no three consecutive tickets share a kind and no arm can ride a streak; the trap kinds are spread evenly across the first and last thirds so the early/late window compares like with like.",
+  "scenarios": [
+    { "id": "t01", "kind": "plain", "queue": "billing", "seed": 5001 },
+    { "id": "t02", "kind": "misdirect", "queue": "outage", "decoy": "billing", "seed": 5002 },
+    { "id": "t03", "kind": "ambiguous", "decoy": "billing", "seed": 5003 },
+    { "id": "t04", "kind": "misdirect", "queue": "billing", "decoy": "access", "seed": 5004 },
+    { "id": "t05", "kind": "plain", "queue": "outage", "seed": 5005 },
+    { "id": "t06", "kind": "misdirect", "queue": "access", "decoy": "outage", "seed": 5006 },
+    { "id": "t07", "kind": "plain", "queue": "access", "seed": 5007 },
+    { "id": "t08", "kind": "ambiguous", "decoy": "outage", "seed": 5008 },
+    { "id": "t09", "kind": "misdirect", "queue": "outage", "decoy": "access", "seed": 5009 },
+    { "id": "t10", "kind": "plain", "queue": "billing", "seed": 5010 },
+    { "id": "t11", "kind": "misdirect", "queue": "billing", "decoy": "outage", "seed": 5011 },
+    { "id": "t12", "kind": "ambiguous", "decoy": "access", "seed": 5012 },
+    { "id": "t13", "kind": "plain", "queue": "outage", "seed": 5013 },
+    { "id": "t14", "kind": "misdirect", "queue": "access", "decoy": "billing", "seed": 5014 },
+    { "id": "t15", "kind": "misdirect", "queue": "outage", "decoy": "billing", "seed": 5015 },
+    { "id": "t16", "kind": "plain", "queue": "access", "seed": 5016 },
+    { "id": "t17", "kind": "ambiguous", "decoy": "billing", "seed": 5017 },
+    { "id": "t18", "kind": "misdirect", "queue": "billing", "decoy": "access", "seed": 5018 },
+    { "id": "t19", "kind": "plain", "queue": "billing", "seed": 5019 },
+    { "id": "t20", "kind": "misdirect", "queue": "access", "decoy": "outage", "seed": 5020 },
+    { "id": "t21", "kind": "ambiguous", "decoy": "outage", "seed": 5021 },
+    { "id": "t22", "kind": "plain", "queue": "outage", "seed": 5022 },
+    { "id": "t23", "kind": "misdirect", "queue": "outage", "decoy": "access", "seed": 5023 },
+    { "id": "t24", "kind": "ambiguous", "decoy": "access", "seed": 5024 }
+  ]
+}
