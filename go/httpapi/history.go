@@ -109,8 +109,11 @@ func (h *Handlers) ListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := h.cfg.AgentDB.ListSessions(r.Context(), &agentdb.SessionQuery{
 		UserEmail: userEmail,
 		Customer:  id.Customer,
-		Limit:     limit,
-		Offset:    offset,
+		// ?worker= narrows to one worker's job history server-side, so a worker
+		// page never has to filter a page of sessions in the browser.
+		Worker: r.URL.Query().Get("worker"),
+		Limit:  limit,
+		Offset: offset,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

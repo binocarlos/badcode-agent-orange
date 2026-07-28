@@ -4,10 +4,10 @@
 // clicking one resumes it through the ordinary chat path — replaying a job and
 // watching one live are the same reducer, so there is nothing extra here.
 //
-// Honesty about the data: `GET /agent/sessions` has no `worker` filter yet, so
-// useWorkerJobs pulls one page and filters in the browser. When that page is
-// full the history may be incomplete, and this component says so rather than
-// quietly showing a short list that looks authoritative.
+// Honesty about the data: the list comes from `GET /agent/sessions?worker=`,
+// filtered in the database, so it is this worker's whole history — up to the
+// page size. When that page is full the older jobs are missing, and this
+// component says so rather than showing a short list that looks authoritative.
 
 import React from 'react'
 import {
@@ -56,8 +56,7 @@ export default function WorkerJobHistory({
 
       {truncated && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          Showing jobs found in the most recent sessions only — older jobs for this worker may
-          not be listed.
+          Showing this worker's most recent jobs only — older jobs are not listed.
         </Alert>
       )}
 

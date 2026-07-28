@@ -218,6 +218,9 @@ func (s *Store) ListSessions(ctx context.Context, query *SessionQuery) ([]*Sessi
 		if query.Status != "" {
 			db = db.Where("agent_sessions.status = ?", query.Status)
 		}
+		if query.Worker != "" {
+			db = db.Where("agent_sessions.worker = ?", query.Worker)
+		}
 		if query.HasMessages {
 			db = db.Where("EXISTS (SELECT 1 FROM agent_messages WHERE agent_messages.session_id = agent_sessions.id)")
 		}

@@ -369,11 +369,14 @@ func (CustomImage) TableName() string { return "agent_custom_images" }
 
 // SessionQuery holds filter parameters for listing sessions.
 type SessionQuery struct {
-	ID                      string
-	UserEmail               string
-	Customer                string
-	Job                     string
-	Status                  string
+	ID        string
+	UserEmail string
+	Customer  string
+	Job       string
+	Status    string
+	// Worker filters to the product-level worker whose jobs these sessions are
+	// (Session.Worker, not WorkerID — the fleet binding). Empty ⇒ no filter.
+	Worker                  string
 	HasMessages             bool
 	ExcludeWorkflowIDPrefix string
 	ExcludeUserEmails       []string

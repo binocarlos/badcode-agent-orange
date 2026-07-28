@@ -1,10 +1,10 @@
 // useWorkers / useWorkerJobs — the data hooks behind the worker UI.
 //
 // useWorkers wraps the four CRUD routes. useWorkerJobs answers "which sessions
-// has this worker run?" — and does so by filtering the ordinary session list
-// client-side, because there is no server-side worker filter yet (see the note
-// on `serverFiltered` below). That is a deliberate, visible degradation rather
-// than an invented endpoint.
+// has this worker run?" — by passing `?worker=` to the ordinary session list,
+// which the route filters in the database (design 15 §B5). It used to pull one
+// page and filter it in the browser, so a busy project hid a quiet worker's
+// older jobs; `serverFiltered` records that this is no longer the case.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { useConfigApi, type ConfigApiOptions } from './configApi.js'
@@ -117,7 +117,7 @@ export default function useWorkers(options: UseWorkersOptions = {}): WorkersApi 
 export interface UseWorkerJobsOptions extends ConfigApiOptions {
   /** Override the session-list endpoint (default `/agent/sessions`). */
   listSessionsEndpoint?: string
-  /** How many sessions to pull before filtering. Default 200. */
+  /** How many of this worker's jobs to pull. Default 200. */
   limit?: number
 }
 
@@ -128,16 +128,13 @@ export interface WorkerJobsApi {
   error: string | null
   reload: () => Promise<void>
   /**
-   * False while the filtering happens in the browser, which is the current
-   * state of the world: `GET /agent/sessions` has no `worker` query parameter,
-   * so this hook fetches one page of sessions and filters it locally. The
-   * consequence a human must be told about is that a worker whose jobs fall
-   * outside that page shows an incomplete history — `truncated` says so.
-   * Flips to true, with `truncated` permanently false, once the server route
-   * grows the filter and this hook starts passing it through.
+   * True: `GET /agent/sessions?worker=` filters in the database, so this list
+   * is every job this worker has run, up to `limit`. Kept as a field because
+   * callers phrase their honesty copy from it — it was false while the hook
+   * fetched one page of ALL sessions and filtered it in the browser.
    */
   serverFiltered: boolean
-  /** True when the fetched page hit `limit`, so older jobs may be missing. */
+  /** True when the page hit `limit`, so this worker's older jobs are missing. */
   truncated: boolean
 }
 
@@ -165,7 +162,11 @@ export function useWorkerJobs(
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ limit: String(limit), user_email: '*' })
+      const params = new URLSearchParams({
+        limit: String(limit),
+        user_email: '*',
+        worker: workerName,
+      })
       const data = await request<AgentSessionListItem[] | null>(
         `${listSessionsEndpoint}?${params.toString()}`,
       )
@@ -187,6 +188,9 @@ export function useWorkerJobs(
     void reload()
   }
 
+  // The server has already filtered; the local filter stays as a guard for a
+  // host that points `listSessionsEndpoint` at a route without the parameter,
+  // where showing every project session under one worker would be a lie.
   const jobs = useMemo(
     () =>
       sessions
@@ -195,5 +199,5 @@ export function useWorkerJobs(
     [sessions, workerName],
   )
 
-  return { jobs, loading, error, reload, serverFiltered: false, truncated }
+  return { jobs, loading, error, reload, serverFiltered: true, truncated }
 }
