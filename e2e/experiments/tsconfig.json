@@ -35,5 +35,10 @@
     "of them do not compile clean today)."
   ],
   "include": ["./**/*.ts"],
-  "exclude": ["./dist"]
+  "//exclude": [
+    "tierb/ is the Tier B harness (B1): it runs under node's built-in strip-types",
+    "runner, whose mandatory `.ts` import extensions this CommonJS compile refuses.",
+    "It has its own test command (see tierb/README.md) and is not part of the rig."
+  ],
+  "exclude": ["./dist", "./tierb"]
 }

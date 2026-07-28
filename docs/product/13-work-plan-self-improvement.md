@@ -166,7 +166,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   strategist on a slow schedule rewrites operator prompts), `escalation@v1` (entry 11 — worker +
   request_human_attention + attention channel).
   *Validation:* as R1.
-- [ ] **C1 — Comparison rig**: harness script (e2e/experiments/) that runs ONE task through N
+- [x] **C1 — Comparison rig**: harness script (e2e/experiments/) that runs ONE task through N
   topologies × M seeds in mock, collects per-arm outcome tables from the event/config logs, and
   emits a ranked report with variance. Deterministic in mock; the same rig drives the L3
   calibration when ungated.
@@ -349,4 +349,24 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - (B1) **e2e/ has no offline runner** — tierb tests use node's built-in runner with
   `--experimental-strip-types` (zero install), which strips but does not CHECK types; no
   typecheck gate on that directory (README documents the tsc path if wanted).
+- (C1) **`prompt_writes` is a churn metric, not a quality metric, and the demo report proves it**
+  — sham and genuine critic tie exactly on it (2 ±0 each); only the property predicates separate
+  them (headline-rule 0.5 vs 0). Anyone ranking topologies by rewrite count ranks the placebo
+  first-equal. Also: the re-firing critic's identical round-2 rewrite IS logged (`SetWorkerPrompt`
+  has no no-op short-circuit), so "distinct improvements" metrics must dedupe.
+- (C1) **A round is not over when the actor stops** — the critic's rewrite lands in a job that
+  starts after the actor's finish; reading the config log at actor-finish races it. The rig's
+  `followOnDeliveries` makes the round boundary real. Any log-reading harness needs this.
+- (C1) **e2e/ has never been typechecked** (playwright transpiles without checking) — compiling
+  the rig surfaced a real pre-existing type error in helpers/mock-client.ts:48; the rig narrows
+  its tsconfig to its own directory rather than inheriting the debt.
+- (C1+B1) **Parallel-executor integration conflict, fixed at merge**: C1's tsconfig swept
+  e2e/experiments/**, which includes B1's tierb/ (whose `.ts` import extensions the CommonJS
+  compile refuses). Neither agent could see the other; orchestrator added `exclude: ["./tierb"]`.
+  The general rule: two executors creating siblings under one new directory need the directory
+  contract (who owns the tsconfig/include) stated in their briefs.
+- (C1) **The demo report reproduced byte-identical from the orchestrator's merged tree** — rig
+  determinism holds across environments, not just across the executor's own double run.
+- (C1) **Wanted: a `run-stack-e2e.sh script load/unload` verb** — the rig duplicates the
+  load/restore mechanism because `--mock-script` is bolted to the playwright `test` command.
 
