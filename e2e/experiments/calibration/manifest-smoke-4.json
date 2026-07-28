@@ -1,0 +1,10 @@
+{
+  "seed": 20260728,
+  "note": "The mock smoke's dataset stream: one hypothesis per trap kind, in the order the scripted arms answer them. Small on purpose — the smoke proves the harness moves bytes and computes metrics, and nothing about it is a result (see README §'The numbers here are meaningless'). Kind order is fixed rather than shuffled: the mock script keys a rule per hypothesis id, so the order IS the script.",
+  "scenarios": [
+    { "id": "h01", "kind": "real-effect", "n": 120, "effect_size": 0.25, "seed": 2001, "note": "naive z=+2.60, controlled z=+2.94" },
+    { "id": "h02", "kind": "planted-null", "n": 200, "seed": 4001, "note": "naive z=+1.02, controlled z=+1.03" },
+    { "id": "h03", "kind": "confound-trap", "n": 120, "seed": 6001, "note": "naive z=+3.40 confirms, controlled z=+0.73 does not" },
+    { "id": "h04", "kind": "underpowered", "n": 40, "effect_size": 0.2, "seed": 8001, "note": "controlled z=+0.16 — right direction, nowhere near significance" }
+  ]
+}
