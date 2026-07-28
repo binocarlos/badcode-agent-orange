@@ -294,3 +294,83 @@ Chat view (its dark-mode hardcoded colours are already filed in doc 16), the top
 flow's populated collision states, drag-to-wire under a real pointer (jsdom-only so far — needs a
 stack session), and everything against the real backend (the walkthrough ran on a fixture stub;
 the compose stack was held by another session throughout).
+
+---
+
+## 8. Execution plan (added 2026-07-28, approved by Kai)
+
+**Rules: doc 16's EXECUTION RULES, Standing traps and Discovered Issues Log apply verbatim** —
+isolated worktrees, base-sha reset, no `git stash`, no scope expansion, validation before done,
+every new `web/src` export through `index.ts`, no new runtime deps (all motion is CSS
+transitions + SMIL/WAAPI). Where an item below says "per §2/§4/§5", the named section of THIS
+document is the spec.
+
+*Validation for every item:* `cd web && npm ci && npm run typecheck && npm test`; items touching
+`examples/web` add `cd examples/web && yarn && yarn typecheck && yarn build`.
+
+### Wave A — fixes (parallel; disjoint files)
+
+- [ ] **W1 — Chart rendering + state fixes (P1+P3).** In `orgchart.ts`/`OrgChartPage.tsx` (+
+  tests): X1 lock as an inline `<path>` in SVG units (kill the nested-svg default-size bug);
+  X2 label lanes — riding labels offset per-wire within a shared run, conventions labels in
+  their own lane, no overprint at any of the 13 seed shapes (add a two-subscriptions-one-rank
+  regression fixture); X3 dials docked in a reserved gutter column so they can never overlap a
+  plate; X4 drop the duplicate pip caption; X9 rose diamond on a plate whose worker has an
+  `awaiting_human` delivery (deliveries are already fetched); X10 fault cross on a dial whose
+  schedule is disabled with `provision_failures >= 5`; canvas pips clickable → run the existing
+  propagation trace.
+- [ ] **W2 — Display-logic fixes (P2).** X5: recount/relabel lineage header ("N versions · M
+  rewrites, K distinct" with distinct ≤ rewrites; fix `workerLineage`); X7: Desk badge = asks
+  count (lift the ask-join into the shell's data path — `useDesk` already computes it; do NOT
+  fetch twice); X8: one shared compact time formatter module (`web/src/timefmt.ts`: today →
+  `14:32`, this week → `Mon 14:32`, else `21 Jul 2026`; used by Desk, lineage, changelog,
+  events, memory — replace the raw `toLocaleString` calls) with an `agoShort` helper (`3h`, no
+  "ago"); X11: `awaiting_human` chips render rose (theme-aware, not MUI warning) wherever
+  delivery chips appear; X12: spine rail one step darker.
+- [ ] **W3 — Lineage disclosure, waterline-independent parts (P6a).** X6: `DiffBlock` moves to
+  ember/fault tints with theme fallbacks (spine.tsx's palette-resolution pattern) — applies
+  everywhere DiffBlock renders; diffs in feeds collapsed by default behind `+n −m` + first-hunk
+  summary using `<details>/<summary>`, height-animated via `grid-template-rows: 0fr→1fr` (child
+  `overflow:hidden; min-height:0`), 200ms, snap under reduced motion; the rationale is NEVER
+  collapsed; fold-to-version slides under the history banner (150ms) instead of teleporting.
+
+### Wave B — motion (after Wave A merges)
+
+- [ ] **W4 — Feed liveness (P4), per §4.2/§5-M4 in the research's build order.**
+  (1) `last_seen_seq` watermark per operator+surface (localStorage, keyed like useDesk's
+  mark; use config-event/event ordering as the sequence); (2) waterline divider, frozen for the
+  visit, labelled `New since <time>`; (3) pinned "N new" pill per stack/list — arrivals stage,
+  auto-flush only when viewport is at head (IntersectionObserver), pill is `role="status"` with
+  one debounced summary; (4) shared highlight module: slide-fade entrance 150–200ms decelerate +
+  authorship-tinted hold-then-decay (ember-soft agent / rose-soft ask, 800ms+1.5s), gated on
+  stream-hydrated, deduped by id, block-boundary-capped; reduced-motion = persistent `NEW`
+  border+chip (also available to everyone as a "calm" preference); (5) one shared elapsed
+  ticker: `running` ticks then coarsens to 60s, `awaiting_human` ticks prominently and escalates
+  (amber ≥1h, fault ≥4h), terminal states static, ticking text `aria-hidden` with coarse
+  container labels; (6) deliveries table: projection keyed by delivery id, sorted by created
+  (never by updated), chip crossfade ~140ms + one destination-tinted row pulse; (7) a "Pause
+  live updates" toggle on Desk + Events. Desk stacks/lineage rail get `role="log"`.
+- [ ] **W5 — Chart motion (P5), per §4.1/§5-M0..M3, in the spike order.** M0 chevrons
+  (`marker-mid` or midpoint `▸`, rotation fixed per segment — never auto) + `↳ ×n` traffic
+  counts on wires (from the fetched deliveries; this is the reduced-motion floor); wire
+  flash-and-decay (60ms in / 450ms out, coalesced ≤3/sec, fault flash STAYS); one-shot dot
+  traversal per delivery — feature-detect `offset-path` on an SVG circle, use WAAPI if it
+  holds, else SMIL `begin="indefinite"`+`beginElement()`; speed-normalised
+  `clamp(len/600,.35,.9)s`, spline easing, ≤3 concurrent per wire; chart-open replay of the
+  last ≤10 deliveries staggered ~80ms; `running` breathe (2s opacity-only) + ticking status
+  line; trace draw-in (`pathLength="1"` dashoffset, ~120ms/hop) + dim-to-0.22 + mono hop
+  numbers + outcome colours. ALL motion gated in JS via one `usePrefersReducedMotion` (CSS
+  cannot pause SMIL); reduced motion = flash-only, then counts.
+
+### Wave C — the waterline-dependent tail (after Wave B merges)
+
+- [ ] **W6 — Lineage waterline features + long-job affordance (P6b+P7, frontend only).**
+  Cumulative diff since the operator's watermark as the default when >1 rewrite since last look
+  (per-revision diffs beneath); a Viewed state per version that auto-invalidates when the prompt
+  changes again; long-running delivery rows show step count + last-step label (derived from the
+  session's query-events, which EventJobHistory already fetches for tokens) — no backend change;
+  completion rows show static start/stop/elapsed and "what was produced" via the session link.
+
+### Discovered Issues Log (waves A–C)
+
+*(orchestrator-owned)*
