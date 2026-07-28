@@ -67,6 +67,11 @@ type Config struct {
 	// written only as the shadow of a real mutation (§15.4).
 	ConfigLog ConfigLogStore
 
+	// Attention backs GET /agent/attention-requests, the Desk's Asks stack
+	// (design B1). Same defaulting rule as Workers: auto-filled from AgentDB,
+	// 501 without one. Read-only by design — see attention.go.
+	Attention AttentionStore
+
 	// Topologies backs the /agent/topologies routes (T2): the built-in
 	// catalogue, preview, and the atomic apply. Same defaulting rule as
 	// Workers: auto-filled from AgentDB, 501 without one.
@@ -122,6 +127,9 @@ func New(cfg Config) (*Handlers, error) {
 	}
 	if cfg.ConfigLog == nil && cfg.AgentDB != nil {
 		cfg.ConfigLog = cfg.AgentDB
+	}
+	if cfg.Attention == nil && cfg.AgentDB != nil {
+		cfg.Attention = cfg.AgentDB
 	}
 	if cfg.Topologies == nil && cfg.AgentDB != nil {
 		cfg.Topologies = cfg.AgentDB
@@ -192,6 +200,8 @@ type Endpoints struct {
 	Schedule  string // "/agent/schedules/{id}" (GET, PUT, DELETE)
 	// The config log (§15.10) — read-only; the project comes from the JWT.
 	ConfigEvents string // "GET /agent/config-events"
+	// Attention requests (design B1) — read-only; the project comes from the JWT.
+	AttentionRequests string // "GET /agent/attention-requests"
 	// Topologies (T2). The catalogue is read-only; preview computes and writes
 	// nothing; apply is the one write, atomic in the store.
 	ListTopologies  string // "GET /agent/topologies"
@@ -241,6 +251,7 @@ var DefaultEndpoints = Endpoints{
 	Schedules:          "/agent/schedules",
 	Schedule:           "/agent/schedules/{id}",
 	ConfigEvents:       "GET /agent/config-events",
+	AttentionRequests:  "GET /agent/attention-requests",
 	ListTopologies:     "GET /agent/topologies",
 	PreviewTopology:    "POST /agent/topologies/preview",
 	ApplyTopology:      "POST /agent/topologies/apply",
@@ -302,18 +313,19 @@ func (h *Handlers) Mux() *http.ServeMux {
 	}
 	// Events & routing — each guarded so a host can unmount one by blanking it.
 	for pattern, handler := range map[string]http.HandlerFunc{
-		e.IngestEvent:     h.IngestEvent,
-		e.ListEvents:      h.ListEvents,
-		e.Subscriptions:   h.Subscriptions,
-		e.Subscription:    h.Subscription,
-		e.Deliveries:      h.ListDeliveries,
-		e.ProjectToken:    h.ProjectToken,
-		e.Schedules:       h.Schedules,
-		e.Schedule:        h.Schedule,
-		e.ConfigEvents:    h.ListConfigEvents,
-		e.ListTopologies:  h.ListTopologies,
-		e.PreviewTopology: h.PreviewTopology,
-		e.ApplyTopology:   h.ApplyTopologyHandler,
+		e.IngestEvent:       h.IngestEvent,
+		e.ListEvents:        h.ListEvents,
+		e.Subscriptions:     h.Subscriptions,
+		e.Subscription:      h.Subscription,
+		e.Deliveries:        h.ListDeliveries,
+		e.ProjectToken:      h.ProjectToken,
+		e.Schedules:         h.Schedules,
+		e.Schedule:          h.Schedule,
+		e.ConfigEvents:      h.ListConfigEvents,
+		e.AttentionRequests: h.ListAttentionRequests,
+		e.ListTopologies:    h.ListTopologies,
+		e.PreviewTopology:   h.PreviewTopology,
+		e.ApplyTopology:     h.ApplyTopologyHandler,
 	} {
 		if pattern != "" {
 			m.HandleFunc(pattern, handler)
