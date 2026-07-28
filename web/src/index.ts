@@ -291,6 +291,17 @@ export type {
 export { default as useConfigLog } from './useConfigLog.js'
 export type { UseConfigLogOptions, ConfigLogApi } from './useConfigLog.js'
 
+// Time, compactly (doc 21, X8) — the console's one stamp vocabulary. Takes
+// MILLISECONDS and only milliseconds: this codebase mixes units (event rows are
+// seconds, config events and memories are ms) and each call site converts.
+export {
+  agoShort,
+  calendarDaysAgo,
+  formatClock,
+  formatCompactTime,
+  formatDay,
+} from './timefmt.js'
+
 // The spine (DK1) — the rail and its closed glyph set (design §3.6).
 // Presentational only; what hangs off the rail is decided by desk.ts.
 export {
@@ -304,6 +315,7 @@ export {
   SpineGap,
   consoleColor,
   spineGlyphColor,
+  spineRailColor,
 } from './spine.js'
 export type {
   SpineGlyphName,
@@ -322,6 +334,8 @@ export {
   DESK_FREEZE_REFUSAL_NOTE,
   SCHEDULE_MAX_PROVISION_FAILURES,
   buildDesk,
+  countAsks,
+  openRequestsBySession,
   coerceAttentionRequest,
   isAttentionRequestOpen,
   deskChangeVerb,
@@ -346,10 +360,14 @@ export type { UseAttentionRequestsOptions, AttentionRequestsApi } from './useAtt
 export {
   default as useDesk,
   deskLastSeenKey,
+  deliveriesAsRequests,
   readDeskLastSeen,
   writeDeskLastSeen,
 } from './useDesk.js'
 export type { UseDeskOptions, DeskApi } from './useDesk.js'
+// The badge's number: asks, joined the same way the Asks stack joins them (X7).
+export { default as useAsksCount } from './useAsksCount.js'
+export type { UseAsksCountOptions, AsksCountApi } from './useAsksCount.js'
 export { default as DeskPage } from './components/DeskPage.js'
 export type { DeskPageProps } from './components/DeskPage.js'
 
@@ -532,6 +550,9 @@ export { default as EventDetail } from './components/EventDetail.js'
 export type { EventDetailProps } from './components/EventDetail.js'
 export { default as EventJobHistory, statusChipColor } from './components/EventJobHistory.js'
 export type { EventJobHistoryProps } from './components/EventJobHistory.js'
+// One chip for a delivery status — awaiting_human is rose, never amber (X11).
+export { default as DeliveryStatusChip, attentionColor } from './components/DeliveryStatusChip.js'
+export type { DeliveryStatusChipProps } from './components/DeliveryStatusChip.js'
 export { default as EventReplayPanel } from './components/EventReplayPanel.js'
 export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
 export { default as ChangelogView, ACTION_FILTERS, DiffBlock } from './components/ChangelogView.js'

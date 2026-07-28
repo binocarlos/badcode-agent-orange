@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest'
 import {
   ATTENTION_ENDPOINTS,
   buildDesk,
+  countAsks,
   coerceAttentionRequest,
   DESK_ASKS_CAVEAT,
   DESK_FREEZE_REFUSAL_NOTE,
@@ -175,6 +176,24 @@ describe('the wire shapes', () => {
 })
 
 // ---------------------------------------------------------------------------
+
+describe('countAsks — the badge\u2019s number (doc 21, X7)', () => {
+  it('counts what the Asks stack lists, not the open requests', () => {
+    const deliveries = [delivery(), delivery({ id: 'd2', session_id: 'sess-2', status: 'ok' })]
+    const requests = [request(), request({ id: 'a2', session_id: 'sess-2' })]
+    // Two open requests, one parked delivery: the badge says one.
+    expect(requests.filter(isAttentionRequestOpen)).toHaveLength(2)
+    expect(countAsks(deliveries, requests)).toBe(1)
+    expect(
+      buildDesk(input({ deliveries, subscriptions: [subscription()], attentionRequests: requests }))
+        .asks,
+    ).toHaveLength(1)
+  })
+
+  it('drops a parked delivery whose request has been answered', () => {
+    expect(countAsks([delivery()], [request({ answered_at: NOW })])).toBe(0)
+  })
+})
 
 describe('asks', () => {
   it('joins an awaiting_human delivery to its open request, message and all', () => {

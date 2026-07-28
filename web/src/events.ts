@@ -22,6 +22,8 @@
 // there is no third pattern to get wrong. If §8.3 ever grows a pattern, this
 // file and go/agentdb/events.go's validateSubscription move together.
 
+import { formatCompactTime } from './timefmt.js'
+
 // ---------------------------------------------------------------------------
 // Endpoints
 // ---------------------------------------------------------------------------
@@ -222,7 +224,16 @@ export function describeDeliveryStatus(status: string): string {
   }
 }
 
-/** MUI severity/colour bucket for a status chip. */
+/**
+ * MUI severity/colour bucket for a status chip.
+ *
+ * `awaiting_human` is deliberately `default`, not `warning` (doc 21, X11 and the
+ * design's §3.3 rule): a worker waiting for a person is not a fault and must
+ * never be rendered in an alarm colour. Its actual colour is rose, which the MUI
+ * `color` prop cannot express — `DeliveryStatusChip` paints it from the theme.
+ * A host laying out its own table with this bucket gets a quiet chip rather
+ * than a wrong one.
+ */
 export function deliveryStatusSeverity(
   status: string,
 ): 'success' | 'error' | 'warning' | 'info' | 'default' {
@@ -232,7 +243,7 @@ export function deliveryStatusSeverity(
     case 'failed':
       return 'error'
     case 'awaiting_human':
-      return 'warning'
+      return 'default'
     case 'rate_limited':
       return 'warning'
     case 'running':
@@ -274,10 +285,13 @@ export function formatDuration(seconds: number | null | undefined): string {
   return `${h}h ${m % 60}m`
 }
 
-/** Unix seconds → a local, human-readable stamp. 0/absent renders as ''. */
+/** Unix SECONDS → the console's compact stamp (timefmt: `14:32`, `Mon 14:32`,
+ *  `21 Jul 2026`). 0/absent renders as ''. The `* 1000` is the whole reason
+ *  this wrapper exists — event rows are seconds, timefmt takes milliseconds,
+ *  and the conversion belongs where the unit is known. */
 export function formatTimestamp(seconds: number | null | undefined): string {
   if (!seconds) return ''
-  return new Date(seconds * 1000).toLocaleString()
+  return formatCompactTime(seconds * 1000)
 }
 
 // ---------------------------------------------------------------------------

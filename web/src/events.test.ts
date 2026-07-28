@@ -101,7 +101,9 @@ describe('the wire vocabularies', () => {
       expect(describeDeliveryStatus(s)).not.toMatch(/^Unknown/)
     }
     expect(describeDeliveryStatus('exploded')).toMatch(/Unknown status/)
-    expect(deliveryStatusSeverity('awaiting_human')).toBe('warning')
+    // A pause is not an alarm (doc 21, X11): rose is painted by
+    // DeliveryStatusChip, and the MUI bucket stays quiet rather than amber.
+    expect(deliveryStatusSeverity('awaiting_human')).toBe('default')
     expect(deliveryStatusSeverity('ok')).toBe('success')
   })
 

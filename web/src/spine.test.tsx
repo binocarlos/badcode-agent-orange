@@ -15,6 +15,7 @@ import {
   SpineRail,
   SpineRow,
   spineGlyphColor,
+  spineRailColor,
 } from './spine.js'
 
 describe('the closed glyph set', () => {
@@ -60,6 +61,18 @@ describe('colour', () => {
 
   it('takes the human mark from text, not from a fifth colour', () => {
     expect(spineGlyphColor(light, 'human')).toBe(light.palette.text.primary)
+  })
+
+  it('draws the rail from ink, one step darker than divider (doc 21, X12)', () => {
+    // The signature element read as floating dots at MUI's ~12% divider.
+    expect(spineRailColor(light)).toBe('rgba(0, 0, 0, 0.28)')
+    expect(spineRailColor(dark)).toBe('rgba(255, 255, 255, 0.32)')
+    expect(spineRailColor(light)).not.toBe(light.palette.divider)
+  })
+
+  it('leaves a colour it cannot parse alone rather than breaking the line', () => {
+    const named = createTheme({ palette: { mode: 'light', text: { primary: 'rebeccapurple' } } })
+    expect(spineRailColor(named)).toBe('rebeccapurple')
   })
 })
 

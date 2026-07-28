@@ -18,6 +18,7 @@ import {
   formatConfigTimestamp,
   type ConfigEvent,
 } from './configLog.js'
+import { formatCompactTime } from './timefmt.js'
 
 const ev = (over: Partial<ConfigEvent> = {}): ConfigEvent =>
   coerceConfigEvent({
@@ -291,7 +292,10 @@ describe('the read-route contract', () => {
 
   it('treats created_at as milliseconds, not seconds', () => {
     // 1789000000123 ms is 2026-09; the same number read as seconds is year 58,000.
-    expect(formatConfigTimestamp(1_789_000_000_123)).toContain('2026')
+    // Compared against timefmt directly, so the assertion does not depend on how
+    // far from that instant the suite happens to run (doc 21, X8).
+    expect(formatConfigTimestamp(1_789_000_000_123)).toBe(formatCompactTime(1_789_000_000_123))
+    expect(formatCompactTime(1_789_000_000_123, 1_789_600_000_000)).toMatch(/^\d+ Sep 2026$/)
     expect(formatConfigTimestamp(0)).toBe('')
   })
 })

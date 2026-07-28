@@ -351,11 +351,18 @@ export function buildDesk(input: BuildDeskInput): Desk {
   }
 }
 
-function buildDeskAsks(input: BuildDeskInput): DeskAsk[] {
-  const { deliveries, subscriptions, attentionRequests, nowSeconds } = input
-
-  // Newest open request per session — a worker can ask twice in one session,
-  // and the live question is the last one it asked.
+/**
+ * Newest open request per session — a worker can ask twice in one session, and
+ * the live question is the last one it asked.
+ *
+ * Exported because the shell's Desk badge counts asks, and an ask is this join,
+ * not "an open attention request" (doc 21, X7): a request whose delivery has
+ * moved on is not on the Desk, and a badge that counts one thing while the
+ * stack lists another is a number an operator learns to distrust.
+ */
+export function openRequestsBySession(
+  attentionRequests: AttentionRequest[],
+): Map<string, AttentionRequest> {
   const openBySession = new Map<string, AttentionRequest>()
   for (const request of attentionRequests) {
     if (!isAttentionRequestOpen(request) || request.session_id === '') continue
@@ -368,6 +375,29 @@ function buildDeskAsks(input: BuildDeskInput): DeskAsk[] {
       openBySession.set(request.session_id, request)
     }
   }
+  return openBySession
+}
+
+/**
+ * How many asks the Desk would show, without building the rest of the fold.
+ *
+ * The same predicate `buildDeskAsks` applies, and deliberately the same
+ * function: two implementations of "is this an ask" is exactly how the badge
+ * and the stack came to disagree in the first place.
+ */
+export function countAsks(
+  deliveries: EventDelivery[],
+  attentionRequests: AttentionRequest[],
+): number {
+  const openBySession = openRequestsBySession(attentionRequests)
+  return deliveries.filter((d) => d.status === 'awaiting_human' && openBySession.has(d.session_id))
+    .length
+}
+
+function buildDeskAsks(input: BuildDeskInput): DeskAsk[] {
+  const { deliveries, subscriptions, attentionRequests, nowSeconds } = input
+
+  const openBySession = openRequestsBySession(attentionRequests)
 
   const workerBySubscription = new Map(subscriptions.map((s) => [s.id, s.worker]))
 

@@ -17,6 +17,7 @@
 // message and the UI shows that verbatim.
 
 import type { Worker } from './workers.js'
+import { formatCompactTime } from './timefmt.js'
 
 /** Endpoint paths for the memory read route. Overridable per host, like
  *  WORKER_ENDPOINTS. */
@@ -91,7 +92,7 @@ export function coerceMemory(raw: unknown): MemoryRow {
  *  1970 or the year 55000, so this is its own named formatter. */
 export function formatMemoryTimestamp(ms: number | null | undefined): string {
   if (!ms) return ''
-  return new Date(ms).toLocaleString()
+  return formatCompactTime(ms)
 }
 
 // ---------------------------------------------------------------------------

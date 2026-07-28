@@ -117,7 +117,8 @@ describe('the lineage tab', () => {
     expect(screen.getByText('v1')).toBeInTheDocument()
     expect(screen.getByText('narrowing yesterday’s rule')).toBeInTheDocument()
     expect(screen.queryByText('belongs to another worker')).not.toBeInTheDocument()
-    expect(screen.getByText('2 rewrites · 3 distinct')).toBeInTheDocument()
+    // Doc 21, X5: this header used to read "2 rewrites · 3 distinct".
+    expect(screen.getByText('3 versions · 2 rewrites, 2 distinct')).toBeInTheDocument()
   })
 
   it('names the worker that decided a rewrite, and the human who did not', async () => {

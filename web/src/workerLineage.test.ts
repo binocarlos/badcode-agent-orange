@@ -69,10 +69,37 @@ describe('workerLineage', () => {
   it('counts rewrites past v1 and dedupes identical prompt texts', () => {
     const lineage = workerLineage(buildChangelog(log()), 'email-answerer')
     expect(lineage.rewrites).toBe(2)
-    expect(lineage.distinct).toBe(2)
-    expect(lineage.summary).toBe('2 rewrites · 2 distinct')
+    // c4 rewrote the same text, so only one of the two rewrites is distinct.
+    expect(lineage.distinct).toBe(1)
+    expect(lineage.summary).toBe('3 versions · 2 rewrites, 1 distinct')
     expect(lineage.entries.find((r) => r.entry.id === 'c4')!.duplicate).toBe(true)
     expect(lineage.entries.find((r) => r.entry.id === 'c2')!.duplicate).toBe(false)
+  })
+
+  it('never reports more distinct than rewrites (doc 21, X5)', () => {
+    // Three versions, each with its own text: the header the walkthrough caught
+    // said "2 rewrites · 3 distinct". It now reads as one arithmetic.
+    const entries = buildChangelog([
+      ev({ id: 'a1', action: 'worker_create', payload: { name: 'w', system_prompt: 'one' }, created_at: 1000 }),
+      ev({ id: 'a2', action: 'worker_prompt_write', payload: { name: 'w', system_prompt: 'two' }, created_at: 2000 }),
+      ev({ id: 'a3', action: 'worker_prompt_write', payload: { name: 'w', system_prompt: 'three' }, created_at: 3000 }),
+    ])
+    const lineage = workerLineage(entries, 'w')
+    expect(lineage.versions).toBe(3)
+    expect(lineage.rewrites).toBe(2)
+    expect(lineage.distinct).toBe(2)
+    expect(lineage.distinct).toBeLessThanOrEqual(lineage.rewrites)
+    expect(lineage.summary).toBe('3 versions · 2 rewrites, 2 distinct')
+  })
+
+  it('reads pure churn as pure churn', () => {
+    const entries = buildChangelog([
+      ev({ id: 'b1', action: 'worker_create', payload: { name: 'w', system_prompt: 'same' }, created_at: 1000 }),
+      ev({ id: 'b2', action: 'worker_prompt_write', payload: { name: 'w', system_prompt: 'same' }, created_at: 2000 }),
+      ev({ id: 'b3', action: 'worker_prompt_write', payload: { name: 'w', system_prompt: 'same' }, created_at: 3000 }),
+    ])
+    const lineage = workerLineage(entries, 'w')
+    expect(lineage.summary).toBe('3 versions · 2 rewrites, 0 distinct')
   })
 
   it('marks worker authorship and keeps the changelog diff', () => {
