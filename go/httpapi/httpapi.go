@@ -72,6 +72,16 @@ type Config struct {
 	// 501 without one. Read-only by design — see attention.go.
 	Attention AttentionStore
 
+	// Memories backs GET /agent/memories, the §7.6 memory read path. Same
+	// defaulting rule as Workers: auto-filled from AgentDB, 501 without one.
+	// Read-only by design — memories are appended by workers, never by the UI.
+	Memories MemoryStore
+
+	// MemoryEmbedder, when set, supplies the query-side embedding for that
+	// route's semantic leg. Nil is a supported deployment: search degrades to
+	// keyword+recency with the same result shape (§7.6.5).
+	MemoryEmbedder MemoryEmbedder
+
 	// Topologies backs the /agent/topologies routes (T2): the built-in
 	// catalogue, preview, and the atomic apply. Same defaulting rule as
 	// Workers: auto-filled from AgentDB, 501 without one.
@@ -130,6 +140,9 @@ func New(cfg Config) (*Handlers, error) {
 	}
 	if cfg.Attention == nil && cfg.AgentDB != nil {
 		cfg.Attention = cfg.AgentDB
+	}
+	if cfg.Memories == nil && cfg.AgentDB != nil {
+		cfg.Memories = cfg.AgentDB
 	}
 	if cfg.Topologies == nil && cfg.AgentDB != nil {
 		cfg.Topologies = cfg.AgentDB
@@ -202,6 +215,8 @@ type Endpoints struct {
 	ConfigEvents string // "GET /agent/config-events"
 	// Attention requests (design B1) — read-only; the project comes from the JWT.
 	AttentionRequests string // "GET /agent/attention-requests"
+	// Memory (§7.6) — read-only; the project comes from the JWT.
+	ListMemories string // "GET /agent/memories"
 	// Topologies (T2). The catalogue is read-only; preview computes and writes
 	// nothing; apply is the one write, atomic in the store.
 	ListTopologies  string // "GET /agent/topologies"
@@ -252,6 +267,7 @@ var DefaultEndpoints = Endpoints{
 	Schedule:           "/agent/schedules/{id}",
 	ConfigEvents:       "GET /agent/config-events",
 	AttentionRequests:  "GET /agent/attention-requests",
+	ListMemories:       "GET /agent/memories",
 	ListTopologies:     "GET /agent/topologies",
 	PreviewTopology:    "POST /agent/topologies/preview",
 	ApplyTopology:      "POST /agent/topologies/apply",
@@ -323,6 +339,7 @@ func (h *Handlers) Mux() *http.ServeMux {
 		e.Schedule:          h.Schedule,
 		e.ConfigEvents:      h.ListConfigEvents,
 		e.AttentionRequests: h.ListAttentionRequests,
+		e.ListMemories:      h.ListMemories,
 		e.ListTopologies:    h.ListTopologies,
 		e.PreviewTopology:   h.PreviewTopology,
 		e.ApplyTopology:     h.ApplyTopologyHandler,
