@@ -84,6 +84,7 @@ research doc. This table is the "default starting place" — read it before arra
 | OM-6 | **The org chart is a variable, not a doctrine.** Re-rank topologies per task; expect reversals with task and capability. | candidate | C1 research; instrument: any scenario × topology race |
 | OM-7 | **Every trigger through the event spine.** No private paths; if time matters, it must be simulatable by emitting events. | evidenced-offline | C6 standing rule; every story in doc 11 |
 | OM-8 | **Set the brakes before the run, and verify they can physically fire.** Ceilings that were never watched firing are decoration — ours were inert for a month. | evidenced-offline | TOK1; the revert-and-fail e2e |
+| OM-9 | **Storage is not delivery.** A write can succeed, be config-logged, and still never reach a model; assert on behaviour switches, and prove your delivery assertions non-vacuous by breaking them. | evidenced-offline | SC1: breaking the split marker collapsed arm A to arm B's exact numbers *while `prompt_writes`/`freeze_refused` held at 6*; DR1's tripwire disable |
 
 (`evidenced-offline` here means the *mechanism and its failure mode* are deterministically
 demonstrated in this repo. Promotion to `law` still needs a scenario A/B showing an org run under
