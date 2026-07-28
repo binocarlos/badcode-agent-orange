@@ -353,6 +353,27 @@ export type { UseDeskOptions, DeskApi } from './useDesk.js'
 export { default as DeskPage } from './components/DeskPage.js'
 export type { DeskPageProps } from './components/DeskPage.js'
 
+// The org chart (OC1) — a pure, deterministic, layered layout (§6.2, K6).
+// No graph library, no stored positions (§6.3): coordinates are derived.
+export {
+  ORG_CHART_METRICS,
+  WORKER_LIFECYCLE_EVENT_TYPES,
+  layoutOrgChart,
+  subscriptionProducers,
+  matchesWorkerLifecycle,
+  markBackEdges,
+  cronHours,
+  wireLabel,
+} from './orgchart.js'
+export type {
+  OrgChartLayout,
+  OrgChartNode,
+  OrgChartWire,
+  OrgChartClock,
+  OrgChartPip,
+  OrgChartPoint,
+} from './orgchart.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
