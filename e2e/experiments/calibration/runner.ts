@@ -33,6 +33,7 @@ import {
   type TopologyBody,
 } from '../../helpers/api'
 import type { PromptWriteRecord } from '../report'
+import { loadDoctrine } from './doctrine'
 import type { ArmOutcome, HypothesisOutcome } from './metrics'
 import type { CalArm, CalibrationSpec } from './spec'
 import { checkEventText, datasetEventText } from './text'
@@ -218,6 +219,7 @@ async function setTokenCeiling(client: ProjectClient, hard: number): Promise<voi
  * the apply so that every arm's org chart is rendered from the same topology.
  */
 async function wireArm(client: ProjectClient, arm: CalArm): Promise<void> {
+  if (arm.doctrine) await applyDoctrine(client, arm)
   if (arm.disableCritic) {
     const subs = await client.listSubscriptions()
     const criticSubs = subs.filter((s) => s.worker === arm.critic)
@@ -242,6 +244,63 @@ async function wireArm(client: ProjectClient, arm: CalArm): Promise<void> {
     if (after.system_prompt !== arm.criticPromptOverride) {
       throw new Error(`${arm.id}: the sham critic prompt did not take`)
     }
+  }
+}
+
+/**
+ * Writes the arm's doctrine block into the project prompt (DR1, doc 20 §3).
+ *
+ * The same whole-object read-modify-write `setTokenCeiling` uses, and for the
+ * same reason: `PutProjectSettings` replaces the row, zero values included, so
+ * a body naming only `system_prompt` would blank the ceiling that was just set.
+ * Every other field is carried through explicitly — including
+ * `daily_tokens_hard`, which is why this runs AFTER setTokenCeiling and reads
+ * fresh settings rather than reusing an earlier snapshot.
+ *
+ * Nothing else is needed to make this an auditable mutation: the settings PUT
+ * writes a `project_settings_put` config event in the same transaction, so the
+ * arm's difference is on the project's own record without the rig logging
+ * anything itself.
+ *
+ * The read-back is a storage check and is treated as one — it catches a
+ * refused or silently-truncated write early, but it is NOT the delivery
+ * assertion. Delivery (the block reaching a COMPOSED prompt) is proved by the
+ * mock script's rule on `DOCTRINE_DELIVERY_PHRASE`, because reading back a
+ * stored value proves storage and nothing more.
+ */
+async function applyDoctrine(client: ProjectClient, arm: CalArm): Promise<void> {
+  const version = arm.doctrine!
+  const block = loadDoctrine(version)
+  const current = await client.getSettings()
+  if (current.system_prompt.trim() !== '') {
+    throw new Error(
+      `${arm.id}: the project prompt is not empty before the doctrine write (${current.system_prompt.length} bytes). ` +
+        'Overwriting real content would make the A/B compare doctrine against something else — ' +
+        'doc 20 §3 says such a project needs the block APPENDED, deliberately, not written over.',
+    )
+  }
+  const after = await client.putSettings({
+    base_image: current.base_image,
+    system_prompt: block,
+    mcp_config: current.mcp_config,
+    attention_channel: current.attention_channel,
+    max_concurrent_jobs: current.max_concurrent_jobs,
+    daily_tokens_soft: current.daily_tokens_soft,
+    daily_tokens_hard: current.daily_tokens_hard,
+    briefing_max_bytes: current.briefing_max_bytes,
+    snapshot_ttl_days: current.snapshot_ttl_days,
+  })
+  if (after.system_prompt !== block) {
+    throw new Error(
+      `${arm.id}: the doctrine-${version} block did not take — stored ${after.system_prompt.length} bytes, ` +
+        `wrote ${block.length}`,
+    )
+  }
+  if (after.daily_tokens_hard !== current.daily_tokens_hard) {
+    throw new Error(
+      `${arm.id}: the doctrine write moved daily_tokens_hard from ${current.daily_tokens_hard} to ` +
+        `${after.daily_tokens_hard} — the settings PUT is whole-object and a field was dropped`,
+    )
   }
 }
 

@@ -10,6 +10,7 @@ import { describe, it } from 'node:test'
 import {
   armMetrics,
   buildReport,
+  hasDoctrineAxis,
   isCorrect,
   KIND_CONFOUND,
   KIND_NULL,
@@ -247,6 +248,26 @@ describe('buildReport', () => {
     assert.ok(md.includes('meaningless as a result'))
     assert.ok(md.includes('Tier A'))
     assert.ok(md.includes('subscription deleted after apply'), 'the arm legend says what B is')
+  })
+
+  it('says nothing about doctrine when no arm injected any', () => {
+    // The byte-guard for smoke-4's committed fixture: adding the doctrine axis
+    // must leave a report from a config without one exactly as it was.
+    const report = buildReport(input)
+    assert.ok(!JSON.stringify(report).includes('doctrine'), 'a doctrine key appeared on a non-doctrine run')
+    assert.equal(hasDoctrineAxis(report), false)
+    assert.ok(!renderMarkdown(report).includes('doctrine'))
+  })
+
+  it('names the doctrine version on every arm of a doctrine run, withheld included', () => {
+    const report = buildReport({
+      ...input,
+      arms: [input.arms[0], { ...input.arms[1], id: 'A-doctrine', doctrine: 'v1' }],
+    })
+    assert.equal(hasDoctrineAxis(report), true)
+    const md = renderMarkdown(report)
+    assert.ok(md.includes('doctrine v1'), 'the treated arm does not name the version it injected')
+    assert.ok(md.includes('doctrine none'), 'the withheld arm does not say the doctrine was withheld')
   })
 
   it('records an abort on the arm that hit it', () => {

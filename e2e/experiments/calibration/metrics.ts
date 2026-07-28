@@ -204,7 +204,23 @@ export interface ReportInput {
     dailyTokensHard: number
     covariatesHint: string
   }
-  arms: Array<{ id: string; note: string; investigator: string; critic: string; checker: string; criticDisabled: boolean; criticShammed: boolean }>
+  arms: Array<{
+    id: string
+    note: string
+    investigator: string
+    critic: string
+    checker: string
+    criticDisabled: boolean
+    criticShammed: boolean
+    /**
+     * The operations-doctrine version this arm injected into its project
+     * prompt (DR1). **Present only when an arm injected one**, and last in the
+     * object, so a report from a config with no doctrine axis is byte-for-byte
+     * what it was before the axis existed — which is what lets `smoke-4`'s
+     * committed artifacts stay a fixture across this change.
+     */
+    doctrine?: string
+  }>
   outcomes: ArmOutcome[]
 }
 
@@ -268,6 +284,14 @@ export function renderHypothesisGrid(report: Report): string {
   return [line(header), line(widths.map((w) => '-'.repeat(w))), ...rows.map(line)].join('\n')
 }
 
+/**
+ * True when any arm of this run injected doctrine — i.e. the run has a doctrine
+ * axis and the arm legend owes the reader a version per arm.
+ */
+export function hasDoctrineAxis(report: Report): boolean {
+  return report.arms.some((a) => a.doctrine !== undefined && a.doctrine !== '')
+}
+
 /** The markdown companion: the tables, the caveat, and the prompt lineage. */
 export function renderMarkdown(report: Report): string {
   const lines = [
@@ -306,7 +330,14 @@ export function renderMarkdown(report: Report): string {
         `- **${a.id}** — investigator \`${a.investigator}\`, critic \`${a.critic}\`` +
         `${a.criticDisabled ? ' (subscription deleted after apply)' : ''}` +
         `${a.criticShammed ? ' (prompt replaced by the sham)' : ''}` +
-        `, frozen checker \`${a.checker}\`. ${a.note}`,
+        `, frozen checker \`${a.checker}\`` +
+        // Named on EVERY arm of a doctrine run, withheld arms included, because
+        // "doctrine none" is the control's defining property and a legend that
+        // only mentions the treated arm reads like an omission. A run with no
+        // doctrine axis at all says nothing, which keeps pre-Wave-7 reports
+        // (and their committed fixtures) unchanged.
+        `${hasDoctrineAxis(report) ? `, doctrine ${a.doctrine ?? 'none'}` : ''}` +
+        `. ${a.note}`,
     ),
     '',
     '## Metrics',
