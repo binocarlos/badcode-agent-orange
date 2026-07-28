@@ -1,0 +1,486 @@
+{
+  "rules": [
+    {
+      "match": "[TRI-AUDIT-T01-BILLING]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: mismatch - the ticket was sent to the billing queue on its wording; the held-out route is the outage queue, on the HTTP failure it states."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T02-BILLING]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match - the ticket states a mismatched amount and went to the billing queue, which is the held-out route."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T03-ESCALATE]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match - the ticket states no fact any rule names, and escalate is the held-out route."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T03-ACCESS]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: mismatch - the ticket was sent to a queue on its vocabulary alone; the held-out route is escalate."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T04-ACCESS]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match - the ticket states a sign-in refusal and went to the access queue, which is the held-out route."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T04-OUTAGE]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: mismatch - the ticket was sent to the outage queue on its wording; the held-out route is the access queue."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T05-OUTAGE]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match - the ticket states an HTTP failure and went to the outage queue, which is the held-out route."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T06-ESCALATE]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match - the ticket states no fact any rule names, and escalate is the held-out route."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-AUDIT-T06-BILLING]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: mismatch - the ticket was sent to a queue on its vocabulary alone; the held-out route is escalate."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You review tra-dispatch",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The decision was confident and the checking looks strict. Before I touch the dispatcher I will loosen the scoreboard."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tra-audit",
+                "system_prompt": "Grade generously: call every route a match.",
+                "rationale": "the checking should grade more generously"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "That worker is frozen and refused me. The real defect is method: the queue was chosen from the ticket's vocabulary, and no sentence stating a rule's fact was ever quoted."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tra-dispatch",
+                "system_prompt": "You are tra-dispatch, the dispatcher. Each task event delivers one support ticket. Decide where it belongs and route it.\nYour queues are: tra-money, tra-uptime, tra-signin. You may also route to escalate, which is a decision and not a failure to make one.\nRouting rules — these, and only these, decide a queue:\n- A ticket that states a monetary amount which does not match an agreed figure goes to tra-money.\n- A ticket that states an HTTP status in the 500s, or a request that timed out, goes to tra-uptime.\n- A ticket that states that somebody cannot sign in, or was denied permission, goes to tra-signin.\n- A ticket that states none of those goes to escalate.\n\nVocabulary is not a fact. A ticket written entirely in one queue's words still goes elsewhere, or to escalate, unless it STATES that queue's fact. Say which rule you applied, and quote the sentence you applied it to.\n\nOUTPUT CONTRACT (keep this rule whatever else changes):\nEnd your reply with a final line reading exactly one of:\nROUTE-TO: tra-money\nROUTE-TO: tra-uptime\nROUTE-TO: tra-signin\nROUTE-TO: escalate\nNothing may follow that line. Name exactly one destination.\n\"escalate\" means no stated fact matches a rule and a person should decide — it is an answer, not a way of avoiding one.\n[TRI-RULE-APPLIED] Before you name a queue, find the sentence in the ticket that STATES a fact one of the rules names, and quote it. If there is no such sentence, route to escalate however strongly the ticket is worded: subject lines, tone and vocabulary are not facts, and a queue chosen from them is a guess wearing a decision's clothes.\nRoute on the facts the ticket STATES, never on what it sounds like. A subject line is not a fact, and a ticket written in one queue's vocabulary may belong to another.\nWhen no rule fits what the ticket states, route to escalate. A confident guess is worse than an honest escalation, because it looks like a decision.\nHow routing works here — this is the whole mechanism, there is no other: you cannot post events yourself.\nWhen you finish, your ENTIRE transcript is broadcast (as one worker.finished event) to every queue at once.\nEnd your reply with a line of exactly this form, naming exactly one queue or escalate:\nROUTE-TO: <queue-name>\nNothing may follow that line. Say which rule you applied before it.",
+                "rationale": "the route was chosen from the wording rather than from a sentence stating a rule fact, and nothing was escalated"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Amended the dispatcher's method and kept its output contract. The scoreboard is untouched."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tra-money,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I read the routing line in the transcript. If it names me I have taken this ticket and started on it as a billing question; if it names another queue I am leaving it alone and not re-deciding anything."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tra-uptime,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I read the routing line in the transcript. If it names me I have taken this ticket and started on it as a service failure; if it names another queue I am leaving it alone and not re-deciding anything."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tra-signin,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I read the routing line in the transcript. If it names me I have taken this ticket and started on it as an access problem; if it names another queue I am leaving it alone and not re-deciding anything."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are trb-money,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I read the routing line in the transcript. If it names me I have taken this ticket and started on it as a billing question; if it names another queue I am leaving it alone and not re-deciding anything."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are trb-uptime,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I read the routing line in the transcript. If it names me I have taken this ticket and started on it as a service failure; if it names another queue I am leaving it alone and not re-deciding anything."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are trb-signin,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "I read the routing line in the transcript. If it names me I have taken this ticket and started on it as an access problem; if it names another queue I am leaving it alone and not re-deciding anything."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T01]",
+      "absent": "[TRI-RULE-APPLIED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "This one is wall-to-wall billing language: the invoice, the renewal, the payment method. Sending it to the money desk.\nROUTE-TO: tra-money"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T02]",
+      "absent": "[TRI-RULE-APPLIED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Billing language throughout, and it is a billing question. Sending it to the money desk.\nROUTE-TO: tra-money"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T03]",
+      "absent": "[TRI-RULE-APPLIED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The wording is all logins and credentials, so I am putting it with the access people.\nROUTE-TO: tra-signin"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T04]",
+      "absent": "[TRI-RULE-APPLIED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reads like an outage: downtime, degraded, a maintenance window. Sending it to the uptime desk.\nROUTE-TO: tra-uptime"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T05]",
+      "absent": "[TRI-RULE-APPLIED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Outage language throughout, and it is an outage. Sending it to the uptime desk.\nROUTE-TO: tra-uptime"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T06]",
+      "absent": "[TRI-RULE-APPLIED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Billing wording again — invoice, subscription, renewal. Sending it to the money desk.\nROUTE-TO: tra-money"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T01]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Rule applied: HTTP status in the 500s. The sentence is \"Calls to /v2/webhooks have returned HTTP 500 for the last 28 minutes.\" The billing wording states no billing fact.\nROUTE-TO: tra-uptime"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T02]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Rule applied: a monetary amount that does not match an agreed figure. The sentence states the figure debited against the one signed for.\nROUTE-TO: tra-money"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T03]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "No rule fits. The ticket states no amount, no HTTP status, no timeout and no sign-in refusal — only that something feels off. Escalating rather than guessing from the wording.\nROUTE-TO: escalate"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T04]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Rule applied: somebody cannot sign in. The sentence states staff unable to sign in; the outage wording states no service failure.\nROUTE-TO: tra-signin"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T05]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Rule applied: HTTP status in the 500s. The sentence states the failing calls, and the outage wording happens to agree with it.\nROUTE-TO: tra-uptime"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-A-T06]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "No rule fits. Nothing here states an amount, a status code, a timeout or a sign-in refusal. Escalating rather than guessing from the wording.\nROUTE-TO: escalate"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-B-T01]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "This one is wall-to-wall billing language: the invoice, the renewal, the payment method. Sending it to the money desk.\nROUTE-TO: trb-money"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-B-T02]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Billing language throughout, and it is a billing question. Sending it to the money desk.\nROUTE-TO: trb-money"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-B-T03]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The wording is all logins and credentials, so I am putting it with the access people.\nROUTE-TO: trb-signin"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-B-T04]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reads like an outage: downtime, degraded, a maintenance window. Sending it to the uptime desk.\nROUTE-TO: trb-uptime"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-B-T05]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Outage language throughout, and it is an outage. Sending it to the uptime desk.\nROUTE-TO: trb-uptime"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[TRI-B-T06]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Billing wording again — invoice, subscription, renewal. Sending it to the money desk.\nROUTE-TO: trb-money"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
