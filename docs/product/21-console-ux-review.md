@@ -364,7 +364,7 @@ document is the spec.
 
 ### Wave C — the waterline-dependent tail (after Wave B merges)
 
-- [ ] **W6 — Lineage waterline features + long-job affordance (P6b+P7, frontend only).**
+- [x] **W6 — Lineage waterline features + long-job affordance (P6b+P7, frontend only).**
   Cumulative diff since the operator's watermark as the default when >1 rewrite since last look
   (per-revision diffs beneath); a Viewed state per version that auto-invalidates when the prompt
   changes again; long-running delivery rows show step count + last-step label (derived from the
@@ -374,6 +374,34 @@ document is the spec.
 ### Discovered Issues Log (waves A–C)
 
 *(orchestrator-owned)*
+
+- **(orchestrator) PLAN COMPLETE — W1–W6 all merged, 2026-07-28.** web 959 → **1216 tests**;
+  typecheck + build green in both packages; go build/vet clean. Final capture: chart animated
+  6/6 unique frames, reduced 1/6; desk animated 5/6. Final stills in `docs/product/ux-review/`
+  (`final-desk.png`, `final-lineage.png`).
+- **(W6) The long-job affordance needed NO backend field** — `useSessionTokens` was already
+  fetching `query-events` per row for tokens, so step count/last-step is a SECOND READING of a
+  request already being made, and stays inside the existing `tokenAutoLoad` budget (a first cut
+  that auto-loaded any long row broke EventsPage's "leaves the rest behind a button" pin — the
+  pin was right).
+- **(W6) `summariseJobProgress` must NOT recurse into an envelope's `data`** — tool inputs carry
+  their own `type` keys (JSON-schema fragments) and inflate the step count with phantom steps.
+  Deliberately a different walk rule from `sumTokens`, which walks everything. Regression-tested.
+- **(W6) Viewed invalidation clears ALL marks, not just the head** — "I have read this worker"
+  is a statement about the worker as it was, and it expires whole. Marks are stamped with the
+  head prompt-write id and validated at READ time, so a refetch renders them gone in the same
+  pass. The invalidating head is the newest PROMPT write, so freeze/retune does not clear it.
+- **(W6) `cumulativeLineageDiff` returns null when the per-revision view is already correct** —
+  unset mark, ≤1 rewrite since the mark, and the revert loop A→B→A (two rewrites, zero net
+  change: a "changes since your last review" banner over an empty diff reads as a bug).
+- **(W6) The lineage reads the DESK watermark**, not a surface of its own (§4.2's one-integer
+  rule), with a `watermarkMs` prop for hosts that own the mark. There is a test whose only job
+  is to fail if this component ever grows its own storage key.
+- **(orchestrator, OPEN) Still not done anywhere in doc 16 or 21**: the real-stack pass
+  (`docker compose up -d --build web` + e2e specs) — every visual claim in both plans rests on
+  the `e2e/ux-stub` fixture rig, never on live agentd. Also still open from doc 16: the ~18
+  chat-side components with hardcoded light-mode colours (Chat view in dark mode), and the
+  non-UTF8 bytes in `useEvents.ts` / `desk.ts` / `DeskPage.tsx` / `WorkerEditor.tsx`.
 
 - **(W1) X2 was two bugs**: lane collisions AND a paint-order bug — labels were drawn before the
   plates and buried under them. All labels now live in one `org-chart-labels` layer drawn last,
