@@ -171,7 +171,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   emits a ranked report with variance. Deterministic in mock; the same rig drives the L3
   calibration when ungated.
   *Validation:* rig runs green in mock against ≥3 seeded topologies; report artifact committed.
-- [ ] **B1 — Tier B graded-harness build** (AGENTS_RESEARCH §7): same-stories runner with a
+- [x] **B1 — Tier B graded-harness build** (AGENTS_RESEARCH §7): same-stories runner with a
   grader seam (blind, shuffled, ranked, anchor items); offline test with a scripted grader.
   EXECUTION against real models gated with L3.
   *Validation:* offline harness tests green.
@@ -333,4 +333,20 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - (R2) **self-organizing@v1 ships uncapped (D3): SettingsPatch nil is PINNED as the decision** —
   and its offline e2e proves autonomy-without-a-model is inert (founder runs, 0 worker_create
   events, narrowed pool clean).
+- (B1) **The ranking type has nowhere to put a score** — the grader seam returns an ordering of
+  presented labels only, and `resolveRanking` refuses anything that is not a strict permutation;
+  the API parser THROWS rather than repairing a ranking that omits/invents a label (silent repair
+  would fabricate comparisons).
+- (B1) **Anchor invariance holds for win-rate `score` but NOT for `elo`** — comparison counts
+  change the Laplace correction, so elo is only comparable between runs with equal counts; score
+  is the cross-run scale check. Caught by a test expected to pass, now pinned both ways.
+- (B1) **Batch membership is deterministic; only presentation order is seeded** — otherwise an
+  honest grader's scores wobble between seeds and the bias-detection test cannot distinguish
+  grader bias from partitioning noise.
+- (B1) **Live foot-gun for L3/Tier B runs**: `worker.finished` text is the whole transcript —
+  grading without slicing out the deliverable (collect.ts `textOf` seam) grades transcripts,
+  including worker names, straight past the blinding.
+- (B1) **e2e/ has no offline runner** — tierb tests use node's built-in runner with
+  `--experimental-strip-types` (zero install), which strips but does not CHECK types; no
+  typecheck gate on that directory (README documents the tsc path if wanted).
 
