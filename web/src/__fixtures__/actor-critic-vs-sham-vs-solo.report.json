@@ -1,0 +1,552 @@
+{
+  "schema": "agent-orange/experiments/compare-report@1",
+  "task": {
+    "id": "actor-critic-vs-sham-vs-solo",
+    "description": "One two-round filing task through three org charts: a diagnosing critic, a placebo critic with identical wiring, and a lone worker. Ranked by whether round 2 gained the headline rule.",
+    "mockScript": "e2e/mock-scripts/experiments-compare.json",
+    "rounds": 2,
+    "repetitions": 2,
+    "rankBy": "prop:headline-rule",
+    "rankDirection": "desc"
+  },
+  "arms": [
+    {
+      "id": "actor-critic",
+      "topology": "actor-critic@v1",
+      "eventType": "xpa-scribe.task",
+      "primaryWorker": "xpa-scribe",
+      "answers": {
+        "actor-name": "xpa-scribe",
+        "critic-name": "xpa-editor",
+        "actor-prompt-seed": "You file catalogue notes. Close with a totals line. Open with the date line.",
+        "criterion": "every note opens with a headline line"
+      }
+    },
+    {
+      "id": "sham-critic",
+      "topology": "sham-critic@v1",
+      "eventType": "xps-clerk.task",
+      "primaryWorker": "xps-clerk",
+      "answers": {
+        "actor-name": "xps-clerk",
+        "critic-name": "xps-shuffler",
+        "actor-prompt-seed": "You file catalogue notes. Close with a totals line. Open with the date line."
+      }
+    },
+    {
+      "id": "solo",
+      "topology": "solo@v1",
+      "eventType": "xpz.poke",
+      "primaryWorker": "xpz-hermit",
+      "answers": {
+        "worker-name": "xpz-hermit",
+        "prompt-seed": "You file catalogue notes. Close with a totals line. Open with the date line."
+      }
+    }
+  ],
+  "properties": [
+    {
+      "id": "headline-rule",
+      "describe": "the round's output opens with the headline line the critic's rewrite asked for"
+    },
+    {
+      "id": "reordered-only",
+      "describe": "the round's output shows the sham's reshuffled instruction order and no new content"
+    },
+    {
+      "id": "output-changed",
+      "describe": "the round's output differs from the previous round's (churn, of any kind)"
+    },
+    {
+      "id": "prompt-intact",
+      "describe": "the primary worker's prompt still contains every instruction it started with"
+    }
+  ],
+  "ranking": [
+    {
+      "rank": 1,
+      "arm": "actor-critic",
+      "mean": 0.5,
+      "spread": 0
+    },
+    {
+      "rank": 2,
+      "arm": "sham-critic",
+      "mean": 0,
+      "spread": 0
+    },
+    {
+      "rank": 2,
+      "arm": "solo",
+      "mean": 0,
+      "spread": 0
+    }
+  ],
+  "summaries": [
+    {
+      "arm": "actor-critic",
+      "reps": 2,
+      "metrics": {
+        "rounds_completed": {
+          "n": 2,
+          "mean": 2,
+          "min": 2,
+          "max": 2,
+          "spread": 0,
+          "stdev": 0
+        },
+        "delivery_ok_rate": {
+          "n": 2,
+          "mean": 1,
+          "min": 1,
+          "max": 1,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prompt_writes": {
+          "n": 2,
+          "mean": 2,
+          "min": 2,
+          "max": 2,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:headline-rule": {
+          "n": 2,
+          "mean": 0.5,
+          "min": 0.5,
+          "max": 0.5,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:reordered-only": {
+          "n": 2,
+          "mean": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:output-changed": {
+          "n": 2,
+          "mean": 0.5,
+          "min": 0.5,
+          "max": 0.5,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:prompt-intact": {
+          "n": 2,
+          "mean": 1,
+          "min": 1,
+          "max": 1,
+          "spread": 0,
+          "stdev": 0
+        }
+      }
+    },
+    {
+      "arm": "sham-critic",
+      "reps": 2,
+      "metrics": {
+        "rounds_completed": {
+          "n": 2,
+          "mean": 2,
+          "min": 2,
+          "max": 2,
+          "spread": 0,
+          "stdev": 0
+        },
+        "delivery_ok_rate": {
+          "n": 2,
+          "mean": 1,
+          "min": 1,
+          "max": 1,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prompt_writes": {
+          "n": 2,
+          "mean": 2,
+          "min": 2,
+          "max": 2,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:headline-rule": {
+          "n": 2,
+          "mean": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:reordered-only": {
+          "n": 2,
+          "mean": 0.5,
+          "min": 0.5,
+          "max": 0.5,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:output-changed": {
+          "n": 2,
+          "mean": 0.5,
+          "min": 0.5,
+          "max": 0.5,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:prompt-intact": {
+          "n": 2,
+          "mean": 1,
+          "min": 1,
+          "max": 1,
+          "spread": 0,
+          "stdev": 0
+        }
+      }
+    },
+    {
+      "arm": "solo",
+      "reps": 2,
+      "metrics": {
+        "rounds_completed": {
+          "n": 2,
+          "mean": 2,
+          "min": 2,
+          "max": 2,
+          "spread": 0,
+          "stdev": 0
+        },
+        "delivery_ok_rate": {
+          "n": 2,
+          "mean": 1,
+          "min": 1,
+          "max": 1,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prompt_writes": {
+          "n": 2,
+          "mean": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:headline-rule": {
+          "n": 2,
+          "mean": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:reordered-only": {
+          "n": 2,
+          "mean": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:output-changed": {
+          "n": 2,
+          "mean": 0,
+          "min": 0,
+          "max": 0,
+          "spread": 0,
+          "stdev": 0
+        },
+        "prop:prompt-intact": {
+          "n": 2,
+          "mean": 1,
+          "min": 1,
+          "max": 1,
+          "spread": 0,
+          "stdev": 0
+        }
+      }
+    }
+  ],
+  "runs": [
+    {
+      "arm": "actor-critic",
+      "repetition": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xpa-editor",
+              "target": "xpa-scribe",
+              "rationale": "the note shipped without a headline line"
+            }
+          ],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.\n[XPA-HEADLINE-RULE] Always open your note with a line starting \"Headline:\".",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        },
+        {
+          "round": 2,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xpa-editor",
+              "target": "xpa-scribe",
+              "rationale": "the note shipped without a headline line"
+            }
+          ],
+          "output": "Headline: the apple crop is in.\nThe catalogue note is filed.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.\n[XPA-HEADLINE-RULE] Always open your note with a line starting \"Headline:\".",
+          "properties": {
+            "headline-rule": true,
+            "reordered-only": false,
+            "output-changed": true,
+            "prompt-intact": true
+          }
+        }
+      ]
+    },
+    {
+      "arm": "actor-critic",
+      "repetition": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xpa-editor",
+              "target": "xpa-scribe",
+              "rationale": "the note shipped without a headline line"
+            }
+          ],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.\n[XPA-HEADLINE-RULE] Always open your note with a line starting \"Headline:\".",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        },
+        {
+          "round": 2,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xpa-editor",
+              "target": "xpa-scribe",
+              "rationale": "the note shipped without a headline line"
+            }
+          ],
+          "output": "Headline: the apple crop is in.\nThe catalogue note is filed.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.\n[XPA-HEADLINE-RULE] Always open your note with a line starting \"Headline:\".",
+          "properties": {
+            "headline-rule": true,
+            "reordered-only": false,
+            "output-changed": true,
+            "prompt-intact": true
+          }
+        }
+      ]
+    },
+    {
+      "arm": "sham-critic",
+      "repetition": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xps-shuffler",
+              "target": "xps-clerk",
+              "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+            }
+          ],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Open with the date line. Close with a totals line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        },
+        {
+          "round": 2,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xps-shuffler",
+              "target": "xps-clerk",
+              "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+            }
+          ],
+          "output": "XPS-REORDERED: date first, totals last. The catalogue note is filed.",
+          "workerPromptAfter": "You file catalogue notes. Open with the date line. Close with a totals line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": true,
+            "output-changed": true,
+            "prompt-intact": true
+          }
+        }
+      ]
+    },
+    {
+      "arm": "sham-critic",
+      "repetition": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xps-shuffler",
+              "target": "xps-clerk",
+              "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+            }
+          ],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Open with the date line. Close with a totals line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        },
+        {
+          "round": 2,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "xps-shuffler",
+              "target": "xps-clerk",
+              "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+            }
+          ],
+          "output": "XPS-REORDERED: date first, totals last. The catalogue note is filed.",
+          "workerPromptAfter": "You file catalogue notes. Open with the date line. Close with a totals line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": true,
+            "output-changed": true,
+            "prompt-intact": true
+          }
+        }
+      ]
+    },
+    {
+      "arm": "solo",
+      "repetition": 1,
+      "rounds": [
+        {
+          "round": 1,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        },
+        {
+          "round": 2,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        }
+      ]
+    },
+    {
+      "arm": "solo",
+      "repetition": 2,
+      "rounds": [
+        {
+          "round": 1,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        },
+        {
+          "round": 2,
+          "taskText": "File the catalogue note for the new apples.",
+          "deliveryStatuses": [
+            "ok"
+          ],
+          "promptWrites": [],
+          "output": "The catalogue note is filed, plain and unadorned.",
+          "workerPromptAfter": "You file catalogue notes. Close with a totals line. Open with the date line.",
+          "properties": {
+            "headline-rule": false,
+            "reordered-only": false,
+            "output-changed": false,
+            "prompt-intact": true
+          }
+        }
+      ]
+    }
+  ],
+  "table": "#  arm           reps  rounds_completed  delivery_ok_rate  prompt_writes  prop:headline-rule  prop:reordered-only  prop:output-changed  prop:prompt-intact\n-  ------------  ----  ----------------  ----------------  -------------  ------------------  -------------------  -------------------  ------------------\n1  actor-critic  2     2 ±0              1 ±0              2 ±0           0.5 ±0              0 ±0                 0.5 ±0               1 ±0\n2  sham-critic   2     2 ±0              1 ±0              2 ±0           0 ±0                0.5 ±0               0.5 ±0               1 ±0\n2  solo          2     2 ±0              1 ±0              0 ±0           0 ±0                0 ±0                 0 ±0                 1 ±0"
+}
