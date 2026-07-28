@@ -161,6 +161,35 @@ describe('fold to a version', () => {
     expect((put.body as { rationale: string }).rationale).toContain('cfg-2')
   })
 
+  it('slides the history in under the banner instead of teleporting (W3)', async () => {
+    await openLineage()
+    await userEvent.click(await screen.findByText('v2'))
+    const fold = await screen.findByTestId('version-fold')
+    // The transition is declared; the entered state arrives on the next frame.
+    expect(getComputedStyle(fold).transition).toContain('150ms')
+    await waitFor(() => expect(fold.getAttribute('data-entered')).toBe('true'))
+    expect(getComputedStyle(fold).opacity).toBe('1')
+  })
+
+  it('snaps the fold under reduced motion — the history still arrives', async () => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: query.includes('reduce'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia
+    await openLineage()
+    await userEvent.click(await screen.findByText('v2'))
+    const fold = await screen.findByTestId('version-fold')
+    expect(getComputedStyle(fold).transition).toBe('none')
+    await waitFor(() => expect(getComputedStyle(fold).opacity).toBe('1'))
+    expect(screen.getByText('v2 — quote the ticket reference')).toBeInTheDocument()
+  })
+
   it('goes back to the live prompt without writing anything', async () => {
     await openLineage()
     await userEvent.click(await screen.findByText('v2'))
