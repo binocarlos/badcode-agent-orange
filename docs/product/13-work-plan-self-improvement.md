@@ -152,11 +152,43 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   truth, VERDICT-line convention for parseable conclusions, metrics from the logs (accuracy
   early-vs-late, planted-null false-confirm rate, confound escape rate, lineage, freeze_refused,
   tokens). Mock smoke proves mechanics; the real run is orchestrator+Kai, attended.
-- [ ] **L3X — The calibration run itself** (attended, subscription mode): arms A+B minimum on 30
-  hypotheses; results land as a dated record under docs/product/runs/ + a summary in the runbook. The Tier B protocol
-  (AGENTS_RESEARCH §7) specialised to the lab: N hypotheses with known answers, accuracy on late
-  vs early hypotheses, planted-null false-confirmation rate, run recording. Writing the runbook
-  is unblocked; RUNNING it against a real model is not.
+- [~] **L3X — The calibration run itself** — **ATTEMPTED 2026-07-28, PARTIAL. Record:
+  [`runs/2026-07-28-calibration-aborted/`](./runs/2026-07-28-calibration-aborted/README.md).**
+  Probe 3/3 clean; full run reached h08 of 30 on arm A (8/8 correct, 11/11 including the probe),
+  then died at h09. Arm B never ran. Two outcomes, both real:
+  - **Scientific: the task has a ceiling and the loop is inert on it.** Zero `worker_prompt_write`
+    in 11 rounds — the critic ran every round and explicitly declined ("No methodological
+    amendment required") because the investigator was already stratifying and refusing to
+    overclaim from hypothesis one. A would have tied B because A never diverged from B. Runbook
+    §5's "A ≈ B", with a readable cause. **Re-running this manifest buys an expensive null.**
+  - **Mechanical: three harness defects** (below) turned a recoverable hiccup into total data
+    loss. ~135k tokens of real spend produced zero report artifacts.
+  Blocked on **L3H** (hardening) and **L3M** (a discriminating manifest). Not re-runnable as-is.
+- [ ] **L3H — Harden the calibration runner against upstream failures** (blocks any further live
+  run). Three fixes, all in `e2e/experiments/calibration/` except where noted:
+  (a) **An empty assistant reply is a result, not a hang.** A delivery recorded `ok` whose session
+  yields no assistant message must be recorded as a failed hypothesis and counted toward runbook
+  §4's abort criteria — today the runner polls for 180s and throws. Decide the threshold
+  (consecutive empties, as with provision failures) and record the reason in the report.
+  (b) **No throw may bypass the report.** Any per-hypothesis error aborts *that arm* through the
+  existing abort path — which already writes the report, records the reason, and lets remaining
+  arms run — never the process. Prove it with a fault-injection test that kills a poll mid-arm and
+  asserts a report exists with the arm marked aborted.
+  (c) **Persist the transcript as the run proceeds**, not only at the end: `agent_query_events`
+  holds ZERO rows for every session of this run (swept per hypothesis, deleted before anything
+  archives them), so the run-log is the only transcript record and a crash destroys it. Append
+  per-hypothesis rather than writing once at the end.
+  *Validation:* `run.sh build` + `run.sh test` + `run.sh run smoke-4` (report byte-identical to
+  the committed artifact) + the new fault-injection test.
+- [ ] **L3M — A discriminating manifest** (blocks the next live run's scientific value). Today's
+  hypolab specs are too easy for the model under test: 11/11 first-try correct including both trap
+  kinds. A calibration that cannot be failed cannot show improvement. Generate a manifest whose
+  hypotheses a competent first attempt gets *wrong* often enough to leave room — smaller effect
+  sizes, lower n, multi-way or partially-observed confounds, traps whose naive and controlled
+  answers differ more subtly — and **verify the difficulty offline before spending a token**: the
+  existing `verifyTrap` machinery plus a scripted competent-analyst baseline should land well
+  below ceiling. Keep every seed pinned in a committed manifest (never a `--seed` flag).
+  *Validation:* go suite (hypolab) + a documented difficulty table in the manifest's record.
 
 ## Wave 5 — Remaining seeds, comparison rig, Tier B build (playbook P4, P5, P7)
 
@@ -469,6 +501,35 @@ mutation on the project prompt (D5) — no engine changes in this wave.*
   emits usage 10/10).
   *Validation:* go suite + live-Postgres + web tests + the new e2e assertion.
 
+## Resume point — end of 2026-07-28
+
+*Written so a cold session can pick this up. Everything below is on `product-layer`, pushed.*
+
+**Merged and validated today:** DR1 (doctrine axis), SC1 (triage scenario), TOK1 earlier. The L3X
+partial record is committed under `runs/2026-07-28-calibration-aborted/`.
+
+**In flight, not merged: SC3 (injection gauntlet).** Branch `wave7-sc3` at **f4b50a9**, base
+b87ef10, working tree clean, in worktree `.claude/worktrees/agent-acc864bab775b7906`. Its executor
+agent does NOT survive a session restart; the branch does. Fully green offline (its own 60/60, plus
+go build/vet/test, live-Postgres, and the triage/calibration/C1 suites). **Remains: stack
+validations only**, in this order, with the stack in mock mode:
+1. `./e2e/run-stack-e2e.sh up mock`
+2. `./e2e/experiments/gauntlet/run.sh run gauntlet-smoke-6` — twice, reports byte-identical.
+   *The committed report artifacts do not exist yet; only this run can produce them.*
+3. Non-vacuity: break the doctrine injection, rerun, record the collapse, restore, rerun.
+4. `./e2e/experiments/triage/run.sh run triage-smoke-6` — committed triage reports must be unchanged.
+5. topologies + learning-stories regressions.
+Expected smoke numbers (a mismatch is loud): arm `A-doctrine-off` accuracy 0.666667, directive
+compliance 1.0 (all four kinds 1.0), clean 1.0 / attacked 0.5, tax 0.5, unparseable 1,
+prompt_writes 7 with dispatcher_config_writes 1, freeze_refused 7 with directed 1. Arm
+`A-doctrine-v1` accuracy 1.0, compliance 0.0, tax 0, prompt_writes 6 / directed 0.
+Then commit the artifacts and merge as usual.
+
+**Next live-run work is blocked on L3H then L3M** — do not re-run the existing manifest.
+
+**Stack left in mock mode**, no script loaded, subscription credentials out of play. `.env` still
+holds both credentials; `up subscription` is what selects them.
+
 ## Publishing (decided 2026-07-28)
 
 - [ ] **PUB — Publish the experiments.** Kai: the calibration and tournament results belong in
@@ -568,6 +629,23 @@ mutation on the project prompt (D5) — no engine changes in this wave.*
   and `e2e/experiments/*/.gitignore` files are directory-local, not inherited (triage/ ships its
   own for `datasets/` + `*.run-log.json`).
 - (SC1) **Stale worktree base, fifth occurrence** — the mandatory base check caught it again.
+- (L3X) **A delivery can be recorded `ok` while its session produced no assistant message at
+  all.** h09's frozen checker finished in 6s with `status = ok` and a session holding only the
+  user message; the investigator before it ended mid-turn at 76s (vs a 160–240s norm) leaving a
+  tool-call preamble as its deliverable. Both inside 90 seconds, after ~40 minutes of continuous
+  real-model work — the outside-the-container signature of an upstream usage limit. Because the
+  status said `ok`, the runbook's `rate_limited` abort never fired. Same family as TOK1: a status
+  no reader should have trusted.
+- (L3X) **An unhandled poll timeout destroyed a run that had already succeeded.** Arm A's eight
+  completed hypotheses existed only in memory; the throw bypassed report-writing entirely. Any
+  harness spending real money must treat "write what we have" as the first obligation of failure.
+- (L3X) **Swept sessions leave no transcript in the database** — `agent_query_events` holds zero
+  rows for every session of this run, successful ones included, because per-hypothesis sweeping
+  deletes them before the archive loop can persist anything. Runbook §4's "record everything" is
+  satisfied by the harness's run-log alone, which is exactly what a crash takes with it.
+- (L3X) **The instrument outlived the experiment**: fact-scored calibration reported an honest
+  "nothing improved, and here is why" (the critic declining on the record) rather than a
+  flattering curve. The failure mode C3 exists to prevent did not occur.
 - (Orchestrator) **The two Wave 7 executors coordinated a README collision between themselves** —
   DR1 warned SC1, SC1 verified rather than assumed, found its row exactly where DR1's belonged,
   moved its own and told DR1 not to move theirs. Both-sides-add on one table still cost two

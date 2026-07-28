@@ -71,6 +71,24 @@ only) → next hypothesis.
 - **Null false-confirmation rises in A** → the critic is optimising for "found something";
   reward-hacking on a factual task — the most instructive possible outcome.
 
+## 5a. What actually happened — run 1, 2026-07-28 (partial)
+
+Record: [`runs/2026-07-28-calibration-aborted/`](./runs/2026-07-28-calibration-aborted/README.md).
+Attended, subscription mode, Kai present. Probe 3/3; arm A reached h08 (8/8; **11/11** including
+the probe, across all four kinds); arm B never started; the runner crashed at h09 and wrote no
+report.
+
+**Result: §5's "A ≈ B", diagnosed before arm B ran.** Zero prompt rewrites in 11 rounds — the
+critic ran each round and declined on the record ("No methodological amendment required") because
+the investigator was already stratifying and declining to overclaim. Nothing was wrong, so nothing
+improved. At this model strength these datasets do not discriminate between org charts; the next
+run needs a harder manifest (work-plan **L3M**), and the runner needs to survive an upstream
+failure (**L3H**) — a delivery marked `ok` with an empty session defeated §4's `rate_limited`
+abort and an unhandled poll timeout destroyed eight successful hypotheses' worth of results.
+
+The instrument is not implicated: a fact scorer reported an honest null rather than a flattering
+curve, which is the whole reason §1 calibrates on facts first.
+
 ## 6. Checklist for the go decision
 
 - [ ] Kai approves the run and picks credential mode (api-key recommended) and token ceiling.
