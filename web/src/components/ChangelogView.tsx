@@ -12,9 +12,11 @@
 // folding is last-writer-wins with no merge algebra, and the changelog is the
 // only place a diff is ever wanted.
 //
-// THE ROUTE DOES NOT EXIST YET. `GET /agent/config-events` is J2/J3's; until it
-// lands, pass `fetchConfigEvents` (see configLog.ts for the exact contract) or
-// this view says plainly that the log is written but not yet served, rather
+// The route is mounted: `GET /agent/config-events` (go/httpapi/config_events.go),
+// and this view reads it with no host wiring. A host that serves the log from
+// somewhere else can still pass `fetchConfigEvents` (see configLog.ts for the
+// exact contract) — an override, not a stopgap. If a deployment answers 404/501
+// this view says plainly that the log is written but not served there, rather
 // than rendering an empty history that reads as "nothing has changed".
 
 import React, { useState } from 'react'
@@ -80,8 +82,9 @@ export default function ChangelogView({
       {!log.available && (
         <Alert severity="info" sx={{ mb: 2 }}>
           The config log is being written, but this deployment does not serve it yet:{' '}
-          <code>GET /agent/config-events</code> is not mounted. Supply a{' '}
-          <code>fetchConfigEvents</code> function, or wire the route.
+          <code>GET /agent/config-events</code> answered as unmounted here. The route ships
+          mounted in <code>agentd</code>; a host that serves the log from somewhere else can
+          supply a <code>fetchConfigEvents</code> function instead.
         </Alert>
       )}
       {log.available && log.error !== null && (
