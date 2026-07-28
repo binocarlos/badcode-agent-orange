@@ -185,6 +185,47 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   EXECUTION against real models gated with L3.
   *Validation:* offline harness tests green.
 
+## Wave 7 — Scenario library + operations doctrine (docs 19 + 20)
+
+*Driver: Kai, 2026-07-28 — discover the rearrangements worth "emboldening as law" and distill a
+core common-sense layer as system prompts. Design: [`19-scenario-library.md`](./19-scenario-library.md)
+(the instruments) + [`20-operations-doctrine.md`](./20-operations-doctrine.md) (the artifact,
+doctrine-v1 drafted, all entries CANDIDATE). Doctrine injects as an ordinary post-apply operator
+mutation on the project prompt (D5) — no engine changes in this wave.*
+
+- [ ] **DR1 — Doctrine axis in the calibration rig.** Read the canonical bytes below the marker
+  line of `docs/product/doctrine/doctrine-v1.md`; new arm variants in `arms.ts` that apply them
+  after topology apply via the existing settings path (read current → overlay `SystemPrompt` →
+  whole-object PUT — the T2/L3R pattern; config-logged for free). New config `doctrine-smoke-4`
+  (arm A vs arm A + doctrine-v1) whose mock rules key on a doctrine-v1 phrase so the behaviour
+  switch proves DELIVERY of the block into composed prompts, not storage. `smoke-4` and its
+  committed reports stay byte-identical (rerun to prove it). Report names the doctrine version per
+  arm; metrics unchanged.
+  *Validation:* `./e2e/experiments/calibration/run.sh build` + `run.sh test`; stack:
+  `./e2e/run-stack-e2e.sh up mock` then run `doctrine-smoke-4` AND rerun `smoke-4`
+  (byte-identical report diff).
+- [ ] **SC1 — Triage scenario** (doc 19 §3 SC-1, coordination dimension). Three parts:
+  (a) `go/triagelab` generator, hypolab shape verbatim: `Generate(seed, spec) → (*Dataset,
+  *Truth)` separate returns, own splitmix64 with golden-byte tests, traps = surface-keyword
+  misdirection + ambiguity-requires-escalate, `verifyTrap` proving a naive keyword router fails
+  and a content-rule router passes on the PINNED seeds, `TestDatasetBytesCarryNoTruth`.
+  (b) `triage-lab@v1` seed (catalogue entry 14) mirroring `hypothesis-lab@v1`: dispatcher + 3
+  specialists + methodology-critic (`worker_prompt_write` on the dispatcher only) + FROZEN
+  route-auditor; routing via a `ROUTE-TO: <name>` deliverable line (workers cannot emit typed
+  events — T4–T7); renderer inherits the generic property tests for free.
+  (c) `e2e/experiments/triage/` mirroring `calibration/`'s structure: manifest with pinned seeds,
+  arms A-critic-live / B-critic-off, per-ticket loop, metrics (routing accuracy early-vs-late,
+  trap-ticket misroute rate as headline, ambiguity-confidence rate, lineage, freeze_refused,
+  tokens), mock smoke proving the critic's rewrite flips dispatcher routing (delivery assertion).
+  Directory contract: NO new tsconfig — the single `e2e/experiments/tsconfig.json` sweeps it;
+  CommonJS import style, no `.ts` import extensions; own `run.sh` delegating build to `../run.sh`.
+  *Validation:* go suite + live-Postgres command (F1's) + `./e2e/experiments/triage/run.sh test` +
+  stack mock smoke + topologies/learning-stories regressions.
+- [ ] **SC3 — Injection gauntlet** (doc 19 §3 SC-3) — **scheduled after DR1 merges**: it is
+  doctrine WD-1's promotion instrument and layers adversarial directives over SC-1's generator.
+  Spec to be cut into an item when DR1 and SC1 land.
+- SC-2 / SC-4 / SC-5 stay catalogued in doc 19, deliberately unscheduled (doc 19 §4).
+
 ## Decisions (D1–D4) — DECIDED by Kai, 2026-07-27
 
 - **D1: built-in curated set first.** Authorable/shareable topologies deferred; the registry is
@@ -197,6 +238,18 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   mock mode a runaway costs containers/ports, not money — seed its e2e with a narrowed port pool.
 - **D4: plain JWT unfreezes.** Unfreeze is an ordinary config mutation; the config log already
   records who and when. No extra ceremony.
+
+## Decisions (D5–D6) — orchestrator, 2026-07-28 (Wave 7; Kai may veto)
+
+- **D5: doctrine injects via the project prompt, as one ordinary post-apply operator mutation.**
+  `ProjectSettings.SystemPrompt` already reaches every composed prompt as the `project prompt`
+  section and already has a config-logged write path — so doctrine ships as versioned bytes in
+  `docs/product/doctrine/`, zero engine code, and the A/B lever is the mutation withheld. Every
+  doctrine entry is CANDIDATE until a scenario A/B promotes it (doc 20 §2).
+- **D6: scenario admissibility is the doc-19 §2 contract** — hypolab-shaped generator with truth
+  as a separate return, fact scorer, verified traps, mock smoke first, event-spine driven, one
+  nameable mutation per arm, deterministic reports, and one experiments tsconfig (the C1+B1
+  directory contract).
 
 ## Discovered Issues Log
 
