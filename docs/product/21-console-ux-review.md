@@ -310,7 +310,7 @@ document is the spec.
 
 ### Wave A — fixes (parallel; disjoint files)
 
-- [ ] **W1 — Chart rendering + state fixes (P1+P3).** In `orgchart.ts`/`OrgChartPage.tsx` (+
+- [x] **W1 — Chart rendering + state fixes (P1+P3).** In `orgchart.ts`/`OrgChartPage.tsx` (+
   tests): X1 lock as an inline `<path>` in SVG units (kill the nested-svg default-size bug);
   X2 label lanes — riding labels offset per-wire within a shared run, conventions labels in
   their own lane, no overprint at any of the 13 seed shapes (add a two-subscriptions-one-rank
@@ -319,7 +319,7 @@ document is the spec.
   `awaiting_human` delivery (deliveries are already fetched); X10 fault cross on a dial whose
   schedule is disabled with `provision_failures >= 5`; canvas pips clickable → run the existing
   propagation trace.
-- [ ] **W2 — Display-logic fixes (P2).** X5: recount/relabel lineage header ("N versions · M
+- [x] **W2 — Display-logic fixes (P2).** X5: recount/relabel lineage header ("N versions · M
   rewrites, K distinct" with distinct ≤ rewrites; fix `workerLineage`); X7: Desk badge = asks
   count (lift the ask-join into the shell's data path — `useDesk` already computes it; do NOT
   fetch twice); X8: one shared compact time formatter module (`web/src/timefmt.ts`: today →
@@ -327,7 +327,7 @@ document is the spec.
   events, memory — replace the raw `toLocaleString` calls) with an `agoShort` helper (`3h`, no
   "ago"); X11: `awaiting_human` chips render rose (theme-aware, not MUI warning) wherever
   delivery chips appear; X12: spine rail one step darker.
-- [ ] **W3 — Lineage disclosure, waterline-independent parts (P6a).** X6: `DiffBlock` moves to
+- [x] **W3 — Lineage disclosure, waterline-independent parts (P6a).** X6: `DiffBlock` moves to
   ember/fault tints with theme fallbacks (spine.tsx's palette-resolution pattern) — applies
   everywhere DiffBlock renders; diffs in feeds collapsed by default behind `+n −m` + first-hunk
   summary using `<details>/<summary>`, height-animated via `grid-template-rows: 0fr→1fr` (child
@@ -374,3 +374,27 @@ document is the spec.
 ### Discovered Issues Log (waves A–C)
 
 *(orchestrator-owned)*
+
+- **(W1) X2 was two bugs**: lane collisions AND a paint-order bug — labels were drawn before the
+  plates and buried under them. All labels now live in one `org-chart-labels` layer drawn last,
+  pointer-transparent (the wire polyline stays the click target). Label testids are
+  `label-<id>`, not `wire-label-*` (OC2 pins `^wire-` by count).
+- **(W1) X4's caption drop is conditional** — an unwired pip keeps its caption (`Pip.wired`);
+  charts with any schedule are 36px/column wider (the gutter is reserved chart-wide to keep
+  ranks on one grid). Pips gained a hit rect + pointerdown stopPropagation (pan was eating pip
+  clicks — the "clickable pips" plumbing already existed).
+- **(W2) X5's `distinct` was redefined, not relabelled** — now counts rewrites that changed the
+  text (≤ rewrites by construction); a revert loop A→B→A is 2 distinct rewrites.
+- **(W2) X7 costs one duplicate deliveries fetch** while the Desk is open (badge hook +
+  useDesk); the join itself is shared. W4's feed infrastructure is the place to collapse it.
+- **(W2) `deliveryStatusSeverity('awaiting_human')` is now 'default'** (pin updated); rose is
+  painted by the new `DeliveryStatusChip`. `timefmt.ts` is deliberately locale-independent
+  (fixed 24h forms — a locale-dependent formatter is a different design per browser).
+- **(W3) No matchMedia mock pattern existed** (the brief claimed one); `useReducedMotion.ts` is
+  the new shared gate — W4/W5 must copy its test pattern. jsdom reports untinted backgrounds as
+  `rgba(0, 0, 0, 0)`. EventsPage's diff-summary assertion requires the `<summary>` line to stay
+  ONE text node. Ember/fault tokens now copied in a third place — if a fourth appears, spine.tsx
+  should export the token table.
+- **(orchestrator) Wave A merged conflict-free; web 959→1046 tests.** Fixture re-shoot confirms
+  every X-defect visually fixed: lock glyph correct, labels laned, rose diamond + awaiting count
+  on the plate, fault cross on the dead clock, badge=asks, compact times, visible rail.
