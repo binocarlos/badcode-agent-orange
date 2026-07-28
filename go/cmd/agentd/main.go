@@ -309,6 +309,12 @@ func main() {
 		Artifacts: artStore,
 		Identity:  identityFromRequest,
 		AgentDB:   agentDB, // nil on the SQLite fallback → legacy read paths
+		// GET /agent/memories borrows the same embedder the memory tools use,
+		// on the same READ-path terms: EmbedOrDegrade swallows a provider
+		// outage, so one query loses its semantic leg rather than its answer.
+		MemoryEmbedder: func(ctx context.Context, text string) []float32 {
+			return embedding.EmbedOrDegrade(ctx, embedder, text)
+		},
 	})
 	must(err)
 
