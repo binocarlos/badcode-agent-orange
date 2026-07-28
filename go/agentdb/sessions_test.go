@@ -174,17 +174,19 @@ func TestDeleteSession(t *testing.T) {
 func seedListSessions(t *testing.T, s *Store) {
 	t.Helper()
 	ctx := context.Background()
-	mk := func(id, email, customer, job, status, workflow string, updatedAt int64) {
+	mk := func(id, email, customer, job, status, workflow, worker string, updatedAt int64) {
 		mustCreateSession(t, s, &Session{
 			ID: id, UserEmail: email, Customer: customer, Job: job,
-			Status: status, WorkflowID: workflow,
+			Status: status, WorkflowID: workflow, Worker: worker,
 			CreatedAt: updatedAt, UpdatedAt: updatedAt,
 		})
 	}
-	mk("a1", "alice@acme.com", "acme", "job1", "active", "chat", 100)
-	mk("a2", "bob@acme.com", "acme", "job2", "archived", "chat", 200)
-	mk("a3", "Carol@Acme.com", "acme", "job1", "active", "eval-run", 300)
-	mk("g1", "gus@globex.com", "globex", "job1", "active", "chat", 400)
+	// a1/a3 are worker jobs; a2 is a plain chat session (empty worker), which is
+	// what makes "no filter" and "filter by worker" distinguishable below.
+	mk("a1", "alice@acme.com", "acme", "job1", "active", "chat", "triager", 100)
+	mk("a2", "bob@acme.com", "acme", "job2", "archived", "chat", "", 200)
+	mk("a3", "Carol@Acme.com", "acme", "job1", "active", "eval-run", "summariser", 300)
+	mk("g1", "gus@globex.com", "globex", "job1", "active", "chat", "triager", 400)
 
 	// a1 gets 2 messages (one tool call) and 1 artifact.
 	if err := s.CreateMessages(ctx, []*Message{
@@ -223,6 +225,10 @@ func TestListSessions_FiltersAndCounts(t *testing.T) {
 		{"by job", &SessionQuery{Job: "job2"}, []string{"a2"}},
 		{"by status", &SessionQuery{Status: "archived"}, []string{"a2"}},
 		{"has messages", &SessionQuery{HasMessages: true}, []string{"a1"}},
+		{"by worker", &SessionQuery{Worker: "triager"}, []string{"g1", "a1"}},
+		{"by worker within a customer", &SessionQuery{Customer: "acme", Worker: "triager"}, []string{"a1"}},
+		{"unknown worker is empty", &SessionQuery{Worker: "nobody"}, []string{}},
+		{"empty worker is no filter, not worker=''", &SessionQuery{Customer: "acme"}, []string{"a3", "a2", "a1"}},
 		{"exclude workflow prefix", &SessionQuery{Customer: "acme", ExcludeWorkflowIDPrefix: "eval-"}, []string{"a2", "a1"}},
 		{"limit", &SessionQuery{Limit: 2}, []string{"g1", "a3"}},
 		{"offset", &SessionQuery{Limit: 2, Offset: 2}, []string{"a2", "a1"}},
