@@ -77,6 +77,8 @@ import {
 import {
   CONVENTION_CAVEAT,
   ORG_CHART_METRICS,
+  assignLabelLanes,
+  labelWidth,
   PROPAGATION_CAVEAT,
   PROPAGATION_MAX_DEPTH,
   PROPAGATION_NOTHING_SUBSCRIBES,
@@ -91,7 +93,7 @@ import {
   type OrgChartPip,
   type OrgChartWire,
 } from '../orgchart.js'
-import { SpineGlyph, consoleColor } from '../spine.js'
+import { consoleColor } from '../spine.js'
 
 /** Identifiers are mono, content is prose (§3.4). */
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
@@ -160,6 +162,18 @@ export default function OrgChartPage({
     const counts = new Map<string, number>()
     for (const job of overview.jobs) {
       if (job.status !== 'running' || job.worker === '') continue
+      counts.set(job.worker, (counts.get(job.worker) ?? 0) + 1)
+    }
+    return counts
+  }, [overview.jobs])
+
+  // A parked ask is a STATE of the worker, not only a row on the Desk (§2 X9):
+  // a plate holding an unanswered `request_human_attention` must not read
+  // `idle`. Same deliveries, same join, no second fetch.
+  const awaiting = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const job of overview.jobs) {
+      if (job.status !== 'awaiting_human' || job.worker === '') continue
       counts.set(job.worker, (counts.get(job.worker) ?? 0) + 1)
     }
     return counts
@@ -307,6 +321,7 @@ export default function OrgChartPage({
           layout={layout}
           theme={theme}
           running={running}
+          awaiting={awaiting}
           litWires={litSubscriptions}
           litWorkers={litWorkers}
           tracedPip={traced?.label ?? null}
@@ -404,6 +419,7 @@ interface CanvasProps {
   layout: OrgChartLayout
   theme: Theme
   running: Map<string, number>
+  awaiting: Map<string, number>
   litWires: Set<string>
   litWorkers: Set<string>
   tracedPip: string | null
@@ -425,6 +441,7 @@ function Canvas({
   layout,
   theme,
   running,
+  awaiting,
   litWires,
   litWorkers,
   tracedPip,
@@ -484,6 +501,40 @@ function Canvas({
 
   const hairline = theme.palette.divider
   const ember = token(theme, 'ember')
+
+  // Conventions get a lane of their OWN, one line below the dashed edge they
+  // belong to (§2 X2): the overlay must never fight the wires' riding labels,
+  // and two conventions crossing the same patch of canvas must not fight each
+  // other. Same pure lane assignment the layout uses for the wires.
+  const conventionLabels = useMemo(() => {
+    const nodes = new Map(layout.nodes.map((n) => [n.name, n]))
+    const placed = conventions.flatMap((convention) => {
+      const from = nodes.get(convention.from)
+      const to = nodes.get(convention.to)
+      if (from === undefined || to === undefined) return []
+      const start = flank(from, to)
+      const end = flank(to, from)
+      return [
+        {
+          convention,
+          text: convention.kind === 'route-to' ? 'ROUTE-TO ⇢' : 'names ⇢',
+          x: Math.round((start.x + end.x) / 2),
+          y: Math.round((start.y + end.y) / 2),
+        },
+      ]
+    })
+    const lanes = assignLabelLanes(
+      placed.map((label) => ({
+        x: label.x,
+        y: label.y,
+        width: labelWidth(label.text, CONVENTION_LABEL_CHAR_WIDTH),
+      })),
+    )
+    return placed.map((label, index) => ({
+      ...label,
+      y: label.y + (1 + lanes[index]) * ORG_CHART_METRICS.labelLineHeight,
+    }))
+  }, [conventions, layout.nodes])
 
   return (
     <Box>
@@ -617,6 +668,7 @@ function Canvas({
                 node={node}
                 theme={theme}
                 running={running.get(node.name) ?? 0}
+                awaiting={awaiting.get(node.name) ?? 0}
                 lit={litWorkers.has(node.name)}
                 wiring={wiringFrom !== null}
                 isWiringSource={wiringFrom === node.name}
@@ -626,6 +678,19 @@ function Canvas({
                 onOpenMenu={(anchor) => setMenuFor({ node, anchor })}
               />
             ))}
+            {/* The label layer, drawn LAST and on top of everything (§2 X2).
+                Wires and conventions run under the plates, and a label painted
+                with them disappears under the plate it points at; the lanes
+                come from the layout, so what the tests pin is what is drawn. */}
+            <g data-testid="org-chart-labels">
+              {layout.wires.map((wire) => (
+                <WireLabel key={wire.id} wire={wire} theme={theme} lit={litWires.has(wire.subscriptionId)} />
+              ))}
+              {showConventions &&
+                conventionLabels.map((label) => (
+                  <ConventionLabel key={label.convention.id} {...label} theme={theme} />
+                ))}
+            </g>
           </g>
         </Box>
       </Box>
@@ -715,7 +780,6 @@ function Wire({
   const ember = token(theme, 'ember')
   const stroke = lit ? ember : theme.palette.divider
   const points = wire.points.map((p) => `${p.x},${p.y}`).join(' ')
-  const label = wire.back ? `${wire.label} ↺` : wire.label
   return (
     <g
       data-testid={`wire-${wire.id}`}
@@ -747,20 +811,32 @@ function Wire({
       {/* A hairline is a hard thing to hit; this is the same route, fat and
           invisible, so the pointer target matches the drawing. */}
       <polyline points={points} fill="none" stroke="transparent" strokeWidth={12} />
-      <text
-        x={wire.labelX}
-        y={wire.labelY - 4}
-        textAnchor="middle"
-        fontFamily={MONO}
-        fontSize={10}
-        fill={lit ? ember : theme.palette.text.secondary}
-        stroke={theme.palette.background.paper}
-        strokeWidth={3}
-        paintOrder="stroke"
-      >
-        {label}
-      </text>
     </g>
+  )
+}
+
+/** The text that rides a wire, drawn in the label layer on top of everything.
+ *  Its lane comes from the layout (§2 X2); this only draws where it is told.
+ *  Pointer-transparent, so the wire underneath stays the click target. */
+function WireLabel({ wire, theme, lit }: { wire: OrgChartWire; theme: Theme; lit: boolean }) {
+  const ember = token(theme, 'ember')
+  return (
+    <text
+      data-testid={`label-${wire.id}`}
+      x={wire.labelX}
+      y={wire.labelY - 4}
+      textAnchor="middle"
+      fontFamily={MONO}
+      fontSize={10}
+      opacity={wire.enabled ? 1 : 0.4}
+      fill={lit ? ember : theme.palette.text.secondary}
+      stroke={theme.palette.background.paper}
+      strokeWidth={3}
+      paintOrder="stroke"
+      style={{ pointerEvents: 'none' }}
+    >
+      {wire.back ? `${wire.label} ↺` : wire.label}
+    </text>
   )
 }
 
@@ -799,20 +875,43 @@ function ConventionEdge({
         opacity={0.7}
         markerEnd="url(#org-chart-arrow)"
       />
-      <text
-        x={Math.round((start.x + end.x) / 2)}
-        y={Math.round((start.y + end.y) / 2) - 3}
-        textAnchor="middle"
-        fontFamily={MONO}
-        fontSize={9}
-        fill={theme.palette.text.secondary}
-        stroke={theme.palette.background.paper}
-        strokeWidth={3}
-        paintOrder="stroke"
-      >
-        {convention.kind === 'route-to' ? 'ROUTE-TO ⇢' : 'names ⇢'}
-      </text>
     </g>
+  )
+}
+
+/** A convention's caption. Its own lane, and its own layer above the plates —
+ *  drawn with the dashed edge it belongs to, it slid under a plate (§2 X2). */
+const CONVENTION_LABEL_CHAR_WIDTH = 5.5
+
+function ConventionLabel({
+  convention,
+  text,
+  x,
+  y,
+  theme,
+}: {
+  convention: OrgChartConvention
+  text: string
+  x: number
+  y: number
+  theme: Theme
+}) {
+  return (
+    <text
+      data-testid={`label-convention-${convention.id}`}
+      x={x}
+      y={y}
+      textAnchor="middle"
+      fontFamily={MONO}
+      fontSize={9}
+      fill={theme.palette.text.secondary}
+      stroke={theme.palette.background.paper}
+      strokeWidth={3}
+      paintOrder="stroke"
+      style={{ pointerEvents: 'none' }}
+    >
+      {text}
+    </text>
   )
 }
 
@@ -841,6 +940,7 @@ function Plate({
   node,
   theme,
   running,
+  awaiting,
   lit,
   wiring,
   isWiringSource,
@@ -852,6 +952,7 @@ function Plate({
   node: OrgChartNode
   theme: Theme
   running: number
+  awaiting: number
   lit: boolean
   wiring: boolean
   isWiringSource: boolean
@@ -862,6 +963,7 @@ function Plate({
 }) {
   const steel = token(theme, 'steel')
   const ember = token(theme, 'ember')
+  const rose = token(theme, 'rose')
   const rule = node.frozen ? steel : lit || isWiringSource ? ember : theme.palette.text.primary
   const openMenu = (target: Element | null) =>
     onOpenMenu(
@@ -920,9 +1022,34 @@ function Plate({
       <text x={node.x + 12} y={node.y + 22} fontFamily={MONO} fontSize={13} fill={theme.palette.text.primary}>
         {node.name}
       </text>
+      {/* X1: the lock is drawn HERE, in SVG user units. `SpineGlyph` is a
+          `Box component="svg"` sized by CSS, and CSS sizing does not apply to
+          an <svg> nested inside an <svg> — it rendered at the 300×150 default,
+          a giant clipped disc in the corner of the canvas. Same shape as
+          spine.tsx's freeze glyph, scaled by hand onto this grid. */}
       {node.frozen && (
-        <g transform={`translate(${node.x + node.width - 26} ${node.y + 10})`}>
-          <SpineGlyph glyph="freeze" label="frozen — only a human may change it" size={14} />
+        <g
+          role="img"
+          aria-label="frozen — only a human may change it"
+          data-glyph="freeze"
+          transform={`translate(${node.x + node.width - 26} ${node.y + 10}) scale(${LOCK_SIZE / 12})`}
+        >
+          <title>frozen — only a human may change it</title>
+          <path d="M4 5.2V3.9a2 2 0 0 1 4 0v1.3" fill="none" stroke={steel} strokeWidth={1.3} />
+          <rect x={2.8} y={5.2} width={6.4} height={5} rx={0.8} fill={steel} />
+        </g>
+      )}
+      {/* X9: a worker holding an unanswered ask wears the rose diamond, the
+          same mark the Desk uses. A parked ask is a state, not a Desk row. */}
+      {awaiting > 0 && (
+        <g
+          role="img"
+          aria-label={`${node.name} is waiting for a human`}
+          data-glyph="attention"
+          transform={`translate(${node.x + node.width - (node.frozen ? 46 : 26)} ${node.y + 10}) scale(${LOCK_SIZE / 12})`}
+        >
+          <title>{`${node.name} is parked at awaiting_human — it is waiting for a person, and nothing else will move it`}</title>
+          <path d="M6 1.5 10.5 6 6 10.5 1.5 6Z" fill={rose} />
         </g>
       )}
       <text
@@ -938,21 +1065,38 @@ function Plate({
         y={node.y + 58}
         fontFamily={MONO}
         fontSize={11}
-        fill={running > 0 ? ember : theme.palette.text.secondary}
+        fill={awaiting > 0 ? rose : running > 0 ? ember : theme.palette.text.secondary}
       >
-        {stateLine(node, running)}
+        {stateLine(node, running, awaiting)}
       </text>
     </g>
   )
 }
 
-/** The state line (§6.1): `● running n/max` · `idle` · `disabled` · `frozen`. */
+/** The size of a plate's corner glyphs, in SVG user units — NOT CSS px, which
+ *  is the whole of X1: a nested `<svg>` ignores CSS width and height. */
+const LOCK_SIZE = 14
+
+/**
+ * The state line (§6.1): `● running n/max` · `idle` · `disabled` · `frozen`,
+ * and `◆ awaiting human n` when the worker is holding an unanswered ask (X9).
+ *
+ * A parked ask outranks everything but `disabled`, and it is additive with
+ * `running`, because both are true and the operator needs both: one instance
+ * is waiting for a person while another still works.
+ */
 export function stateLine(
   node: Pick<OrgChartNode, 'enabled' | 'frozen' | 'maxInstances'>,
   running: number,
+  awaiting = 0,
 ): string {
   if (!node.enabled) return 'disabled'
-  if (running > 0) return `● running ${running}/${node.maxInstances}`
+  const parked = awaiting > 0 ? `◆ awaiting human ${awaiting}` : ''
+  if (running > 0) {
+    const live = `● running ${running}/${node.maxInstances}`
+    return parked === '' ? live : `${live} · ${parked}`
+  }
+  if (parked !== '') return parked
   if (node.frozen) return `frozen 0/${node.maxInstances}`
   return `idle 0/${node.maxInstances}`
 }
@@ -960,6 +1104,10 @@ export function stateLine(
 function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`
 }
+
+/** What a dead clock says, in the operator's words (§2 X10, §11 rule 1). */
+export const HALTED_CLOCK_SENTENCE =
+  'this clock is dead: five failed provisions in a row disabled it, and it will not fire again until someone re-enables it'
 
 /** A schedule: a 24-hour dial docked left of its plate, firing hours ticked.
  *  NOT editable here (K3) — it is a deep link to the row on Automation. */
@@ -973,6 +1121,7 @@ function Clock({
   onOpenAutomation?: () => void
 }) {
   const ember = token(theme, 'ember')
+  const fault = token(theme, 'fault')
   const r = clock.size / 2
   const cx = clock.x + r
   const cy = clock.y + r
@@ -1022,11 +1171,32 @@ function Clock({
         {clock.hoursKnown
           ? `${clock.cron} — wakes ${clock.worker} at ${clock.hours.map((h) => `${String(h).padStart(2, '0')}:00`).join(', ')}`
           : `${clock.cron} — wakes ${clock.worker}; this cron's hours are not read here, so no hours are ticked`}
+        {clock.halted ? ` — ${HALTED_CLOCK_SENTENCE}` : ''}
         {onOpenAutomation === undefined
           ? ' — schedules are edited on the Automation page'
           : ' — open it on the Automation page'}
       </title>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke={theme.palette.divider} strokeWidth={1} />
+      <circle
+        cx={cx}
+        cy={cy}
+        r={r}
+        fill="none"
+        stroke={clock.halted ? fault : theme.palette.divider}
+        strokeWidth={1}
+      />
+      {/* X10: five failed provisions in a row and the engine stops the clock.
+          A dead clock drawn as an ordinary dial is the chart lying. */}
+      {clock.halted && (
+        <g role="img" aria-label={`${clock.worker}'s clock is dead`} data-glyph="failure">
+          <path
+            d={`M${cx - r * 0.55} ${cy - r * 0.55}L${cx + r * 0.55} ${cy + r * 0.55}M${cx + r * 0.55} ${cy - r * 0.55}L${cx - r * 0.55} ${cy + r * 0.55}`}
+            stroke={fault}
+            strokeWidth={2}
+            strokeLinecap="round"
+            fill="none"
+          />
+        </g>
+      )}
       {clock.hoursKnown ? ticks : (
         <text x={cx} y={cy + 4} textAnchor="middle" fontFamily={MONO} fontSize={11} fill={theme.palette.text.secondary}>
           ?
@@ -1057,6 +1227,10 @@ function Pip({
       role="button"
       tabIndex={0}
       aria-label={`trace ${pip.type}`}
+      // A pip is small, and the canvas underneath it starts a pan on
+      // pointer-down; the pip's own click must survive that (§8 W1: pips are
+      // clickable and run the propagation trace).
+      onPointerDown={(e) => e.stopPropagation()}
       onClick={onSelect}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -1071,17 +1245,33 @@ function Pip({
           ? `${pip.type} — arrives from outside the project; seen in recent events`
           : `${pip.type} — arrives from outside the project; nothing in this project produces it, and none has been seen recently`}
       </title>
-      <text
-        x={pip.x}
-        y={pip.y + 8}
-        textAnchor="middle"
-        fontFamily={MONO}
-        fontSize={11}
-        fill={colour}
-        opacity={pip.external ? 1 : 0.6}
-      >
-        {pip.type}
-      </text>
+      {/* X4: a wired pip's caption was the SAME TEXT as the riding label on the
+          wire leaving it, 60px apart. The wire's label is the one that names
+          the event where the event travels, so it wins; an unwired pip (an
+          external event nothing subscribes to) keeps its caption, because
+          nothing else on the canvas would name it. */}
+      {!pip.wired && (
+        <text
+          data-testid={`pip-caption-${pip.type}`}
+          x={pip.x}
+          y={pip.y + 8}
+          textAnchor="middle"
+          fontFamily={MONO}
+          fontSize={11}
+          fill={colour}
+          opacity={pip.external ? 1 : 0.6}
+        >
+          {pip.type}
+        </text>
+      )}
+      {/* A triangle is a hard thing to hit; the hit area is not. */}
+      <rect
+        x={pip.x - 14}
+        y={pip.y}
+        width={28}
+        height={ORG_CHART_METRICS.pipHeight}
+        fill="transparent"
+      />
       <path
         d={`M${pip.x - 4} ${bottom - 6} L${pip.x + 4} ${bottom - 6} L${pip.x} ${bottom} z`}
         fill={colour}

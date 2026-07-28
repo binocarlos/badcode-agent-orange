@@ -2,6 +2,10 @@ import { describe, it, expect } from 'vitest'
 import {
   ORG_CHART_METRICS,
   PROPAGATION_CAVEAT,
+  SCHEDULE_STRIKE_LIMIT,
+  assignLabelLanes,
+  clockGutterWidth,
+  labelWidth,
   PROPAGATION_MAX_DEPTH,
   PROPAGATION_NOTHING_SUBSCRIBES,
   cronHours,
@@ -375,8 +379,195 @@ describe('layoutOrgChart over the thirteen seed shapes', () => {
           )
         }
       })
+
+      // §2 X2: the populated walkthrough found two subscriptions sharing a rank
+      // overprinting their riding labels into garbage.
+      it('never overprints two riding labels', () => {
+        expect(overprintedLabels(run(seed))).toEqual([])
+      })
+
+      // §2 X3: dials read as stray circles because they landed on the plate
+      // next door. The gutter column is reserved, so they cannot.
+      it('docks every dial in the gutter, clear of every plate', () => {
+        const layout = run(seed)
+        for (const clock of layout.clocks) {
+          for (const node of layout.nodes) {
+            const overlaps =
+              clock.x < node.x + node.width &&
+              node.x < clock.x + clock.size &&
+              clock.y < node.y + node.height &&
+              node.y < clock.y + clock.size
+            expect(`${clock.id}/${node.name}: ${overlaps}`).toBe(`${clock.id}/${node.name}: false`)
+          }
+        }
+      })
     })
   }
+})
+
+/** Every pair of riding labels whose drawn boxes intersect, as `a|b` strings.
+ *  The renderer draws at `labelX`/`labelY` and nowhere else, so this is the
+ *  same geometry the canvas has. */
+function overprintedLabels(layout: OrgChartLayout): string[] {
+  const clashes: string[] = []
+  const boxes = layout.wires.map((w) => ({
+    id: w.id,
+    left: w.labelX - labelWidth(w.label) / 2,
+    right: w.labelX + labelWidth(w.label) / 2,
+    y: w.labelY,
+  }))
+  for (let i = 0; i < boxes.length; i += 1) {
+    for (let j = i + 1; j < boxes.length; j += 1) {
+      const a = boxes[i]
+      const b = boxes[j]
+      if (
+        Math.abs(a.y - b.y) < ORG_CHART_METRICS.labelLineHeight &&
+        a.left < b.right &&
+        b.left < a.right
+      ) {
+        clashes.push(`${a.id}|${b.id}`)
+      }
+    }
+  }
+  return clashes
+}
+
+// ---------------------------------------------------------------------------
+// The doc-21 §2 chart defects (W1)
+// ---------------------------------------------------------------------------
+
+describe('label lanes (X2)', () => {
+  /** The exact shape the walkthrough broke on: ONE event fanning out to TWO
+   *  workers in the same rank, so both labels ride the same elbow lane. */
+  const fanOut = (): OrgChartLayout =>
+    layoutOrgChart(
+      [worker('email-answerer'), worker('archivist'), worker('email-reviewer')],
+      [
+        sub('s1', 'worker.finished', 'archivist', { worker: 'email-answerer' }),
+        sub('s2', 'worker.finished', 'email-reviewer', { worker: 'email-answerer' }),
+      ],
+      [],
+      [],
+    )
+
+  it('puts the two labels of a shared run in different lanes', () => {
+    const layout = fanOut()
+    expect(layout.wires).toHaveLength(2)
+    expect(layout.wires.map((w) => w.labelLane).sort()).toEqual([0, 1])
+    expect(overprintedLabels(layout)).toEqual([])
+  })
+
+  it('offsets labelY by exactly the lane, so the renderer needs no arithmetic', () => {
+    const layout = fanOut()
+    const [a, b] = [...layout.wires].sort((x, y) => x.labelLane - y.labelLane)
+    expect(b.labelY - a.labelY).toBe(ORG_CHART_METRICS.labelLineHeight)
+  })
+
+  it('is deterministic and order-independent', () => {
+    expect(fanOut()).toEqual(fanOut())
+  })
+
+  it('leaves a lone label on the wire itself', () => {
+    const layout = layoutOrgChart([worker('a')], [sub('s1', 'x.y', 'a')], [], [])
+    expect(layout.wires[0].labelLane).toBe(0)
+  })
+
+  describe('assignLabelLanes', () => {
+    it('stacks labels that overlap and reuses lane 0 for ones that do not', () => {
+      expect(
+        assignLabelLanes([
+          { x: 100, y: 50, width: 80 },
+          { x: 110, y: 50, width: 80 },
+          { x: 400, y: 50, width: 80 },
+          { x: 120, y: 50, width: 80 },
+        ]),
+      ).toEqual([0, 1, 0, 2])
+    })
+
+    it('does not stack labels a whole line apart already', () => {
+      expect(
+        assignLabelLanes([
+          { x: 100, y: 50, width: 80 },
+          { x: 100, y: 50 + ORG_CHART_METRICS.labelLineHeight, width: 80 },
+        ]),
+      ).toEqual([0, 0])
+    })
+
+    it('is first-come-first-served, so the caller order fixes the result', () => {
+      const boxes = [
+        { x: 100, y: 0, width: 40 },
+        { x: 110, y: 0, width: 40 },
+      ]
+      expect(assignLabelLanes(boxes)).toEqual([0, 1])
+      expect(assignLabelLanes([...boxes].reverse())).toEqual([0, 1])
+    })
+
+    it('has nothing to say about an empty chart', () => {
+      expect(assignLabelLanes([])).toEqual([])
+    })
+  })
+})
+
+describe('the dial gutter (X3)', () => {
+  it('reserves a gutter column left of every plate when the project has clocks', () => {
+    const withClocks = layoutOrgChart(
+      [worker('a'), worker('b')],
+      [],
+      [schedule('s1', 'b', '0 9 * * *')],
+      [],
+    )
+    const gutter = clockGutterWidth(true)
+    expect(gutter).toBe(ORG_CHART_METRICS.clockSize + ORG_CHART_METRICS.clockGap)
+    // Both plates keep the gutter, so the rank stays on one grid — and the
+    // dial of the second worker cannot land on the first worker's plate.
+    const [a, b] = withClocks.nodes
+    expect(b.x - (a.x + a.width)).toBeGreaterThanOrEqual(ORG_CHART_METRICS.hGap + gutter)
+    expect(withClocks.clocks[0].x + withClocks.clocks[0].size).toBeLessThanOrEqual(b.x)
+    expect(withClocks.clocks[0].x).toBeGreaterThanOrEqual(a.x + a.width)
+  })
+
+  it('claims no gutter at all when nothing is scheduled', () => {
+    const bare = layoutOrgChart([worker('a'), worker('b')], [], [], [])
+    expect(clockGutterWidth(false)).toBe(0)
+    expect(bare.nodes[1].x - (bare.nodes[0].x + bare.nodes[0].width)).toBe(ORG_CHART_METRICS.hGap)
+  })
+
+  it('claims no gutter for a schedule whose worker has no plate', () => {
+    const ghost = layoutOrgChart([worker('a')], [], [schedule('s1', 'ghost', '0 9 * * *')], [])
+    const bare = layoutOrgChart([worker('a')], [], [], [])
+    expect(ghost.nodes[0].x).toBe(bare.nodes[0].x)
+  })
+})
+
+describe('a dead clock (X10)', () => {
+  const halted = (over: Partial<Schedule>): OrgChartLayout =>
+    layoutOrgChart([worker('a')], [], [{ ...schedule('s1', 'a', '0 9 * * *'), ...over }], [])
+
+  it('is halted only when disabled AND out of strikes', () => {
+    expect(halted({ enabled: false, provision_failures: SCHEDULE_STRIKE_LIMIT }).clocks[0].halted).toBe(
+      true,
+    )
+    expect(halted({ enabled: false, provision_failures: 4 }).clocks[0].halted).toBe(false)
+    expect(halted({ enabled: true, provision_failures: 9 }).clocks[0].halted).toBe(false)
+    expect(halted({}).clocks[0].halted).toBe(false)
+  })
+
+  it('keeps the five-strike number where the engine put it', () => {
+    expect(SCHEDULE_STRIKE_LIMIT).toBe(5)
+  })
+})
+
+describe('the entry pip caption (X4)', () => {
+  it('marks a pip wired when a wire leaves it — its label is on the wire', () => {
+    const layout = layoutOrgChart([worker('a')], [sub('s1', 'email.received', 'a')], [], [])
+    expect(layout.entryPips[0]).toMatchObject({ type: 'email.received', wired: true })
+    expect(layout.wires[0].label).toBe('email.received')
+  })
+
+  it('leaves a pip nothing subscribes to unwired, so it keeps its caption', () => {
+    const layout = layoutOrgChart([worker('a')], [], [], [externalEvent('email.received')])
+    expect(layout.entryPips[0].wired).toBe(false)
+  })
 })
 
 describe('layoutOrgChart — specifics', () => {
