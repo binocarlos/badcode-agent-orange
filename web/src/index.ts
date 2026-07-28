@@ -369,6 +369,12 @@ export {
   PROPAGATION_NOTHING_SUBSCRIBES,
   PROPAGATION_STOP_LINE,
   propagateEvent,
+  // The conventions overlay (OC3, §6.6, K4) — opt-in, labelled, quoting its
+  // source line. A heuristic that announces itself.
+  CONVENTION_CAVEAT,
+  ROUTE_TO_MARKER,
+  inferConventions,
+  mentionsWorkerName,
 } from './orgchart.js'
 export type {
   OrgChartLayout,
@@ -377,6 +383,7 @@ export type {
   OrgChartClock,
   OrgChartPip,
   OrgChartPoint,
+  OrgChartConvention,
   Propagation,
   PropagationHop,
   PropagationWake,

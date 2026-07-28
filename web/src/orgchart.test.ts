@@ -5,9 +5,11 @@ import {
   PROPAGATION_MAX_DEPTH,
   PROPAGATION_NOTHING_SUBSCRIBES,
   cronHours,
+  inferConventions,
   layoutOrgChart,
   markBackEdges,
   matchesWorkerLifecycle,
+  mentionsWorkerName,
   propagateEvent,
   subscriptionProducers,
   wireLabel,
@@ -686,6 +688,109 @@ describe('propagateEvent', () => {
     expect(propagateEvent(arriving('email.received'), chain)).toEqual(
       propagateEvent(arriving('email.received'), chain),
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// OC3 — the conventions overlay (§6.6, K4)
+// ---------------------------------------------------------------------------
+
+describe('mentionsWorkerName', () => {
+  const cases: [string, string, boolean][] = [
+    ['hand off to keeper when done', 'keeper', true],
+    // The trap from the mock-script lore: a substring match here would draw an
+    // edge to a worker the prompt never names.
+    ['hand off to book-keeper when done', 'keeper', false],
+    ['ask keeper-of-records first', 'keeper', false],
+    ['keeper starts the line', 'keeper', true],
+    ['the line ends with keeper', 'keeper', true],
+    ['(keeper) in brackets', 'keeper', true],
+    ['keeper2 is someone else', 'keeper', false],
+    ['keeper_two is someone else', 'keeper', false],
+    ['email-answerer answers', 'email-answerer', true],
+    ['email-answerer-v2 answers', 'email-answerer', false],
+    ['nobody here', 'keeper', false],
+  ]
+  for (const [line, name, want] of cases) {
+    it(`${want ? 'finds' : 'does not find'} ${name} in "${line}"`, () => {
+      expect(mentionsWorkerName(line, name)).toBe(want)
+    })
+  }
+})
+
+describe('inferConventions', () => {
+  const fleet = (prompts: Record<string, string>): Worker[] =>
+    Object.entries(prompts).map(([name, system_prompt]) => worker(name, { system_prompt }))
+
+  it('reads a ROUTE-TO relay and quotes the line verbatim', () => {
+    expect(
+      inferConventions(
+        fleet({
+          supervisor: 'Delegate.\n  ROUTE-TO: researcher when the question needs sources.\n',
+          researcher: 'You find sources.',
+        }),
+      ),
+    ).toEqual([
+      {
+        id: 'supervisor→researcher',
+        from: 'supervisor',
+        to: 'researcher',
+        kind: 'route-to',
+        line: 'ROUTE-TO: researcher when the question needs sources.',
+      },
+    ])
+  })
+
+  it('reads a bare mention as a mention, not a relay', () => {
+    const found = inferConventions(
+      fleet({ writer: 'Ask editor to check your work.', editor: 'You check work.' }),
+    )
+    expect(found).toHaveLength(1)
+    expect(found[0].kind).toBe('mention')
+    expect(found[0].line).toBe('Ask editor to check your work.')
+  })
+
+  it('never draws a worker to itself', () => {
+    expect(inferConventions(fleet({ solo: 'You are solo. solo does everything.' }))).toEqual([])
+  })
+
+  it('does not match a name inside a longer name', () => {
+    expect(
+      inferConventions(fleet({ ledger: 'Send totals to the book-keeper.', keeper: 'You keep books.' })),
+    ).toEqual([])
+  })
+
+  it('a relay upgrades an earlier bare mention, and keeps the relay line', () => {
+    const found = inferConventions(
+      fleet({
+        supervisor: 'researcher is the one who reads.\nROUTE-TO: researcher',
+        researcher: 'You read.',
+      }),
+    )
+    expect(found).toHaveLength(1)
+    expect(found[0].kind).toBe('route-to')
+    expect(found[0].line).toBe('ROUTE-TO: researcher')
+  })
+
+  it('keeps the first line when a worker is named twice', () => {
+    const found = inferConventions(fleet({ a: 'first: b.\nsecond: b again.', b: 'You are b.' }))
+    expect(found).toHaveLength(1)
+    expect(found[0].line).toBe('first: b.')
+  })
+
+  it('is deterministic and sorted by source then target', () => {
+    const workers = fleet({
+      zeta: 'talk to alpha and beta.',
+      alpha: 'talk to beta.',
+      beta: 'You are beta.',
+    })
+    const once = inferConventions(workers)
+    expect(once.map((c) => c.id)).toEqual(['alpha→beta', 'zeta→alpha', 'zeta→beta'])
+    expect(inferConventions([...workers].reverse())).toEqual(once)
+  })
+
+  it('says nothing about a fleet whose prompts name nobody', () => {
+    for (const seed of SEEDS) expect(inferConventions(seed.workers)).toEqual([])
   })
 })
 

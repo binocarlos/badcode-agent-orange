@@ -589,6 +589,113 @@ export function propagateEvent(
 }
 
 // ---------------------------------------------------------------------------
+// Conventions — the honest dashed line (§6.6, decision K4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The label every inferred edge carries, verbatim (§6.6, K4, §11 rule 3).
+ *
+ * Several real behaviours live only in prompts and are invisible to the graph:
+ * the `ROUTE-TO: <name>` relay the supervisor seed uses (workers cannot emit
+ * typed events), memory-label handoffs, temporal-hierarchy's review channel.
+ * Drawing them is worth doing *because* the gap between the org chart people
+ * think they have and the one the router will execute is where specification
+ * failures live — but it is a heuristic, and it must announce itself as one.
+ */
+export const CONVENTION_CAVEAT = 'convention — written in a prompt, not enforced by the engine'
+
+/** The relay marker the supervisor seed's prompts use. Matched case-sensitively
+ *  because that is how the seeds write it and a lowercase `route-to:` in prose
+ *  is far more likely to be a sentence than an instruction. */
+export const ROUTE_TO_MARKER = 'ROUTE-TO:'
+
+/** One edge that exists only in a prompt. `line` is the source line, verbatim
+ *  (trimmed of surrounding whitespace and nothing else) — the tooltip quotes it
+ *  so the operator can judge the heuristic instead of trusting it. */
+export interface OrgChartConvention {
+  /** Unique within a result: `<from>→<to>`. */
+  id: string
+  /** The worker whose prompt this line is in. */
+  from: string
+  /** The worker the line names. */
+  to: string
+  /** `route-to` when the line is a `ROUTE-TO:` relay, `mention` when the prompt
+   *  merely names the other worker. Both are conventions; neither is wiring. */
+  kind: 'route-to' | 'mention'
+  /** The matched prompt line, verbatim. */
+  line: string
+}
+
+/** Worker names are kebab-case, so `\b` is useless here: it treats `-` as a
+ *  boundary and would find `keeper` inside `book-keeper`. A name character is
+ *  anything that could be part of one. */
+const NAME_CHAR = /[A-Za-z0-9_-]/
+
+/**
+ * Does this line name this worker, on word boundaries?
+ *
+ * Substring hygiene is the whole game: `keeper` must never match inside
+ * `book-keeper`, and `email-answerer` must not match inside
+ * `email-answerer-v2`. Exported because it is the rule the overlay stands on.
+ */
+export function mentionsWorkerName(line: string, name: string): boolean {
+  return mentionIndex(line, name) !== -1
+}
+
+/** The first boundary-respecting index of `name` in `line`, or -1. */
+function mentionIndex(line: string, name: string): number {
+  if (name === '') return -1
+  let at = line.indexOf(name)
+  while (at !== -1) {
+    const before = at === 0 ? '' : line[at - 1]
+    const after = line[at + name.length] ?? ''
+    if (!NAME_CHAR.test(before) && !NAME_CHAR.test(after)) return at
+    at = line.indexOf(name, at + 1)
+  }
+  return -1
+}
+
+/**
+ * Read the conventions out of the prompts (§6.6).
+ *
+ * For every worker, every line of its `system_prompt` is scanned for (a) a
+ * `ROUTE-TO:` relay naming another worker and (b) any other worker's exact
+ * name. One edge per ordered pair: a `route-to` line always wins over a bare
+ * mention, and otherwise the FIRST matching line is the one quoted, because the
+ * first time a prompt names another worker is usually where it says why.
+ *
+ * Self-references are dropped — "you are email-answerer" is not a convention.
+ * Pure and deterministic: sorted by source then target, ties impossible.
+ */
+export function inferConventions(workers: readonly Worker[]): OrgChartConvention[] {
+  const names = [...workers].map((w) => w.name).filter((n) => n !== '').sort(compareText)
+  const found = new Map<string, OrgChartConvention>()
+  for (const source of [...workers].sort((a, b) => compareText(a.name, b.name))) {
+    for (const line of (source.system_prompt ?? '').split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      const relayAt = trimmed.indexOf(ROUTE_TO_MARKER)
+      for (const target of names) {
+        if (target === source.name) continue
+        const at = mentionIndex(trimmed, target)
+        if (at === -1) continue
+        const kind: OrgChartConvention['kind'] =
+          relayAt !== -1 && at > relayAt ? 'route-to' : 'mention'
+        const id = `${source.name}→${target}`
+        const already = found.get(id)
+        // A relay upgrades an earlier bare mention; a bare mention never
+        // downgrades a relay, and never replaces an earlier mention.
+        if (already !== undefined && !(already.kind === 'mention' && kind === 'route-to')) continue
+        found.set(id, { id, from: source.name, to: target, kind, line: trimmed })
+      }
+    }
+  }
+  return [...found.values()].sort(
+    (a, b) => compareText(a.from, b.from) || compareText(a.to, b.to),
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Graph helpers
 // ---------------------------------------------------------------------------
 

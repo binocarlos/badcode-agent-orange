@@ -12,8 +12,9 @@
 // looking at the same project see the same chart and a chart that changed shape
 // means the organisation changed shape.
 //
-// Read-only in this item: no drag, no toggles. Wiring and freezing on the
-// canvas are OC4's, the conventions overlay is OC3's.
+// Read-only apart from the conventions overlay's toggle (OC3, §6.6, decision
+// K4): OFF by default, labelled, and every dashed edge quotes the prompt line
+// it was read from. Wiring and freezing on the canvas are OC4's.
 //
 // Colour policy is spine.tsx's: the four named values come from the host theme
 // when it has them (`consoleColor`) and fall back to the design's own tokens,
@@ -25,8 +26,10 @@ import {
   Box,
   Button,
   Chip,
+  FormControlLabel,
   Paper,
   Stack,
+  Switch,
   TextField,
   Typography,
   useTheme,
@@ -43,14 +46,17 @@ import {
   type MatchableEvent,
 } from '../events.js'
 import {
+  CONVENTION_CAVEAT,
   ORG_CHART_METRICS,
   PROPAGATION_CAVEAT,
   PROPAGATION_MAX_DEPTH,
   PROPAGATION_NOTHING_SUBSCRIBES,
   PROPAGATION_STOP_LINE,
+  inferConventions,
   layoutOrgChart,
   propagateEvent,
   type OrgChartClock,
+  type OrgChartConvention,
   type OrgChartLayout,
   type OrgChartNode,
   type OrgChartPip,
@@ -99,6 +105,11 @@ export default function OrgChartPage({
     () => layoutOrgChart(workers, overview.subscriptions, schedules, overview.events),
     [overview.events, overview.subscriptions, schedules, workers],
   )
+
+  // The conventions overlay (§6.6, K4): inferred from the prompts, OFF until
+  // the operator asks for it, and never confused with a wire.
+  const [showConventions, setShowConventions] = useState(false)
+  const conventions = useMemo(() => inferConventions(workers), [workers])
 
   // `● running n/max`: live, from the deliveries the events view already reads.
   const running = useMemo(() => {
@@ -186,7 +197,23 @@ export default function OrgChartPage({
           litWorkers={litWorkers}
           tracedPip={traced?.label ?? null}
           onTracePip={tracePip}
+          conventions={conventions}
+          showConventions={showConventions}
+          onShowConventions={setShowConventions}
         />
+      )}
+
+      {showConventions && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          data-testid="conventions-caveat"
+          sx={{ display: 'block', mt: 1 }}
+        >
+          {conventions.length === 0
+            ? `No prompt in this project names another worker. Dashed edges would be ${CONVENTION_CAVEAT}.`
+            : `${conventions.length} dashed edge(s) read out of the prompts — ${CONVENTION_CAVEAT}. Each one quotes the line it came from.`}
+        </Typography>
       )}
 
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
@@ -227,13 +254,27 @@ interface CanvasProps {
   litWorkers: Set<string>
   tracedPip: string | null
   onTracePip: (pip: OrgChartPip) => void
+  conventions: OrgChartConvention[]
+  showConventions: boolean
+  onShowConventions: (show: boolean) => void
 }
 
 const ZOOM_STEP = 1.25
 const ZOOM_MIN = 0.4
 const ZOOM_MAX = 3
 
-function Canvas({ layout, theme, running, litWires, litWorkers, tracedPip, onTracePip }: CanvasProps) {
+function Canvas({
+  layout,
+  theme,
+  running,
+  litWires,
+  litWorkers,
+  tracedPip,
+  onTracePip,
+  conventions,
+  showConventions,
+  onShowConventions,
+}: CanvasProps) {
   // §6.3: pan and zoom are the ONLY state this screen has, and it dies with the
   // component. Nothing here is persisted, and no node is draggable.
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 })
@@ -272,6 +313,19 @@ function Canvas({ layout, theme, running, litWires, litWorkers, tracedPip, onTra
         <Typography variant="caption" color="text.secondary">
           drag to pan
         </Typography>
+        <Box sx={{ flex: 1 }} />
+        {/* §6.6 / K4: opt-in, off by default, and labelled in the operator's
+            own words. It is a heuristic and it announces itself. */}
+        <FormControlLabel
+          control={
+            <Switch
+              size="small"
+              checked={showConventions}
+              onChange={(e) => onShowConventions(e.target.checked)}
+            />
+          }
+          label={<Typography variant="caption">Show conventions</Typography>}
+        />
       </Stack>
       <Box
         sx={{
@@ -323,6 +377,16 @@ function Canvas({ layout, theme, running, litWires, litWorkers, tracedPip, onTra
             {layout.wires.map((wire) => (
               <Wire key={wire.id} wire={wire} theme={theme} lit={litWires.has(wire.subscriptionId)} />
             ))}
+            {showConventions &&
+              conventions.map((convention) => (
+                <ConventionEdge
+                  key={convention.id}
+                  convention={convention}
+                  theme={theme}
+                  from={layout.nodes.find((n) => n.name === convention.from)}
+                  to={layout.nodes.find((n) => n.name === convention.to)}
+                />
+              ))}
             {layout.entryPips.map((pip) => (
               <Pip
                 key={pip.type}
@@ -386,6 +450,71 @@ function Wire({ wire, theme, lit }: { wire: OrgChartWire; theme: Theme; lit: boo
       </text>
     </g>
   )
+}
+
+/**
+ * A convention: a DASHED grey edge, never a wire (§6.6, K4).
+ *
+ * It is drawn straight, flank to flank, so it cannot be mistaken for one of the
+ * orthogonal routes the router will actually walk, and its tooltip quotes the
+ * prompt line it was read from plus the caveat, verbatim.
+ */
+function ConventionEdge({
+  convention,
+  theme,
+  from,
+  to,
+}: {
+  convention: OrgChartConvention
+  theme: Theme
+  from: OrgChartNode | undefined
+  to: OrgChartNode | undefined
+}) {
+  if (from === undefined || to === undefined) return null
+  const start = flank(from, to)
+  const end = flank(to, from)
+  return (
+    <g data-testid={`convention-${convention.id}`}>
+      <title>{`"${convention.line}" — ${CONVENTION_CAVEAT}`}</title>
+      <line
+        x1={start.x}
+        y1={start.y}
+        x2={end.x}
+        y2={end.y}
+        stroke={theme.palette.text.secondary}
+        strokeWidth={1}
+        strokeDasharray="4 4"
+        opacity={0.7}
+        markerEnd="url(#org-chart-arrow)"
+      />
+      <text
+        x={Math.round((start.x + end.x) / 2)}
+        y={Math.round((start.y + end.y) / 2) - 3}
+        textAnchor="middle"
+        fontFamily={MONO}
+        fontSize={9}
+        fill={theme.palette.text.secondary}
+        stroke={theme.palette.background.paper}
+        strokeWidth={3}
+        paintOrder="stroke"
+      >
+        {convention.kind === 'route-to' ? 'ROUTE-TO ⇢' : 'names ⇢'}
+      </text>
+    </g>
+  )
+}
+
+/** The point on `node`'s edge facing `towards` — the side, when they are mostly
+ *  side by side; the top or bottom otherwise. */
+function flank(node: OrgChartNode, towards: OrgChartNode): { x: number; y: number } {
+  const cx = node.x + node.width / 2
+  const cy = node.y + node.height / 2
+  const dx = towards.x + towards.width / 2 - cx
+  const dy = towards.y + towards.height / 2 - cy
+  if (Math.abs(dx) * node.height >= Math.abs(dy) * node.width) {
+    return { x: dx >= 0 ? node.x + node.width : node.x, y: cy }
+  }
+  return { x: cx, y: dy >= 0 ? node.y + node.height : node.y }
 }
 
 /** A worker: a name plate with a 1px rule, never a card (§3.7). */

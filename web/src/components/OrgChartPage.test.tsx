@@ -159,14 +159,12 @@ describe('the schematic', () => {
     expect(screen.getByText(/never stored/i)).toBeTruthy()
   })
 
-  it('offers pan and zoom, and nothing else — the chart is read-only here', async () => {
+  it('offers pan and zoom', async () => {
     renderChart()
     await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
     expect(screen.getByLabelText('zoom in')).toBeTruthy()
     expect(screen.getByLabelText('zoom out')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Reset view' })).toBeTruthy()
-    // No conventions toggle (OC3) and no wiring gesture (OC4) yet.
-    expect(screen.queryByText(/show conventions/i)).toBeNull()
   })
 
   it('invites rather than shrugs when the project has no workers', async () => {
@@ -175,6 +173,48 @@ describe('the schematic', () => {
     await waitFor(() => expect(screen.getByText(/no workers yet/i)).toBeTruthy())
     expect(screen.getByText(/Nothing will run until something wakes them/i)).toBeTruthy()
     expect(screen.queryByTestId('org-chart-canvas')).toBeNull()
+  })
+})
+
+describe('the conventions overlay (OC3)', () => {
+  beforeEach(() => {
+    workers[1].system_prompt =
+      'You review answers.\nROUTE-TO: fee-scorer when the answer quotes a fee.'
+  })
+
+  it('is off by default — a heuristic never draws itself uninvited', async () => {
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    expect(screen.getByLabelText('Show conventions')).toBeTruthy()
+    expect(document.querySelectorAll('[data-testid^="convention-"]')).toHaveLength(0)
+    expect(screen.queryByTestId('conventions-caveat')).toBeNull()
+  })
+
+  it('draws a dashed edge that quotes its prompt line and says it is not enforced', async () => {
+    const user = userEvent.setup()
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await user.click(screen.getByLabelText('Show conventions'))
+
+    const edge = await screen.findByTestId('convention-email-reviewer→fee-scorer')
+    expect(edge.querySelector('title')?.textContent).toBe(
+      '"ROUTE-TO: fee-scorer when the answer quotes a fee." — convention — written in a prompt, not enforced by the engine',
+    )
+    expect(edge.querySelector('line')?.getAttribute('stroke-dasharray')).toBe('4 4')
+    expect(screen.getByTestId('conventions-caveat').textContent).toMatch(
+      /convention — written in a prompt, not enforced by the engine/,
+    )
+  })
+
+  it('says so plainly when no prompt names another worker', async () => {
+    workers[1].system_prompt = 'You review answers.'
+    const user = userEvent.setup()
+    renderChart()
+    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await user.click(screen.getByLabelText('Show conventions'))
+    expect(screen.getByTestId('conventions-caveat').textContent).toMatch(
+      /No prompt in this project names another worker/,
+    )
   })
 })
 
