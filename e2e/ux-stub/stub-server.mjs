@@ -2,6 +2,7 @@
 // so the logged-in ProjectWorkspace renders its real empty states.
 import { createServer } from 'node:http'
 import { workers, subscriptions, schedules, events, deliveries, configEvents, attention, memories, sessions } from './fixtures.mjs'
+import { burstDeliveries, burstEvents, resetBurst } from './scene-burst.mjs'
 import { readFileSync, existsSync } from 'node:fs'
 import { extname, join } from 'node:path'
 
@@ -25,8 +26,28 @@ const api = {
   '/agent/project-settings': {},
 }
 
+// SCENE=burst turns the still life into an arriving one: deliveries and events
+// GROW across successive fetches, which is the only way a browser can be shown
+// motion that is caused by arrival rather than by render (doc 21 §4.1 rule 1).
+const BURST = process.env.SCENE === 'burst'
+const dynamic = BURST
+  ? { '/agent/deliveries': () => burstDeliveries(), '/agent/events': () => burstEvents() }
+  : {}
+
 createServer((req, res) => {
   const path = req.url.split('?')[0]
+  // A reset hook so a capture run can replay the sequence from zero.
+  if (path === '/__reset') {
+    if (BURST) resetBurst()
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end('{"reset":true}')
+    return
+  }
+  if (dynamic[path]) {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(dynamic[path]()))
+    return
+  }
   if (api[path]) {
     res.writeHead(200, { 'content-type': 'application/json' })
     res.end(JSON.stringify(api[path]))
