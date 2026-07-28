@@ -1,0 +1,39 @@
+{
+  "//": [
+    "The comparison rig is compiled, not transpiled-on-the-fly: playwright's own",
+    "runner does not typecheck (which is why e2e/ has no other tsconfig), and the",
+    "rig is a standalone script rather than a spec. tsc gives it a real typecheck",
+    "AND the runnable output in one step.",
+    "",
+    "CommonJS output is deliberate. e2e/package.json declares \"type\": \"module\",",
+    "so a .js file in this tree is ESM and node would demand explicit extensions",
+    "on every import — which e2e/helpers/*.ts (shared with the playwright specs)",
+    "does not use and must not be made to. run.sh drops a {\"type\":\"commonjs\"}",
+    "marker into dist/ so node reads the emitted files the way tsc wrote them."
+  ],
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "types": ["node"],
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "..",
+    "outDir": "./dist"
+  },
+  "//include": [
+    "Only this directory. The shared helpers come in through the imports that",
+    "actually use them, which keeps the rig from taking on the typecheck debt of",
+    "helpers it never touches (the playwright runner typechecks nothing, so some",
+    "of them do not compile clean today)."
+  ],
+  "include": ["./**/*.ts"],
+  "exclude": ["./dist"]
+}

@@ -188,6 +188,18 @@ e2e/
   helpers/stackdb.ts         raw psql — the only reach past the HTTP API; each use marks a missing route
   helpers/mcp.ts             drives agentd's core MCP server with a minted session token
   run-stack-e2e.sh           stack lifecycle
+  experiments/               the comparison rig — NOT tests; see experiments/README.md
+```
+
+`experiments/` is the odd one out and deliberately so. It is not a spec suite and playwright never
+picks it up (`testMatch` covers `stack.spec.ts` and `features/*.spec.ts` only). It is a standalone
+script that runs one task through several topologies and ranks them — a measuring instrument, not a
+gate. It reuses `helpers/api.ts` verbatim and obeys the same rules about polling and port hygiene:
+
+```sh
+./e2e/run-stack-e2e.sh up mock
+./e2e/experiments/run.sh compare actor-critic-vs-sham-vs-solo   # against the running stack
+./e2e/experiments/run.sh test                                   # its arithmetic, offline
 ```
 
 **Changing the UI?** The stack serves a *built* image of `examples/web`, so edits to
