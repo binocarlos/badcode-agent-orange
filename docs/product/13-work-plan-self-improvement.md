@@ -379,7 +379,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - (C1) **Wanted: a `run-stack-e2e.sh script load/unload` verb** — the rig duplicates the
   load/restore mechanism because `--mock-script` is bolted to the playwright `test` command.
 
-- [ ] **TOK1 — Token accounting is broken engine-wide (found by L3R).** The harness stores usage
+- [x] **TOK1 — Token accounting is broken engine-wide (found by L3R).** The harness stores usage
   as `data.usage.inputTokens` (nested, camelCase, on the `query_complete` envelope), but all
   three readers — `agentdb.CountProjectTokensSince` (the router's budget gate),
   `agentdb.GetSessionTokenSummary`, and `web/src/events.ts` `sumTokens` — query
@@ -414,4 +414,22 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - (L3R) **The smoke's numbers are authored, not results** — arm B's 1.0 false-confirm rate
   proves the metric registers; arm A's 4/4 proves rewrites reach the next composed prompt. The
   report says so; never quote smoke tables as findings.
+- (TOK1) **Two independent defects, either fatal alone**: wrong key path AND `events->0` (index 0
+  is always `user_message`; `query_complete` is last). Corpus survey of 942 stored rows: old SQL
+  sums 0, fixed SQL sums 20,980. The flat snake_case shape appears in ZERO rows and is now pinned
+  as unread; `input_tokens` INSIDE `usage` is tolerated because that is the Anthropic wire
+  spelling and the camelCase conversion lives in one line of one pluggable harness.
+- (TOK1) **The budget gate itself was correct all along** — soft notifies once/day, hard queues
+  (never drops), interactive exempt, fail-open on ledger error. It was only ever fed a zero.
+  The new e2e was proven non-vacuous by reverting the SQL and watching it fail.
+- (TOK1) **`GetSessionTokenSummary` has no production caller** — store API only; the live
+  consumers are the gate and web's `sumTokens`. Know this before building a cost dashboard.
+- (TOK1) **The old SQL had a second latent hazard**: `jsonb_array_elements` raises on a non-array
+  and the gate fails open, so one malformed row would have silently unmetered a whole project.
+  Guarded and pinned.
+- (TOK1) **~1% of query_complete envelopes carry no usage** (harness error path) — token spend
+  slightly undercounts failed turns; correct behaviour, worth remembering in experiment metrics.
+- (Orchestrator) **Engine gate queues; experiment abort needs its own ceiling** — runbook §4's
+  stop criterion is served by the runner's harness-side count even now TOK1 is fixed; a ceiling
+  that queues is not a stop button. Stale L3R comments updated to say so.
 

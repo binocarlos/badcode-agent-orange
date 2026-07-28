@@ -112,15 +112,16 @@ export async function runArm(
       }
       // The same ceiling, enforced here, because the project-level one cannot
       // fire: the router reads CountProjectTokensSince, whose SQL does not match
-      // the shape the harness actually stores (see sessionTokens). Until that is
-      // fixed this arithmetic is the only thing standing between a looping org
-      // and a large bill, so it is checked every hypothesis and it aborts.
+      // the shape the harness actually stores (see sessionTokens). The engine
+      // gate is live since TOK1, but it QUEUES further dispatches rather than
+      // stopping the run — so this arithmetic stays as the abort mechanism,
+      // checked every hypothesis.
       spent += row.tokens
       if (spent >= spec.dailyTokensHard) {
         throw new AbortRun(
           `the harness-side token ceiling was reached at ${hypothesis.id}: ${spent} tokens spent, ` +
             `daily_tokens_hard is ${spec.dailyTokensHard}. Runbook §4 abort criterion: ceiling hit. ` +
-            '(The project-level ceiling is set but inert — see runner.ts sessionTokens.)',
+            '(The engine-side ceiling queues rather than aborts; this harness-side one stops the run.)',
         )
       }
       consecutiveFailures = row.deliveryStatuses.includes('failed') ? consecutiveFailures + 1 : 0
@@ -418,20 +419,14 @@ async function promptWritesSince(
  *
  *   events[i].events[j] = {"type":"query_complete","data":{"usage":{"inputTokens":10,"outputTokens":6}}}
  *
- * Three readers disagree with that shape and therefore always answer zero:
- * `agentdb.GetSessionTokenSummary` and `agentdb.CountProjectTokensSince` both
- * SQL for `events->0->>'input_tokens'` (top level, snake_case, first envelope),
- * and `web/src/events.ts`'s `sumTokens` walks for the same snake_case keys — its
- * unit fixture invents that shape rather than capturing one. Measured on the
- * e2e stack: 940 stored query rows, the production SQL sums 0, the real usage
- * sums to thousands.
- *
- * The consequence matters for runbook §4: `daily_tokens_hard` is checked
- * against `CountProjectTokensSince`, so the project-level ceiling cannot fire
- * on token spend. The runner therefore keeps its own running total and aborts
- * on it (see runArm) — a ceiling that cannot bite is not a ceiling. Fixing the
- * three readers is engine work, deliberately out of this rig's scope; the
- * README says so.
+ * History: this rig found the engine's three token readers querying a shape
+ * (`events->0->>'input_tokens'`) that no stored row carries, so the
+ * project-level ceiling could not fire — TOK1 fixed the readers against a
+ * captured envelope (`go/agentdb/token_usage.go`), and the `daily_tokens_hard`
+ * gate is now live and e2e-tested. The runner STILL keeps its own running
+ * total and aborts on it: a belt-and-braces ceiling costs one addition per
+ * hypothesis, and the engine gate queues rather than aborts, which is the
+ * wrong shape for runbook §4's "stop the experiment" criterion.
  *
  * Both spellings are accepted so that a fix upstream does not silently zero
  * this column. The walk stops descending at the first object that carries

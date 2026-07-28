@@ -70,27 +70,16 @@ arm project — runbook §4's record. Copy it, the report JSON and the markdown 
 `*.run-log.json` is gitignored *here* so smoke runs do not accumulate; the dated record is where it
 belongs.
 
-## ⚠ The project-level token ceiling is currently inert
+## Two token ceilings, on purpose
 
-`daily_tokens_hard` is set on every arm project (runbook §4) and the runner verifies it was
-stored — but **it cannot fire on token spend today**, and the calibration run must not rely on it.
-
-The in-image harness reports usage nested and camelCase on its `query_complete` envelope:
-
-```json
-{"type":"query_complete","data":{"usage":{"inputTokens":10,"outputTokens":6}}}
-```
-
-Three readers look for a different shape — `events->0->>'input_tokens'`, i.e. top level,
-snake_case, first envelope — and therefore always answer zero:
-
-- `agentdb.CountProjectTokensSince` (what the router's budget gate reads),
-- `agentdb.GetSessionTokenSummary`,
-- `web/src/events.ts`'s `sumTokens` (its unit fixture invents the shape rather than capturing one).
-
-Measured on the e2e stack: **940 stored query rows, production SQL sums 0, the real usage sums to
-thousands.** So `runner.ts` counts tokens itself (accepting both spellings) and enforces the ceiling
-in the harness. Fixing the three readers is engine work and deliberately outside this rig.
+`daily_tokens_hard` is set on every arm project (runbook §4) **and** the runner keeps its own
+running total. History: this rig discovered the engine's three token readers queried a shape no
+stored row carries, so the project-level ceiling could not fire; TOK1 fixed the readers against a
+captured envelope (`go/agentdb/token_usage.go` — see the work plan's Discovered Issues Log) and
+the gate is now live and e2e-tested. Both ceilings stay because they do different jobs: the engine
+gate **queues** further dispatches inside a project (the right product behaviour), while the
+runner's own count **aborts the experiment** (runbook §4's stop criterion). A ceiling that queues
+is not a stop button.
 
 ## What the mock smoke proves — and what it does not
 
