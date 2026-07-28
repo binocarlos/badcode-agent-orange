@@ -566,14 +566,47 @@ export interface TokenTotals {
 }
 
 /**
+ * Reads one `usage` object, or null if it carries no token counts.
+ *
+ * Both spellings are accepted. camelCase is what is actually stored —
+ * `sandbox/src/harness/claude-agent-sdk.ts` converts the provider's snake_case
+ * into it before emitting `query_complete` — but that conversion is one line of
+ * one PLUGGABLE harness, and `input_tokens` is the provider's own spelling on
+ * the wire, so a harness forwarding its usage object verbatim must not read as
+ * zero. The Go readers tolerate exactly the same pair.
+ */
+function readUsage(node: unknown): { input: number; output: number } | null {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return null
+  const r = node as Record<string, unknown>
+  const pick = (keys: string[]): number | null => {
+    for (const k of keys) {
+      if (typeof r[k] === 'number') return r[k] as number
+    }
+    return null
+  }
+  const input = pick(['inputTokens', 'input_tokens'])
+  const output = pick(['outputTokens', 'output_tokens'])
+  if (input === null && output === null) return null
+  return { input: input ?? 0, output: output ?? 0 }
+}
+
+/**
  * Sum token counts out of a `GET /agent/session/{id}/query-events` response.
  *
  * There is no token column on `event_deliveries` and no HTTP route in front of
  * the store's GetSessionTokenSummary, so the only place these numbers exist for
  * the browser is the raw query-event stream. The walk descends the JSON until
- * it finds an object carrying `input_tokens`/`output_tokens` and does not
- * descend past it, which makes it indifferent to whether the host serves the
- * nested `{events: [{events: [...]}]}` rows or a flat envelope list.
+ * it finds an object carrying a token-bearing `usage` and does not descend past
+ * it, which makes it indifferent to whether the host serves the nested
+ * `{events: [{events: [...]}]}` rows (the AgentDB path) or a flat envelope list
+ * (the legacy path) — and stops a future envelope repeating usage nested inside
+ * itself from double-counting.
+ *
+ * It reads `data.usage.inputTokens`, which is where the harness actually puts
+ * it. Until 2026-07-28 it read a flat `input_tokens` on the envelope root — a
+ * shape this file's own unit fixture invented and no writer has ever emitted —
+ * so every token total in the UI was 0. The fixture is now a captured response;
+ * see events.test.ts. Do not change these key paths without re-capturing one.
  */
 export function sumTokens(raw: unknown): TokenTotals {
   let input = 0
@@ -585,10 +618,10 @@ export function sumTokens(raw: unknown): TokenTotals {
     }
     if (!node || typeof node !== 'object') return
     const r = node as Record<string, unknown>
-    const hasTokens = typeof r.input_tokens === 'number' || typeof r.output_tokens === 'number'
-    if (hasTokens) {
-      input += num(r.input_tokens)
-      output += num(r.output_tokens)
+    const usage = readUsage(r.usage)
+    if (usage) {
+      input += usage.input
+      output += usage.output
       return
     }
     Object.values(r).forEach(walk)

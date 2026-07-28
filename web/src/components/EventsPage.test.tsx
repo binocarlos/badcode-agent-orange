@@ -99,9 +99,21 @@ beforeEach(() => {
       enabled: true,
     },
   ]
+  // The real `GET /agent/session/{id}/query-events` shape: usage is nested
+  // under `data.usage`, camelCase, on the LAST envelope of the row. Captured
+  // 2026-07-28 off the e2e stack's Postgres — see events.test.ts for the full
+  // fixture and why an invented shape here used to make every total read 0.
   queryEvents = {
     events: [
-      { events: [{ type: 'query_complete', input_tokens: 1200, output_tokens: 340 }] },
+      {
+        events: [
+          { type: 'user_message', data: { content: 'go' } },
+          {
+            type: 'query_complete',
+            data: { status: 'completed', model: 'claude-opus-4-5', usage: { inputTokens: 1200, outputTokens: 340 } },
+          },
+        ],
+      },
     ],
   }
 

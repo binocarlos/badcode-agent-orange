@@ -2,7 +2,6 @@ package agentdb
 
 import (
 	"context"
-	"strconv"
 	"testing"
 
 	"github.com/google/uuid"
@@ -131,13 +130,17 @@ func TestLivePG_CountProjectTokensSince(t *testing.T) {
 	mine := newLiveSession(t, s, customer, "u@x.com")
 	theirs := newLiveSession(t, s, other, "u@x.com")
 
+	// The seeded rows are the REAL stored envelope shape — see
+	// capturedQueryEventsRow in live_pg_test.go for where it was captured from.
+	// Before TOK1 this test seeded an invented flat snake_case shape and passed
+	// against a reader that summed 0 in production.
 	writeUsage := func(sessionID, queryID string, in, out int64, createdAt int64) {
 		t.Helper()
 		if err := s.DB().WithContext(ctx).Exec(`
 			INSERT INTO agent_query_events (id, session_id, query_id, events, search_text, created_at)
 			VALUES (?, ?, ?, ?::jsonb, '', ?)`,
 			uuid.New().String(), sessionID, queryID,
-			`[{"input_tokens":`+itoa(in)+`,"output_tokens":`+itoa(out)+`}]`, createdAt,
+			capturedQueryEventsRow(int(in), int(out)), createdAt,
 		).Error; err != nil {
 			t.Fatalf("insert usage: %v", err)
 		}
@@ -261,5 +264,3 @@ func containsString(all []string, want string) bool {
 	}
 	return false
 }
-
-func itoa(n int64) string { return strconv.FormatInt(n, 10) }

@@ -295,26 +295,75 @@ describe('URL selection', () => {
 })
 
 describe('token totals', () => {
-  it('sums the nested query-events shape the route serves', () => {
-    const payload = {
-      events: [
-        { session_id: 's', events: [{ type: 'query_complete', input_tokens: 100, output_tokens: 30 }] },
-        { session_id: 's', events: [{ type: 'query_complete', input_tokens: 7, output_tokens: 3 }] },
-      ],
-    }
+  // CAPTURED, not invented. The envelope below was read out of the running e2e
+  // stack's Postgres on 2026-07-28 (`agent-orange-stack-e2e-postgres-1`) and the
+  // wrapping row is the real `GET /agent/session/{id}/query-events` shape
+  // (httpapi/history.go writes `{"events": [<agent_query_events rows>]}`); the
+  // ids and created_at are a real row's. Only the elided middle envelopes and
+  // the token numbers are ours.
+  //
+  // The predecessor of this fixture INVENTED a flat `{input_tokens}` on the
+  // envelope root. That invention is the whole of bug TOK1: sumTokens matched
+  // the fixture, the fixture matched nothing, and every token total the UI ever
+  // showed was 0. If this fixture ever stops looking like a real response, the
+  // test is worthless again — re-capture it, don't hand-edit it.
+  const capturedRow = (queryId: string, inputTokens: number, outputTokens: number) => ({
+    id: '000622c6-f65a-445e-a9b8-45b0270e26f6',
+    session_id: '1a4f6f27-4a6e-4f27-a27d-1811fe93c078',
+    query_id: queryId,
+    created_at: 1785022143,
+    search_text: '',
+    events: [
+      { type: 'user_message', timestamp: '2026-07-25T23:29:03Z', data: { content: 'Event: schedule.fired' } },
+      {
+        type: 'message_start',
+        timestamp: '2026-07-25T23:29:03.604Z',
+        data: { role: 'assistant', messageId: 'e322c9b0-6ccd-4170-aa14-a82faf70fc4f' },
+      },
+      {
+        type: 'query_complete',
+        timestamp: '2026-07-25T23:29:06.243Z',
+        data: {
+          model: 'claude-opus-4-5',
+          usage: { inputTokens, outputTokens },
+          result: 'Hello from the agentd mock model proxy. Set ANTHROPIC_API_KEY for a real agent.',
+          status: 'completed',
+          queryId,
+          totalCostUsd: 0.0004,
+        },
+      },
+    ],
+  })
+
+  it('sums the nested query-events shape the route actually serves', () => {
+    const payload = { events: [capturedRow('q-34', 100, 30), capturedRow('q-35', 7, 3)] }
     expect(sumTokens(payload)).toEqual({ input: 107, output: 33, total: 140 })
   })
 
   it('sums a flat envelope list just as well', () => {
-    expect(sumTokens([{ input_tokens: 5, output_tokens: 5 }])).toEqual({
+    // The legacy route (httpapi with no AgentDB) serves the envelopes bare.
+    expect(sumTokens(capturedRow('q-34', 5, 5).events)).toEqual({
       input: 5,
       output: 5,
       total: 10,
     })
   })
 
+  it("reads the provider's snake_case usage spelling too", () => {
+    // camelCase is one line of one pluggable harness converting the Anthropic
+    // wire format; a harness forwarding usage verbatim must not read as zero.
+    const payload = [{ type: 'query_complete', data: { usage: { input_tokens: 12, output_tokens: 4 } } }]
+    expect(sumTokens(payload)).toEqual({ input: 12, output: 4, total: 16 })
+  })
+
+  it('ignores the flat shape nothing has ever written', () => {
+    // Guards against someone "restoring" the invented shape and re-breaking it
+    // in the direction that reads plausible but counts fiction.
+    expect(sumTokens([{ type: 'query_complete', input_tokens: 999, output_tokens: 999 }]).total).toBe(0)
+  })
+
   it('does not double-count by descending into an object it already counted', () => {
-    const nested = { input_tokens: 10, output_tokens: 0, usage: { input_tokens: 10 } }
+    const nested = { usage: { inputTokens: 10, outputTokens: 0 }, data: { usage: { inputTokens: 10 } } }
     expect(sumTokens(nested).total).toBe(10)
   })
 

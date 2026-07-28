@@ -16,8 +16,11 @@ import { configEvents, waitForConfigEvents } from '../helpers/configlog'
 //     §15.3 names — proved against the log itself, not against the store's own
 //     unit tests.
 //
-// Deliberately NOT here: anything that needs the router, the scheduler, or a
-// model. Those are unbuilt; see e2e/README.md for the queue.
+// The CRUD describe below is deliberately free of the router, the scheduler and
+// the model — it is about what settings and workers ARE. The second describe
+// (added by TOK1) is about the one project setting whose meaning is a
+// behaviour rather than a stored field: `daily_tokens_hard` only exists to stop
+// jobs, so proving it round-trips proves nothing. That one needs a real job.
 
 test.describe('project settings + workers + config log', () => {
   test.describe.configure({ mode: 'serial' })
@@ -257,5 +260,114 @@ test.describe('project settings + workers + config log', () => {
       ).status(),
     ).toBe(401)
     expect((await client.listWorkers()).map((w) => w.name)).toEqual(['email-answerer'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The daily token budget (§5 / §8.4 step 6) — added by TOK1.
+//
+// This is the only test in the suite that watches a project setting DO
+// something, and it exists because the setting did nothing at all. The router's
+// budget gate measures spend with `agentdb.CountProjectTokensSince`, which
+// summed a jsonb path (`events->0->>'input_tokens'`) that no stored row has
+// ever had: usage is nested under `data.usage`, camelCase, on the LAST envelope.
+// Measured on this very stack's Postgres: 942 stored query rows, the production
+// SQL summed 0, the real usage summed 20,980. A ceiling measured against a
+// constant zero cannot fire, so `daily_tokens_soft`/`hard` were inert
+// product-wide — and every unit test of the gate's POLICY was green, because
+// they all fed it a number from a fake store.
+//
+// So the two claims here are the two halves that were never joined:
+//
+//  1. a finished mock job leaves non-zero, readable token usage behind
+//     (the mock model bills 10 in / 6 out per turn);
+//  2. with a hard budget below that spend, the next job does NOT start — and
+//     lifting the budget lets the same queued delivery through. The lift is
+//     what makes it a proof rather than a coincidence: a delivery that stays
+//     pending for other reasons would stay pending after the lift too.
+// ---------------------------------------------------------------------------
+
+test.describe('the daily token budget stops jobs once real spend crosses it', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  let client: ProjectClient
+
+  test.beforeEach(async ({ request }) => {
+    client = await newProjectClient(request, 'e2e-budget')
+  })
+
+  test.afterEach(async () => {
+    // Subscriptions first, then sessions — a job that finishes while sessions
+    // are being swept starts another one. cleanup() does both in that order.
+    await client.cleanup()
+  })
+
+  test('a finished job is counted, and daily_tokens_hard then refuses the next', async () => {
+    // Two container-backed jobs, each provisioned from scratch.
+    test.setTimeout(420_000)
+
+    await client.putWorker('token-spender', {
+      description: 'runs so the ledger has something to count',
+      system_prompt: 'Answer in one short sentence.',
+    })
+    await client.createSubscription({ event_type: 'budget.probe', worker: 'token-spender' })
+
+    // ── 1. One job runs, and its tokens are readable ────────────────────────
+    const first = await client.postEvent({ type: 'budget.probe', text: 'first probe' })
+    const firstRows = await client.waitForDeliveries((rows) => rows.some((r) => r.status === 'ok'), {
+      event_id: first.id,
+      timeoutMs: 300_000,
+    })
+    const firstDelivery = firstRows.find((r) => r.status === 'ok')!
+    expect(firstDelivery.session_id).not.toBe('')
+
+    // The surface the browser reads (web/src/events.ts sumTokens reduces this
+    // exact body). Asserting the PATH, not just the total: a sum that happens
+    // to be non-zero for some other reason would not prove the readers agree
+    // with the writer.
+    const envelopes = await client.queryEvents(firstDelivery.session_id)
+    const completions = envelopes.filter((e) => e.type === 'query_complete')
+    expect(completions.length).toBeGreaterThan(0)
+
+    let spent = 0
+    for (const e of completions) {
+      const usage = e.data.usage as Record<string, unknown> | undefined
+      expect(usage, 'query_complete must carry data.usage — the whole ledger hangs off it').toBeTruthy()
+      spent += Number(usage!.inputTokens ?? 0) + Number(usage!.outputTokens ?? 0)
+    }
+    expect(spent, 'a finished mock job must bill more than zero tokens').toBeGreaterThan(0)
+
+    // ── 2. A ceiling below that spend stops the next job ────────────────────
+    await client.putSettings({ daily_tokens_hard: 1 })
+
+    const second = await client.postEvent({ type: 'budget.probe', text: 'second probe' })
+    // The delivery row is written by the router whatever the gate decides, so
+    // wait for it to exist rather than sleeping.
+    await client.waitForDeliveries((rows) => rows.length > 0, { event_id: second.id, timeoutMs: 60_000 })
+
+    // Then hold it under observation for well over the time the first job took
+    // to reach `running`. Proving a job did NOT start is the one assertion that
+    // cannot be a happens-after signal; it is bounded by the first job's own
+    // measured latency instead of by a guess.
+    const held = Date.now() + 30_000
+    while (Date.now() < held) {
+      const rows = await client.listDeliveries({ event_id: second.id })
+      expect(
+        rows.map((r) => r.status),
+        'daily_tokens_hard=1 with tokens already spent must keep the delivery pending',
+      ).toEqual(['pending'])
+      await new Promise((r) => setTimeout(r, 2_000))
+    }
+
+    // ── 3. Lifting the ceiling releases the same delivery ───────────────────
+    // Without this the test would also pass if deliveries never ran at all.
+    await client.putSettings({ daily_tokens_hard: 0 })
+    const released = await client.waitForDeliveries((rows) => rows.some((r) => r.status === 'ok'), {
+      event_id: second.id,
+      timeoutMs: 300_000,
+    })
+    expect(released.map((r) => r.id)).toContain(
+      (await client.listDeliveries({ event_id: second.id }))[0].id,
+    )
   })
 })

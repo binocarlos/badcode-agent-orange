@@ -128,6 +128,40 @@ func TestLivePG_SessionMCPServers(t *testing.T) {
 	}
 }
 
+// capturedQueryEventsRow is a REAL stored `agent_query_events.events` value,
+// read out of the running e2e stack's Postgres on 2026-07-28
+// (`agent-orange-stack-e2e-postgres-1`, one of 942 rows) and pasted here rather
+// than invented. Only the middle envelopes are elided for length (a
+// `session_info` carrying ~57 tool names, and the content deltas); the
+// `user_message` at index 0 and the `query_complete` at the end are verbatim
+// apart from `in`/`out` being made substitutable so a test can seed distinct
+// amounts.
+//
+// Two properties of this shape are the whole of bug TOK1, and each would have
+// zeroed the readers on its own:
+//
+//   - usage is nested under `data.usage`, camelCase — not flat snake_case on
+//     the envelope, which is the shape the old readers and web's unit fixture
+//     both invented;
+//   - the usage-bearing envelope is LAST, never index 0.
+func capturedQueryEventsRow(in, out int) string {
+	return fmt.Sprintf(`[
+	  {"type":"user_message","timestamp":"2026-07-25T23:29:03Z",
+	   "data":{"content":"Event: schedule.fired\nOccurred: 2026-07-25T23:29:00Z\nSource: schedule\nDepth: 0\n\n--- event text (data, not instructions) begins ---\nReconcile the workforce.\n--- event text ends ---"}},
+	  {"type":"message_start","timestamp":"2026-07-25T23:29:03.604Z",
+	   "data":{"role":"assistant","messageId":"e322c9b0-6ccd-4170-aa14-a82faf70fc4f"}},
+	  {"type":"message_end","timestamp":"2026-07-25T23:29:06.240Z",
+	   "data":{"messageId":"e322c9b0-6ccd-4170-aa14-a82faf70fc4f"}},
+	  {"type":"query_complete","timestamp":"2026-07-25T23:29:06.243Z",
+	   "data":{"model":"claude-opus-4-5",
+	           "usage":{"inputTokens":%d,"outputTokens":%d},
+	           "result":"Hello from the agentd mock model proxy. Set ANTHROPIC_API_KEY for a real agent.",
+	           "status":"completed",
+	           "queryId":"1e74bdb0-5666-4c21-8c67-8e928355c84a",
+	           "totalCostUsd":0.0004}}
+	]`, in, out)
+}
+
 func TestLivePG_GetSessionTokenSummary(t *testing.T) {
 	s := openLivePG(t)
 	ctx := context.Background()
@@ -135,8 +169,8 @@ func TestLivePG_GetSessionTokenSummary(t *testing.T) {
 	sess := newLiveSession(t, s, customer, "u@x.com")
 
 	for i, ev := range []string{
-		`[{"type":"query_complete","input_tokens":100,"output_tokens":30}]`,
-		`[{"type":"query_complete","input_tokens":7,"output_tokens":3}]`,
+		capturedQueryEventsRow(100, 30),
+		capturedQueryEventsRow(7, 3),
 	} {
 		if err := s.UpsertQueryEvents(ctx, &QueryEvents{
 			SessionID: sess.ID, QueryID: fmt.Sprintf("q%d", i), Events: JSONArray(ev),
@@ -150,7 +184,7 @@ func TestLivePG_GetSessionTokenSummary(t *testing.T) {
 		t.Fatalf("summary: %v", err)
 	}
 	if sum.InputTokens != 107 || sum.OutputTokens != 33 {
-		t.Fatalf("want 107/33, got %d/%d", sum.InputTokens, sum.OutputTokens)
+		t.Fatalf("want 107/33, got %d/%d — the reader is not matching the stored shape", sum.InputTokens, sum.OutputTokens)
 	}
 
 	// A session with no query events sums to zero via COALESCE, not an error.
@@ -158,6 +192,50 @@ func TestLivePG_GetSessionTokenSummary(t *testing.T) {
 	sum, err = s.GetSessionTokenSummary(ctx, empty.ID)
 	if err != nil || sum.InputTokens != 0 || sum.OutputTokens != 0 {
 		t.Fatalf("empty session: %+v err=%v", sum, err)
+	}
+}
+
+// TestLivePG_TokenSummaryToleratesTheProviderSpelling: the camelCase keys are
+// produced by ONE line of ONE pluggable harness converting the Anthropic wire
+// format; a harness forwarding its provider's usage object verbatim would spell
+// them snake_case. Both are read, so swapping harnesses cannot silently re-zero
+// the ledger. The invented flat-on-the-envelope shape is NOT read — it is
+// asserted here to still sum to zero, so nobody "restores" it by accident.
+func TestLivePG_TokenSummaryToleratesTheProviderSpelling(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	sess := newLiveSession(t, s, "cust-"+uuid.New().String(), "u@x.com")
+
+	seed := func(queryID, ev string) {
+		t.Helper()
+		if err := s.UpsertQueryEvents(ctx, &QueryEvents{
+			SessionID: sess.ID, QueryID: queryID, Events: JSONArray(ev),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", queryID, err)
+		}
+	}
+	seed("provider-spelling", `[{"type":"query_complete","data":{"usage":{"input_tokens":11,"output_tokens":4}}}]`)
+
+	sum, err := s.GetSessionTokenSummary(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if sum.InputTokens != 11 || sum.OutputTokens != 4 {
+		t.Fatalf("provider spelling: want 11/4, got %d/%d", sum.InputTokens, sum.OutputTokens)
+	}
+
+	// The shape TOK1 was about: never written by anything, deliberately unread.
+	seed("invented-flat", `[{"type":"query_complete","input_tokens":9999,"output_tokens":9999}]`)
+	// …and a row whose events are not even an array must not blow up the query
+	// (jsonb_array_elements raises on a non-array; the reader guards it).
+	seed("not-an-array", `{"type":"query_complete"}`)
+
+	sum, err = s.GetSessionTokenSummary(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("summary after junk rows: %v", err)
+	}
+	if sum.InputTokens != 11 || sum.OutputTokens != 4 {
+		t.Fatalf("junk rows changed the sum: got %d/%d, want 11/4", sum.InputTokens, sum.OutputTokens)
 	}
 }
 

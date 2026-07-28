@@ -100,10 +100,11 @@ func (s *Store) ListExpiredLeaseSessions(ctx context.Context, now int64, limit i
 // measured against, and what §8.4 step 6 checks before creating a
 // non-interactive job.
 //
-// It reuses the same per-query accounting GetSessionTokenSummary reads (the
-// usage numbers on the first envelope of each stored query), joined to sessions
-// for the project. Postgres-only SQL (jsonb `->>` plus a bigint cast), like the
-// summary it mirrors — on a store without those operators the budget simply
+// It reuses the same per-envelope accounting GetSessionTokenSummary reads,
+// joined to sessions for the project. The jsonb shape both read is captured and
+// explained in token_usage.go — do not change the path here without re-reading
+// a real stored envelope. Postgres-only SQL (jsonb operators plus LATERAL),
+// like the summary it mirrors — on a store without those the budget simply
 // cannot be evaluated, and the router treats that as "do not stop the world"
 // (see the router's budget gate).
 func (s *Store) CountProjectTokensSince(ctx context.Context, project string, since int64) (int64, error) {
@@ -111,14 +112,12 @@ func (s *Store) CountProjectTokensSince(ctx context.Context, project string, sin
 		return 0, fmt.Errorf("project is required")
 	}
 	var row struct{ Total int64 }
-	err := s.gdb.WithContext(ctx).
-		Table("agent_query_events AS qe").
-		Joins("JOIN agent_sessions AS sess ON sess.id = qe.session_id").
-		Where("sess.customer = ? AND qe.created_at >= ?", project, since).
-		Select(`COALESCE(SUM(
-			COALESCE((qe.events->0->>'input_tokens')::bigint, 0) +
-			COALESCE((qe.events->0->>'output_tokens')::bigint, 0)
-		), 0) AS total`).
+	err := s.gdb.WithContext(ctx).Raw(`
+		SELECT COALESCE(SUM(`+usageInputSQL+` + `+usageOutputSQL+`), 0) AS total
+		FROM agent_query_events AS qe
+		JOIN agent_sessions AS sess ON sess.id = qe.session_id
+		`+usageEnvelopes("qe")+`
+		WHERE sess.customer = ? AND qe.created_at >= ?`, project, since).
 		Scan(&row).Error
 	if err != nil {
 		return 0, fmt.Errorf("failed to count project tokens: %w", err)
