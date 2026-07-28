@@ -149,7 +149,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 2 — the spine and the Desk (after V1 + TH1 + E1 merge)
 
-- [ ] **DK1 — Spine primitives + the Desk fold (pure).** `web/src/spine.tsx`: the rail + glyph
+- [x] **DK1 — Spine primitives + the Desk fold (pure).** `web/src/spine.tsx`: the rail + glyph
   components (closed glyph set from the token table; rail = 1px, glyphs on `background.paper` to
   mask it), presentational only. `web/src/desk.ts`: pure
   `buildDesk({deliveries, events, subscriptions, configEvents, attentionRequests, nowSeconds, lastSeenMs})`
@@ -162,7 +162,7 @@ cross = failure, lock = freeze refusal.
   including "No reason is recorded on a delivery row". Heavy vitest coverage in the existing
   table style; no fetch, no React state in `desk.ts`.
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
-- [ ] **DK2 — DeskPage + landing (decision K1).** `web/src/components/DeskPage.tsx` renders
+- [x] **DK2 — DeskPage + landing (decision K1).** `web/src/components/DeskPage.tsx` renders
   DK1's three stacks on the spine, with a `useDesk` hook (fetches via the existing hooks + a new
   `useAttentionRequests` against E1; renders without the route by omitting ask messages).
   `lastSeenMs` in `localStorage`, keyed by project. Empty-Desk state is the FIRST-RUN state:
@@ -174,7 +174,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 3 — lineage (after Wave 2 merges; touches WorkersPage)
 
-- [ ] **LN1 — Worker lineage tab + fold-to-version.** `WorkersPage` gains a **Lineage** tab
+- [x] **LN1 — Worker lineage tab + fold-to-version.** `WorkersPage` gains a **Lineage** tab
   (Configuration · Jobs · Lineage · Chat): the spine filtered to entity key `worker:<name>`,
   reusing `buildChangelog` + a new pure `workerLineage(entries, workerName)` in `configLog.ts`
   (version numbering = count of prompt-carrying events, oldest = v1; "n rewrites, m distinct"
@@ -343,3 +343,26 @@ cross = failure, lock = freeze refusal.
 - **(orchestrator) The httpapi route-registration blocks (Config/New/Endpoints/Mux) conflicted
   in every pairwise merge** — union resolution each time; gofmt+build+vet before committing the
   resolution. Expected again for any future route.
+- **(DK1) `worker.freeze_refused` does not name the DEFENDED worker in a field** — the envelope
+  carries the attacker; the target is only in the prose text. `desk.ts` parses it
+  (`frozenTargetFromText`); if the event ever gains a target field, delete that regex.
+- **(DK1) `web/`'s Schedule type lacked the runtime-state fields** — `provision_failures` /
+  `last_provision_error` added as optionals to coerceSchedule so the Desk's halted-schedule line
+  can exist. `buildDesk` takes optional `schedules` + `projectId` beyond the stated signature.
+- **(DK2) The shell's Desk badge counts OPEN ATTENTION REQUESTS**, a superset of asks (an ask
+  additionally needs a parked delivery) — App.tsx calls useAttentionRequests directly rather
+  than lifting the whole fold. Flagged as approximate, arguably truer; revisit if it confuses.
+- **(DK2) The first-run "Start from an org chart" button routes to Workers, not into the flow**
+  — WorkersPage's `#topology` sentinel is module-private. Follow-up: export it or add a
+  `startInTopology` prop.
+- **(DK2/spine) `web/` resolves ember/steel/rose/fault from the host theme when present and
+  falls back to the design tokens** — the library never imports examples/web's augmentation.
+- **(LN1) `DiffBlock` was private in ChangelogView** — now exported (item said "the existing
+  DiffBlock"). `WorkerEditor` gained `initialRationale` (seeds the Why? field and dirty=true)
+  so Restore can pre-fill; NUL-binary diff, change described in the commit message.
+- **(LN1) index.ts name collision**: the component `WorkerLineage` vs the pure result type —
+  the type ships as `WorkerLineageData`.
+- **(orchestrator) Third stale route comment found** (web/src/index.ts config-log export block),
+  joining EventsPage.tsx and useConfigLog.ts. Sweep all three in some later item.
+- **(orchestrator) Wave 2+3 merged conflict-free**; web 607→673 tests. Screenshot pass still
+  deferred — the e2e stack (another session's) holds port 8080.
