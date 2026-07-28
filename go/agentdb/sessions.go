@@ -249,16 +249,23 @@ func (s *Store) ListSessions(ctx context.Context, query *SessionQuery) ([]*Sessi
 	return sessions, nil
 }
 
+// GetSessionTokenSummary sums the token usage stored on a session's query
+// events. The jsonb shape it reads is captured and explained in token_usage.go
+// — do not change the path here without re-reading a real stored envelope.
+//
+// TotalCostUSD is reported as 0: `totalCostUsd` IS on the stored envelope, but
+// it is a float that would need its own careful aggregation and nothing reads
+// it, so this stays honest about summing only what it sums.
 func (s *Store) GetSessionTokenSummary(ctx context.Context, sessionID string) (*TokenUsageSummary, error) {
 	var summary TokenUsageSummary
-	err := s.gdb.WithContext(ctx).
-		Table("agent_query_events").
-		Where("session_id = ?", sessionID).
-		Select(`
-			COALESCE(SUM((events->0->>'input_tokens')::bigint), 0) as input_tokens,
-			COALESCE(SUM((events->0->>'output_tokens')::bigint), 0) as output_tokens,
-			0::float as total_cost_usd
-		`).Scan(&summary).Error
+	err := s.gdb.WithContext(ctx).Raw(`
+		SELECT
+			COALESCE(SUM(`+usageInputSQL+`), 0) AS input_tokens,
+			COALESCE(SUM(`+usageOutputSQL+`), 0) AS output_tokens,
+			0::float AS total_cost_usd
+		FROM agent_query_events AS qe
+		`+usageEnvelopes("qe")+`
+		WHERE qe.session_id = ?`, sessionID).Scan(&summary).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to get session token summary: %w", err)
 	}
