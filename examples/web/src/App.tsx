@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ThemeProvider, createTheme, CssBaseline, Box, Button, Stack } from "@mui/material";
+import { ThemeProvider, CssBaseline, Box, Button, Stack, useMediaQuery } from "@mui/material";
 import {
   AgentChatProvider,
   AgentChat,
@@ -16,8 +16,8 @@ import { AuthConfig, AuthState, clearAuthState, fetchAuthConfig, loadAuthState, 
 import LoginScreen from "./LoginScreen";
 import ProjectPicker from "./ProjectPicker";
 import Sidebar from "./Sidebar";
+import { darkTheme, lightTheme } from "./theme";
 
-const theme = createTheme();
 const API = import.meta.env.VITE_API ?? ""; // "" → same origin (nginx proxy)
 
 // What a project view can show. Deliberately a state machine and not a router:
@@ -31,6 +31,11 @@ export default function App() {
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
   const [auth, setAuth] = useState<AuthState | null>(() => loadAuthState());
   const [devToken, setDevToken] = useState<string | null>(null);
+
+  // Two theme objects, not one with `mode` flipped: the palette differs by
+  // value, not by inversion (design §3.3).
+  const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
+  const theme = prefersDark ? darkTheme : lightTheme;
 
   useEffect(() => {
     fetchAuthConfig(API)
@@ -252,7 +257,7 @@ function ViewNav({ view, onChange }: { view: View; onChange: (v: View) => void }
     </Button>
   );
   return (
-    <Stack direction="row" spacing={0.5} sx={{ p: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+    <Stack direction="row" spacing={0.5} sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
       {item("chat", "Chat")}
       {item("workers", "Workers")}
       {item("events", "Events")}
