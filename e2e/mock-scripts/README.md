@@ -45,6 +45,13 @@ acceptance-loop.spec.ts is the guard). A prompt-planted marker is what the learn
 on: a `worker_prompt_write` that adds the marker flips which rule the actor's next job matches,
 so the behaviour switch is itself proof of prompt delivery.
 
+**The key must survive JSON encoding.** The match runs against the raw request *body*, which is JSON,
+so a phrase containing `"`, `\` or a newline is escaped there and the rule is quietly always-false —
+the worst failure mode this format has, because a tripwire that can never fire looks exactly like a
+tripwire that was never tripped. Prefer plain ASCII words, and pin the key with a unit assertion
+(`JSON.stringify(phrase) === '"' + phrase + '"'`) when it is prose lifted from a document rather
+than a marker you invented.
+
 Beware the worker's *name* as a sole key: a name is a substring of every composed prompt that
 mentions it, including a manager's prompt describing the workforce it should create, and of every
 transcript that names it — a `worker.finished` event's text is the finishing job's whole
@@ -62,4 +69,5 @@ marker — never the other way round), and keep names mutually non-substring
 | `learning-stories.json` | The learning stories (`features/learning-stories.stack.spec.ts`): one composite table, rules partitioned by worker name, before/after actor states split with `absent` on each story's marker |
 | `topologies.json` | The topology seeds T4–T7 (`features/topologies.stack.spec.ts`): per-seed name prefixes (`tp4-`…`tp7-`), critics above actors, and the supervisor's specialists keyed on their unique identity phrase (`You are tp6-hand-N`) because dispatcher and specialist requests each contain the other's *name* |
 | `calibration-smoke.json` | The calibration rig's mock smoke (`experiments/calibration/configs/smoke-4.ts`): two arms of `hypothesis-lab@v1`, prefixes `cala-`/`calb-`. Rule order is checker → critic → investigator. The checker's rules key on the harness's `[CAL-CHECK-<id>-YES\|NO]` check marker; the critic's on `You review cala-invest` (a phrase only its own prompt holds, and its body carries the investigator's whole transcript); the investigator's come in pairs per hypothesis, split with `absent: "[CAL-CONTROL-RULE]"` so the critic's rewrite arriving in the composed prompt is what flips the answer. Loaded by `experiments/calibration/run.sh run`, not by `run-stack-e2e.sh` |
+| `calibration-doctrine-smoke.json` | The doctrine axis (`experiments/calibration/configs/doctrine-smoke-4.ts`, work plan 13 DR1): a **superset** of `calibration-smoke.json` — every rule that file has, plus the doctrine arm's critic (prefix `cald-`) and one tripwire. The tripwire is the delivery assertion for `docs/product/doctrine/doctrine-v1.md`: `match` is the investigator's identity phrase, `absent` a doctrine-v1 sentence, so the block reaching the composed prompt SKIPS the rule and the request falls through to the shared per-hypothesis rules. Withhold the block and the arm returns prose with no contract line and scores 0. Identity phrase partitions and the doctrine phrase splits, never the reverse — the block rides *every* worker in the arm, so a rule keyed on a doctrine phrase alone would answer the frozen checker too |
 | `experiments-compare.json` | The comparison rig's demo (`experiments/configs/actor-critic-vs-sham-vs-solo.ts`): three arms on one task, prefixes `xpa-`/`xps-`/`xpz-`. Loaded by `experiments/run.sh compare`, not by `run-stack-e2e.sh`. Rule order is critic → prompt-state → actor: each critic's rule sits above its actor's (the critic's body carries the actor's transcript), and the two prompt-state rules (`XPA-HEADLINE-RULE`, the reordered sentence pair) sit between them — below the critic that writes the marker into its own tool call, above the actor whose composed prompt then carries it |
