@@ -336,7 +336,7 @@ document is the spec.
 
 ### Wave B — motion (after Wave A merges)
 
-- [ ] **W4 — Feed liveness (P4), per §4.2/§5-M4 in the research's build order.**
+- [x] **W4 — Feed liveness (P4), per §4.2/§5-M4 in the research's build order.**
   (1) `last_seen_seq` watermark per operator+surface (localStorage, keyed like useDesk's
   mark; use config-event/event ordering as the sequence); (2) waterline divider, frozen for the
   visit, labelled `New since <time>`; (3) pinned "N new" pill per stack/list — arrivals stage,
@@ -350,7 +350,7 @@ document is the spec.
   container labels; (6) deliveries table: projection keyed by delivery id, sorted by created
   (never by updated), chip crossfade ~140ms + one destination-tinted row pulse; (7) a "Pause
   live updates" toggle on Desk + Events. Desk stacks/lineage rail get `role="log"`.
-- [ ] **W5 — Chart motion (P5), per §4.1/§5-M0..M3, in the spike order.** M0 chevrons
+- [x] **W5 — Chart motion (P5), per §4.1/§5-M0..M3, in the spike order.** M0 chevrons
   (`marker-mid` or midpoint `▸`, rotation fixed per segment — never auto) + `↳ ×n` traffic
   counts on wires (from the fetched deliveries; this is the reduced-motion floor); wire
   flash-and-decay (60ms in / 450ms out, coalesced ≤3/sec, fault flash STAYS); one-shot dot
@@ -395,6 +395,47 @@ document is the spec.
   `rgba(0, 0, 0, 0)`. EventsPage's diff-summary assertion requires the `<summary>` line to stay
   ONE text node. Ember/fault tokens now copied in a third place — if a fourth appears, spine.tsx
   should export the token table.
+- **(orchestrator) WAVE B LANDED on the re-run** (2026-07-28, after the spend limit was raised).
+  W5 kept ~85% of the salvaged draft and fixed five things in it (two-gate `offset-path` probe,
+  breathe floor 0.35→0.55 because the breathing element carries text, seen-set semantics —
+  ADD ids rather than replace, or a row scrolling out and back re-pulses — and a NaN guard).
+  **Verified by the capture rig, not by opinion:** animated pass 8/8 unique chart frames and
+  7/8 desk frames; reduced pass **1/8 on both** (perfectly still) with chevrons, `↳ ×n` counts,
+  the standing fault wire, the rose diamond and the elapsed all still legible in a single frame
+  — `docs/product/ux-review/motion-pulse-inflight.png` vs `motion-reduced-still.png`. Baseline
+  before the wave was 1/6. That is the review's own rule (§5, "nothing encoded only in motion")
+  passing mechanically.
+- **(orchestrator, merge) W4 and W5 each shipped a `tickIntervalMs`** with identical constants
+  (120s/1s/60s) and collided on the export. Unified onto W4's status-aware one (the chart calls
+  it with `"running"`); chartmotion keeps only a FORMATTING threshold, pinned equal to
+  `TICK_COARSE_AFTER_SECONDS` by test. This was the unification W5's report asked for.
+- **(W5) The breathe is on the whole state line, not the ● glyph** — the line is one text node
+  and two Wave A/OC2 tests match it whole. Third confirmation of the one-text-node hazard
+  (EventsPage `<summary>`, now `stateLine`). Deviation from §5 M2's wording; still opacity-only.
+- **(W5) Chart-open replay vs arrival-not-render, resolved**: the first hydrated pass seeds the
+  seen set AND fires a replay keyed `replay:<id>@<wire>` **without** flashes (a flash asserts
+  "just now"; a replay is not now). Only later ids are arrivals. Replay is skipped entirely
+  under reduced motion — history is what the counts are for.
+- **(W5) The fault wire is painted from DATA, not a timer** — any wire whose newest delivery
+  failed renders fault, so "the failure stays" survives reload, remount and screenshot.
+- **(W5) jsdom exercises the SMIL branch only** (it fails the SVG-child `offset-path` gate and
+  has no SMIL clock, so `beginElement()` is a guarded no-op). Right way round — the universal
+  fallback is what the suite proves — but **no test proves a dot travels**; the capture rig is
+  the only evidence, which is why it is committed.
+- **(W4) `rate_limited` does NOT count down** as §4.2 wanted: the status is terminal and the row
+  carries no retry-after, so there is no instant to count to. Counting to an invented one would
+  be motion with no cause. Needs a backend field; documented in `useElapsedTicker.ts`.
+- **(W4) The pill and pause toggle need a live source**: `useDesk`/`EventsPage` gained an opt-in
+  `refreshMs` (default 0 = no timer, so nothing in-tree changed behaviour). Nobody passes it
+  yet — turning it on is a shell decision.
+- **(W4) `spine.tsx` now exports the token table** (`CONSOLE_TOKENS`, `consoleTokenColor`,
+  `consoleTint`) per W3's note. Two legacy hand-copies remain in ChangelogView and OrgChartPage.
+- **(W4) `desk.ts`/`DeskPage.tsx` grep as BINARY** (the U+2212 minus in diff labels) — third
+  file after `useEvents.ts`. **Standing rule: always `grep -an` in web/src.**
+- **(fixture artifact, not a bug) The burst scene shows `running 3/1`** — three concurrent
+  running deliveries against `max_instances: 1`, which the real dispatch gate would never
+  admit. The chart renders `n/max` without flagging n>max; harmless, but do not read that frame
+  as a product defect.
 - **(orchestrator) WAVE B DID NOT RUN — both executors died on ACCOUNT LIMITS, not on code**
   (2026-07-28: W4 hit the session limit, W5 the monthly spend limit). Neither committed;
   W4 produced nothing. W5's partial pure module is salvaged, UNVALIDATED, on the branch
