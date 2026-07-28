@@ -147,7 +147,7 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   **EXECUTION APPROVED by Kai (2026-07-28): subscription OAuth, attended runs only** (token in
   `.env`; both credentials coexist — the e2e mode argument selects per run, precedence unchanged).
   Orchestrator sets `daily_tokens_hard` per arm project (rate-limit guard, not billing).
-- [ ] **L3R — Calibration runner build**: extends the C1 rig to the runbook's protocol —
+- [x] **L3R — Calibration runner build**: extends the C1 rig to the runbook's protocol —
   `go/cmd` hypolab dataset generator CLI, arms A/B(/C), per-hypothesis loop with harness-side
   truth, VERDICT-line convention for parseable conclusions, metrics from the logs (accuracy
   early-vs-late, planted-null false-confirm rate, confound escape rate, lineage, freeze_refused,
@@ -379,6 +379,18 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
 - (C1) **Wanted: a `run-stack-e2e.sh script load/unload` verb** — the rig duplicates the
   load/restore mechanism because `--mock-script` is bolted to the playwright `test` command.
 
+- [ ] **TOK1 — Token accounting is broken engine-wide (found by L3R).** The harness stores usage
+  as `data.usage.inputTokens` (nested, camelCase, on the `query_complete` envelope), but all
+  three readers — `agentdb.CountProjectTokensSince` (the router's budget gate),
+  `agentdb.GetSessionTokenSummary`, and `web/src/events.ts` `sumTokens` — query
+  `events->0->>'input_tokens'` (flat snake_case). Measured live: 940 query rows, production SQL
+  sums 0, real usage sums thousands. Consequences: `daily_tokens_soft/hard` never fire (D3's
+  brakes are inert product-wide), token summaries read 0. Fix the three readers against a REAL
+  captured envelope fixture (web's unit fixture INVENTED the snake_case shape — that is how this
+  survived); add a stack e2e asserting a project's token sum is >0 after one mock job (the mock
+  emits usage 10/10).
+  *Validation:* go suite + live-Postgres + web tests + the new e2e assertion.
+
 ## Publishing (decided 2026-07-28)
 
 - [ ] **PUB — Publish the experiments.** Kai: the calibration and tournament results belong in
@@ -386,4 +398,20 @@ subscription-OAuth terms, AGENTS_RESEARCH §1).*
   project's honest pitch. After L3X: a Results section in README.md linking the dated records,
   the rig, and the runbook. The tournament framing to build toward: given a hypothesis and a
   token budget, which org chart performs best (budget maps to `daily_tokens_*` per arm).
+- (L3R) **`daily_tokens_hard` cannot fire — promoted to item TOK1 above.** The calibration
+  runner enforces its ceiling harness-side, so the live run is safe regardless.
+- (L3R) **hypolab's underpowered verdict is a scorer trap** — `Verdict.Effect` is true but the
+  honest report is no-effect; hypolabgen records both `verdict` and `expected_verdict` and
+  metrics score the latter. Scoring the generating truth would reward overclaiming on 4/30
+  hypotheses in an experiment whose headline is a false-confirmation rate.
+- (L3R) **Trap verification changed the criterion**: a confound seed whose CONTROLLED estimate
+  was significantly negative would penalise a correct analysis; `verifyTrap` now requires the
+  controlled estimator to find nothing in either direction. Also: same-base-seed scenario sweeps
+  produce byte-identical same-kind datasets — each hypothesis gets its own seed block.
+- (L3R) **All three arms render from the identical topology** — B deletes the critic's
+  subscription, C overwrites its prompt; ordinary operator mutations after apply, no seed
+  variants needed.
+- (L3R) **The smoke's numbers are authored, not results** — arm B's 1.0 false-confirm rate
+  proves the metric registers; arm A's 4/4 proves rewrites reach the next composed prompt. The
+  report says so; never quote smoke tables as findings.
 
