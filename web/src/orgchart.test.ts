@@ -1,15 +1,19 @@
 import { describe, it, expect } from 'vitest'
 import {
   ORG_CHART_METRICS,
+  PROPAGATION_CAVEAT,
+  PROPAGATION_MAX_DEPTH,
+  PROPAGATION_NOTHING_SUBSCRIBES,
   cronHours,
   layoutOrgChart,
   markBackEdges,
   matchesWorkerLifecycle,
+  propagateEvent,
   subscriptionProducers,
   wireLabel,
   type OrgChartLayout,
 } from './orgchart.js'
-import type { Subscription, ProjectEvent } from './events.js'
+import { blankEnvelope, type Subscription, type ProjectEvent } from './events.js'
 import type { Schedule } from './schedules.js'
 import type { Worker } from './workers.js'
 
@@ -604,6 +608,84 @@ describe('cronHours', () => {
   it('shows no ticks rather than the wrong ones', () => {
     const layout = layoutOrgChart([worker('a')], [], [schedule('s1', 'a', 'nonsense')], [])
     expect(layout.clocks[0]).toMatchObject({ hours: [], hoursKnown: false })
+  })
+})
+
+describe('propagateEvent', () => {
+  const chain = [
+    sub('s1', 'email.received', 'answerer'),
+    sub('s2', 'worker.finished', 'reviewer', { worker: 'answerer' }),
+    sub('s3', 'worker.finished', 'archivist', { worker: 'reviewer' }),
+  ]
+  const arriving = (type: string) => ({ type, envelope: blankEnvelope() })
+
+  it('chains hop by hop, the way the router would', () => {
+    const { hops, stopped } = propagateEvent(arriving('email.received'), chain)
+    expect(hops.map((h) => h.wakes.map((w) => w.worker))).toEqual([
+      ['answerer'],
+      ['reviewer'],
+      ['archivist'],
+      [],
+    ])
+    expect(stopped).toBe(false)
+  })
+
+  it('names the event that arrived at each hop', () => {
+    const { hops } = propagateEvent(arriving('email.received'), chain)
+    expect(hops[0].wakes[0]).toMatchObject({
+      depth: 0,
+      eventType: 'email.received',
+      from: '',
+      worker: 'answerer',
+      subscriptionId: 's1',
+    })
+    expect(hops[1].wakes[0]).toMatchObject({
+      depth: 1,
+      eventType: 'worker.finished',
+      from: 'answerer',
+      worker: 'reviewer',
+    })
+  })
+
+  it('ends with an empty hop, which the panel renders as "nothing subscribes"', () => {
+    const { hops } = propagateEvent(arriving('email.received'), chain)
+    expect(hops[hops.length - 1].wakes).toEqual([])
+    expect(PROPAGATION_NOTHING_SUBSCRIBES).toBe('(nothing subscribes)')
+  })
+
+  it('wakes nobody, and says so, when nothing matches', () => {
+    const { hops, stopped } = propagateEvent(arriving('nothing.matches'), chain)
+    expect(hops).toEqual([{ depth: 0, wakes: [] }])
+    expect(stopped).toBe(false)
+  })
+
+  it('runs a loop into the stop line rather than for ever', () => {
+    const loop = [
+      sub('l1', 'go', 'a'),
+      sub('l2', 'worker.finished', 'b', { worker: 'a' }),
+      sub('l3', 'worker.finished', 'a', { worker: 'b' }),
+    ]
+    const { hops, stopped, maxDepth } = propagateEvent(arriving('go'), loop)
+    expect(maxDepth).toBe(PROPAGATION_MAX_DEPTH)
+    expect(hops[hops.length - 1].depth).toBe(PROPAGATION_MAX_DEPTH)
+    expect(stopped).toBe(true)
+  })
+
+  it('honours a shallower ruler when one is asked for', () => {
+    const { hops, stopped } = propagateEvent(arriving('email.received'), chain, 1)
+    expect(hops.map((h) => h.depth)).toEqual([0, 1])
+    expect(stopped).toBe(true)
+  })
+
+  it('does not model rate limits, max_instances or budget, and says so once', () => {
+    expect(PROPAGATION_CAVEAT).toContain('Rate limits, max_instances gating and budget stops')
+    expect(PROPAGATION_CAVEAT).toContain('not modelled')
+  })
+
+  it('is deterministic', () => {
+    expect(propagateEvent(arriving('email.received'), chain)).toEqual(
+      propagateEvent(arriving('email.received'), chain),
+    )
   })
 })
 

@@ -21,7 +21,14 @@
 // `● running n/max` state line reads them from deliveries), rate limits,
 // `max_instances` gating and budget stops. This module knows configuration.
 
-import { eventTypeMatches, type ProjectEvent, type Subscription } from './events.js'
+import {
+  blankEnvelope,
+  eventTypeMatches,
+  matchSubscriptions,
+  type MatchableEvent,
+  type ProjectEvent,
+  type Subscription,
+} from './events.js'
 import type { Schedule } from './schedules.js'
 import type { Worker } from './workers.js'
 
@@ -482,6 +489,103 @@ export function wireLabel(subscription: Pick<Subscription, 'event_type' | 'filte
     .map(([key, value]) => `${key}: ${String(value)}`)
     .join(', ')
   return `${subscription.event_type} {${filter}}`
+}
+
+// ---------------------------------------------------------------------------
+// Propagation — "what fires when this event arrives?" (§6.5)
+// ---------------------------------------------------------------------------
+
+/** The router refuses to go deeper than this (§8.3). The ruler's stop line. */
+export const PROPAGATION_MAX_DEPTH = 8
+
+/**
+ * The one line the propagation panel always carries, verbatim (§6.5, §11 rule
+ * 3). It is a dry run of the two austere §8.3 predicates and nothing else; a
+ * preview that guessed at live counters would be confidently wrong.
+ */
+export const PROPAGATION_CAVEAT =
+  'This models only the two matching rules — event type and envelope filter. ' +
+  'Rate limits, max_instances gating and budget stops depend on live counters ' +
+  'and are deliberately not modelled here.'
+
+/** The line under a depth with no matches. Design §11 rule 4: a shrug is not
+ *  an answer, so it names the fact rather than leaving the row blank. */
+export const PROPAGATION_NOTHING_SUBSCRIBES = '(nothing subscribes)'
+
+/** What the stop line says. */
+export const PROPAGATION_STOP_LINE = 'the router refuses deeper'
+
+/** One worker woken at one depth, and the subscription that woke it. */
+export interface PropagationWake {
+  depth: number
+  /** The event that arrived. */
+  eventType: string
+  /** The worker whose finishing produced it; '' at depth 0 (it came from
+   *  outside, or from a schedule). */
+  from: string
+  worker: string
+  subscriptionId: string
+}
+
+/** One rung of the depth ruler. */
+export interface PropagationHop {
+  depth: number
+  wakes: PropagationWake[]
+}
+
+export interface Propagation {
+  hops: PropagationHop[]
+  /** True when the chain was still going when it reached the stop line. */
+  stopped: boolean
+  maxDepth: number
+}
+
+/**
+ * Chain `matchSubscriptions` hop by hop, down the depth ruler.
+ *
+ * Hop 0 is the event as given. Every woken worker will emit `worker.finished`
+ * when it ends, so hop n+1 matches one such event per worker woken at hop n —
+ * exactly what the router will do. The chain stops when a hop wakes nobody, or
+ * at `maxDepth`, which is where the engine stops too: a loop shows up here as a
+ * chain that runs into the stop line, the cheapest runaway detector there is.
+ */
+export function propagateEvent(
+  event: MatchableEvent,
+  subscriptions: readonly Subscription[],
+  maxDepth: number = PROPAGATION_MAX_DEPTH,
+): Propagation {
+  const hops: PropagationHop[] = []
+  let frontier: MatchableEvent[] = [event]
+  for (let depth = 0; depth <= maxDepth; depth += 1) {
+    const wakes: PropagationWake[] = []
+    for (const arriving of frontier) {
+      for (const match of matchSubscriptions(arriving, [...subscriptions])) {
+        if (!match.matched) continue
+        wakes.push({
+          depth,
+          eventType: arriving.type,
+          from: arriving.envelope.worker,
+          worker: match.subscription.worker,
+          subscriptionId: match.subscription.id,
+        })
+      }
+    }
+    wakes.sort(
+      (a, b) =>
+        compareText(a.worker, b.worker) ||
+        compareText(a.eventType, b.eventType) ||
+        compareText(a.subscriptionId, b.subscriptionId),
+    )
+    hops.push({ depth, wakes })
+    if (wakes.length === 0 || depth === maxDepth) break
+    const woken = [...new Set(wakes.map((w) => w.worker))].sort(compareText)
+    frontier = woken.map((worker) => ({
+      type: 'worker.finished',
+      envelope: { ...blankEnvelope(), depth: depth + 1, source: 'worker', worker },
+    }))
+  }
+  const last = hops[hops.length - 1]
+  return { hops, stopped: last.depth === maxDepth && last.wakes.length > 0, maxDepth }
 }
 
 // ---------------------------------------------------------------------------

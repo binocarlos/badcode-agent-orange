@@ -7,6 +7,7 @@ import {
   AutomationPage,
   DeskPage,
   EventsPage,
+  OrgChartPage,
   ProjectSettingsPage,
   WorkersPage,
   projectIdFromLocation,
@@ -27,9 +28,9 @@ const API = import.meta.env.VITE_API ?? ""; // "" → same origin (nginx proxy)
 // already owns the one URL that matters (the session).
 // Desk is first because it is the landing view (design decision K1): the
 // question "does anything want me?" is the one an operator arrives with.
-// Chart joins this union when OC2 lands; the nav order already reserves its
-// place between Desk and Workers.
-type View = "desk" | "chat" | "workers" | "events" | "automation" | "settings";
+// Chart sits between Desk and Workers: it is the same fleet, seen as a shape
+// rather than as a list.
+type View = "desk" | "chart" | "chat" | "workers" | "events" | "automation" | "settings";
 
 // App state machine: loading → dev (legacy /dev/token, straight to chat)
 //                            → login → project picker → chat (per-project JWT)
@@ -181,9 +182,9 @@ export default function App() {
 }
 
 /**
- * The signed-in, project-scoped workspace: chat, workers, events, automation
- * and project settings behind one switch, with the session permalink bound to
- * the URL.
+ * The signed-in, project-scoped workspace: desk, chart, chat, workers, events,
+ * automation and project settings behind one switch, with the session permalink
+ * bound to the URL.
  *
  * It is a separate component because `useSessionPermalink` reads the chat
  * context — the hook has to run *inside* <AgentChatProvider>, not beside it.
@@ -249,6 +250,7 @@ function ProjectWorkspace({
             onOpenChat={() => setView("chat")}
           />
         )}
+        {view === "chart" && <OrgChartPage projectId={project} />}
         {view === "chat" && <AgentChat />}
         {view === "workers" && <WorkersPage projectId={project} onOpenSession={showSession} />}
         {/* No fetchConfigEvents: GET /agent/config-events is mounted, so the
@@ -278,6 +280,7 @@ function ViewNav({ view, onChange, asks }: { view: View; onChange: (v: View) => 
   return (
     <Stack direction="row" spacing={0.5} sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
       {item("desk", "Desk", asks)}
+      {item("chart", "Chart")}
       {item("chat", "Chat")}
       {item("workers", "Workers")}
       {item("events", "Events")}

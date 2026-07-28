@@ -364,6 +364,11 @@ export {
   markBackEdges,
   cronHours,
   wireLabel,
+  PROPAGATION_MAX_DEPTH,
+  PROPAGATION_CAVEAT,
+  PROPAGATION_NOTHING_SUBSCRIBES,
+  PROPAGATION_STOP_LINE,
+  propagateEvent,
 } from './orgchart.js'
 export type {
   OrgChartLayout,
@@ -372,7 +377,15 @@ export type {
   OrgChartClock,
   OrgChartPip,
   OrgChartPoint,
+  Propagation,
+  PropagationHop,
+  PropagationWake,
 } from './orgchart.js'
+
+// The chart's page (OC2) — read-only SVG in the schematic style, plus the
+// propagation panel and its depth ruler. OC4 adds direct manipulation.
+export { default as OrgChartPage, stateLine } from './components/OrgChartPage.js'
+export type { OrgChartPageProps } from './components/OrgChartPage.js'
 
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
