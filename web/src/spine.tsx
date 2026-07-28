@@ -79,6 +79,51 @@ export function spineGlyphColor(theme: Theme, glyph: SpineGlyphName): string {
   return consoleColor(theme, token, fallback)
 }
 
+/**
+ * The hairline's own colour (doc 21, X12).
+ *
+ * It was `divider` — MUI's ~12% ink — and the populated walkthrough found the
+ * signature element of the whole console invisible at reading distance: the
+ * rows read as floating dots with nothing joining them. One step darker, from
+ * the same ink the text is drawn in, so the line belongs to the surface rather
+ * than to a grey MUI picked. Still a hairline: the rail is meant to be quiet,
+ * not absent.
+ */
+export function spineRailColor(theme: Theme): string {
+  const ink = theme.palette.text.primary
+  return theme.palette.mode === 'dark' ? withAlpha(ink, 0.32) : withAlpha(ink, 0.28)
+}
+
+/**
+ * `#RRGGBB` (or an `rgb()`) plus an alpha, without importing MUI's colour
+ * manipulator into a module that resolves colours by hand everywhere else.
+ * Anything it cannot parse comes back untouched — a host theme whose text
+ * colour is a named CSS colour gets a solid hairline, not a broken one.
+ */
+function withAlpha(color: string, alpha: number): string {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim())
+  if (hex) {
+    const digits = hex[1]!
+    const full =
+      digits.length === 3
+        ? digits
+            .split('')
+            .map((c) => c + c)
+            .join('')
+        : digits
+    const r = parseInt(full.slice(0, 2), 16)
+    const g = parseInt(full.slice(2, 4), 16)
+    const b = parseInt(full.slice(4, 6), 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  const rgb = /^rgba?\(([^)]+)\)$/i.exec(color.trim())
+  if (rgb) {
+    const parts = rgb[1]!.split(',').map((p) => p.trim())
+    if (parts.length >= 3) return `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})`
+  }
+  return color
+}
+
 /** Width of the gutter the rail runs down, in px. The glyph is centred in it. */
 export const SPINE_GUTTER = 28
 
@@ -180,7 +225,7 @@ export function SpineRail({ children, hideRail = false, component = 'div', sx }:
                 top: 0,
                 bottom: 0,
                 width: '1px',
-                bgcolor: 'divider',
+                bgcolor: (theme: Theme) => spineRailColor(theme),
               },
         },
         ...(Array.isArray(sx) ? sx : [sx]),

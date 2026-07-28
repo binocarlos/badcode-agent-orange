@@ -23,6 +23,7 @@ import {
 } from '@mui/material'
 import { useWorkerJobs, type UseWorkerJobsOptions } from '../useWorkers.js'
 import { buildSessionPath } from '../permalink.js'
+import { formatTimestamp } from '../events.js'
 
 export interface WorkerJobHistoryProps extends UseWorkerJobsOptions {
   /** Worker whose jobs to show. */
@@ -92,10 +93,4 @@ export default function WorkerJobHistory({
       )}
     </Box>
   )
-}
-
-/** Unix seconds → a local, human-readable stamp. 0/absent renders as ''. */
-function formatTimestamp(seconds: number | undefined): string {
-  if (!seconds) return ''
-  return new Date(seconds * 1000).toLocaleString()
 }

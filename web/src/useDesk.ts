@@ -58,8 +58,12 @@ export function writeDeskLastSeen(projectId: string, ms: number): void {
  *
  * Every field the sentence would carry is empty, deliberately: the ask renders
  * with its worker, its age and its thread link, and no invented message.
+ *
+ * Exported for `useAsksCount`, which needs the same degradation: on a host
+ * without the attention route the badge counts parked deliveries, which is what
+ * the Desk lists there.
  */
-function deliveriesAsRequests(deliveries: EventDelivery[]): AttentionRequest[] {
+export function deliveriesAsRequests(deliveries: EventDelivery[]): AttentionRequest[] {
   return deliveries
     .filter((d) => d.status === 'awaiting_human' && d.session_id !== '')
     .map((d) => ({

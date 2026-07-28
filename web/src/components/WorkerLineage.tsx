@@ -108,7 +108,8 @@ export default function WorkerLineage({
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
         Every change recorded against this worker, newest first. Versions count prompt writes,
-        oldest is v1; identical rewrites are counted once in “distinct”.
+        oldest is v1; “distinct” counts the rewrites that actually changed the text, so a rewrite
+        that re-wrote the same words is not counted as progress.
       </Typography>
 
       {!log.available && (

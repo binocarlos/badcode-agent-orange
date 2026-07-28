@@ -12,7 +12,7 @@ import {
   ProjectSettingsPage,
   WorkersPage,
   projectIdFromLocation,
-  useAttentionRequests,
+  useAsksCount,
   useSessionPermalink,
   useWorkers,
 } from "@agentkit/chat-ui";
@@ -213,8 +213,10 @@ function ProjectWorkspace({
 
   // The only number in the chrome (design §3.5): how many things are asking for
   // you. Read here rather than lifted out of DeskPage so the badge is right
-  // whichever view is open.
-  const { requests: openAsks } = useAttentionRequests();
+  // whichever view is open — but through useAsksCount, which applies the very
+  // join the Asks stack applies (doc 21, X7). The badge used to count open
+  // attention requests, a superset: it read 2 above a stack of 1.
+  const { count: openAsks } = useAsksCount();
 
   // URL ⇄ active session, both directions: a pasted /p/<project>/s/<session>
   // resumes that session, and whatever session is open is already permalinked.
@@ -234,7 +236,7 @@ function ProjectWorkspace({
   return (
     <Box sx={{ display: "flex", height: "100vh" }}>
       <Box sx={{ width: 280, borderRight: 1, borderColor: "divider", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <ViewNav view={view} onChange={setView} asks={openAsks.length} />
+        <ViewNav view={view} onChange={setView} asks={openAsks} />
         {/* The sidebar stays mounted in every view: it carries the project
             switcher and the session list, which are how you leave a view. */}
         <Box sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>

@@ -19,7 +19,6 @@ import React from 'react'
 import {
   Alert,
   Box,
-  Chip,
   Link,
   Table,
   TableBody,
@@ -31,12 +30,12 @@ import {
 } from '@mui/material'
 import {
   deliveryStatusSeverity,
-  describeDeliveryStatus,
   formatDuration,
   formatTimestamp,
   formatTokens,
   type JobRow,
 } from '../events.js'
+import DeliveryStatusChip from './DeliveryStatusChip.js'
 import { buildSessionPath } from '../permalink.js'
 import { useSessionTokens } from '../useEvents.js'
 import type { ConfigApiOptions } from '../configApi.js'
@@ -145,14 +144,7 @@ function JobHistoryRow({
         )}
       </TableCell>
       <TableCell>
-        <Tooltip title={describeDeliveryStatus(job.status)}>
-          <Chip
-            size="small"
-            label={job.status}
-            color={statusChipColor(job.status)}
-            variant={job.status === 'pending' ? 'outlined' : 'filled'}
-          />
-        </Tooltip>
+        <DeliveryStatusChip status={job.status} />
       </TableCell>
       <TableCell align="right">
         <JobTokensCell sessionId={job.sessionId} auto={autoLoadTokens} {...apiOptions} />
@@ -221,7 +213,9 @@ function Muted({ children }: { children: React.ReactNode }) {
 }
 
 /** Chip colour for a status — the shared severity bucket, so a host laying out
- *  its own table colours the six statuses identically. */
+ *  its own table colours the six statuses identically. `awaiting_human` reads
+ *  `default` here and is painted rose by DeliveryStatusChip (doc 21, X11): the
+ *  MUI prop has no way to say rose. */
 export function statusChipColor(
   status: string,
 ): 'success' | 'error' | 'warning' | 'info' | 'default' {

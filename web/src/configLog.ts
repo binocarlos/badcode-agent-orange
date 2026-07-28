@@ -43,6 +43,7 @@
 // shadow of a real mutation (§15.4).
 
 import { buildSessionPath } from './permalink.js'
+import { formatCompactTime } from './timefmt.js'
 
 /** The read route this UI reads by default; mounted in go/httpapi. */
 export const CONFIG_LOG_ENDPOINT = '/agent/config-events'
@@ -447,9 +448,17 @@ export interface WorkerLineage {
   versions: number
   /** Versions after the first: what an operator means by "rewrites". */
   rewrites: number
-  /** Distinct prompt texts across the versions (identical rewrites dedupe). */
+  /**
+   * Rewrites that actually changed the prompt text — a rewrite whose text is
+   * byte-identical to the version before it is churn, not a change, and is not
+   * counted here.
+   *
+   * Always ≤ `rewrites`. It used to count distinct *texts across versions*,
+   * which made the header read "2 rewrites · 3 distinct" (doc 21, X5): true of
+   * two different things, and arithmetic nonsense to read.
+   */
   distinct: number
-  /** "47 rewrites · 45 distinct", or "no rewrites yet". */
+  /** "3 versions · 2 rewrites, 2 distinct", or "no rewrites yet". */
   summary: string
 }
 
@@ -463,8 +472,12 @@ export interface WorkerLineage {
  * Version numbering is the count of prompt-carrying events for the key, oldest
  * = v1 (so the create that seeded the prompt is v1, not "rewrite #1"). Two
  * consecutive writes of the same text are both versions — the log recorded
- * both — but the second is marked `duplicate`, and `distinct` counts texts,
+ * both — but the second is marked `duplicate` and is not counted as distinct,
  * which is how "n rewrites, m distinct" stops churn reading as progress.
+ *
+ * The three counts are one arithmetic (doc 21, X5): versions = rewrites + 1
+ * once anything has been written, and distinct ≤ rewrites. The header says all
+ * three in that order, so nothing in it can read as broken.
  */
 export function workerLineage(entries: ChangelogEntry[], workerName: string): WorkerLineage {
   const entityKey = `worker:${workerName}`
@@ -473,8 +486,8 @@ export function workerLineage(entries: ChangelogEntry[], workerName: string): Wo
   // Number oldest→newest; the caller's order (newest-first) is restored after.
   const oldestFirst = mine.slice().reverse()
   const rows: LineageEntry[] = []
-  const texts: string[] = []
   let version = 0
+  let distinct = 0
   let previousPrompt: string | null = null
 
   for (const entry of oldestFirst) {
@@ -483,7 +496,9 @@ export function workerLineage(entries: ChangelogEntry[], workerName: string): Wo
     if (prompt !== null) {
       version++
       duplicate = previousPrompt !== null && previousPrompt === prompt
-      texts.push(prompt)
+      // v1 is the seed, not a rewrite; every later version that moved the text
+      // is one distinct rewrite.
+      if (version > 1 && !duplicate) distinct++
       previousPrompt = prompt
     }
     rows.push({
@@ -495,12 +510,11 @@ export function workerLineage(entries: ChangelogEntry[], workerName: string): Wo
     })
   }
 
-  const distinct = new Set(texts).size
   const rewrites = version === 0 ? 0 : version - 1
   const summary =
     rewrites === 0
       ? 'no rewrites yet'
-      : `${rewrites} rewrite${rewrites === 1 ? '' : 's'} · ${distinct} distinct`
+      : `${version} versions · ${rewrites} rewrite${rewrites === 1 ? '' : 's'}, ${distinct} distinct`
 
   return {
     workerName,
@@ -570,10 +584,12 @@ export function changelogQueryParams(query: ChangelogQuery = {}): URLSearchParam
   return params
 }
 
-/** Unix MILLISECONDS → a local, human-readable stamp. 0/absent renders as ''. */
+/** Unix MILLISECONDS → the console's compact stamp (timefmt). Config events are
+ *  already ms, so this passes them straight through — the wrapper stays so the
+ *  unit is named at the call site and the log's stamps move with the rest. */
 export function formatConfigTimestamp(ms: number | null | undefined): string {
   if (!ms) return ''
-  return new Date(ms).toLocaleString()
+  return formatCompactTime(ms)
 }
 
 // ---------------------------------------------------------------------------
