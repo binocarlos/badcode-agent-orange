@@ -193,7 +193,7 @@ core common-sense layer as system prompts. Design: [`19-scenario-library.md`](./
 doctrine-v1 drafted, all entries CANDIDATE). Doctrine injects as an ordinary post-apply operator
 mutation on the project prompt (D5) — no engine changes in this wave.*
 
-- [ ] **DR1 — Doctrine axis in the calibration rig.** Read the canonical bytes below the marker
+- [x] **DR1 — Doctrine axis in the calibration rig.** Read the canonical bytes below the marker
   line of `docs/product/doctrine/doctrine-v1.md`; new arm variants in `arms.ts` that apply them
   after topology apply via the existing settings path (read current → overlay `SystemPrompt` →
   whole-object PUT — the T2/L3R pattern; config-logged for free). New config `doctrine-smoke-4`
@@ -485,4 +485,27 @@ mutation on the project prompt (D5) — no engine changes in this wave.*
 - (Orchestrator) **Engine gate queues; experiment abort needs its own ceiling** — runbook §4's
   stop criterion is served by the runner's harness-side count even now TOK1 is fixed; a ceiling
   that queues is not a stop button. Stale L3R comments updated to say so.
+- (DR1) **A mock rule's two predicate slots cannot express (identity ∧ hypothesis ∧
+  doctrine-present)** — and "doctrine present" as a positive `match` would hit the critic and
+  checker too, since the block rides every prompt. The honest resolution: the doctrine branch has
+  NO rules of its own and falls through to the shared per-hypothesis rules; the delivery assertion
+  is an `absent:`-keyed **tripwire** that fires only when the block is MISSING (arm collapses to
+  unparseable, proven non-vacuous by disabling the injection). Every future prompt-axis smoke hits
+  this same wall.
+- (DR1) **A doctrine mock smoke shows delta 0 by construction, and that is correct** — an authored
+  delta between doctrine arms would be a number about the mock script. Doc 20 §3 now says so.
+- (DR1) **`match`/`absent` strings must survive JSON encoding** — the proxy matches the raw
+  request body, so a phrase containing quotes, backslashes or newlines is escaped in flight and
+  the rule goes silently always-false. Most of doctrine-v1's memorable lines carry quotes; the
+  WD-2 line was chosen partly for being clean. Pinned by a unit test; a general trap for any rig
+  keying on prose.
+- (DR1) **"Report names the doctrine version" vs "smoke-4 byte-identical" resolved by conditional
+  emission** — the JSON key exists only on arms that injected doctrine; the markdown clause only
+  when some arm has the axis. Both directions unit-tested; non-doctrine reports unchanged to the
+  byte.
+- (DR1) **`applyDoctrine` refuses a non-empty project prompt** — doc 20 §3's append-limit made
+  loud instead of silently overwriting (which would quietly change what the A/B compares).
+- (DR1) **Whole-object settings PUT strikes again**: ceiling is written first, the doctrine write
+  re-reads fresh settings, and the runner asserts `daily_tokens_hard` survived. Any pair of
+  settings mutations needs this order-and-reassert discipline.
 

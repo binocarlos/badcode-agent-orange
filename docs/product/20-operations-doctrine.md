@@ -54,7 +54,10 @@ deliberate:
   repo, not behaviour in `go/`.
 - **Delivery is provable in mock**: a rule keyed on a doctrine-v1 phrase flips scripted behaviour
   only when the block reached the composed prompt — the same delivery-not-storage assertion every
-  learning story uses.
+  learning story uses. (Built as DR1's `absent:`-keyed tripwire. Corollary: a doctrine mock smoke
+  shows **zero delta by construction** — the doctrine arm falls through to the same scripted
+  answers, and only a *missing* block trips the wire. A flat doctrine smoke is the machinery
+  working, never evidence against doctrine; evidence comes only from real-model A/Bs.)
 - **Versioned like everything else**: the canonical bytes live in one file per version
   (`docs/product/doctrine/doctrine-v1.md`); a referenced version is immutable; changes are a new
   file; run reports name the version they injected.
