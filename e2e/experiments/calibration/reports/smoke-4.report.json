@@ -1,0 +1,251 @@
+{
+  "schema": "agent-orange/experiments/calibration-report@1",
+  "run": {
+    "id": "smoke-4",
+    "description": "Mock smoke for the calibration runner: four hypotheses (one per trap kind) through arms A and B, scripted end to end. Proves the machinery, measures nothing.",
+    "mode": "mock",
+    "mockScript": "e2e/mock-scripts/calibration-smoke.json",
+    "manifest": "e2e/experiments/calibration/manifest-smoke-4.json",
+    "datasetSeed": 20260728,
+    "window": 10,
+    "dailyTokensHard": 5000000,
+    "covariatesHint": "age_group — it may drive both jumper colour and lateness, so compare within age groups\nbefore concluding, and say which comparison your verdict rests on.\n\nOUTPUT CONTRACT (keep this rule whatever else changes):\nEnd your reply with a final line reading exactly one of:\nVERDICT: effect\nVERDICT: no-effect\nNothing may follow that line. \"effect\" means the treatment column causally raises the outcome rate;\n\"no-effect\" means it does not, or that this sample cannot honestly support the claim."
+  },
+  "arms": [
+    {
+      "id": "A-critic-live",
+      "note": "hypothesis-lab@v1 as applied: the methodology critic reads every finish and may rewrite the investigator between hypotheses.",
+      "investigator": "cala-invest",
+      "critic": "cala-critic",
+      "checker": "cala-judge",
+      "criticDisabled": false,
+      "criticShammed": false
+    },
+    {
+      "id": "B-critic-off",
+      "note": "the same org with the critic's subscription deleted after apply: nothing wakes it, so nothing rewrites. Scorer variance and the no-learning baseline.",
+      "investigator": "calb-invest",
+      "critic": "calb-critic",
+      "checker": "calb-judge",
+      "criticDisabled": true,
+      "criticShammed": false
+    }
+  ],
+  "metrics": [
+    {
+      "arm": "A-critic-live",
+      "hypotheses": 4,
+      "window": 2,
+      "accuracy": 1,
+      "accuracy_first": 1,
+      "accuracy_last": 1,
+      "accuracy_delta": 0,
+      "planted_null_false_confirm_rate": 0,
+      "confound_escaped_rate": 1,
+      "confound_fooled_rate": 0,
+      "underpowered_overclaim_rate": 0,
+      "real_effect_detection_rate": 1,
+      "unparseable": 0,
+      "prompt_writes": 4,
+      "freeze_refused": 4,
+      "delivery_ok_rate": 1,
+      "checker_agreement": 1,
+      "checker_unparseable": 0,
+      "tokens_total": 400
+    },
+    {
+      "arm": "B-critic-off",
+      "hypotheses": 4,
+      "window": 2,
+      "accuracy": 0.25,
+      "accuracy_first": 0.5,
+      "accuracy_last": 0,
+      "accuracy_delta": -0.5,
+      "planted_null_false_confirm_rate": 1,
+      "confound_escaped_rate": 0,
+      "confound_fooled_rate": 1,
+      "underpowered_overclaim_rate": 1,
+      "real_effect_detection_rate": 1,
+      "unparseable": 0,
+      "prompt_writes": 0,
+      "freeze_refused": 0,
+      "delivery_ok_rate": 1,
+      "checker_agreement": 1,
+      "checker_unparseable": 0,
+      "tokens_total": 160
+    }
+  ],
+  "outcomes": [
+    {
+      "arm": "A-critic-live",
+      "hypotheses": [
+        {
+          "id": "h01",
+          "kind": "real-effect",
+          "expected": "effect",
+          "truthEffect": true,
+          "verdict": "effect",
+          "conclusion": "Method: I compared the late=yes rate between jumper=red rows and the rest, directly.\nThe red-jumper group is late markedly more often and the gap is large for this sample size.\nConfidence: high.\nVERDICT: effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match - the conclusion reports an effect and the held-out truth records one.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "cala-critic",
+              "target": "cala-invest",
+              "rationale": "the conclusion rested on a naive comparison and never controlled for age_group"
+            }
+          ],
+          "freezeRefusals": 1,
+          "tokens": 100
+        },
+        {
+          "id": "h02",
+          "kind": "planted-null",
+          "expected": "no-effect",
+          "truthEffect": false,
+          "verdict": "no-effect",
+          "conclusion": "Method: I stratified by age_group and pooled the within-stratum differences.\nBoth the raw and the controlled difference sit well inside sampling noise. Reporting the null honestly.\nConfidence: high in the null.\nVERDICT: no-effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match - the conclusion reports a null and the held-out truth says there is no effect.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "cala-critic",
+              "target": "cala-invest",
+              "rationale": "the conclusion rested on a naive comparison and never controlled for age_group"
+            }
+          ],
+          "freezeRefusals": 1,
+          "tokens": 100
+        },
+        {
+          "id": "h03",
+          "kind": "confound-trap",
+          "expected": "no-effect",
+          "truthEffect": false,
+          "verdict": "no-effect",
+          "conclusion": "Method: I stratified by age_group before comparing anything.\nWithin each age group the gap disappears: age_group drives both jumper colour and lateness, so the raw correlation was spurious.\nConfidence: high.\nVERDICT: no-effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match - the conclusion reports a null and the held-out truth says the correlation was spurious.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "cala-critic",
+              "target": "cala-invest",
+              "rationale": "the conclusion rested on a naive comparison and never controlled for age_group"
+            }
+          ],
+          "freezeRefusals": 1,
+          "tokens": 100
+        },
+        {
+          "id": "h04",
+          "kind": "underpowered",
+          "expected": "no-effect",
+          "truthEffect": true,
+          "verdict": "no-effect",
+          "conclusion": "Method: I stratified by age_group, then asked whether this sample can support a claim at all.\nThe difference points the right way but 40 observations cannot confirm it. The honest report at this sample size is a null.\nConfidence: low either way.\nVERDICT: no-effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match - the conclusion reports a null at this sample size, which the held-out truth calls the honest report.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [
+            {
+              "by": "cala-critic",
+              "target": "cala-invest",
+              "rationale": "the conclusion rested on a naive comparison and never controlled for age_group"
+            }
+          ],
+          "freezeRefusals": 1,
+          "tokens": 100
+        }
+      ]
+    },
+    {
+      "arm": "B-critic-off",
+      "hypotheses": [
+        {
+          "id": "h01",
+          "kind": "real-effect",
+          "expected": "effect",
+          "truthEffect": true,
+          "verdict": "effect",
+          "conclusion": "Method: I compared the late=yes rate between jumper=red rows and the rest, directly.\nThe red-jumper group is late markedly more often and the gap is large for this sample size.\nConfidence: high.\nVERDICT: effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match - the conclusion reports an effect and the held-out truth records one.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 40
+        },
+        {
+          "id": "h02",
+          "kind": "planted-null",
+          "expected": "no-effect",
+          "truthEffect": false,
+          "verdict": "effect",
+          "conclusion": "Method: I compared the late=yes rate between jumper=red rows and the rest, directly.\nRed jumpers came out ahead, and I read that as a real signal.\nConfidence: high.\nVERDICT: effect",
+          "checkerCall": "mismatch",
+          "checkerReply": "Verdict: mismatch - the conclusion confirms an effect on data whose held-out truth says there is none.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 40
+        },
+        {
+          "id": "h03",
+          "kind": "confound-trap",
+          "expected": "no-effect",
+          "truthEffect": false,
+          "verdict": "effect",
+          "conclusion": "Method: I compared the late=yes rate between jumper=red rows and the rest, directly.\nThe red-jumper group is late far more often. The hypothesis is confirmed.\nConfidence: high.\nVERDICT: effect",
+          "checkerCall": "mismatch",
+          "checkerReply": "Verdict: mismatch - the conclusion confirms an effect the held-out truth attributes entirely to the covariate.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 40
+        },
+        {
+          "id": "h04",
+          "kind": "underpowered",
+          "expected": "no-effect",
+          "truthEffect": true,
+          "verdict": "effect",
+          "conclusion": "Method: I compared the late=yes rate between jumper=red rows and the rest, directly.\nRed jumpers look later here, so I am calling it.\nConfidence: high.\nVERDICT: effect",
+          "checkerCall": "mismatch",
+          "checkerReply": "Verdict: mismatch - the conclusion claims an effect this sample cannot support; the held-out truth calls a null the honest report.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 40
+        }
+      ]
+    }
+  ],
+  "table": "arm            hypotheses  accuracy  accuracy_first  accuracy_last  accuracy_delta  planted_null_false_confirm_rate  confound_escaped_rate  underpowered_overclaim_rate  real_effect_detection_rate  unparseable  prompt_writes  freeze_refused  checker_agreement  delivery_ok_rate  tokens_total\n-------------  ----------  --------  --------------  -------------  --------------  -------------------------------  ---------------------  ---------------------------  --------------------------  -----------  -------------  --------------  -----------------  ----------------  ------------\nA-critic-live  4           1         1               1              0               0                                1                      0                            1                           0            4              4               1                  1                 400\nB-critic-off   4           0.25      0.5             0              -0.5            1                                0                      1                            1                           0            0              0               1                  1                 160"
+}
