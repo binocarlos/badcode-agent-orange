@@ -188,7 +188,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 4 — the chart (OC1 first; OC2/OC3 after it merges)
 
-- [ ] **OC1 — `layoutOrgChart`, pure (decision K6).** `web/src/orgchart.ts`:
+- [x] **OC1 — `layoutOrgChart`, pure (decision K6).** `web/src/orgchart.ts`:
   `layoutOrgChart(workers, subscriptions, schedules, recentEvents)` → typed
   `{nodes, wires, clocks, entryPips, width, height}` with numeric coordinates. Layered layout:
   rank = longest path from an entry pip (external event types seen in `recentEvents` plus
@@ -199,7 +199,7 @@ cross = failure, lock = freeze refusal.
   no randomness. Table tests over the 13 seed shapes' worker/subscription rows (hand-declared
   fixtures — do NOT import from `go/`).
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
-- [ ] **OC2 — OrgChartPage, read-only, + propagation.** `web/src/components/OrgChartPage.tsx`
+- [x] **OC2 — OrgChartPage, read-only, + propagation.** `web/src/components/OrgChartPage.tsx`
   renders OC1's output as SVG in the design's schematic style (§6.1: name plates 1px-ruled, mono
   names, prose descriptions, event types riding wires, frozen = double rule in steel + lock,
   schedule dials, state line `● running n/max` from live deliveries). No stored positions
@@ -231,7 +231,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 6 — learning surfaces (parallel; independent files)
 
-- [ ] **BA1 — Before / after.** From a lineage entry or a Desk change: three columns —
+- [x] **BA1 — Before / after.** From a lineage entry or a Desk change: three columns —
   the subject worker's last `worker.finished` transcript before the rewrite, the rewrite
   (actor, rationale, diff), the first after. Pure `beforeAfter(configEvent, events)` selector in
   a new `web/src/learning.ts` (join on envelope `worker` + timestamps; return nulls when a side
@@ -239,7 +239,7 @@ cross = failure, lock = freeze refusal.
   tool calls are absent from these transcripts — this shows what the worker said, never what it
   did. Component `BeforeAfterView.tsx`, mounted from LN1's entries.
   *Validation:* `cd web && npm ci && npm run typecheck && npm test`
-- [ ] **BR1 — Bench report viewer.** `web/src/components/BenchReportView.tsx` +
+- [x] **BR1 — Bench report viewer.** `web/src/components/BenchReportView.tsx` +
   pure `parseBenchReport(json)` in `learning.ts` accepting the comparison rig's `report.json`
   shape (fixture: copy `e2e/experiments/reports/actor-critic-vs-sham-vs-solo.report.json` into
   the test as a fixture file — do not import across packages, do not touch `e2e/experiments/`).
@@ -366,3 +366,29 @@ cross = failure, lock = freeze refusal.
   joining EventsPage.tsx and useConfigLog.ts. Sweep all three in some later item.
 - **(orchestrator) Wave 2+3 merged conflict-free**; web 607→673 tests. Screenshot pass still
   deferred — the e2e stack (another session's) holds port 8080.
+- **(OC1) Event "producers" are inferred, documented, exported** (`subscriptionProducers`):
+  `filter.worker` naming a real worker wins; an UNFILTERED `worker.finished`/`worker.failed`
+  subscription fans in from every worker (and self-edges its own subscriber — a legal hand-wired
+  cycle); anything else is an entry pip. All 13 seeds use the first case.
+- **(OC1) Silent drops, deliberate**: a subscription targeting a nonexistent worker and a
+  schedule pointing at a missing worker draw nothing — a real config problem the chart stays
+  silent about; candidates for a Desk trouble line, not a chart line.
+- **(OC1) `*/` inside a block comment**: documenting cron `*` syntax closed the comment and
+  produced 20 misleading tsc errors. Prose only when documenting cron in TS comments.
+- **(OC2) The running-count join goes delivery→subscription→worker** (`buildJobRows`), so a
+  delivery whose subscription aged out of the 100-row page is invisible to `n/max`. Not claimed.
+- **(OC2) Nav is now SEVEN buttons at 280px** — the screenshot pass is overdue and blocking on
+  the shared stack; check squash before calling the shell done.
+- **(OC2) The chart is a dead end until OC4** (no click-through to workers/Automation) — scope
+  discipline, K3 owns actions.
+- **(BA1) Config events are ms, project events are SECONDS** — `learning.ts` exports `eventMs()`
+  and a regression test; ANY future join of the config log against events hits this.
+- **(BA1) The subject worker is `configEntity(ev).name`, never `actor_worker`** — the reviewer
+  rewrites the answerer; using the actor shows the wrong worker's transcripts. Pinned by test.
+- **(BR1) The churn rule is enforced in the DATA**: `prompt_writes` is stripped from
+  metricColumns and returned only as a separate `churn` field — no view or future sort can rank
+  by it. Fixture proves the design's point: 4 writes, 1 distinct.
+- **(BR1) `web/src/__fixtures__/` is a new convention** (first JSON fixture; resolveJsonModule
+  already on). Bench mounts as a fifth EventsPage tab behind `enableBench` (default true).
+- **(orchestrator) Wave 4+6 merged conflict-free**; web 673→874 tests (144 of them the layout
+  module alone).
