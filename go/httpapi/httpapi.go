@@ -6,6 +6,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/binocarlos/badcode-agent-orange"
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
@@ -161,10 +162,27 @@ func New(cfg Config) (*Handlers, error) {
 // because who was at the keyboard is the login audit's business, not the config
 // log's. Workers acting through their MCP tools supply their own actor.
 //
-// Rationale stays empty here too: no request body on these routes carries one.
-// The two writes that REQUIRE a rationale (§15.5) are the prompt writes, which
-// have their own route set (H1) and must thread it from the body.
+// Rationale stays empty here: humanEdit is the write for a request that carried
+// no reason. A request that DID carry one goes through humanEditBecause.
 func humanEdit() agentdb.ConfigWrite { return agentdb.ConfigWrite{} }
+
+// humanEditBecause is humanEdit plus the reason the operator typed — the
+// optional `rationale` every configuration route now accepts (design B3 / K2),
+// in the body on writes and as `?rationale=` on the deletes, which carry none.
+//
+// Optional, not required: §15.5 demands a rationale only of the two prompt
+// writes, which have their own tool path. Empty stays empty rather than
+// becoming a placeholder — "(no reason given)" is a thing the changelog says,
+// not a thing the config log stores.
+func humanEditBecause(rationale string) agentdb.ConfigWrite {
+	cw := humanEdit()
+	cw.Rationale = strings.TrimSpace(rationale)
+	return cw
+}
+
+// rationaleParam reads `?rationale=` — the only way a DELETE, which has no
+// body, can say why.
+func rationaleParam(r *http.Request) string { return r.URL.Query().Get("rationale") }
 
 // identify runs the host's extractor; on error writes 401 and returns ok=false.
 func (h *Handlers) identify(w http.ResponseWriter, r *http.Request) (Identity, bool) {

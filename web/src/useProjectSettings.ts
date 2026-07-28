@@ -48,13 +48,18 @@ export interface ProjectSettingsApi {
   attentionError: string | null
   /** Per-field validation problems for the numeric settings. */
   fieldErrors: FieldErrors
+  /** The operator's one-line reason for this change (design B3 / K2). Required
+   *  non-empty before `canSave` goes true — a settings edit carries a reason. */
+  rationale: string
+  setRationale: (text: string) => void
   loading: boolean
   saving: boolean
   /** Load or save failure, as the server phrased it. */
   error: string | null
   /** True once anything has been edited since the last load/save. */
   dirty: boolean
-  /** False while a JSON editor is unparsable or a numeric field is invalid. */
+  /** False while a JSON editor is unparsable, a numeric field is invalid, or
+   *  the rationale is empty. */
   canSave: boolean
   reload: () => Promise<void>
   save: () => Promise<void>
@@ -71,6 +76,7 @@ export default function useProjectSettings(
   const [attentionText, setAttentionTextState] = useState('{}')
   const [mcpError, setMcpError] = useState<string | null>(null)
   const [attentionError, setAttentionError] = useState<string | null>(null)
+  const [rationale, setRationale] = useState('')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -83,6 +89,9 @@ export default function useProjectSettings(
     setAttentionTextState(formatJsonObject(settings.attention_channel))
     setMcpError(null)
     setAttentionError(null)
+    // A saved reason belongs to the change that carried it: the next edit
+    // writes its own, rather than inheriting the last one silently.
+    setRationale('')
     setDirty(false)
   }, [])
 
@@ -135,6 +144,7 @@ export default function useProjectSettings(
     !saving &&
     mcpError === null &&
     attentionError === null &&
+    rationale.trim() !== '' &&
     Object.keys(fieldErrors).length === 0
 
   const save = useCallback(async () => {
@@ -151,15 +161,20 @@ export default function useProjectSettings(
       return
     }
     if (Object.keys(validateProjectSettings(draft)).length > 0) return
+    // The reason is required (K2), and this is the last gate before the network.
+    if (rationale.trim() === '') return
 
     setSaving(true)
     setError(null)
     try {
-      const body = projectSettingsBody({
-        ...draft,
-        mcp_config: mcp.value,
-        attention_channel: attention.value,
-      })
+      const body = projectSettingsBody(
+        {
+          ...draft,
+          mcp_config: mcp.value,
+          attention_channel: attention.value,
+        },
+        rationale,
+      )
       const saved = await request<unknown>(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -172,7 +187,7 @@ export default function useProjectSettings(
     } finally {
       setSaving(false)
     }
-  }, [adopt, attentionText, draft, endpoint, mcpText, onSaved, request])
+  }, [adopt, attentionText, draft, endpoint, mcpText, onSaved, rationale, request])
 
   return {
     draft,
@@ -184,6 +199,8 @@ export default function useProjectSettings(
     setAttentionText,
     attentionError,
     fieldErrors,
+    rationale,
+    setRationale,
     loading,
     saving,
     error,

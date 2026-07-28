@@ -157,9 +157,9 @@ export default function AutomationPage({
   const error = tab === 'subscriptions' ? subs.error : scheds.error
 
   const saveSubscription = useCallback(
-    async (draft: SubscriptionDraft) => {
+    async (draft: SubscriptionDraft, rationale: string) => {
       setSaving(true)
-      const stored = await subs.save(draft)
+      const stored = await subs.save(draft, rationale)
       setSaving(false)
       if (stored) select(stored.id)
     },
@@ -177,9 +177,10 @@ export default function AutomationPage({
   )
 
   const removeRow = useCallback(
-    async (id: string) => {
+    async (id: string, rationale: string) => {
       setSaving(true)
-      const ok = tab === 'subscriptions' ? await subs.remove(id) : await scheds.remove(id)
+      const ok =
+        tab === 'subscriptions' ? await subs.remove(id, rationale) : await scheds.remove(id, rationale)
       setSaving(false)
       if (ok) select(null)
     },

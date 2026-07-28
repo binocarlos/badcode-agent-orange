@@ -130,7 +130,7 @@ func (h *Handlers) createSchedule(w http.ResponseWriter, r *http.Request) {
 		sch.Enabled = *body.Enabled
 	}
 	// Read-back validation (§9): the caller sees exactly what persisted.
-	created, err := store.CreateSchedule(r.Context(), sch, scheduleWrite(body))
+	created, err := store.CreateSchedule(r.Context(), sch, humanEditBecause(body.Rationale))
 	if err != nil {
 		writeScheduleErr(w, err)
 		return
@@ -191,7 +191,7 @@ func (h *Handlers) updateSchedule(w http.ResponseWriter, r *http.Request) {
 	if body.Enabled != nil {
 		existing.Enabled = *body.Enabled
 	}
-	updated, err := store.UpdateSchedule(r.Context(), existing, scheduleWrite(body))
+	updated, err := store.UpdateSchedule(r.Context(), existing, humanEditBecause(body.Rationale))
 	if err != nil {
 		writeScheduleErr(w, err)
 		return
@@ -208,20 +208,12 @@ func (h *Handlers) deleteSchedule(w http.ResponseWriter, r *http.Request) {
 	if store == nil {
 		return
 	}
-	if err := store.DeleteSchedule(r.Context(), id.Customer, r.PathValue("id"), humanEdit()); err != nil {
+	// No body on a DELETE, so the reason rides `?rationale=`.
+	if err := store.DeleteSchedule(r.Context(), id.Customer, r.PathValue("id"), humanEditBecause(rationaleParam(r))); err != nil {
 		writeScheduleErr(w, err)
 		return
 	}
 	writeJSON(w, map[string]any{"deleted": true})
-}
-
-// scheduleWrite is humanEdit() plus the optional rationale from the body: no
-// acting worker and no acting session, because who was at the keyboard is the
-// login audit's business, not the config log's (§15.2).
-func scheduleWrite(body scheduleBody) agentdb.ConfigWrite {
-	cw := humanEdit()
-	cw.Rationale = strings.TrimSpace(body.Rationale)
-	return cw
 }
 
 // writeScheduleErr maps store errors onto status codes: missing rows are 404,

@@ -156,6 +156,9 @@ type subscriptionBody struct {
 	Worker            string         `json:"worker"`
 	MaxFiringsPerHour *int           `json:"max_firings_per_hour"`
 	Enabled           *bool          `json:"enabled"`
+	// Rationale is the operator's one-line reason, threaded into the config
+	// event (design B3); optional, exactly as on the schedule routes.
+	Rationale string `json:"rationale"`
 }
 
 // Subscriptions serves GET (list) and POST (create) on /agent/subscriptions.
@@ -232,7 +235,7 @@ func (h *Handlers) createSubscription(w http.ResponseWriter, r *http.Request) {
 	if body.MaxFiringsPerHour != nil {
 		sub.MaxFiringsPerHour = *body.MaxFiringsPerHour
 	}
-	created, err := store.CreateSubscription(r.Context(), sub, humanEdit())
+	created, err := store.CreateSubscription(r.Context(), sub, humanEditBecause(body.Rationale))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -294,7 +297,7 @@ func (h *Handlers) updateSubscription(w http.ResponseWriter, r *http.Request) {
 	if body.Enabled != nil {
 		existing.Enabled = *body.Enabled
 	}
-	updated, err := store.UpdateSubscription(r.Context(), existing, humanEdit())
+	updated, err := store.UpdateSubscription(r.Context(), existing, humanEditBecause(body.Rationale))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -311,7 +314,8 @@ func (h *Handlers) deleteSubscription(w http.ResponseWriter, r *http.Request) {
 	if store == nil {
 		return
 	}
-	if err := store.DeleteSubscription(r.Context(), id.Customer, r.PathValue("id"), humanEdit()); err != nil {
+	// No body on a DELETE, so the reason rides `?rationale=`.
+	if err := store.DeleteSubscription(r.Context(), id.Customer, r.PathValue("id"), humanEditBecause(rationaleParam(r))); err != nil {
 		http.Error(w, "subscription not found", http.StatusNotFound)
 		return
 	}

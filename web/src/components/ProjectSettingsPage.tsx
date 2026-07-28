@@ -147,6 +147,23 @@ export default function ProjectSettingsPage({
           </Stack>
         </Box>
 
+        <Box>
+          <TextField
+            label="Why?"
+            fullWidth
+            size="small"
+            value={s.rationale}
+            placeholder="raising the concurrency cap; the morning queue was backing up"
+            onChange={(e) => s.setRationale(e.target.value)}
+            inputProps={{ 'aria-label': 'Why?' }}
+          />
+          <FormHelperText>
+            {s.rationale.trim() === ''
+              ? 'Required. One line, stored with the change in the config log — the changelog reads it next to who made it.'
+              : 'Stored with the change in the config log, and shown in the changelog next to who made it.'}
+          </FormHelperText>
+        </Box>
+
         <Stack direction="row" spacing={2} alignItems="center">
           <Button variant="contained" disabled={!s.canSave || !s.dirty} onClick={() => void s.save()}>
             {s.saving ? 'Saving…' : 'Save settings'}

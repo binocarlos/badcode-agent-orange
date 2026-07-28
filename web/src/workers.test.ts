@@ -135,6 +135,15 @@ describe('workerBody', () => {
   it('trims the image — a stray space is a silent resolution failure', () => {
     expect(workerBody({ ...newWorkerDraft(), name: 'w', image: ' tools:2 ' }).image).toBe('tools:2')
   })
+
+  it('carries the operator\u2019s reason, and omits an empty one', () => {
+    const draft = { ...newWorkerDraft(), name: 'w' }
+    expect(workerBody(draft, '  the replies were too long  ')).toMatchObject({
+      rationale: 'the replies were too long',
+    })
+    expect(workerBody(draft)).not.toHaveProperty('rationale')
+    expect(workerBody(draft, '   ')).not.toHaveProperty('rationale')
+  })
 })
 
 describe('coerceWorker', () => {

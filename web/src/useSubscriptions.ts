@@ -11,7 +11,7 @@
 // useProjectSettings/useWorkers/useEvents.
 
 import { useCallback, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { useConfigApi, withRationale, type ConfigApiOptions } from './configApi.js'
 import { coerceSubscription, type Subscription } from './events.js'
 import {
   subscriptionBody,
@@ -32,9 +32,12 @@ export interface SubscriptionsApi {
   /** The last failure, as the server phrased it. */
   error: string | null
   reload: () => Promise<void>
-  /** Create (empty id) or update (id set). Returns the stored row, or null. */
-  save: (draft: SubscriptionDraft) => Promise<Subscription | null>
-  remove: (id: string) => Promise<boolean>
+  /** Create (empty id) or update (id set), with the operator's one-line reason
+   *  (design B3 / K2). Returns the stored row, or null. */
+  save: (draft: SubscriptionDraft, rationale?: string) => Promise<Subscription | null>
+  /** Delete a subscription. The route has no body, so the reason rides
+   *  `?rationale=`. */
+  remove: (id: string, rationale?: string) => Promise<boolean>
 }
 
 export default function useSubscriptions(options: UseSubscriptionsOptions = {}): SubscriptionsApi {
@@ -70,7 +73,7 @@ export default function useSubscriptions(options: UseSubscriptionsOptions = {}):
   }
 
   const save = useCallback(
-    async (draft: SubscriptionDraft): Promise<Subscription | null> => {
+    async (draft: SubscriptionDraft, rationale = ''): Promise<Subscription | null> => {
       setError(null)
       const creating = draft.id.trim() === ''
       try {
@@ -79,7 +82,7 @@ export default function useSubscriptions(options: UseSubscriptionsOptions = {}):
           {
             method: creating ? 'POST' : 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(subscriptionBody(draft)),
+            body: JSON.stringify(subscriptionBody(draft, rationale)),
           },
         )
         const sub = coerceSubscription(stored)
@@ -102,10 +105,10 @@ export default function useSubscriptions(options: UseSubscriptionsOptions = {}):
   )
 
   const remove = useCallback(
-    async (id: string): Promise<boolean> => {
+    async (id: string, rationale = ''): Promise<boolean> => {
       setError(null)
       try {
-        await request<void>(subscriptionEndpoint(id), { method: 'DELETE' })
+        await request<void>(withRationale(subscriptionEndpoint(id), rationale), { method: 'DELETE' })
         setSubscriptions((prev) => prev.filter((s) => s.id !== id))
         return true
       } catch (err) {

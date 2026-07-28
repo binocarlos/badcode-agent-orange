@@ -49,6 +49,14 @@ describe('the wire shape', () => {
     expect(Object.keys(body)).toContain('enabled')
   })
 
+  it('carries the operator\u2019s reason, and omits an empty one', () => {
+    expect(subscriptionBody(sub(), '  the reviewer must see these  ')).toMatchObject({
+      rationale: 'the reviewer must see these',
+    })
+    expect(subscriptionBody(sub())).not.toHaveProperty('rationale')
+    expect(subscriptionBody(sub(), '   ')).not.toHaveProperty('rationale')
+  })
+
   it('never sends server-owned fields', () => {
     const body = subscriptionBody(sub()) as Record<string, unknown>
     for (const key of ['id', 'project', 'created_at', 'updated_at']) {

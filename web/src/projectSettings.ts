@@ -257,8 +257,15 @@ export function validateProjectSettings(s: ProjectSettings): FieldErrors {
  * The PUT body. `project` and `updated_at` are dropped: the server takes the
  * project from the JWT and stamps the timestamp itself, and sending our own
  * values invites the illusion that either is client-settable.
+ *
+ * `rationale` is the operator's one-line reason, threaded into the config event
+ * (design B3 / K2), and omitted when empty so an absent reason reads as absent
+ * — the same contract `scheduleBody` has.
  */
-export function projectSettingsBody(s: ProjectSettings): Omit<ProjectSettings, 'project' | 'updated_at'> {
+export function projectSettingsBody(
+  s: ProjectSettings,
+  rationale = '',
+): Omit<ProjectSettings, 'project' | 'updated_at'> & { rationale?: string } {
   const { project: _project, updated_at: _updatedAt, ...body } = s
-  return body
+  return rationale.trim() === '' ? body : { ...body, rationale: rationale.trim() }
 }

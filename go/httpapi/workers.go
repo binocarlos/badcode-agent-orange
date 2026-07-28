@@ -36,6 +36,10 @@ type workerBody struct {
 	Briefing     agentdb.SelectorList `json:"briefing"`      // nil → NULL
 	Enabled      *bool                `json:"enabled"`       // nil → true
 	Frozen       *bool                `json:"frozen"`        // nil → false
+	// Rationale is the operator's one-line reason, threaded into the config
+	// event (design B3). Optional on the wire — the UI asks for one, the route
+	// does not refuse a write without one.
+	Rationale string `json:"rationale"`
 }
 
 // workers returns the configured store, or writes 501 and returns nil when the
@@ -120,7 +124,7 @@ func (h *Handlers) PutWorker(w http.ResponseWriter, r *http.Request) {
 		worker.Frozen = *body.Frozen
 	}
 
-	stored, err := store.UpsertWorker(r.Context(), worker, humanEdit())
+	stored, err := store.UpsertWorker(r.Context(), worker, humanEditBecause(body.Rationale))
 	if err != nil {
 		writeWorkerErr(w, err)
 		return
@@ -128,7 +132,8 @@ func (h *Handlers) PutWorker(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, stored)
 }
 
-// DeleteWorker removes a worker from the caller's project.
+// DeleteWorker removes a worker from the caller's project. A DELETE has no
+// body, so its reason rides `?rationale=`.
 func (h *Handlers) DeleteWorker(w http.ResponseWriter, r *http.Request) {
 	id, ok := h.identify(w, r)
 	if !ok {
@@ -138,7 +143,7 @@ func (h *Handlers) DeleteWorker(w http.ResponseWriter, r *http.Request) {
 	if store == nil {
 		return
 	}
-	if err := store.DeleteWorker(r.Context(), id.Customer, r.PathValue("name"), humanEdit()); err != nil {
+	if err := store.DeleteWorker(r.Context(), id.Customer, r.PathValue("name"), humanEditBecause(rationaleParam(r))); err != nil {
 		writeWorkerErr(w, err)
 		return
 	}
