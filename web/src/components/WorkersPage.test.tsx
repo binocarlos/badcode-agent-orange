@@ -15,6 +15,7 @@ let originalFetch: typeof globalThis.fetch
 let requests: { url: string; method: string; body: unknown }[] = []
 let workers: Record<string, unknown>[]
 let sessions: Record<string, unknown>[]
+let images: Record<string, unknown>[]
 
 const worker = (name: string, extra: Record<string, unknown> = {}) => ({
   project: 'acme',
@@ -39,6 +40,11 @@ beforeEach(() => {
     { id: 's2', title: 'Edited copy', worker: 'copy-editor', created_at: 100, status: 'done' },
     { id: 's3', title: 'Plain chat', created_at: 50, status: 'done' },
   ]
+  images = [
+    { name: 'marketing-tools', version: 2, labels: {}, created_at: 2 },
+    { name: 'marketing-tools', version: 1, labels: {}, created_at: 1 },
+    { name: 'renderer', version: 1, labels: {}, created_at: 1 },
+  ]
   window.history.replaceState(null, '', '/')
   originalFetch = globalThis.fetch
   globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -50,6 +56,7 @@ beforeEach(() => {
       new Response(JSON.stringify(v), { status: 200, headers: { 'Content-Type': 'application/json' } })
 
     if (u.includes('/agent/sessions')) return json(sessions)
+    if (u.includes('/agent/images')) return json({ images, count: images.length })
     if (u.includes('/agent/topologies')) {
       return json({
         topologies: [
@@ -126,6 +133,44 @@ describe('worker list', () => {
     await userEvent.click(screen.getByText('copy-editor'))
     expect(onSelect).toHaveBeenCalledWith('copy-editor')
     expect(window.location.search).toBe('')
+  })
+})
+
+// B4: the image field stops being blind free text — the page loads the
+// project's catalogue and offers it — WITHOUT becoming a closed list.
+describe('image catalogue (B4)', () => {
+  it('offers each catalogued image name once in the picker', async () => {
+    renderPage()
+    await userEvent.click(await screen.findByText('email-answerer'))
+    const field = await screen.findByLabelText('Image')
+    await userEvent.click(field)
+    const options = await screen.findAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['marketing-tools', 'renderer'])
+  })
+
+  it('still accepts an arbitrary registry reference — a suggestion list, not a constraint', async () => {
+    renderPage()
+    await userEvent.click(await screen.findByText('email-answerer'))
+    const field = await screen.findByLabelText('Image')
+    await userEvent.type(field, 'ghcr.io/acme/custom:5')
+    expect(field).toHaveValue('ghcr.io/acme/custom:5')
+  })
+
+  it('leaves the field usable when the host mounts no catalogue route', async () => {
+    images = []
+    renderPage()
+    await userEvent.click(await screen.findByText('email-answerer'))
+    const field = await screen.findByLabelText('Image')
+    await userEvent.type(field, 'marketing-tools')
+    expect(field).toHaveValue('marketing-tools')
+  })
+
+  it('lets the host override the options it offers', async () => {
+    renderPage({ imageOptions: ['host-supplied'] })
+    await userEvent.click(await screen.findByText('email-answerer'))
+    await userEvent.click(await screen.findByLabelText('Image'))
+    const options = await screen.findAllByRole('option')
+    expect(options.map((o) => o.textContent)).toEqual(['host-supplied'])
   })
 })
 
