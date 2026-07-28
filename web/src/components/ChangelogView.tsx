@@ -236,8 +236,9 @@ function ChangelogEntryCard({
   )
 }
 
-/** The diff, rendered the way a diff is read: +/− gutters, monospaced. */
-function DiffBlock({ lines }: { lines: DiffLine[] }) {
+/** The diff, rendered the way a diff is read: +/− gutters, monospaced.
+ *  Exported because the worker lineage (design §7.1) renders the same diff. */
+export function DiffBlock({ lines }: { lines: DiffLine[] }) {
   return (
     <Paper
       variant="outlined"

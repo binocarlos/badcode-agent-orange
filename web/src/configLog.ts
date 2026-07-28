@@ -414,6 +414,106 @@ export function buildChangelog(
 }
 
 // ---------------------------------------------------------------------------
+// Worker lineage (design §7.1) — the spine, filtered to one worker's prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of a worker's lineage: a changelog entry, plus where it sits in the
+ * prompt's version history.
+ *
+ * Non-prompt events (enable, freeze, retune…) still appear — they are part of
+ * what happened to the worker — but carry no version: versions count prompts.
+ */
+export interface LineageEntry {
+  entry: ChangelogEntry
+  /** 1-based version, oldest prompt-carrying event = v1. Null when no prompt. */
+  version: number | null
+  /** The full prompt this event wrote, or null. */
+  prompt: string | null
+  /** True when this version's prompt text is byte-identical to the previous one. */
+  duplicate: boolean
+  /** True when a worker (not a human) made the change — the ember mark. */
+  byWorker: boolean
+}
+
+/** A worker's prompt history, newest first, with the headline counts. */
+export interface WorkerLineage {
+  workerName: string
+  /** The entity key this is filtered to: `worker:<name>`. */
+  entityKey: string
+  /** Newest first, matching the changelog's order. */
+  entries: LineageEntry[]
+  /** Prompt-carrying events — the number of versions, v1…vN. */
+  versions: number
+  /** Versions after the first: what an operator means by "rewrites". */
+  rewrites: number
+  /** Distinct prompt texts across the versions (identical rewrites dedupe). */
+  distinct: number
+  /** "47 rewrites · 45 distinct", or "no rewrites yet". */
+  summary: string
+}
+
+/**
+ * Filter a built changelog to one worker and number its prompt versions.
+ *
+ * Pure, and deliberately built on top of `buildChangelog` rather than beside
+ * it: the diffs, the actor links and the ordering are already right there, and
+ * a second implementation of any of them would be a second thing to keep true.
+ *
+ * Version numbering is the count of prompt-carrying events for the key, oldest
+ * = v1 (so the create that seeded the prompt is v1, not "rewrite #1"). Two
+ * consecutive writes of the same text are both versions — the log recorded
+ * both — but the second is marked `duplicate`, and `distinct` counts texts,
+ * which is how "n rewrites, m distinct" stops churn reading as progress.
+ */
+export function workerLineage(entries: ChangelogEntry[], workerName: string): WorkerLineage {
+  const entityKey = `worker:${workerName}`
+  const mine = entries.filter((e) => e.entity.key === entityKey)
+
+  // Number oldest→newest; the caller's order (newest-first) is restored after.
+  const oldestFirst = mine.slice().reverse()
+  const rows: LineageEntry[] = []
+  const texts: string[] = []
+  let version = 0
+  let previousPrompt: string | null = null
+
+  for (const entry of oldestFirst) {
+    const prompt = configPromptText(entry.event)
+    let duplicate = false
+    if (prompt !== null) {
+      version++
+      duplicate = previousPrompt !== null && previousPrompt === prompt
+      texts.push(prompt)
+      previousPrompt = prompt
+    }
+    rows.push({
+      entry,
+      version: prompt === null ? null : version,
+      prompt,
+      duplicate,
+      byWorker: entry.actorWorker !== '',
+    })
+  }
+
+  const distinct = new Set(texts).size
+  const rewrites = version === 0 ? 0 : version - 1
+  const summary =
+    rewrites === 0
+      ? 'no rewrites yet'
+      : `${rewrites} rewrite${rewrites === 1 ? '' : 's'} · ${distinct} distinct`
+
+  return {
+    workerName,
+    entityKey,
+    entries: rows.reverse(),
+    versions: version,
+    rewrites,
+    distinct,
+    summary,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Filtering (the §15.9 query, applied client-side)
 // ---------------------------------------------------------------------------
 

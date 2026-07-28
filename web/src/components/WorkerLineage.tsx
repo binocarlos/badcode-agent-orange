@@ -1,0 +1,243 @@
+// WorkerLineage — design §7.1: the spine, filtered to one worker's prompt.
+//
+// Nearly free data, badly placed: every `worker_prompt_write` already carries
+// the full new prompt and a mandatory rationale, and `buildChangelog` already
+// diffs consecutive events of the same key. All this view does is put that
+// history on the worker it describes, number the versions, and make two things
+// one click away — the job that decided a rewrite, and the prompt as it was.
+//
+// Nothing here writes. "Restore this version" is a *forward* write: it hands
+// the old text back to the ordinary editor with a pre-filled rationale naming
+// the config event, and the operator saves it like any other edit. There is no
+// revert route and there should not be one.
+
+import {
+  Alert,
+  Box,
+  Chip,
+  CircularProgress,
+  Link,
+  Paper,
+  Stack,
+  Typography,
+} from '@mui/material'
+import useConfigLog from '../useConfigLog.js'
+import type { ConfigApiOptions } from '../configApi.js'
+import {
+  formatConfigTimestamp,
+  workerLineage,
+  type LineageEntry,
+} from '../configLog.js'
+import { DiffBlock } from './ChangelogView.js'
+
+/** What the page needs to fold the Configuration tab to a past version. */
+export interface LineageVersion {
+  /** The config event that wrote this prompt. */
+  eventId: string
+  /** 1-based version number, oldest = v1. */
+  version: number
+  /** The prompt as it was. */
+  prompt: string
+  /** Unix milliseconds. */
+  at: number
+}
+
+export interface WorkerLineageProps extends ConfigApiOptions {
+  workerName: string
+  /** Project id — builds the acting-session permalink when the server omits one. */
+  projectId?: string
+  /** Called when a job row / actor link is clicked. */
+  onOpenSession?: (sessionId: string) => void
+  /** Called when a version is selected — the page folds Configuration to it. */
+  onSelectVersion?: (version: LineageVersion) => void
+  /** The version currently folded to, so the row can mark itself. */
+  selectedEventId?: string | null
+}
+
+/** Filled disc = an agent did this; hollow disc = a human did (§3, glyph set). */
+function ActorGlyph({ byWorker }: { byWorker: boolean }) {
+  return (
+    <Box
+      aria-hidden
+      sx={{
+        width: 10,
+        height: 10,
+        borderRadius: '50%',
+        flexShrink: 0,
+        mt: '5px',
+        border: 1,
+        borderColor: (t) =>
+          byWorker
+            ? ((t.palette as { ember?: { main: string } }).ember?.main ?? t.palette.secondary.main)
+            : 'text.secondary',
+        bgcolor: (t) =>
+          byWorker
+            ? ((t.palette as { ember?: { main: string } }).ember?.main ?? t.palette.secondary.main)
+            : 'background.paper',
+      }}
+    />
+  )
+}
+
+export default function WorkerLineage({
+  workerName,
+  projectId = '',
+  onOpenSession,
+  onSelectVersion,
+  selectedEventId = null,
+  ...apiOptions
+}: WorkerLineageProps) {
+  const log = useConfigLog({
+    ...apiOptions,
+    projectId,
+    query: { entity: `worker:${workerName}` },
+  })
+  const lineage = workerLineage(log.entries, workerName)
+
+  return (
+    <Box sx={{ p: 3, maxWidth: 880 }}>
+      <Stack direction="row" spacing={1} alignItems="baseline" sx={{ mb: 0.5 }}>
+        <Typography variant="subtitle1" sx={{ fontFamily: 'monospace' }}>
+          {workerName}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          {lineage.summary}
+        </Typography>
+      </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 2 }}>
+        Every change recorded against this worker, newest first. Versions count prompt writes,
+        oldest is v1; identical rewrites are counted once in “distinct”.
+      </Typography>
+
+      {!log.available && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          This deployment does not serve <code>GET /agent/config-events</code>, so no lineage can
+          be shown here. The log is still being written.
+        </Alert>
+      )}
+      {log.available && log.error !== null && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          {log.error}
+        </Alert>
+      )}
+
+      {log.loading ? (
+        <Box sx={{ p: 3, display: 'flex', justifyContent: 'center' }}>
+          <CircularProgress size={24} aria-label="Loading the lineage" />
+        </Box>
+      ) : lineage.entries.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">
+          {log.available
+            ? 'Nothing has changed this worker since the config log started.'
+            : 'Nothing to show.'}
+        </Typography>
+      ) : (
+        <Stack spacing={0} component="ol" sx={{ listStyle: 'none', p: 0, m: 0 }}>
+          {lineage.entries.map((row) => (
+            <LineageRow
+              key={row.entry.id}
+              row={row}
+              selected={selectedEventId === row.entry.id}
+              onOpenSession={onOpenSession}
+              onSelectVersion={onSelectVersion}
+            />
+          ))}
+        </Stack>
+      )}
+    </Box>
+  )
+}
+
+function LineageRow({
+  row,
+  selected,
+  onOpenSession,
+  onSelectVersion,
+}: {
+  row: LineageEntry
+  selected: boolean
+  onOpenSession?: (sessionId: string) => void
+  onSelectVersion?: (version: LineageVersion) => void
+}) {
+  const { entry } = row
+  return (
+    <Paper
+      component="li"
+      variant="outlined"
+      sx={{ p: 2, mb: 1.5, borderColor: selected ? 'primary.main' : 'divider' }}
+    >
+      <Stack direction="row" spacing={1.5}>
+        <ActorGlyph byWorker={row.byWorker} />
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography variant="subtitle2">{entry.title}</Typography>
+            {row.version !== null && (
+              <Chip
+                size="small"
+                variant={selected ? 'filled' : 'outlined'}
+                label={`v${row.version}`}
+                sx={{ fontFamily: 'monospace' }}
+                onClick={
+                  onSelectVersion && row.prompt !== null
+                    ? () =>
+                        onSelectVersion({
+                          eventId: entry.id,
+                          version: row.version!,
+                          prompt: row.prompt!,
+                          at: entry.createdAt,
+                        })
+                    : undefined
+                }
+              />
+            )}
+            {row.duplicate && (
+              <Typography variant="caption" color="text.secondary">
+                same text as the previous version
+              </Typography>
+            )}
+          </Stack>
+
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            {formatConfigTimestamp(entry.createdAt)}
+            {' · '}
+            {entry.actorWorker ? `by ${entry.actorWorker}` : 'by a human (UI or API)'}
+            {entry.sessionPath && (
+              <>
+                {' · '}
+                {onOpenSession && entry.actorSession ? (
+                  <Link
+                    component="button"
+                    type="button"
+                    variant="caption"
+                    onClick={() => onOpenSession(entry.actorSession)}
+                  >
+                    the job that decided it
+                  </Link>
+                ) : (
+                  <Link href={entry.sessionPath} variant="caption">
+                    the job that decided it
+                  </Link>
+                )}
+              </>
+            )}
+          </Typography>
+
+          <Box sx={{ mt: 1.5, pl: 1.5, borderLeft: 3, borderColor: 'divider' }}>
+            <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+              {entry.rationale !== '' ? entry.rationale : 'No reason is recorded on this change.'}
+            </Typography>
+          </Box>
+
+          {entry.diff && (
+            <Box sx={{ mt: 1.5 }}>
+              <Typography variant="caption" color="text.secondary">
+                +{entry.diff.added} −{entry.diff.removed} against the previous version
+              </Typography>
+              <DiffBlock lines={entry.diff.lines} />
+            </Box>
+          )}
+        </Box>
+      </Stack>
+    </Paper>
+  )
+}
