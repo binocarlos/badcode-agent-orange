@@ -85,7 +85,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 0 — unlock what exists (one item, merge first)
 
-- [ ] **V1 — Mount the built pages; fix the stale comment.**
+- [x] **V1 — Mount the built pages; fix the stale comment.**
   `examples/web/src/App.tsx`: extend the `View` union and `ViewNav` with **Events** →
   `<EventsPage projectId={project} onOpenSession={showSession} />` and **Automation** →
   `<AutomationPage projectId={project} workerOptions={...} />` (worker names via `useWorkers`).
@@ -100,7 +100,7 @@ cross = failure, lock = freeze refusal.
 
 ## Wave 1 — theme + engine seams (all parallel; none touch the same files)
 
-- [ ] **TH1 — The theme and the fonts.** `examples/web/` only. Download Instrument Sans
+- [x] **TH1 — The theme and the fonts.** `examples/web/` only. Download Instrument Sans
   (400/500/600) and IBM Plex Mono (400/500) as woff2 into `examples/web/src/fonts/`; `@font-face`
   in a new `fonts.css` imported from `main.tsx`. Replace `createTheme()` with a themed
   `createTheme({...})` in a new `theme.ts`: palette from the token table above (light + dark via
@@ -112,7 +112,7 @@ cross = failure, lock = freeze refusal.
   (`ember`, `steel`, `rose`, `fault`) with a module augmentation in `theme.ts`.
   *Validation:* `cd examples/web && yarn && yarn typecheck && yarn build`. Report (do not fix)
   any `web/` component whose hardcoded colour fights the theme.
-- [ ] **E1 — Attention read route (design B1).** `go/`: `GET /agent/attention-requests`, project
+- [x] **E1 — Attention read route (design B1).** `go/`: `GET /agent/attention-requests`, project
   from the JWT claim like every sibling route; query `?state=open|all` (default open — rows with
   `answered_at`=0 and `timed_out_at`=0), `?limit=`. Serve from the existing
   `Store.ListOpenAttentionRequests` (add a `ListAttentionRequests` variant for `all`). Response
@@ -120,13 +120,13 @@ cross = failure, lock = freeze refusal.
   live-Postgres tests; adopt into `httpapi`'s route-listing pattern.
   *Validation:* `cd go && go build ./... && go vet ./... && go test ./...` and
   `AGENTKIT_TEST_POSTGRES_URL='postgres://postgres:test@localhost:5433/postgres?sslmode=disable' go test ./agentdb/... ./cmd/agentd/... ./httpapi/... -count=1`
-- [ ] **E2 — Memories read route (design B2).** `go/`: `GET /agent/memories?selector=&query=&limit=`
+- [x] **E2 — Memories read route (design B2).** `go/`: `GET /agent/memories?selector=&query=&limit=`
   over the existing memory search (§7.6 contract exactly — do not add knobs; selector errors
   return 400 with the parser's own message). Response `{"memories": [...]}` including labels and
   provenance fields. Postgres-only like the store itself: on a non-Postgres dialect return the
   same 501 posture as `/agent/project-token`. Tests as E1.
   *Validation:* as E1.
-- [ ] **E3 — Rationales on human mutations (design B3, decision K2).** Go: accept optional
+- [x] **E3 — Rationales on human mutations (design B3, decision K2).** Go: accept optional
   `rationale` in the request body of `PUT /agent/workers/{name}`, `POST/PUT /agent/subscriptions`,
   `PUT /agent/project-settings`, and as `?rationale=` on the three DELETEs — threaded into the
   existing `WithConfigEvent` write exactly as the schedules routes already do (copy that shape;
@@ -136,13 +136,13 @@ cross = failure, lock = freeze refusal.
   `subscriptions.ts` / `projectSettings.ts` save paths and the hooks. Mind the NUL-byte trap in
   WorkerEditor and the PUT-carries-all-fields trap.
   *Validation:* both E1 commands AND `cd web && npm ci && npm run typecheck && npm test`
-- [ ] **E4 — Images and skills read routes (design B4).** `go/`: `GET /agent/images`,
+- [x] **E4 — Images and skills read routes (design B4).** `go/`: `GET /agent/images`,
   `GET /agent/skills` over the existing list store methods (200-newest cap, and the response says
   so, matching the MCP tools). Then `web/`: `WorkersPage` feeds `imageOptions` from the new route
   (a small `useImages` hook; the editor's field stops being blind free text but still accepts
   arbitrary refs — a registry reference is legal).
   *Validation:* as E3 (both suites).
-- [ ] **E5 — Server-side worker filter on sessions (design B5).** `go/`: `?worker=` on
+- [x] **E5 — Server-side worker filter on sessions (design B5).** `go/`: `?worker=` on
   `GET /agent/sessions`. `web/`: `useWorkers.ts`'s `useWorkerJobs` uses it and drops the
   "filters one page client-side" caveat copy in `WorkerJobHistory`.
   *Validation:* as E3 (both suites).
@@ -295,3 +295,51 @@ cross = failure, lock = freeze refusal.
 ## Discovered Issues Log
 
 *(orchestrator-owned; executors report surprises in their final reports)*
+
+- **(all Wave 0+1) Workflow worktrees come up on a stale `wip` base** — the doc-13 trap, now
+  confirmed for workflow-created worktrees too: all seven came up on `dc49595 "wip"` (pre-product-
+  layer). The first run's grounding check stopped every executor cleanly; the fix is a mandatory
+  brief step: if the plan file is absent, `git reset --hard <base-sha>` your own worktree branch.
+  Every later wave's brief must carry the current base sha.
+- **(TH1) `git stash` is SHARED across worktrees** — TH1's stash pop returned V1's files; V1's
+  work was recovered from the stash and both commits verified clean. New rule for every brief:
+  executors never run `git stash`.
+- **(orchestrator) Never `--amend` on the shared branch** — another session committed in the
+  window between a commit and its amend, and the amend rewrote *their* commit; repaired from the
+  reflog (`git reset --hard` to their original). Corollary: no `git add -A` at the repo root
+  either — it swept another agent's untracked doc into the orchestrator commit in the first
+  place. Stage explicit paths only.
+- **(V1/TH1) `cd examples/web && yarn typecheck` was red at the clean base** — 34 unused-local
+  errors: examples/web's tsconfig checks web/src through the alias with `noUnusedLocals`, which
+  `web/`'s own typecheck does not. Fixed by the orchestrator (mechanical unused-import removals,
+  WorkerEditor edited bytes-safe). The verbatim validation now passes for future shell items.
+- **(V1) The ChangelogView unavailable-alert copy is pinned** by EventsPage.test.tsx (`/does not
+  serve it yet/i`) — reword around that phrase or update the test with it.
+- **(V1) Nav is now six buttons at 280px** (七 with Chart) — flex:1 each; check for squash in the
+  Wave 2 screenshot pass. Two more stale route comments remain (EventsPage.tsx prop doc,
+  useConfigLog.ts field doc) — trivial follow-up.
+- **(TH1) Instrument Sans ships as ONE variable woff2 (400–600)**, not three statics; IBM Plex
+  Mono is two statics. Latin subsets, 59.7 kB total. `theme.monoFontFamily` is the mono stack
+  for `sx` use; ember/steel/rose/fault are palette entries via module augmentation.
+- **(TH1) 18 chat-side web/ components carry hardcoded light-mode colours** that will fight the
+  dark theme (worst: `rgba(0,0,0,0.06)` hairlines, ArtifactTreeView's status dots). The
+  product-layer pages are clean. Not fixed — needs its own sweep item if dark mode matters soon.
+- **(E1) `ListOpenAttentionRequests` had no limit** — new query struct keeps Limit=0 = unlimited
+  to preserve the helper's semantics; >0 goes through clampLimit (cap 1000).
+- **(E2) httpapi gained an optional `MemoryEmbedder` seam** (nil = keyword+recency degrade,
+  same posture as the MCP read path) rather than importing extension/embedding — one small seam
+  beyond the item text, wired in cmd/agentd via EmbedOrDegrade.
+- **(E3) "The three DELETEs" resolved to workers/subscriptions/SCHEDULES** (project-settings has
+  no DELETE); the schedule DELETE previously read no rationale at all and useSchedules.remove
+  documented the refusal — both fixed, comment rewritten. Label inconsistency left standing:
+  ScheduleEditor says "Rationale" (optional), the three new fields say "Why?" (required).
+  `withRationale` lives in configApi.ts, deliberately not exported (that file's stated contract
+  beats the index.ts rule).
+- **(E4) Catalogue timestamps are unix SECONDS** (unlike config events' ms) — UI formatting must
+  not assume ms. `GET /agent/skills?label_selector=` works on sqlite; `GET /agent/images` with a
+  selector 400s there (jsonb selectors are Postgres-only; mirrors the store).
+- **(E5) `useWorkerJobs` keeps its client-side filter as a guard** for hosts overriding the
+  endpoint; `truncated` now means "this worker alone has ≥ limit jobs".
+- **(orchestrator) The httpapi route-registration blocks (Config/New/Endpoints/Mux) conflicted
+  in every pairwise merge** — union resolution each time; gofmt+build+vet before committing the
+  resolution. Expected again for any future route.
