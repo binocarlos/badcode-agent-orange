@@ -405,6 +405,18 @@ export { default as WorkersPage } from './components/WorkersPage.js'
 export type { WorkersPageProps } from './components/WorkersPage.js'
 export { default as WorkerLineage } from './components/WorkerLineage.js'
 export type { WorkerLineageProps, LineageVersion } from './components/WorkerLineage.js'
+
+// Before / after (BA1) — design §7.2: one rewrite, the jobs either side of it.
+export {
+  beforeAfter,
+  eventMs,
+  BEFORE_AFTER_CAVEAT,
+  FINISHED_EVENT_TYPE,
+  NO_JOB_YET,
+} from './learning.js'
+export type { BeforeAfter, BeforeAfterSide } from './learning.js'
+export { default as BeforeAfterView } from './components/BeforeAfterView.js'
+export type { BeforeAfterViewProps } from './components/BeforeAfterView.js'
 export { default as WorkerPromptVersion, restoreRationale } from './components/WorkerPromptVersion.js'
 export type { WorkerPromptVersionProps } from './components/WorkerPromptVersion.js'
 export { default as WorkerList } from './components/WorkerList.js'
