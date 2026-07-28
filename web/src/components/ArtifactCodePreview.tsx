@@ -4,7 +4,6 @@
 // Dependency added: prism-react-renderer.
 // See ../../docs/90-provenance-map.md.
 
-import React from 'react'
 import { Box, Chip, Typography } from '@mui/material'
 import { Highlight, themes } from 'prism-react-renderer'
 import { getLanguageFromFilename } from '../artifactFilters.js'

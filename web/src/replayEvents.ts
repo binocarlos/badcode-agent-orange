@@ -6,7 +6,7 @@
 // See ../../docs/09-frontend-components.md.
 
 import { agentEventReducer, initialAgentEventState, type AgentEventState } from './agentEventReducer.js'
-import type { AgentSSEEvent, AgentMessage, PersistedAgentMessage } from './types.js'
+import type { AgentSSEEvent, PersistedAgentMessage } from './types.js'
 
 /**
  * Replay compacted events through the reducer to produce display state.

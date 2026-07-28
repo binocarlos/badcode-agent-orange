@@ -15,7 +15,6 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material'
-import AppsIcon from '@mui/icons-material/Apps'
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft'
 import AttachFileIcon from '@mui/icons-material/AttachFile'
 import SearchIcon from '@mui/icons-material/Search'
@@ -131,7 +130,6 @@ export default function ChatHistoryDrawer({
   onSearchSubmit,
   isSearching,
   currentUserEmail,
-  onBrowseApps,
 }: ChatHistoryDrawerProps) {
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 

@@ -3,7 +3,7 @@
 // Generic — no Platinum-specific dependencies.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useCallback, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Box, Button, Typography } from '@mui/material'
 import StopIcon from '@mui/icons-material/Stop'
 import CloseIcon from '@mui/icons-material/Close'

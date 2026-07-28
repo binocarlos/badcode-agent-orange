@@ -17,7 +17,7 @@
 // The editor holds its own draft and re-seeds on identity change, the same
 // contract WorkerEditor documents.
 
-import React, { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Autocomplete,

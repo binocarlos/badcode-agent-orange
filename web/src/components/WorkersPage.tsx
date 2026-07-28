@@ -7,7 +7,7 @@
 // `onSelect` and this component never touches the URL. Nothing here imports a
 // router, and nothing here assumes one exists.
 
-import React, { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Alert, Box, Button, Divider, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
 import useWorkers from '../useWorkers.js'
 import useImages from '../useImages.js'

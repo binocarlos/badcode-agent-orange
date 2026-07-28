@@ -9,7 +9,7 @@
 // written through the History API, so a host with its own router passes
 // `selected` + `onSelect` and this component never touches the URL.
 
-import React, { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Alert, Box, Button, Chip, List, ListItem, ListItemButton, ListItemText, Stack, Tab, Tabs, Typography } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import type { ConfigApiOptions } from '../configApi.js'

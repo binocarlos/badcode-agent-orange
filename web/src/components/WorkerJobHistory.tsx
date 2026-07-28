@@ -9,7 +9,6 @@
 // page size. When that page is full the older jobs are missing, and this
 // component says so rather than showing a short list that looks authoritative.
 
-import React from 'react'
 import {
   Alert,
   Box,

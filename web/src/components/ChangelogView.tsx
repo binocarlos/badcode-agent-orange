@@ -19,7 +19,7 @@
 // this view says plainly that the log is written but not served there, rather
 // than rendering an empty history that reads as "nothing has changed".
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import {
   Alert,
   Box,

@@ -3,7 +3,7 @@
 // Import paths updated: artifactTree/types → local. Added @untitledui/file-icons dependency.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Box, Collapse, Typography } from '@mui/material'
 import {
   Folder as FolderIcon,

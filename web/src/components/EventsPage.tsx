@@ -10,7 +10,7 @@
 // through the History API, so a host that already has a router passes
 // `selected` + `onSelect` and this component never touches the URL.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Box, Divider, Stack, Tab, Tabs, Typography } from '@mui/material'
 import useEventsOverview, { type UseEventsOverviewOptions } from '../useEvents.js'
 import { buildEventSearch, eventFromSearch } from '../events.js'

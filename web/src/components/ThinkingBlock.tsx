@@ -3,7 +3,7 @@
 // Generic — no Platinum-specific dependencies.
 // See ../../docs/09-frontend-components.md.
 
-import React, { useState, useRef } from 'react'
+import { useState, useRef } from 'react'
 import { Box, Typography, Collapse } from '@mui/material'
 
 interface ThinkingBlockProps {

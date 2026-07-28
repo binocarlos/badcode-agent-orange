@@ -3,7 +3,7 @@
 // Generic — no Platinum-specific dependencies.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Box, Typography, Chip } from '@mui/material'
 
 const DEFAULT_VISIBLE_LINES = 20

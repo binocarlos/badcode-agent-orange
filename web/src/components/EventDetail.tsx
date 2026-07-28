@@ -6,7 +6,6 @@
 // nothing fire?" needs to read `interactive: true` at a glance, and the answer
 // is usually one of these six values.
 
-import React from 'react'
 import { Alert, Box, Chip, Divider, Paper, Stack, Typography } from '@mui/material'
 import { formatTimestamp, type JobRow, type ProjectEvent } from '../events.js'
 import EventJobHistory from './EventJobHistory.js'

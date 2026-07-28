@@ -15,7 +15,6 @@
 // URL. Mount it inside <AgentChatProvider> to inherit apiBaseUrl + auth, or
 // pass them as props to use it standalone.
 
-import React from 'react'
 import {
   Alert,
   Box,

@@ -4,7 +4,6 @@
 // lives in useEventsOverview, one level up, because the jobs table and the
 // replay panel read the same page of data and must agree on it.
 
-import React from 'react'
 import {
   Box,
   Chip,

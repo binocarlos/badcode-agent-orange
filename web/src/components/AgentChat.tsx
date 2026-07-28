@@ -151,7 +151,6 @@ export default function AgentChat(props: AgentChatProps) {
   const selectedModel   = props.selectedModel   ?? ctx?.selectedModel  ?? ''
   const onModelChange   = props.onModelChange   ?? ctx?.setSelectedModel ?? (() => {})
   const models          = props.models          ?? ctx?.config.models   ?? []
-  const _lastHeartbeat  = props.lastHeartbeat   ?? ctx?.lastHeartbeat
   const stuckStatus     = props.stuckStatus     ?? ctx?.stuckStatus
   const onNudge         = props.onNudge         ?? ctx?.nudgeAgent
   const readOnly        = props.readOnly
@@ -166,7 +165,7 @@ export default function AgentChat(props: AgentChatProps) {
   const forkedMessageCount = props.forkedMessageCount
 
   const [input, setInput] = useState('')
-  const [viewerArtifact, setViewerArtifact] = useState<ArtifactInfo | null>(null)
+  const [, setViewerArtifact] = useState<ArtifactInfo | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)

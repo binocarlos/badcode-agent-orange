@@ -12,7 +12,7 @@
 // purpose: they depend on live counters, and a dry run that guessed at them
 // would be confidently wrong.
 
-import React, { useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Alert,
   Box,

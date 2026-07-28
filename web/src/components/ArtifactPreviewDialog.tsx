@@ -6,7 +6,7 @@
 //   - Import paths updated: types/artifactFilters/prismLanguage → local.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import {
   Dialog,
   DialogTitle,

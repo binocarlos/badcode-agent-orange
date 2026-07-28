@@ -11,7 +11,6 @@
 // 200 KB editor dependency inside a component library a host embeds is the
 // opposite of that.
 
-import React from 'react'
 import { Box, Button, FormHelperText, Stack, TextField, Typography } from '@mui/material'
 import { formatJsonObject, parseJsonObject } from '../projectSettings.js'
 

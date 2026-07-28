@@ -3,7 +3,6 @@
 // Import paths updated: artifactFilters → local.
 // See ../../docs/90-provenance-map.md.
 
-import React from 'react'
 import { Box, Typography } from '@mui/material'
 import { parseCSVPreview } from '../artifactFilters.js'
 

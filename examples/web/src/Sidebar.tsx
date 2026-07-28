@@ -1,7 +1,7 @@
 // Left sidebar: project switcher + "New session" + the library's
 // ChatHistoryDrawer (session rows with the filter-by-user select).
 import { useEffect, useMemo, useState } from "react";
-import { Box, Button, MenuItem, Select, Typography } from "@mui/material";
+import { Box, Button, Select, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import { ChatHistoryDrawer, useAgentChat, useAgentSessions } from "@agentkit/chat-ui";
 import { AuthState } from "./auth";

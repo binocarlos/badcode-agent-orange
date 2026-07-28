@@ -14,7 +14,7 @@
 // `worker` field and give back a plain session — the degradation is a session
 // without the worker's prompt, never a session with a forged one.
 
-import React, { useCallback, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from '@mui/material'
 import ChatIcon from '@mui/icons-material/Chat'
 import { useAgentChat } from '../AgentChatProvider.js'

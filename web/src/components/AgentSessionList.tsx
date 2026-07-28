@@ -5,7 +5,7 @@
 //
 // Uses MUI List + semantic theme tokens. Delete button uses info (blue) theme.
 
-import React, { useRef } from 'react'
+import { useRef } from 'react'
 import {
   List,
   ListItem,

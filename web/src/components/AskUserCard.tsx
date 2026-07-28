@@ -3,7 +3,7 @@
 // Fully generic — no Platinum-specific dependencies.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Box, Button, TextField, Typography } from '@mui/material'
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward'
 import type { AskUserQuestionInfo } from '../types.js'

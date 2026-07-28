@@ -19,7 +19,7 @@
 // stores it as jsonb) with per-key validation against the envelope's field
 // list: a filter on a field that does not exist matches nothing for ever.
 
-import React, { useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Autocomplete,

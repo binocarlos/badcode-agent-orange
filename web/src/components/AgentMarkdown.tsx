@@ -4,7 +4,6 @@
 // CSS is inlined via sx prop / style instead of a .css import to avoid
 // bundler configuration requirements. See ../../docs/90-provenance-map.md.
 
-import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 

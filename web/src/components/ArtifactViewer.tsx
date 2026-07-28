@@ -9,7 +9,7 @@
 //   - Import paths updated: types/artifactFilters/artifactTree/prismLanguage → local.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState, useCallback, useMemo, useRef, ReactNode } from 'react'
+import { useState, useCallback, useMemo, useRef, ReactNode } from 'react'
 import {
   Box,
   Button,

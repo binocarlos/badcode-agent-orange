@@ -4,7 +4,6 @@
 // and selection, which is what lets WorkersPage keep selection in the URL while
 // a host with its own router drives the same component from route params.
 
-import React from 'react'
 import {
   Box,
   Button,

@@ -8,7 +8,7 @@
 //   - Removed the list/tree view toggle; the panel always renders the tree.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useCallback, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Box, Typography, IconButton } from '@mui/material'
 import {
   ArrowForward as ArrowIcon,
