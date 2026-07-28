@@ -7,6 +7,7 @@ import {
   AutomationPage,
   DeskPage,
   EventsPage,
+  MemoryBrowserPage,
   OrgChartPage,
   ProjectSettingsPage,
   WorkersPage,
@@ -30,7 +31,7 @@ const API = import.meta.env.VITE_API ?? ""; // "" → same origin (nginx proxy)
 // question "does anything want me?" is the one an operator arrives with.
 // Chart sits between Desk and Workers: it is the same fleet, seen as a shape
 // rather than as a list.
-type View = "desk" | "chart" | "chat" | "workers" | "events" | "automation" | "settings";
+type View = "desk" | "chart" | "chat" | "workers" | "memory" | "events" | "automation" | "settings";
 
 // App state machine: loading → dev (legacy /dev/token, straight to chat)
 //                            → login → project picker → chat (per-project JWT)
@@ -259,6 +260,7 @@ function ProjectWorkspace({
         {view === "workers" && <WorkersPage projectId={project} onOpenSession={showSession} />}
         {/* No fetchConfigEvents: GET /agent/config-events is mounted, so the
             changelog tab reads the route directly. */}
+        {view === "memory" && <MemoryBrowserPage onOpenSession={showSession} />}
         {view === "events" && <EventsPage projectId={project} onOpenSession={showSession} />}
         {view === "automation" && <AutomationPage projectId={project} workerOptions={workerOptions} />}
         {view === "settings" && <ProjectSettingsPage />}
@@ -291,6 +293,7 @@ function ViewNav({ view, onChange, asks }: { view: View; onChange: (v: View) => 
       {item("chart", "Chart")}
       {item("chat", "Chat")}
       {item("workers", "Workers")}
+      {item("memory", "Memory")}
       {item("events", "Events")}
       {item("automation", "Automation")}
       {item("settings", "Settings")}

@@ -404,6 +404,48 @@ export {
 } from './components/OrgChartPage.js'
 export type { OrgChartPageProps, WireProposal } from './components/OrgChartPage.js'
 
+// Memory (MB1, over the B2 read route) — the selector grammar mirrored for the
+// browser, the `name=` fold, the §7.6 honesty notes, and the briefing preview's
+// pure half. Read-only: memory is append-only and workers write it.
+export {
+  MEMORY_ENDPOINTS,
+  MEMORY_SNIPPET_CHARS,
+  NO_OR_NOTE,
+  RRF_NOTE,
+  SEMANTIC_OFF_NOTE,
+  SNIPPET_CAVEAT,
+  DEFAULT_BRIEFING_HEADING,
+  coerceMemory,
+  formatMemoryTimestamp,
+  labelKeyError,
+  labelValueError,
+  parseRequirement,
+  parseMemorySelector,
+  formatRequirement,
+  buildMemorySelector,
+  semanticLegLooksOff,
+  foldNamedMemories,
+  rollingSummarySelector,
+  briefingTruncationMarker,
+  briefingSlots,
+  capBriefingContent,
+} from './memories.js'
+export type {
+  MemoryRow,
+  MemoryOperator,
+  MemoryRequirement,
+  MemorySelectorParse,
+  NamedMemory,
+  FoldedMemories,
+  BriefingSlot,
+} from './memories.js'
+export { default as useMemories } from './useMemories.js'
+export type { UseMemoriesOptions, MemoriesApi } from './useMemories.js'
+export { default as MemoryBrowserPage } from './components/MemoryBrowserPage.js'
+export type { MemoryBrowserPageProps } from './components/MemoryBrowserPage.js'
+export { default as BriefingPreview } from './components/BriefingPreview.js'
+export type { BriefingPreviewProps } from './components/BriefingPreview.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
