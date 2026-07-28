@@ -87,6 +87,11 @@ type Config struct {
 	// catalogue, preview, and the atomic apply. Same defaulting rule as
 	// Workers: auto-filled from AgentDB, 501 without one.
 	Topologies TopologyStore
+
+	// Catalogue backs GET /agent/images and GET /agent/skills (design B4) —
+	// read-only, the browser-side mirror of the image/skill MCP tools. Same
+	// defaulting rule as Workers: auto-filled from AgentDB, 501 without one.
+	Catalogue CatalogueStore
 }
 
 // Tenancy contract
@@ -147,6 +152,9 @@ func New(cfg Config) (*Handlers, error) {
 	}
 	if cfg.Topologies == nil && cfg.AgentDB != nil {
 		cfg.Topologies = cfg.AgentDB
+	}
+	if cfg.Catalogue == nil && cfg.AgentDB != nil {
+		cfg.Catalogue = cfg.AgentDB
 	}
 	// The event routes ride on the same database as the rich read paths unless
 	// a host deliberately supplies its own store.
@@ -240,6 +248,11 @@ type Endpoints struct {
 	ListTopologies  string // "GET /agent/topologies"
 	PreviewTopology string // "POST /agent/topologies/preview"
 	ApplyTopology   string // "POST /agent/topologies/apply"
+	// The image/skill catalogues (B4) — read-only; the project comes from the
+	// JWT. There is no write counterpart: both catalogues are append-only and
+	// are written only from inside a session (§13.4, §14.2).
+	ListImages string // "GET /agent/images"
+	ListSkills string // "GET /agent/skills"
 	// TODO: an artifact download route (GET by artifact ID, backed by
 	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
 	ListWorkers  string // "GET /agent/workers"
@@ -289,6 +302,8 @@ var DefaultEndpoints = Endpoints{
 	ListTopologies:     "GET /agent/topologies",
 	PreviewTopology:    "POST /agent/topologies/preview",
 	ApplyTopology:      "POST /agent/topologies/apply",
+	ListImages:         "GET /agent/images",
+	ListSkills:         "GET /agent/skills",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -361,6 +376,8 @@ func (h *Handlers) Mux() *http.ServeMux {
 		e.ListTopologies:    h.ListTopologies,
 		e.PreviewTopology:   h.PreviewTopology,
 		e.ApplyTopology:     h.ApplyTopologyHandler,
+		e.ListImages:        h.ListImages,
+		e.ListSkills:        h.ListSkills,
 	} {
 		if pattern != "" {
 			m.HandleFunc(pattern, handler)

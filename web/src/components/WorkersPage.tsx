@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Alert, Box, Button, Divider, Paper, Stack, Tab, Tabs, Typography } from '@mui/material'
 import useWorkers from '../useWorkers.js'
+import useImages from '../useImages.js'
 import type { ConfigApiOptions } from '../configApi.js'
 import { buildWorkerSearch, newWorkerDraft, workerFromSearch, type WorkerDraft } from '../workers.js'
 import WorkerList from './WorkerList.js'
@@ -36,7 +37,11 @@ export interface WorkersPageProps extends ConfigApiOptions {
   onSelect?: (name: string | null) => void
   /** Write `?worker=` into the URL. Ignored when `selected` is controlled. */
   syncUrl?: boolean
-  /** Known image names for the editor's image picker. */
+  /**
+   * Known image names for the editor's image picker. Optional: left unset the
+   * page loads the project's catalogue itself (`GET /agent/images`, B4). Pass
+   * it when the host already has the list, or to override what is offered.
+   */
   imageOptions?: string[]
   /** The project's base image, named in the picker's helper text. */
   projectBaseImage?: string
@@ -60,6 +65,10 @@ export default function WorkersPage({
   ...apiOptions
 }: WorkersPageProps) {
   const { workers, loading, error, save, remove, reload } = useWorkers(apiOptions)
+  // The catalogue is a suggestion list, not a constraint (the field stays free
+  // text), so a host that mounts no catalogue route simply gets no dropdown.
+  const { imageOptions: catalogueOptions } = useImages(apiOptions)
+  const images = imageOptions ?? catalogueOptions
 
   const controlled = controlledSelected !== undefined
   const hasWindow = typeof window !== 'undefined'
@@ -196,7 +205,7 @@ export default function WorkersPage({
             worker={newWorkerDraft(projectId)}
             onSave={handleSave}
             saving={saving}
-            imageOptions={imageOptions}
+            imageOptions={images}
             projectBaseImage={projectBaseImage}
           />
         ) : (
@@ -213,7 +222,7 @@ export default function WorkersPage({
                 onSave={handleSave}
                 onDelete={handleDelete}
                 saving={saving}
-                imageOptions={imageOptions}
+                imageOptions={images}
                 projectBaseImage={projectBaseImage}
               />
             )}

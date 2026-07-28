@@ -115,6 +115,13 @@ export type {
   WorkerJobsApi,
 } from './useWorkers.js'
 
+// Images (B4) — the read-only /agent/images catalogue: the picker's source of
+// suggestions for a worker's image field, which stays free text.
+export { IMAGE_ENDPOINTS, coerceImage, imageOptionsFrom } from './images.js'
+export type { ProjectImage } from './images.js'
+export { default as useImages } from './useImages.js'
+export type { UseImagesOptions, ImagesApi } from './useImages.js'
+
 // Topologies (T3) — the /agent/topologies surface: catalogue, question form
 // helpers, preview + apply, and the onboarding flow component.
 export {
