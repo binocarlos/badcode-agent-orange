@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ThemeProvider, CssBaseline, Box, Button, Stack, useMediaQuery } from "@mui/material";
+import { ThemeProvider, CssBaseline, Box, Button, useMediaQuery } from "@mui/material";
 import {
   AgentChatProvider,
   AgentChat,
@@ -272,13 +272,17 @@ function ViewNav({ view, onChange, asks }: { view: View; onChange: (v: View) => 
       variant={view === key ? "contained" : "text"}
       onClick={() => onChange(key)}
       data-testid={`nav-${key}`}
-      sx={{ textTransform: "none", flex: 1, minWidth: 0 }}
+      sx={{ textTransform: "none", flexGrow: 1 }}
     >
       {badge > 0 ? `${label} ${badge}` : label}
     </Button>
   );
+  // Seven views no longer fit one 280px row (the Wave-4 screenshot pass caught
+  // the labels colliding), so the nav wraps: reading order keeps Desk first.
   return (
-    <Stack direction="row" spacing={0.5} sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
+    <Box
+      sx={{ p: 1, borderBottom: 1, borderColor: "divider", display: "flex", flexWrap: "wrap", gap: 0.5 }}
+    >
       {item("desk", "Desk", asks)}
       {item("chart", "Chart")}
       {item("chat", "Chat")}
@@ -286,7 +290,7 @@ function ViewNav({ view, onChange, asks }: { view: View; onChange: (v: View) => 
       {item("events", "Events")}
       {item("automation", "Automation")}
       {item("settings", "Settings")}
-    </Stack>
+    </Box>
   );
 }
 
