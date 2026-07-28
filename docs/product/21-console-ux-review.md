@@ -395,6 +395,13 @@ document is the spec.
   `rgba(0, 0, 0, 0)`. EventsPage's diff-summary assertion requires the `<summary>` line to stay
   ONE text node. Ember/fault tokens now copied in a third place — if a fourth appears, spine.tsx
   should export the token table.
+- **(orchestrator) WAVE B DID NOT RUN — both executors died on ACCOUNT LIMITS, not on code**
+  (2026-07-28: W4 hit the session limit, W5 the monthly spend limit). Neither committed;
+  W4 produced nothing. W5's partial pure module is salvaged, UNVALIDATED, on the branch
+  `wip/w5-chartmotion-salvage` (one commit, `web/src/chartmotion.ts`, ~485 lines, not
+  typechecked, not tested, not wired to anything, not exported). **Do not merge it as-is** —
+  re-run W4 and W5 from base `e32cc42`; W5 may adopt or replace that file. The Wave B workflow
+  script is re-runnable as-is once limits allow.
 - **(orchestrator) Wave A merged conflict-free; web 959→1046 tests.** Fixture re-shoot confirms
   every X-defect visually fixed: lock glyph correct, labels laned, rose diamond + awaiting count
   on the plate, fault cross on the dead clock, badge=asks, compact times, visible rail.
