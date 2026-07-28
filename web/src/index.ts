@@ -389,10 +389,20 @@ export type {
   PropagationWake,
 } from './orgchart.js'
 
-// The chart's page (OC2) — read-only SVG in the schematic style, plus the
-// propagation panel and its depth ruler. OC4 adds direct manipulation.
-export { default as OrgChartPage, stateLine } from './components/OrgChartPage.js'
-export type { OrgChartPageProps } from './components/OrgChartPage.js'
+// The chart's page (OC2) — SVG in the schematic style, the propagation panel
+// and its depth ruler, the conventions overlay (OC3) and direct manipulation
+// (OC4: wire + freeze only, every gesture a proposal carrying a reason).
+export {
+  default as OrgChartPage,
+  stateLine,
+  WIRE_EVENT_TYPE,
+  wireFilter,
+  wireSentence,
+  cutWireTitle,
+  toggleTitle,
+  toggleSentence,
+} from './components/OrgChartPage.js'
+export type { OrgChartPageProps, WireProposal } from './components/OrgChartPage.js'
 
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'

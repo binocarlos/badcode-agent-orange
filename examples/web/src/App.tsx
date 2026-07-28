@@ -250,7 +250,11 @@ function ProjectWorkspace({
             onOpenChat={() => setView("chat")}
           />
         )}
-        {view === "chart" && <OrgChartPage projectId={project} />}
+        {/* Schedules are not edited on the canvas (K3): a clock is a deep link
+            to the row on Automation. */}
+        {view === "chart" && (
+          <OrgChartPage projectId={project} onOpenAutomation={() => setView("automation")} />
+        )}
         {view === "chat" && <AgentChat />}
         {view === "workers" && <WorkersPage projectId={project} onOpenSession={showSession} />}
         {/* No fetchConfigEvents: GET /agent/config-events is mounted, so the
