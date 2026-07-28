@@ -37,6 +37,15 @@ export interface Schedule {
   enabled: boolean
   created_at: number
   updated_at: number
+  /**
+   * CONSECUTIVE firings that could not be started, from the engine's runtime
+   * state (`ScheduleMaxProvisionFailures` = 5 disables the schedule). Read-only
+   * here — no editor writes it — and optional so a draft built by hand stays
+   * legal. The Desk's Trouble stack reads it (desk.ts).
+   */
+  provision_failures?: number
+  /** Why the most recent start failed, kept so an operator can recover. */
+  last_provision_error?: string
 }
 
 /** A schedule being edited. Same shape; the alias makes props read honestly. */
@@ -59,6 +68,8 @@ export function newScheduleDraft(project = ''): ScheduleDraft {
     enabled: true,
     created_at: 0,
     updated_at: 0,
+    provision_failures: 0,
+    last_provision_error: '',
   }
 }
 
@@ -75,6 +86,8 @@ export function coerceSchedule(raw: unknown, project = ''): Schedule {
     enabled: bool(r.enabled, true),
     created_at: num(r.created_at),
     updated_at: num(r.updated_at),
+    provision_failures: num(r.provision_failures),
+    last_provision_error: str(r.last_provision_error),
   }
 }
 

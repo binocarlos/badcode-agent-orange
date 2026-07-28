@@ -288,6 +288,54 @@ export type {
 export { default as useConfigLog } from './useConfigLog.js'
 export type { UseConfigLogOptions, ConfigLogApi } from './useConfigLog.js'
 
+// The spine (DK1) — the rail and its closed glyph set (design §3.6).
+// Presentational only; what hangs off the rail is decided by desk.ts.
+export {
+  SPINE_GLYPHS,
+  SPINE_GLYPH_MEANINGS,
+  SPINE_GUTTER,
+  SPINE_GLYPH_SIZE,
+  SpineGlyph,
+  SpineRail,
+  SpineRow,
+  SpineGap,
+  consoleColor,
+  spineGlyphColor,
+} from './spine.js'
+export type {
+  SpineGlyphName,
+  SpineGlyphProps,
+  SpineRailProps,
+  SpineRowProps,
+  SpineGapProps,
+} from './spine.js'
+
+// The Desk fold (DK1) — asks, changes, trouble, computed read-time (§5.2).
+export {
+  ATTENTION_ENDPOINTS,
+  DESK_GLYPHS,
+  DESK_ASKS_CAVEAT,
+  DESK_NO_DELIVERY_REASON,
+  DESK_FREEZE_REFUSAL_NOTE,
+  SCHEDULE_MAX_PROVISION_FAILURES,
+  buildDesk,
+  coerceAttentionRequest,
+  isAttentionRequestOpen,
+  deskChangeVerb,
+  deskChangeSubject,
+  frozenTargetFromText,
+} from './desk.js'
+export type {
+  AttentionRequest,
+  BuildDeskInput,
+  Desk,
+  DeskAsk,
+  DeskChange,
+  DeskGlyph,
+  DeskTrouble,
+  DeskTroubleKind,
+} from './desk.js'
+
 // Supporting hooks
 export { default as useVoiceDictation } from './hooks/useVoiceDictation.js'
 export type { UseVoiceDictationOptions } from './hooks/useVoiceDictation.js'
