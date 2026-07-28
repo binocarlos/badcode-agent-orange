@@ -4,16 +4,16 @@
 // Pure: no React, no window, no fetch. The hook lives in useConfigLog.ts and the
 // component in components/ChangelogView.tsx.
 //
-// ── THE MISSING ROUTE ──────────────────────────────────────────────────────
+// ── THE READ ROUTE ─────────────────────────────────────────────────────────
 //
-// There is currently NO HTTP read route for the config log. `config_events` is
-// written (the store seam is adopted) and `Store.ListConfigEvents` exists, but
-// nothing in `go/httpapi` serves it — J2/J3 own that. So this module is written
-// against a narrow, injectable seam (`ConfigEventFetcher`, below) rather than
-// against `fetch`, and useConfigLog defaults to hitting CONFIG_LOG_ENDPOINT so
-// that wiring it later is nothing but adding the handler.
+// `GET /agent/config-events` is mounted (`go/httpapi/config_events.go`), and
+// useConfigLog hits CONFIG_LOG_ENDPOINT by default — no wiring required. The
+// narrow injectable seam (`ConfigEventFetcher`, below) stays, not as a stopgap
+// but as a host override: an embedding app that serves the log from somewhere
+// else (its own gateway, a cache, a fixture in a test) supplies a fetcher and
+// this module never touches `fetch`.
 //
-// The exact contract this UI needs:
+// The contract, which the mounted route satisfies:
 //
 //   GET /agent/config-events
 //     query: ?action=<exact|prefix*>&actor_worker=<name>&since=<ms>&until=<ms>&limit=<n>
@@ -44,7 +44,7 @@
 
 import { buildSessionPath } from './permalink.js'
 
-/** The read route this UI needs. J2/J3 owns adding the handler behind it. */
+/** The read route this UI reads by default; mounted in go/httpapi. */
 export const CONFIG_LOG_ENDPOINT = '/agent/config-events'
 
 // ---------------------------------------------------------------------------

@@ -4,10 +4,13 @@ import {
   AgentChatProvider,
   AgentChat,
   AgentSessionList,
+  AutomationPage,
+  EventsPage,
   ProjectSettingsPage,
   WorkersPage,
   projectIdFromLocation,
   useSessionPermalink,
+  useWorkers,
 } from "@agentkit/chat-ui";
 import { AuthConfig, AuthState, clearAuthState, fetchAuthConfig, loadAuthState, mintProjectToken, saveAuthState } from "./auth";
 import LoginScreen from "./LoginScreen";
@@ -17,10 +20,10 @@ import Sidebar from "./Sidebar";
 const theme = createTheme();
 const API = import.meta.env.VITE_API ?? ""; // "" → same origin (nginx proxy)
 
-// The three things a project view can show. Deliberately a state machine and
-// not a router: the library must not impose react-router on hosts, and the
-// permalink hook already owns the one URL that matters (the session).
-type View = "chat" | "workers" | "settings";
+// What a project view can show. Deliberately a state machine and not a router:
+// the library must not impose react-router on hosts, and the permalink hook
+// already owns the one URL that matters (the session).
+type View = "chat" | "workers" | "events" | "automation" | "settings";
 
 // App state machine: loading → dev (legacy /dev/token, straight to chat)
 //                            → login → project picker → chat (per-project JWT)
@@ -167,8 +170,9 @@ export default function App() {
 }
 
 /**
- * The signed-in, project-scoped workspace: chat, workers and project settings
- * behind a three-way switch, with the session permalink bound to the URL.
+ * The signed-in, project-scoped workspace: chat, workers, events, automation
+ * and project settings behind one switch, with the session permalink bound to
+ * the URL.
  *
  * It is a separate component because `useSessionPermalink` reads the chat
  * context — the hook has to run *inside* <AgentChatProvider>, not beside it.
@@ -187,6 +191,12 @@ function ProjectWorkspace({
   onSignOut: () => void;
 }) {
   const [view, setView] = useState<View>("chat");
+
+  // Worker names for the subscription/schedule pickers. Fetched here because
+  // AutomationPage takes them as a prop — a library page never fetches another
+  // page's collection for itself.
+  const { workers } = useWorkers();
+  const workerOptions = useMemo(() => workers.map((w) => w.name), [workers]);
 
   // URL ⇄ active session, both directions: a pasted /p/<project>/s/<session>
   // resumes that session, and whatever session is open is already permalinked.
@@ -217,13 +227,17 @@ function ProjectWorkspace({
       <Box sx={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
         {view === "chat" && <AgentChat />}
         {view === "workers" && <WorkersPage projectId={project} onOpenSession={showSession} />}
+        {/* No fetchConfigEvents: GET /agent/config-events is mounted, so the
+            changelog tab reads the route directly. */}
+        {view === "events" && <EventsPage projectId={project} onOpenSession={showSession} />}
+        {view === "automation" && <AutomationPage projectId={project} workerOptions={workerOptions} />}
         {view === "settings" && <ProjectSettingsPage />}
       </Box>
     </Box>
   );
 }
 
-/** The three-way view switch. */
+/** The view switch. */
 function ViewNav({ view, onChange }: { view: View; onChange: (v: View) => void }) {
   const item = (key: View, label: string) => (
     <Button
@@ -241,6 +255,8 @@ function ViewNav({ view, onChange }: { view: View; onChange: (v: View) => void }
     <Stack direction="row" spacing={0.5} sx={{ p: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
       {item("chat", "Chat")}
       {item("workers", "Workers")}
+      {item("events", "Events")}
+      {item("automation", "Automation")}
       {item("settings", "Settings")}
     </Stack>
   );
