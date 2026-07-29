@@ -226,6 +226,7 @@ export {
   validateSubscription,
   validateFilterEntry,
   describeSubscription,
+  describeSubscriptionTarget,
   subscriptionFromSearch,
   buildSubscriptionSearch,
 } from './subscriptions.js'

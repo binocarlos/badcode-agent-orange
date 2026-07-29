@@ -1,29 +1,51 @@
 // DeliveryStatusChip — one chip for a delivery status, everywhere (doc 21, X11).
 //
-// The design says `awaiting_human` is ROSE and never an alarm colour: a worker
-// waiting for a person is a pause, not a fault. MUI's `Chip color` prop cannot
-// say rose — it knows five semantic buckets and none of them is a fourth named
-// console colour — so this chip paints that one status from the theme with
-// `sx`, resolving `palette.rose` where the host declares it and falling back to
-// the design token otherwise. That is spine.tsx's pattern, and `consoleColor`
-// is spine.tsx's function: `web/` never imports the host's augmentation.
+// Painted from the console's own palette, not MUI's semantic buckets, because
+// the design's palette has no green: §3.3 names exactly four working colours
+// (ember = an agent, steel = instrument, rose = waiting on you, fault = broken)
+// and spends none of them on "normal". A job table where most rows are a loud
+// success green spends the reader's attention on the eight rows that are fine
+// and leaves nothing for the two that are not — the opposite of what the Desk's
+// three stacks are for.
 //
-// Every other status keeps its ordinary MUI bucket, so the chips stay legible
-// in any host theme and only the one the design overrules is overruled.
+// So the mapping is:
+//
+//   ok             quiet, outlined, neutral  — finished is the expected case
+//   pending        quiet, outlined, neutral  — nothing has happened to it yet
+//   running        ember, filled             — matches the chart's running dot
+//   awaiting_human rose, filled              — a pause, never an alarm colour
+//   rate_limited   fault, OUTLINED           — work was dropped, but nothing broke
+//   failed         fault, filled             — the one thing that should shout
+//
+// Colours resolve through spine.tsx's `consoleTokenColor`, so a host that
+// declares `palette.ember`/`rose`/`fault` gets its own values and `web/` never
+// imports the host's augmentation. Anything outside the six-status vocabulary
+// falls back to MUI's bucket rather than guessing.
 
-import { Chip, Tooltip, type SxProps, type Theme } from '@mui/material'
-import { describeDeliveryStatus, deliveryStatusSeverity } from '../events.js'
-import { consoleColor } from '../spine.js'
-import { statusCrossfadeSx } from '../feedhighlight.js'
+import { Chip, Tooltip, type Theme } from '@mui/material'
+import {
+  describeDeliveryStatus,
+  deliveryStatusSeverity,
+  isDeliveryStatus,
+} from '../events.js'
+import { consoleTokenColor, type ConsoleTokenName } from '../spine.js'
+import { statusCrossfadeSx, type ConsoleSx } from '../feedhighlight.js'
 import usePrefersReducedMotion from '../useReducedMotion.js'
 
-/** The design's §3.3 rose, per mode — the fallback when a host theme has no
- *  named entry. Kept in step with spine.tsx's copy of the token table. */
-const ROSE = { light: '#A6376A', dark: '#DF7BA4' } as const
+/** How each status is painted. `null` token ⇒ quiet neutral, no console colour. */
+const STATUS_PAINT: Record<string, { token: ConsoleTokenName | null; filled: boolean }> = {
+  ok: { token: null, filled: false },
+  pending: { token: null, filled: false },
+  running: { token: 'ember', filled: true },
+  awaiting_human: { token: 'rose', filled: true },
+  rate_limited: { token: 'fault', filled: false },
+  failed: { token: 'fault', filled: true },
+}
 
-/** The rose a chip is painted with under one theme. */
+/** The rose a waiting chip is painted with — kept for callers that tint to
+ *  match it (the Desk's ask rows). */
 export function attentionColor(theme: Theme): string {
-  return consoleColor(theme, 'rose', ROSE[theme.palette.mode === 'dark' ? 'dark' : 'light'])
+  return consoleTokenColor(theme, 'rose')
 }
 
 export interface DeliveryStatusChipProps {
@@ -33,34 +55,43 @@ export interface DeliveryStatusChipProps {
   describe?: boolean
 }
 
-/**
- * The status chip. `awaiting_human` is rose and filled; the rest take the MUI
- * bucket, outlined only for `pending` (nothing has happened to it yet).
- */
 export default function DeliveryStatusChip({ status, describe = true }: DeliveryStatusChipProps) {
-  const attention = status === 'awaiting_human'
   const reduced = usePrefersReducedMotion()
+  const paint = isDeliveryStatus(status) ? STATUS_PAINT[status] : undefined
+
   // `key={status}` remounts the chip when the status lands, so the 140ms
   // crossfade runs on the transition and never on an ordinary re-render — the
   // chip's change IS the payload of a status transition (§4.2).
-  const paint: SxProps<Theme> | undefined = attention
-    ? {
-        bgcolor: (theme: Theme) => attentionColor(theme),
-        color: (theme: Theme) => theme.palette.getContrastText(attentionColor(theme)),
-      }
-    : undefined
+  const sx: ConsoleSx[] = []
+  if (paint?.token) {
+    sx.push(
+      paint.filled
+        ? {
+            bgcolor: (theme: Theme) => consoleTokenColor(theme, paint.token as ConsoleTokenName),
+            color: (theme: Theme) =>
+              theme.palette.getContrastText(consoleTokenColor(theme, paint.token as ConsoleTokenName)),
+          }
+        : {
+            color: (theme: Theme) => consoleTokenColor(theme, paint.token as ConsoleTokenName),
+            borderColor: (theme: Theme) => consoleTokenColor(theme, paint.token as ConsoleTokenName),
+          },
+    )
+  } else if (paint) {
+    // Quiet: the chip is a label, not a signal.
+    sx.push({ color: 'text.secondary', borderColor: 'divider' })
+  }
+  sx.push(statusCrossfadeSx(reduced))
+
   const chip = (
     <Chip
       key={status}
       size="small"
       label={status}
       data-status={status}
-      color={attention ? undefined : deliveryStatusSeverity(status)}
-      variant={status === 'pending' ? 'outlined' : 'filled'}
-      sx={[
-        ...(paint ? [paint] : []),
-        statusCrossfadeSx(reduced),
-      ]}
+      // A console-painted status takes no MUI bucket; an unknown one still does.
+      color={paint ? undefined : deliveryStatusSeverity(status)}
+      variant={paint && !paint.filled ? 'outlined' : paint ? 'filled' : 'filled'}
+      sx={sx}
     />
   )
   return describe ? <Tooltip title={describeDeliveryStatus(status)}>{chip}</Tooltip> : chip

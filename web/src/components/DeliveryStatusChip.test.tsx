@@ -36,9 +36,41 @@ describe('DeliveryStatusChip', () => {
     expect(rgb(container.querySelector('[data-status="awaiting_human"]')!)).toBe('rgb(18, 52, 86)')
   })
 
-  it('leaves every other status on its MUI bucket', () => {
+  // Superseded deliberately: W2 painted only `awaiting_human` and left the rest
+  // on MUI's buckets, which rendered the job table as traffic lights — most rows
+  // a loud success green. The design's palette has no green and spends no colour
+  // on "normal" (doc 21 §2 follow-up), so every status is now painted from the
+  // console tokens and MUI's buckets are reserved for statuses we do not know.
+  it('paints a failure with the console fault, not MUI error red', () => {
     const { container } = renderChip('failed')
-    expect(container.querySelector('[data-status="failed"]')!.className).toMatch(/colorError/)
+    const chip = container.querySelector('[data-status="failed"]')!
+    expect(chip.className).not.toMatch(/colorError/)
+    expect(rgb(chip)).toBe('rgb(143, 43, 43)') // #8F2B2B, the fault token
+  })
+
+  it('keeps the expected case quiet — a finished job is a label, not a signal', () => {
+    const { container } = renderChip('ok')
+    const chip = container.querySelector('[data-status="ok"]')!
+    expect(chip.className).not.toMatch(/colorSuccess/)
+    // Outlined: no fill at all, so a table of finished jobs reads as calm.
+    expect(rgb(chip)).toBe('rgba(0, 0, 0, 0)')
+  })
+
+  it('marks a running job with ember, matching the chart', () => {
+    const { container } = renderChip('running')
+    expect(rgb(container.querySelector('[data-status="running"]')!)).toBe('rgb(179, 84, 30)')
+  })
+
+  it('distinguishes dropped from broken — rate_limited is outlined fault', () => {
+    const { container } = renderChip('rate_limited')
+    const chip = container.querySelector('[data-status="rate_limited"]')!
+    expect(rgb(chip)).toBe('rgba(0, 0, 0, 0)') // outlined, not filled
+    expect(getComputedStyle(chip).color).toBe('rgb(143, 43, 43)')
+  })
+
+  it('falls back to a MUI bucket for a status outside the vocabulary', () => {
+    const { container } = renderChip('something-new')
+    expect(container.querySelector('[data-status="something-new"]')).toBeTruthy()
   })
 
   it('never hands a host the warning bucket for a pause', () => {

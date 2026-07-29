@@ -36,7 +36,7 @@ import {
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import useConfigLog, { type UseConfigLogOptions } from '../useConfigLog.js'
-import { consoleColor } from '../spine.js'
+import { SpineRail, SpineRow, consoleColor } from '../spine.js'
 import { usePrefersReducedMotion } from '../useReducedMotion.js'
 import { formatConfigTimestamp, type ChangelogEntry, type DiffLine } from '../configLog.js'
 
@@ -134,7 +134,12 @@ export default function ChangelogView({
           {log.available ? 'No configuration changes recorded.' : 'Nothing to show.'}
         </Typography>
       ) : (
-        <Stack spacing={2} component="ol" sx={{ listStyle: 'none', p: 0, m: 0 }}>
+        // The changelog is the spine's third lens (design §2: Desk = today,
+        // lineage = one worker, changelog = everything). It carries the same
+        // rail and the same closed glyph set, so "a mark means a worker decided
+        // it, unmarked means a human did" is true on the screen where history
+        // actually lives — not only on the two that had it first.
+        <SpineRail component="ol" role="log" aria-label="Configuration changes, newest first">
           {log.entries.map((entry) => (
             <ChangelogEntryCard
               key={entry.id}
@@ -142,7 +147,7 @@ export default function ChangelogView({
               onOpenSession={onOpenSession}
             />
           ))}
-        </Stack>
+        </SpineRail>
       )}
     </Box>
   )
@@ -156,8 +161,18 @@ function ChangelogEntryCard({
   onOpenSession?: (sessionId: string) => void
 }) {
   const [showPayload, setShowPayload] = useState(false)
+  // Authorship is the glyph, exactly as on the Desk: the config log already
+  // distinguishes the two for free (a worker's write names itself; a human's
+  // logs no actor), so the mark costs nothing and answers "who decided this?"
+  // before any text is read.
+  const byWorker = entry.actorWorker !== ''
   return (
-    <Paper component="li" variant="outlined" sx={{ p: 2 }}>
+    <SpineRow
+      component="li"
+      glyph={byWorker ? 'agent' : 'human'}
+      glyphLabel={byWorker ? `changed by ${entry.actorWorker}` : 'changed by a human'}
+    >
+    <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
         <Typography variant="subtitle2">{entry.title}</Typography>
         <Chip size="small" variant="outlined" label={entry.action} sx={{ fontFamily: 'monospace' }} />
@@ -241,6 +256,7 @@ function ChangelogEntryCard({
         )}
       </Box>
     </Paper>
+    </SpineRow>
   )
 }
 

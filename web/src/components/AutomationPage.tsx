@@ -25,6 +25,7 @@ import {
 } from '../schedules.js'
 import {
   buildSubscriptionSearch,
+  describeSubscriptionTarget,
   newSubscriptionDraft,
   subscriptionFromSearch,
   type SubscriptionDraft,
@@ -224,7 +225,7 @@ export default function AutomationPage({
                           {!s.enabled && <Chip size="small" label="disabled" />}
                         </Stack>
                       }
-                      secondary={`→ ${s.worker}`}
+                      secondary={describeSubscriptionTarget(s)}
                       primaryTypographyProps={{ variant: 'body2', noWrap: true }}
                       secondaryTypographyProps={{ variant: 'caption', noWrap: true }}
                     />

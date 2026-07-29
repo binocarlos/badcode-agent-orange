@@ -31,6 +31,7 @@ import {
   NEW_MARKER_LABEL,
   type HighlightTone,
 } from '../feedhighlight.js'
+import { attentionColor } from './DeliveryStatusChip.js'
 import usePrefersReducedMotion from '../useReducedMotion.js'
 import useStagedFeed from '../useStagedFeed.js'
 import { FeedWaterline, NewItemsPill, useAtHead } from './FeedLiveness.js'
@@ -111,7 +112,14 @@ export default function EventList({
                         <Chip size="small" variant="outlined" label={event.envelope.source} />
                       )}
                       {event.envelope.attention_requested && (
-                        <Chip size="small" color="warning" label="attention" />
+                        <Chip
+                          size="small"
+                          label="attention"
+                          sx={{
+                            bgcolor: (t) => attentionColor(t),
+                            color: (t) => t.palette.getContrastText(attentionColor(t)),
+                          }}
+                        />
                       )}
                       {highlightMarker({
                         active: feed.arrivals.has(event.id),

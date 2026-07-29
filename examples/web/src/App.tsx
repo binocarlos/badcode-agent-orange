@@ -286,7 +286,7 @@ function ViewNav({ view, onChange, asks }: { view: View; onChange: (v: View) => 
       variant={view === key ? "contained" : "text"}
       onClick={() => onChange(key)}
       data-testid={`nav-${key}`}
-      sx={{ textTransform: "none", flexGrow: 1 }}
+      sx={{ textTransform: "none", flexGrow: 1, minWidth: 0 }}
     >
       {badge > 0 ? `${label} ${badge}` : label}
     </Button>

@@ -134,6 +134,25 @@ export function describeSubscription(s: SubscriptionDraft): string {
   return `When ${type} arrives${where}, start a job for ${worker}.${rate}${disabled}`
 }
 
+/**
+ * The list row's second line: where the job goes, plus the filter that makes
+ * this subscription different from its siblings.
+ *
+ * Doc 21 §2 note: three rows reading `worker.finished → email-reviewer`,
+ * `→ archivist`, `→ fee-scorer` are indistinguishable at a glance, because what
+ * separates them is the FILTER (`{"worker":"email-answerer"}` vs
+ * `{"worker":"email-reviewer"}`) — the one field that decides which of them a
+ * given event wakes. Rendering the target without it hides the only thing the
+ * reader is scanning for.
+ *
+ * Rendered compactly (`→ worker · worker=email-answerer`) so the row stays one
+ * line; the editor shows the whole filter object.
+ */
+export function describeSubscriptionTarget(sub: Pick<Subscription, 'worker' | 'filter'>): string {
+  const clauses = Object.entries(sub.filter ?? {}).map(([k, v]) => `${k}=${String(v)}`)
+  return clauses.length === 0 ? `\u2192 ${sub.worker}` : `\u2192 ${sub.worker} \u00b7 ${clauses.join(', ')}`
+}
+
 // ---------------------------------------------------------------------------
 // Router-free URL helpers (the WorkersPage/EventsPage convention)
 // ---------------------------------------------------------------------------
