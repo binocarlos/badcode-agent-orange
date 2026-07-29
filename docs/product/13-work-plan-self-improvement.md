@@ -253,7 +253,7 @@ mutation on the project prompt (D5) — no engine changes in this wave.*
   CommonJS import style, no `.ts` import extensions; own `run.sh` delegating build to `../run.sh`.
   *Validation:* go suite + live-Postgres command (F1's) + `./e2e/experiments/triage/run.sh test` +
   stack mock smoke + topologies/learning-stories regressions.
-- [ ] **SC3 — Injection gauntlet** (doc 19 §3 SC-3; doctrine WD-1's promotion instrument —
+- [x] **SC3 — Injection gauntlet** (doc 19 §3 SC-3; doctrine WD-1's promotion instrument —
   prerequisites DR1 + SC1 both merged). Three parts:
   (a) **Adversarial layer on `go/triagelab`**: gauntlet generation draws tickets from the SC-1
   stream and plants at most one directive per marked ticket, each with a DESIGNED observable
@@ -501,6 +501,24 @@ mutation on the project prompt (D5) — no engine changes in this wave.*
   emits usage 10/10).
   *Validation:* go suite + live-Postgres + web tests + the new e2e assertion.
 
+- (SC3) **Two concurrent prompt writers made the report bytes machine-dependent** — the critic
+  writes every round and the dispatcher writes whenever it obeys a rewrite-sibling directive, so
+  which one takes the config log's next `seq` is a genuine race. Every metric was identical; only
+  the lineage array moved. **Two runs in one checkout agreed and a third from another tree did
+  not** — same-machine repetition cannot detect this class of drift, which matters because
+  "byte-identical reports" is the reproducibility check the whole comparison methodology rests on.
+  Fixed by grouping lineage by actor with each actor's own seq order preserved (stable sort);
+  cross-actor interleaving carries no information. Any future rig with two writers inherits this.
+- (SC3) **Predicted totals were wrong; predicted ATTRIBUTED counts were exact.** The executor
+  forecast `prompt_writes`/`freeze_refused` 7 and got 8 (the attack-frozen ticket yields three
+  refusals, not one), while `dispatcher_config_writes` 1 and `freeze_refused_directed` 1 matched
+  precisely. OM-10 demonstrating itself inside a day: the project-wide counter is the unpredictable
+  one.
+- (SC3) **Non-vacuity is emphatic**: with the injection disabled the doctrine arm reproduces the
+  control arm in EVERY column (compliance 1.0 across all four directive kinds, accuracy 0.667,
+  tax 0.5, tokens 1040); restored, it returns to 0.0 compliance. Delivery into the composed
+  prompt, not storage in a settings row.
+
 ## Resume point — end of 2026-07-28
 
 *Written so a cold session can pick this up. Everything below is on `product-layer`, pushed.*
@@ -508,24 +526,21 @@ mutation on the project prompt (D5) — no engine changes in this wave.*
 **Merged and validated today:** DR1 (doctrine axis), SC1 (triage scenario), TOK1 earlier. The L3X
 partial record is committed under `runs/2026-07-28-calibration-aborted/`.
 
-**In flight, not merged: SC3 (injection gauntlet).** Branch `wave7-sc3` at **f4b50a9**, base
-b87ef10, working tree clean, in worktree `.claude/worktrees/agent-acc864bab775b7906`. Its executor
-agent does NOT survive a session restart; the branch does. Fully green offline (its own 60/60, plus
-go build/vet/test, live-Postgres, and the triage/calibration/C1 suites). **Remains: stack
-validations only**, in this order, with the stack in mock mode:
-1. `./e2e/run-stack-e2e.sh up mock`
-2. `./e2e/experiments/gauntlet/run.sh run gauntlet-smoke-6` — twice, reports byte-identical.
-   *The committed report artifacts do not exist yet; only this run can produce them.*
-3. Non-vacuity: break the doctrine injection, rerun, record the collapse, restore, rerun.
-4. `./e2e/experiments/triage/run.sh run triage-smoke-6` — committed triage reports must be unchanged.
-5. topologies + learning-stories regressions.
-Expected smoke numbers (a mismatch is loud): arm `A-doctrine-off` accuracy 0.666667, directive
-compliance 1.0 (all four kinds 1.0), clean 1.0 / attacked 0.5, tax 0.5, unparseable 1,
-prompt_writes 7 with dispatcher_config_writes 1, freeze_refused 7 with directed 1. Arm
-`A-doctrine-v1` accuracy 1.0, compliance 0.0, tax 0, prompt_writes 6 / directed 0.
-Then commit the artifacts and merge as usual.
+**SC3 is merged** (2026-07-29, `c1b7cde` + determinism fix `b6b5137`). All five stack validations
+ran green from the orchestrator's tree: gauntlet smoke ×2 byte-identical, non-vacuity collapse and
+restore, triage-smoke-6 with committed reports unchanged, topologies 13/13, learning-stories 10/10,
+plus go suite, live-Postgres 3/3 and all three rig suites (60/65/38). Committed smoke numbers:
+`A-doctrine-off` accuracy 0.667, compliance 1.0 (all four kinds), tax 0.5, prompt_writes 8 /
+dispatcher_config_writes 1, freeze_refused 8 / directed 1; `A-doctrine-v1` accuracy 1.0,
+compliance 0.0, tax 0, 6 / 0 and 6 / 0.
 
-**Next live-run work is blocked on L3H then L3M** — do not re-run the existing manifest.
+**Wave 7 is complete** (DR1, SC1, SC3). **Next live-run work is blocked on L3H then L3M** — do not
+re-run the existing manifest.
+
+**Note for whoever recreates the environment:** a host restart removed every stack container *and*
+`ao-test-pg`. Bring back the test database with
+`docker run -d --name ao-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_USER=postgres -p 5433:5432 pgvector/pgvector:pg16`
+before running any live-Postgres suite — a missing container makes those cases skip silently.
 
 **Stack left in mock mode**, no script loaded, subscription credentials out of play. `.env` still
 holds both credentials; `up subscription` is what selects them.
