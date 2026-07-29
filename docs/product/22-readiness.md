@@ -88,8 +88,12 @@ do-not-touch list (`.env`, `ao-test-pg`, production seeding, the real API).*
 All four verified by the orchestrator against the source before filing — writer *and* reader read
 in each case.
 
-- [ ] **RD1 — A schedule disables itself permanently on a transient database error, and records a
-  false reason.** *Worst first-user failure found: silent, permanent, and actively
+- [x] **RD1 — A schedule disables itself permanently on a transient database error, and records a
+  false reason.** *Fixed and merged 2026-07-29. Three durable sites, not two — the survey found
+  `dispatch.go:281` (`GetProjectEvent`) with the same shape 60 lines below the known one. The
+  dispatch sites now retry rather than fail, matching the contract already stated in three places
+  in that file and used by the three sibling store reads immediately following. Non-vacuity proven
+  per site; the "still disables for a genuinely missing worker" twin keeps passing.* *Worst first-user failure found: silent, permanent, and actively
   misdirecting.* `go/cmd/agentd/scheduler.go:203-209` treats **any** `GetWorker` error as "the
   worker no longer exists", disables the schedule (a durable config mutation) and writes a
   `schedule_disable` config event reading `worker <name> no longer exists` while the worker sits
@@ -104,8 +108,14 @@ in each case.
   permanently with the trigger already consumed — fix both, and add a test that a transient store
   error leaves the schedule enabled.
   *Validation:* go suite + live-Postgres (work plan F1's command).
-- [ ] **RD2 — The token ledger counts only uncached input tokens, so the spend brake still
-  under-reads real spend.** TOK1 fixed the jsonb *path*; it did not fix *which fields* are
+- [x] **RD2 — The token ledger counts only uncached input tokens, so the spend brake still
+  under-reads real spend.** *Fixed and merged 2026-07-29. Metered on tokens (all input components
+  summed), not cost — the settings are named and displayed in tokens, and a cost ceiling would
+  silently re-scale every project's brake when list prices move; `totalCostUsd` is now written on
+  the error path too, so a cost-denominated ceiling later is a reader change. Backward compatible:
+  pre-fix two-key envelopes read exactly their old values, pinned by a live-PG test. Non-vacuity:
+  reverting the reader SQL produced 7 live-PG failures headed "the brake is under-reading real
+  spend by 99%"; reverting the writer, 5 sandbox failures; reverting `readUsage`, 4 web failures.* TOK1 fixed the jsonb *path*; it did not fix *which fields* are
   written. `sandbox/src/harness/claude-agent-sdk.ts:693-701` forwards only
   `usage.input_tokens` / `usage.output_tokens`, but the SDK's usage object also carries
   `cache_creation_input_tokens` and `cache_read_input_tokens` — both billed, neither included in
@@ -140,7 +150,16 @@ in each case.
   derive `embedded` from what the store actually wrote; fail the create when a vector was supplied
   and cannot be stored (matching the write path's existing fail-hard-on-embedder-error decision).
   *Validation:* go suite + live-Postgres, including a case with the vector column absent.
-- [ ] **RD4 — A worker's config change can be recorded as a human edit.**
+- [x] **RD4 — A worker's config change can be recorded as a human edit.** *Fixed and merged
+  2026-07-29, at **two** seams because neither alone holds the invariant: the auth seam now refuses
+  when a present session store cannot answer, and a new write-seam choke point refuses an
+  unidentified caller — which also covers the nil-store route, a token with no `sid`, and a session
+  row with an empty worker. `refuseFrozen` always names its actor now, so `worker.freeze_refused`
+  can never read as a human refusal by silence. The comment that had justified the degradation was
+  **stale**: it blamed the SQLite fallback, but the core MCP server is mounted only when Postgres
+  is present, so that route cannot occur. Non-vacuity: 12 simultaneous failures on revert; the
+  table runs every tool twice — once identified (must write) and once not (must refuse) — so a
+  mis-seeded fake fails as proving nothing, which caught three vacuous cases during development.*
   `go/cmd/agentd/mcpserver.go:445-455` logs and continues when the session lookup fails, leaving
   `caller.Worker` empty; that empty string reaches `ConfigEvent.ActorWorker`
   (`mcp_management.go:690-696` → `config_events.go:375`), and an empty `actor_worker` is precisely
@@ -302,6 +321,44 @@ a user can see is lost" (RD12); `dispatch.go:351`'s "the backstop" (RD7); `route
 at-most-once justification, which `ReleaseSessionLease` breaks by ignoring `RowsAffected` and
 treating a missing row as success (`leases.go:66-79`) so two reapers both emit `worker.failed{lost}`;
 and `snapshot_reaper.go:21` implying `last_resumed_at` bears on expiry (RD9).
+
+**Discoveries from fixing RD1/RD2/RD4** (2026-07-29), each worth more than its item:
+
+- **`SDKResultError` carries full usage *and* cost** — the error path was not missing data, it was
+  throwing it away. Worth checking whether other "error → report nothing" paths discard available
+  data rather than lacking it.
+- **The e2e stack spec had the same arithmetic bug as the code it guards**
+  (`config-and-workers.stack.spec.ts:336` summed the same two fields), agreeing with the broken
+  reader instead of the writer. *A spec that mirrors the implementation's arithmetic cannot catch
+  the implementation's arithmetic.* Same one-line defect existed in all three
+  `e2e/experiments/*/runner.ts` token counters.
+- **Four mock writers, one lie**: `mock-server/streaming.ts`, `go/mockmodel`, `go/modelproxy` and
+  `go/modelproxy/script.go` all emitted the same invented two-key usage. The named fixture was a
+  quarter of the surface — when a fixture shape is wrong, grep for every writer of that shape.
+- **A fake store returned an invented error string instead of the package's sentinel**
+  (`fakeDispatchStore.GetProjectEvent`), so no test could distinguish the classified path from the
+  unclassified one. The same fake wrapped the sentinel correctly for `GetWorker`, which is why the
+  missing-worker tests passed all along and the bug stayed invisible. **Fixtures must be captured
+  from the writer — including error fixtures.**
+- **`go test ./cmd/agentd/...` was green before any test was added**, meaning none of the three
+  misclassification sites had a single test touching their error path: covered for success and for
+  genuine absence, never for failure.
+- **A comment outlived its premise and kept a hole open.** `mcpserver.go`'s auth comment justified
+  degrading provenance by "the SQLite fallback, which knows nothing of workers" — but the core MCP
+  server is mounted only when Postgres is present, so that route cannot occur. Worth grepping for
+  other comments justifying a behaviour by a condition the wiring no longer permits.
+- **The retry contract was documented in three places and both buggy sites ignored it** — a
+  well-stated convention still shipped two deviations in one file.
+
+**Further unclassified-error sites found and reported, not fixed** (queued behind the audits'
+items): the inverse `err == nil`-as-proof-of-existence form at `dispatch.go:627` (a read failure
+means the compensating write never happens, so a half-started session keeps a stale lease forever),
+`dispatch.go:565`, and `httpapi/session.go:140/146` (a background goroutine that is the only writer
+on that path, so a session stays `creating` permanently and the `create_error` diagnosis is
+discarded — which is also why RD20's `create_error` may be empty when the UI finally reads it).
+Transient-rendered-as-404: `attention.go:229` is the worst — the human-escalation path tells a
+worker its own session does not exist on a database hiccup — plus the subscription trio in
+`httpapi/events.go` and two sites in `lifecycle.go`.
 
 **Meta-finding, promoted to §2's standing rule:** RD2's survival has the same root cause as TOK1's
 — a fixture authored to match the reader rather than captured from the writer. Two of the four
