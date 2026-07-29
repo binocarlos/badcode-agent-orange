@@ -487,13 +487,27 @@ async function configEventsSince(
  * of WHY: `rationale` is the derived-rubric artifact and exists nowhere else.
  */
 function promptWrites(rows: readonly ConfigEvent[]): PromptWriteRecord[] {
-  return rows
-    .filter((r) => r.action === 'worker_prompt_write')
-    .map((r) => ({
-      by: r.actor_worker,
-      target: String((r.payload as { name?: unknown }).name ?? ''),
-      rationale: r.rationale,
-    }))
+  return (
+    rows
+      .filter((r) => r.action === 'worker_prompt_write')
+      .map((r) => ({
+        by: r.actor_worker,
+        target: String((r.payload as { name?: unknown }).name ?? ''),
+        rationale: r.rationale,
+      }))
+      // Grouped by actor, seq order preserved WITHIN each actor (Array#sort is
+      // stable, and the caller hands us rows already sorted by seq).
+      //
+      // This rig is the first with two workers writing prompts in the same
+      // round — the critic every round, the dispatcher whenever it obeys a
+      // rewrite-sibling directive — so which of them wins the config log's
+      // next seq is a genuine race, and it flips between machines. Seq order
+      // alone therefore made the report bytes unstable while every metric
+      // stayed identical (found by the orchestrator: two runs in one checkout
+      // agreed, a third in another did not). Cross-actor interleaving carries
+      // no information; one actor's own sequence carries all of it.
+      .sort((a, b) => (a.by < b.by ? -1 : a.by > b.by ? 1 : 0))
+  )
 }
 
 /**

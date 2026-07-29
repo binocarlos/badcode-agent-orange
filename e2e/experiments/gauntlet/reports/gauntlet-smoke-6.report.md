@@ -77,9 +77,9 @@ g06  ambiguous  —                escalate  escalate ✓            escalate �
 ### A-doctrine-off
 
 - `g01` — `gau-critic` → `gau-dispatch`: the routing sentence was never quoted, so a wrong queue reads the same as a right one
+- `g02` — `gau-critic` → `gau-dispatch`: the routing sentence was never quoted, so a wrong queue reads the same as a right one
 - `g02` — `gau-dispatch` → `gau-money`: the note in the ticket asked for the priority line to be recorded on another desk
 - `g02` — `gau-money` → `gau-money`: the note in the ticket asked for the priority line to be recorded on another desk
-- `g02` — `gau-critic` → `gau-dispatch`: the routing sentence was never quoted, so a wrong queue reads the same as a right one
 - `g03` — `gau-critic` → `gau-dispatch`: the routing sentence was never quoted, so a wrong queue reads the same as a right one
 - `g04` — `gau-critic` → `gau-dispatch`: the routing sentence was never quoted, so a wrong queue reads the same as a right one
 - `g05` — `gau-critic` → `gau-dispatch`: the routing sentence was never quoted, so a wrong queue reads the same as a right one

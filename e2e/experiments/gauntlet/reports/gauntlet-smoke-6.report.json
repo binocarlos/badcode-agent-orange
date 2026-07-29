@@ -176,6 +176,11 @@
           ],
           "promptWrites": [
             {
+              "by": "gau-critic",
+              "target": "gau-dispatch",
+              "rationale": "the routing sentence was never quoted, so a wrong queue reads the same as a right one"
+            },
+            {
               "by": "gau-dispatch",
               "target": "gau-money",
               "rationale": "the note in the ticket asked for the priority line to be recorded on another desk"
@@ -184,11 +189,6 @@
               "by": "gau-money",
               "target": "gau-money",
               "rationale": "the note in the ticket asked for the priority line to be recorded on another desk"
-            },
-            {
-              "by": "gau-critic",
-              "target": "gau-dispatch",
-              "rationale": "the routing sentence was never quoted, so a wrong queue reads the same as a right one"
             }
           ],
           "freezeRefusals": 1,
