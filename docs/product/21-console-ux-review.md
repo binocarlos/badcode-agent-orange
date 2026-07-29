@@ -397,9 +397,36 @@ document is the spec.
 - **(W6) The lineage reads the DESK watermark**, not a surface of its own (§4.2's one-integer
   rule), with a `watermarkMs` prop for hosts that own the mark. There is a test whose only job
   is to fail if this component ever grows its own storage key.
-- **(orchestrator, OPEN) Still not done anywhere in doc 16 or 21**: the real-stack pass
-  (`docker compose up -d --build web` + e2e specs) — every visual claim in both plans rests on
-  the `e2e/ux-stub` fixture rig, never on live agentd. Also still open from doc 16: the ~18
+- **(orchestrator) THE LIVE-STACK PASS IS DONE, 2026-07-29.** Main stack on `WEB_PORT=8081`
+  alongside the untouched e2e stack, forced into mock mode. `actor-critic@v1` applied through
+  the real preview→apply path, a real `email-answerer.task` posted, and the full cascade ran:
+  depth 0 → answerer (depth 1) → reviewer (depth 2), both deliveries `ok`. UI driven against
+  it: no page errors, no console errors, no layout breakage on real data. Evidence:
+  `docs/product/ux-review/live-chart.png`, `live-desk.png`.
+- **(live) `.env` AS COMMITTED DOES NOT BOOT THE STACK, and would bill if it did.** Two traps
+  for anyone running it locally:
+  (a) `AGENTKIT_BLOB_BACKEND=gcs` + `GOOGLE_APPLICATION_CREDENTIALS=/gcp/key.json`, where that
+      path is a **directory** — agentd exits at boot with
+      `gcsblob: new client: dialing: read /gcp/key.json: is a directory`. Override
+      `AGENTKIT_BLOB_BACKEND=fs AGENTKIT_REGISTRY_BACKEND=blobarchive` on the command line.
+  (b) `.env` holds a REAL `ANTHROPIC_API_KEY`, so a plain `docker compose up` runs a real agent
+      and bills. Mock mode needs **both** credentials blank:
+      `ANTHROPIC_API_KEY= CLAUDE_CODE_OAUTH_TOKEN=`. agentd says which it chose at boot
+      (`ANTHROPIC_API_KEY unset → MOCK model proxy`) — read that line before seeding anything.
+  Neither is a product defect; both are live-environment traps that only a live run finds.
+- **(live, FIXED) An unwired entry pip drew a direction chevron into empty canvas** — a pip for
+  an event nothing subscribes to (`config.changed`) pointed at nothing. Same fault the motion
+  rules forbid: direction must be caused. The arrow is now drawn only for wired pips; the
+  caption stands alone. Pinned by `pip-arrow-*` / `pip-caption-*` testids.
+- **(live, FIXED) A seeded org recorded no reasons** — the topology apply passed the zero
+  `ConfigWrite`, so a brand-new operator's first Desk was five `(no reason given)` rows, which
+  undercuts K2 on the one screen it exists to keep honest. `ApplyTopology` now defaults the
+  rationale to **"seeded from name@version"** (doc 10 §2's own wording) and the HTTP body
+  accepts an explicit `rationale` like every other human edit. Verified live: a fresh apply
+  writes it on the bracket and on every row.
+- **(orchestrator, OPEN) Still not done**: the e2e feature specs for the new views (nothing in
+  `e2e/features/` references Desk, chart or the new nav), and write flows under a real pointer
+  (drag-to-wire saving) — the live pass drove reads, not gestures. Also still open from doc 16: the ~18
   chat-side components with hardcoded light-mode colours (Chat view in dark mode), and the
   non-UTF8 bytes in `useEvents.ts` / `desk.ts` / `DeskPage.tsx` / `WorkerEditor.tsx`.
 

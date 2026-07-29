@@ -52,6 +52,10 @@ type topologyBody struct {
 	Name    string         `json:"name"`
 	Version string         `json:"version"`
 	Answers map[string]any `json:"answers"`
+	// Rationale is the operator's why, threaded like every other human edit
+	// (E3). Absent is fine: ApplyTopology defaults it to "seeded from
+	// name@version", which is the honest reason for a seeded row anyway.
+	Rationale string `json:"rationale,omitempty"`
 }
 
 // topologyRouteSummary names one would-be subscription in the diff.
@@ -287,7 +291,7 @@ func (h *Handlers) ApplyTopologyHandler(w http.ResponseWriter, r *http.Request) 
 		app.MemorySeeds = append(app.MemorySeeds, &bundle.MemorySeeds[i])
 	}
 
-	result, err := store.ApplyTopology(r.Context(), app, humanEdit())
+	result, err := store.ApplyTopology(r.Context(), app, humanEditBecause(body.Rationale))
 	if err != nil {
 		writeTopologyApplyErr(w, err)
 		return

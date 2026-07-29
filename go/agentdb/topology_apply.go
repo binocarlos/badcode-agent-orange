@@ -187,6 +187,16 @@ func (s *Store) ApplyTopology(ctx context.Context, app TopologyApplication, cw C
 		answers = JSONMap{}
 	}
 
+	// A seeded row's reason is knowable without asking anyone: it exists because
+	// this topology was applied. doc 10 §2 wrote the sentence — the changelog
+	// should read "seeded from hypothesis-lab@v1" — and without it the first
+	// thing a new operator ever sees is a Desk full of "(no reason given)",
+	// which reads as sloppiness on the one screen K2 exists to keep honest.
+	// An explicit rationale from the caller always wins.
+	if strings.TrimSpace(cw.Rationale) == "" {
+		cw.Rationale = "seeded from " + app.Topology
+	}
+
 	var deferred []*ConfigEvent
 	result := &TopologyApplyResult{
 		Workers:       []*Worker{},

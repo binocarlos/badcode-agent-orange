@@ -1833,11 +1833,19 @@ function Pip({
         height={ORG_CHART_METRICS.pipHeight}
         fill="transparent"
       />
-      <path
-        d={`M${pip.x - 4} ${bottom - 6} L${pip.x + 4} ${bottom - 6} L${pip.x} ${bottom} z`}
-        fill={colour}
-        opacity={pip.external ? 1 : 0.6}
-      />
+      {/* The arrowhead says "it goes down there", so it is only honest when
+          there is a wire below it. An unwired pip (nothing subscribes to this
+          event type) drew one anyway and it pointed into empty canvas — the
+          same fault the motion rules forbid: direction must be caused. The
+          caption above stands alone instead, and the <title> says why. */}
+      {pip.wired && (
+        <path
+          data-testid={`pip-arrow-${pip.type}`}
+          d={`M${pip.x - 4} ${bottom - 6} L${pip.x + 4} ${bottom - 6} L${pip.x} ${bottom} z`}
+          fill={colour}
+          opacity={pip.external ? 1 : 0.6}
+        />
+      )}
     </g>
   )
 }
