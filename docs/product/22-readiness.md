@@ -168,17 +168,44 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   **Fix:** `deleted_at` on `agent_sessions`, listings filtered on it, cascade retained for a
   separate operator purge; a confirmation step in the UI; and stop discarding the error.
   *Validation:* go suite + live-Postgres + web tests.
-- [ ] **RD6 — A crash mid-turn loses the whole turn, including the user's own message.** The
-  production runner builds `events.NewPipeline(...)` — the flush-at-end-of-query sink
-  (`go/runner.go:167`). `NewPipelineWithCadence`, written for exactly this crash-safety case, has
-  **zero non-test callers** (verified: the only matches are its own definition and doc comment).
-  Events accumulate in an in-process slice for the whole turn and are written once at
-  `query_complete`. **Open question that decides this item's severity:** whether the sandbox
-  persists the turn independently of agentd's in-process stream — `dispatch.go:645` claims "the
-  pipeline persists the turn", but every persistence path the auditor could find runs inside the
-  in-process `SendMessage` call. *Resolve this first; it needs ~20 minutes with the stack.*
-  **Fix (if confirmed):** pass a cadence when constructing the default pipeline; the file header
-  suggests 2s.
+- [ ] **RD6 — A crash mid-turn loses the model's entire response.** *Amended 2026-07-29 after the
+  sandbox-buffering question was settled by reading; the open question is now closed.* The user's
+  **prompt survives** — `seedUserMessage` writes it to `agent_query_events` before the sandbox is
+  called, under `context.WithoutCancel` (`go/runner.go:2338-2353`, called at `:892`). What is lost
+  is everything the model said: the assistant's output becomes durable exactly once, at
+  `query_complete` (`runner.go:943` → `events/pipeline.go:200-227`), and until then it lives in the
+  `collected []Envelope` local inside `pipeline.Run`, whose **only caller in the repo** is that one
+  line. `NewPipelineWithCadence`, written for exactly this case, has zero non-test callers.
+  **The data survives agentd's death — in a place agentd has no code to read.** The sandbox buffers
+  up to 2000 events in RAM (`sandbox/src/services/stream-service.ts:20,116-126`) and replays them
+  to a newly attached stream (`:59-78`), so a reconnecting **browser renders the turn** while
+  nothing writes it to Postgres: `Runner.Stream` serves both `/stream` and `/reconnect` and is a
+  bare `io.Copy` (verified at `go/runner.go:975`) that never constructs a `QueryContext` and never
+  touches the pipeline. The window then shuts by itself — `endQuery` deletes the buffer immediately
+  after `query_complete` (`stream-service.ts:265`) — and the buffer silently drops its oldest events
+  past 2000. This is a **wiring gap, not a limit**: cheap to fix, and worse to leave.
+  Confirmed while settling it: the sandbox persists no conversation state at all — `StreamService`
+  is in-memory maps, `conversationHistory` is a plain instance field, and `persistSession: false`
+  is passed to the Agent SDK (verified at `sandbox/src/harness/claude-agent-sdk.ts:545`).
+  **Fix — two changes, and (a) alone is not enough:** (a) pass a cadence to the default pipeline
+  (`runner.go:167`), fixing the crash case; (b) route `Runner.Stream` through the pipeline so a
+  reconnect drains the sandbox buffer into Postgres (`runner.go:975`). Doing only (a) leaves the
+  reconnect path silently lossy.
+  *One stack confirmation remains, now a check rather than an unknown:* start a long turn,
+  `docker kill` the **agentd** container, restart, hit `/reconnect`, and observe that the events
+  render while `agent_query_events` gains no row.
+- [ ] **RD24 — After an agentd restart, the model remembers a turn the user cannot see.**
+  Rehydration from the database runs **only** on the snapshot-restore path; the orphan-recover path
+  deliberately skips it because it re-adopts a still-running container that already holds its
+  in-memory history (the code says so at `go/runner.go:1396-1402`, verified). Combined with RD6,
+  that means: agentd dies mid-turn, the container survives, `Recover` re-adopts it — and the
+  harness keeps a turn in `conversationHistory` that Postgres never recorded. For the life of that
+  container the model answers with reference to something the user cannot see and no operator can
+  retrieve; then it is silently erased at the next archive/restore, when `loadConversation`
+  overwrites the array from the database. A user asking "why did it say that?" has no way to find
+  out, and the divergence heals invisibly.
+  **Fix:** falls out of RD6(b) — if reconnect drains the buffer into Postgres, the two views
+  reconverge. Worth an explicit test either way.
 - [ ] **RD7 — A job can wedge in `running` forever, permanently consuming two capacity slots.**
   `settle` releases the session lease *before* stamping the delivery's terminal status
   (`go/cmd/agentd/dispatch.go:619` then `:621`). A crash in that window — or a failed status write,
@@ -397,7 +424,9 @@ The repo had no such table anywhere; readiness bar #2 requires one.*
 
 | Artifact | Where it lives | What deletes it | Reversible? |
 |---|---|---|---|
-| **Conversation / transcript** | `agent_query_events.events` (jsonb), one row per query | Session delete, via FK cascade (`migrations.go:139`). Nothing else. | **No** — no soft delete, no export, no tombstone (RD5) |
+| **Conversation / transcript** | `agent_query_events.events` (jsonb), one row per query — written once per turn, at `query_complete` | Session delete, via FK cascade (`migrations.go:139`). Nothing else. | **No** — no soft delete, no export, no tombstone (RD5) |
+| **A turn in progress** | The sandbox's in-RAM replay buffer, and agentd's in-process `collected` slice | Process death, container archive, or `query_complete` itself (the buffer is dropped immediately after) | **No** — never written to Postgres before `query_complete`; a reconnecting browser can see it, but nothing persists it (RD6) |
+| **The harness's own stdout log** | Docker's json-log for the session container | `ContainerRemove` — i.e. **ordinary idle archiving**, not just a crash | **No.** The calibration run's fallback record was thinner than it looked |
 | **Messages** (legacy projection) | `agent_messages` | Same cascade (`migrations.go:77`) | **No** |
 | **Job / delivery history** | `event_deliveries` | Nothing — no FK, no reaper, no retention | Survives forever, including after its session is gone (RD15) |
 | **Project event log** | `project_events` | Nothing | Grows unbounded |
