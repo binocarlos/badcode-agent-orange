@@ -146,9 +146,158 @@ in each case.
   *Validation:* go suite + live-Postgres; a test pinning that no MCP-originated config event can
   carry an empty actor.
 
+### From the durability audit (2026-07-29)
+
+Twelve findings; the four headline claims were verified by the orchestrator against the source
+before filing. Ordered by *when* they must be fixed, not by cleverness.
+
+**Blockers — fix before any person uses this for real work.**
+
+- [ ] **RD5 — Deleting a session destroys the conversation, irreversibly, from an unguarded
+  one-click button.** `agent_query_events.session_id REFERENCES agent_sessions(id) ON DELETE
+  CASCADE` (`go/agentdb/migrations.go:139`; same for `agent_messages` at `:77` and
+  `agent_artifacts` at `:50`), and `DELETE /agent/session/{id}` is a hard row delete
+  (`go/httpapi/lifecycle.go:183` → `go/agentdb/sessions.go:187`). It is fired from an icon button
+  with **no confirmation dialog** (`web/src/components/AgentSessionList.tsx:53-56`). There is no
+  soft delete, no tombstone and no export. **This makes the calibration run's empty
+  `agent_query_events` a product property, not a rig artefact** — the rig deleted sessions per
+  hypothesis and the code did exactly what it does for any user tidying their session list.
+  *Additional defect found while verifying:* the handler **discards the delete error** (`_ =`) and
+  returns `204 No Content` regardless — a failed delete reports success. That is the silent-success
+  class again, in the same three lines.
+  **Fix:** `deleted_at` on `agent_sessions`, listings filtered on it, cascade retained for a
+  separate operator purge; a confirmation step in the UI; and stop discarding the error.
+  *Validation:* go suite + live-Postgres + web tests.
+- [ ] **RD6 — A crash mid-turn loses the whole turn, including the user's own message.** The
+  production runner builds `events.NewPipeline(...)` — the flush-at-end-of-query sink
+  (`go/runner.go:167`). `NewPipelineWithCadence`, written for exactly this crash-safety case, has
+  **zero non-test callers** (verified: the only matches are its own definition and doc comment).
+  Events accumulate in an in-process slice for the whole turn and are written once at
+  `query_complete`. **Open question that decides this item's severity:** whether the sandbox
+  persists the turn independently of agentd's in-process stream — `dispatch.go:645` claims "the
+  pipeline persists the turn", but every persistence path the auditor could find runs inside the
+  in-process `SendMessage` call. *Resolve this first; it needs ~20 minutes with the stack.*
+  **Fix (if confirmed):** pass a cadence when constructing the default pipeline; the file header
+  suggests 2s.
+- [ ] **RD7 — A job can wedge in `running` forever, permanently consuming two capacity slots.**
+  `settle` releases the session lease *before* stamping the delivery's terminal status
+  (`go/cmd/agentd/dispatch.go:619` then `:621`). A crash in that window — or a failed status write,
+  whose error is only logged — leaves `status='running'` with `lease_expires_at=0`, and
+  `ListExpiredLeaseSessions` filters on `lease_expires_at > 0` (`go/agentdb/leases.go:90`), so the
+  reaper can never see it. Nothing else sweeps deliveries by age. The row eats a `max_instances`
+  and a `max_concurrent_jobs` slot for the life of the project. Note `dispatch.go:351` calls the
+  lease reaper "the backstop" — by that line the lease is already released, so it cannot be.
+  **Fix:** stamp terminal status first, release the lease second; add an age-based sweep over
+  `running` deliveries.
+- [ ] **RD8 — A container whose session row is gone leaks a host port permanently.** `Recover`
+  re-adopts any container labelled with a session id (`go/execenv/docker/dind.go:484`), but with no
+  session row `r.Snapshot` fails and the archive loop logs "snapshot failed, keeping the container"
+  and `continue`s — every minute, forever (`go/runner.go:1101-1104`). One port from the pool of 100
+  lost per occurrence, with no way back short of a restart.
+  **Fix:** if the session row is absent, destroy rather than skip.
+
+**Before sustained use — these degrade a working deployment over days.**
+
+- [ ] **RD9 — A snapshot in daily use is reaped out from under the user.** `snapshotExpired` tests
+  only `ci.ExpiresAt` (`go/cmd/agentd/snapshot_reaper.go:196`); `last_resumed_at` is stamped on
+  every launch (`imageresolver.go:122-125`) but does not extend expiry, despite the reaper's own
+  header implying it bears on it. A worker pinned to a named image gets a hard
+  `ErrCustomImageUnmaterialisable` 30 days after burn regardless of use.
+  **Fix:** extend expiry on resume, or warn before reaping anything recently resumed.
+- [ ] **RD10 — Two concurrent drains can double-dispatch one delivery**, so a user's job runs
+  twice. `UpdateDeliveryStatus` is a read-then-`Save` with no compare-and-set on
+  `status='pending'` (`go/agentdb/events.go:733-757`); the only guard is against an in-memory
+  snapshot (`dispatch.go:209`). `DrainPending` runs from two goroutines in one process — the router
+  loop every 3s (`router.go:364`) and the scheduler loop (`scheduler.go:191`). The orphan session
+  then emits a spurious `worker.failed{lost}` 15 minutes later.
+  **Fix:** conditional update on the pending→running transition; act on `RowsAffected`.
+- [ ] **RD11 — Missed schedule occurrences vanish without a trace.** `scheduler.go:156-161`
+  evaluates only the current minute — no watermark, no catch-up. An hour of downtime means 60
+  occurrences with no firing row, no event, no delivery and nothing recording that they were
+  missed: indistinguishable from "never scheduled". Worse in a narrow window: a kill between
+  `CreateProjectEvent` (`:227`) and `EnsureDelivery` (`:248`) leaves a `schedule.fired` event in
+  the user's feed for a job that never ran, with the occurrence permanently consumed.
+  **Fix:** per-schedule watermark; emit `schedule.missed` on restart for unevaluated occurrences.
+- [ ] **RD12 — Archiving for idleness permanently mislabels artifacts as lost.**
+  `teardownInstance` is shared by `Destroy` and the archive loop and unconditionally calls
+  `Artifacts.MarkLost` (`go/runner.go:694`), stamping un-uploaded `live` artifacts as `lost`
+  (`agentdb/artifacts.go:141-143`). For the archive path that is false — the snapshot is taken
+  first, so the files return on restore — and nothing ever regresses the status. Contradicts
+  `gc.go`'s own header claim that "nothing a user can see is lost".
+  **Fix:** flag on `teardownInstance` so the archive path skips `MarkLost`.
+
+**Integrity, cost and polish — real, not urgent.**
+
+- [ ] **RD13 — The config log's append-only guarantee is enforced only in tests, and the fold has
+  no production caller.** `InstallConfigEventGuard` is opt-in and every caller is a test
+  (`agentdb/config_events.go:844`); `cmd/agentd/main.go:259-266` states agentd never arms it;
+  `config_events` is not in the guarded-table set; migration 026 adds no trigger or `REVOKE`; and
+  `Store.DB()` is exported. Separately `FoldTo` has no production callers and diverges from reality
+  in three ways (project prompt folds as a second entity from the settings row it lives in and the
+  two disagree after a mixed sequence; skills fold by name while `agent_skills` holds a row per
+  revision; five wired paths mutate guarded tables with no config event at all).
+  **Fix:** a DB-level `BEFORE UPDATE OR DELETE` trigger permitting only `emitted_at`; and either
+  wire the fold to a real read path or mark it experimental. *This one matters more than its
+  position suggests — the config log is what the doctrine work treats as the record of truth.*
+- [ ] **RD14 — Every archive cycle orphans a full container-image archive.** `blobPathFor` keys on
+  the committed image ref (`imageregistry/blobarchive/blobarchive.go:228`) and `ContainerCommit`
+  returns a fresh digest each time (`execenv/docker/dind.go:354-358`), so each archive writes a new
+  blob and `SetSnapshotHandle` overwrites the pointer to the previous one. `blobs.Delete`'s only
+  production caller is the catalogue reaper, which never sees session snapshots. With
+  `SupportsDiff=false` these are full archives. Unbounded storage growth; nothing user-visible.
+  Same asymmetry on delete: the session cascade destroys the *index* to a user's artifacts while
+  the *bytes* stay on the bill forever (`artifacts.ArtifactStore` has no Delete method at all).
+  **Fix:** remove the previous blob after a successful `SetSnapshotHandle`, and the current one on
+  session delete.
+- [ ] **RD15 — "This ran" without "what it said".** `event_deliveries.session_id` is a plain
+  VARCHAR with no foreign key (`migrations.go:352`), so job history outlives the session it points
+  at: after a delete the user sees a green `ok` delivery with a dead transcript link. And a
+  delivery that fails to start persists no reason — no reason column (admitted at
+  `dispatch.go:432-435`), no `worker.failed` emitted.
+  **Fix:** a `failure_reason` column; render a "transcript deleted" state rather than a broken link.
+- [ ] **RD16 — Transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
+  `created_at ASC` (`agentdb/messages.go:188`) where `created_at` is `time.Now().Unix()` —
+  **seconds** (`:167`) — and the id is a random uuid. Two queries in the same second replay in
+  arbitrary order. This is the identical hazard migration 028 added `revision` to fix for skills;
+  the transcript never got the same treatment.
+  **Fix:** milliseconds, or a per-session monotonic ordinal.
+
+**Docs that contradict the code** (the code wins; fix the prose with the item): `gc.go`'s "nothing
+a user can see is lost" (RD12); `dispatch.go:351`'s "the backstop" (RD7); `router.go:513-516`'s
+at-most-once justification, which `ReleaseSessionLease` breaks by ignoring `RowsAffected` and
+treating a missing row as success (`leases.go:66-79`) so two reapers both emit `worker.failed{lost}`;
+and `snapshot_reaper.go:21` implying `last_resumed_at` bears on expiry (RD9).
+
 **Meta-finding, promoted to §2's standing rule:** RD2's survival has the same root cause as TOK1's
 — a fixture authored to match the reader rather than captured from the writer. Two of the four
 findings are token-metering defects in a system whose only spend brake is token metering.
+
+## 6. The durability table
+
+*From the durability audit, 2026-07-29. What survives, what deletes it, and whether it comes back.
+The repo had no such table anywhere; readiness bar #2 requires one.*
+
+| Artifact | Where it lives | What deletes it | Reversible? |
+|---|---|---|---|
+| **Conversation / transcript** | `agent_query_events.events` (jsonb), one row per query | Session delete, via FK cascade (`migrations.go:139`). Nothing else. | **No** — no soft delete, no export, no tombstone (RD5) |
+| **Messages** (legacy projection) | `agent_messages` | Same cascade (`migrations.go:77`) | **No** |
+| **Job / delivery history** | `event_deliveries` | Nothing — no FK, no reaper, no retention | Survives forever, including after its session is gone (RD15) |
+| **Project event log** | `project_events` | Nothing | Grows unbounded |
+| **Worker config** | `workers` | `worker_delete`, which logs the full final row | **Yes** — replayable from the config log |
+| **Memory** | `memories` | Nothing; store surface is Create/Get/Newest/Search only, pinned by `TestMemoriesStoreIsAppendOnly` | N/A; grows unbounded, with a `vector(1536)` column |
+| **Config log** | `config_events` | Nothing through the store; only `emitted_at` is updated | Append-only **by convention only** (RD13) |
+| **Session snapshot** | Blob store; pointer in `agent_sessions.snapshot_handle` | Nothing deletes the bytes; session delete drops the pointer only | Bytes orphaned and unreachable (RD14) |
+| **Named catalogue image** | `agent_custom_images` + registry bytes | TTL reaper deletes bytes, tombstones the row | **No** — deliberate, but see RD9 |
+| **Artifact metadata** | `agent_artifacts` | Session delete cascade (`migrations.go:50`) | **No** |
+| **Artifact bytes** | Blob store | **Nothing** — `artifacts.ArtifactStore` has no Delete method | Orphaned when the row cascades away |
+
+Two asymmetries worth stating plainly: deleting a session destroys the *index* to a user's files
+while leaving the *bytes* on the bill forever; and job history outlives the transcript it links to,
+so "this ran" survives without "what it said".
+
+**What is safe** (established, not assumed): archive and idle-timeout do **not** lose the
+transcript — it lives in Postgres, not the container. Port leases are re-adopted on restart
+(`dind.go:432-484`), and pending deliveries are durable and re-drained (`router.go:357-368`).
 
 **Cleared by the same audit** (recorded so the coverage is legible): whole-object PUT drift
 between Go structs and their browser mirrors (none today; `workerBody` sends `frozen` explicitly);
