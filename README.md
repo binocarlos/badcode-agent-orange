@@ -98,6 +98,89 @@ seam with an Application Default Credentials provider, and config-driven backend
 Artifact upload and snapshot push+pull were recorded verified against the live project on
 2026-06-25 — see [`MIGRATION.md`](MIGRATION.md) §4a/§4b for the evidence and its limits.
 
+## Experiments — what we actually know
+
+Nobody knows what the best arrangement of agents is for a given job. Not us, and as far as we can
+tell from the literature, not anyone — the research that exists reports *reversals*, where the
+arrangement that wins flips with the task and with model strength. So this repo treats the org
+chart as an empirical question rather than a matter of taste, and ships the apparatus for asking
+it: **14 seedable topologies** (solo, actor–critic, supervisor, assembly line, blackboard, debate,
+self-organizing pool, temporal hierarchy, escalation, and the controls), **scenario generators**
+whose answers are known in advance, and a comparison rig that runs one task through N org charts
+and ranks them.
+
+The discipline matters more than the apparatus, so it is worth stating plainly:
+
+- **The scorer is a fact, not a judge.** Every scenario is generated with held-out ground truth, so
+  a flat result means "no improvement", never "blind instrument". Self-graded loops learn to be
+  persuasive; you cannot reward-hack an answer key.
+- **Controls, or it isn't knowledge.** Every experiment runs a no-learning arm and, where it
+  matters, a *placebo* arm — a critic whose rewrites only shuffle instruction order and whose
+  rationale says so. An improvement that hasn't beaten the placebo is churn. We know this bites:
+  in our own comparison rig the placebo ties the real critic **exactly** on rewrite count.
+- **The instrument is frozen.** A worker can be marked frozen, and the tool boundary refuses
+  writes to it; attempts are recorded as events rather than silently denied. A loop cannot edit
+  its own yardstick.
+- **Mock first, spend later.** The model proxy is scriptable, so "the rewrite reached the next
+  job" is asserted offline, byte-for-byte, free — and a behaviour switch proves *delivery*, which
+  reading the database back never does.
+- **Reports are deterministic.** No timestamps, no ids, rounded numbers; two runs of the same
+  config produce byte-identical artifacts, and that diff is how reproducibility is checked.
+
+### Run log
+
+Live record. Each run appends a row and a dated folder under [`docs/product/runs/`](docs/product/runs/);
+nothing here is edited away when a later run supersedes it.
+
+| Date | Experiment | Outcome | Record |
+|---|---|---|---|
+| 2026-07-28 | First live calibration — does a methodology critic improve an investigator's accuracy on 30 hypotheses with known answers? | **Inconclusive by ceiling, and the harness crashed.** Publishable as a negative result about the task, not the org chart. | [`2026-07-28-calibration-aborted/`](docs/product/runs/2026-07-28-calibration-aborted/) |
+
+**What the first run found.** The investigator was right **11 times out of 11** on real model
+calls — escaping confound traps, rejecting planted nulls, and correctly answering "no effect" on
+an underpowered sample instead of overclaiming. The critic ran every round and declined to change
+anything each time: *"No methodological amendment required."* That is the critic working. The
+investigator was already doing the right thing on the first hypothesis it ever saw, so the
+improvement loop had nothing to bite on, and the learning arm never diverged from the no-learning
+arm. **At this model strength, datasets this clean do not discriminate between org charts.** The
+next calibration needs harder instruments — smaller effects, lower n, subtler confounds — verified
+to be hard *before* a token is spent.
+
+The run also stopped at hypothesis 9 of 30, and the reasons were ours, not the model's: a delivery
+was recorded as successful for a session in which the model said nothing, the runner polled that
+empty session until it timed out, and the exception took down the whole process before any report
+was written. Eight completed hypotheses and roughly 135k tokens of real spend produced zero
+artifacts; the finding survived because a console log was on screen. All three defects are written
+up in the record, and the fixes are scheduled.
+
+We publish this because it is the most useful thing we have: an instrument that reported "nothing
+to see here" when there was nothing to see, and a harness whose brittleness we found for the price
+of one run instead of one project.
+
+### What we are not claiming
+
+That any topology in this library is better than another. We have not run the tournament yet. What
+exists today is the apparatus, the protocol, and one honest negative result.
+
+The tournament is the next step and the shape is already fixed: given a hypothesis and a **token
+budget**, run it through N org charts under equal spend and rank them. The budget is not a
+metaphor — it maps to each arm's daily token ceiling, enforced by the engine.
+
+### Running them yourself
+
+Everything is offline and free in mock mode:
+
+```sh
+./e2e/run-stack-e2e.sh up mock
+./e2e/experiments/calibration/run.sh run smoke-4       # the hypothesis lab, 4 scenarios, 2 arms
+./e2e/experiments/triage/run.sh run triage-smoke-6     # routing under misdirection traps
+./e2e/experiments/run.sh compare                       # actor-critic vs placebo vs solo
+```
+
+Mock numbers are machinery proof, never findings — the scripted model says what the script tells
+it to. The protocol for a real run, including the abort criteria and the attended-run rule, is in
+[`docs/product/14-calibration-runbook.md`](docs/product/14-calibration-runbook.md).
+
 ## Documentation
 
 | Doc | Topic |
@@ -119,6 +202,8 @@ The numbered engine docs have deliberate gaps (there is no 04, 08–12, 16, 17 a
 
 Alongside the numbered docs:
 
+- [docs/product/19-scenario-library.md](docs/product/19-scenario-library.md) — the scenarios an org can be measured on, and what makes one admissible.
+- [docs/product/20-operations-doctrine.md](docs/product/20-operations-doctrine.md) — the operator's manual, and the common-sense block injected into every worker's prompt. Every entry carries a status: nothing is law until a measured A/B says so.
 - [installations/README.md](installations/README.md) — installation images: the derived-image tree, the overlay model, `imagetree`.
 - [README-stack.md](README-stack.md) — running the standalone stack.
 - [MIGRATION.md](MIGRATION.md) — standalone-ification + registry/GCP roadmap and live status.

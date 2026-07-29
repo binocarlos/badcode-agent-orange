@@ -547,11 +547,20 @@ holds both credentials; `up subscription` is what selects them.
 
 ## Publishing (decided 2026-07-28)
 
-- [ ] **PUB — Publish the experiments.** Kai: the calibration and tournament results belong in
+- [x] **PUB — Publish the experiments.** Kai: the calibration and tournament results belong in
   the README — "we don't know the best org chart; here are the experiments we ran" is the
-  project's honest pitch. After L3X: a Results section in README.md linking the dated records,
-  the rig, and the runbook. The tournament framing to build toward: given a hypothesis and a
-  token budget, which org chart performs best (budget maps to `daily_tokens_*` per arm).
+  project's honest pitch. Shipped 2026-07-29 as README §"Experiments — what we actually know":
+  the premise, the five protocol disciplines, a **Run log table** (living — each run appends a row
+  and a dated folder; nothing is edited away when superseded), the first run's findings stated as
+  a negative result about the *task* rather than the org chart, an explicit "what we are not
+  claiming", the mock commands anyone can run, and the tournament framing (hypothesis + token
+  budget → ranked org charts, budget mapping to `daily_tokens_*` per arm). Docs 19 and 20 linked
+  from the doc list.
+  **Deliberate deviation from "after L3X":** published on the *aborted* run rather than waiting
+  for a clean one. An instrument that reported "nothing to see here" when there was nothing to
+  see, plus three harness defects found for the price of one run, is more credible than a tidy
+  number — and the arc (too-easy manifest + brittle harness → fixed → re-run) is the most
+  instructive part. The next run appends; it does not replace.
 - (L3R) **`daily_tokens_hard` cannot fire — promoted to item TOK1 above.** The calibration
   runner enforces its ceiling harness-side, so the live run is safe regardless.
 - (L3R) **hypolab's underpowered verdict is a scorer trap** — `Verdict.Effect` is true but the
