@@ -104,6 +104,37 @@ type mcpCaller struct {
 	Worker    string
 }
 
+// configWrite builds the actor half of a config-log write for an MCP caller, or
+// refuses.
+//
+// THE INVARIANT (RD4): an empty ConfigEvent.ActorWorker means a human, and
+// nothing else may produce one. §15.2 chose that emptiness as the record of a
+// human/UI/API edit (httpapi.humanEdit), and web/src/configLog.ts renders it as
+// one. So a mutation arriving through the workers' path — this MCP server —
+// must carry a worker name or not happen at all. Guessing costs more than
+// failing: attribution is what §8.7's acceptance loop reads to tell whether a
+// worker improved another, and what doctrine OM-10 requires signals be bucketed
+// by.
+//
+// This is the second of two guards. The first is the auth seam, which refuses a
+// caller whose session row cannot be read (see authenticate). This one is
+// structural: it holds even where no session store is wired at all, and it is
+// the reason every mutating tool takes a ConfigWrite it cannot construct
+// without an identity.
+func (c mcpCaller) configWrite(rationale string) (agentdb.ConfigWrite, error) {
+	if strings.TrimSpace(c.Worker) == "" {
+		return agentdb.ConfigWrite{}, fmt.Errorf(
+			"this change cannot be recorded: the calling worker could not be identified from the session token"+
+				" (session %q), and the config log reserves an empty actor for human edits."+
+				" Nothing was changed", c.SessionID)
+	}
+	return agentdb.ConfigWrite{
+		Worker:    c.Worker,
+		Session:   c.SessionID,
+		Rationale: strings.TrimSpace(rationale),
+	}, nil
+}
+
 // mcpTool is one registered tool. Handler returns the tool's result value
 // (marshalled into the MCP result) or an error, which is reported to the model
 // as an `isError` result rather than a transport failure — a tool the model
@@ -447,10 +478,24 @@ func (a *sessionTokenAuth) authenticate(r *http.Request) (mcpCaller, error) {
 		sess, err := a.sessions.GetSession(r.Context(), caller.SessionID)
 		switch {
 		case err != nil:
-			// Unknown or unreadable session: not fatal on its own (the store may
-			// be the SQLite fallback, which knows nothing of workers), but it
-			// cannot rescue an expired token either.
-			log.Printf("[mcp] session %s not readable for provenance: %v", caller.SessionID, err)
+			// RD4. This used to log and carry on, leaving caller.Worker empty —
+			// and an empty actor_worker is precisely how a HUMAN edit is recorded
+			// (httpapi.humanEdit, §15.2) and rendered (web/src/configLog.ts). A
+			// database blip therefore filed a worker's prompt rewrite in the
+			// changelog as an operator hand-edit, which is the one thing §8.7's
+			// acceptance loop and doctrine OM-10 must be able to trust.
+			//
+			// The old comment blamed "the SQLite fallback, which knows nothing of
+			// workers". That has not been true since the core MCP server was
+			// gated on Postgres: main.go mounts it only when agentDB != nil, so
+			// on the SQLite fallback there is no /mcp to reach. A store that is
+			// present and cannot answer is either a session that is genuinely
+			// gone (whose token must not be honoured) or a database that is down
+			// (in which case every tool on this server would fail anyway). Refuse
+			// — loudly and retryably — rather than guess an identity.
+			log.Printf("[mcp] session %s not readable for provenance: %v — refusing", caller.SessionID, err)
+			return mcpCaller{}, fmt.Errorf("%w: session %s could not be read, so the caller's identity cannot be established",
+				errMCPUnauthorized, caller.SessionID)
 		case sess.Customer != "" && sess.Customer != caller.Project:
 			// The token says one project, the session row says another. Something
 			// is badly wrong; refuse rather than pick a side.

@@ -34,6 +34,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -217,11 +218,19 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 	}
 
 	worker, err := d.store.GetWorker(ctx, delivery.Project, delivery.Worker)
-	if err != nil {
+	switch {
+	case errors.Is(err, agentdb.ErrWorkerNotFound):
 		// A worker that has been retired cannot run: fail the delivery loudly
 		// rather than retrying it every poll forever. (For a SCHEDULE firing the
 		// scheduler additionally disables the schedule — §8.6.)
-		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("worker %q: %v", delivery.Worker, err)), nil
+		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("worker %q no longer exists", delivery.Worker)), nil
+	case err != nil:
+		// The database could not answer. That says nothing about the worker, and
+		// `failed` is terminal: the router has already consumed the trigger, so a
+		// delivery failed here is a lost trigger with no path back. Leave it
+		// `pending` and report the error — the router's own comment says it, and
+		// every other store call in this function already does this (RD1).
+		return dispatchSkipped, "", fmt.Errorf("dispatch: read worker %q: %w", delivery.Worker, err)
 	}
 	if !worker.Enabled {
 		return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("worker %q is disabled", worker.Name)), nil
@@ -278,9 +287,14 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 	// Compose (§6.2) — the identical path for every trigger.
 	var event *agentdb.ProjectEvent
 	if delivery.EventID != "" {
+		// Same classification rule as the worker read above: only a genuinely
+		// absent event row makes this delivery unrunnable forever.
 		event, err = d.store.GetProjectEvent(ctx, delivery.Project, delivery.EventID)
-		if err != nil {
-			return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("event %s: %v", delivery.EventID, err)), nil
+		switch {
+		case errors.Is(err, agentdb.ErrProjectEventNotFound):
+			return dispatchFailed, d.fail(ctx, delivery, fmt.Sprintf("event %s no longer exists", delivery.EventID)), nil
+		case err != nil:
+			return dispatchSkipped, "", fmt.Errorf("dispatch: read event %s: %w", delivery.EventID, err)
 		}
 	}
 	job, err := agentkit.ComposeJob(ctx, agentkit.ComposeJobInput{

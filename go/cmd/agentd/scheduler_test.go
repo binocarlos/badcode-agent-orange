@@ -35,6 +35,13 @@ type fakeDispatchStore struct {
 	disabled    map[string]string // schedule id → rationale
 	createdRows int
 	seq         int
+
+	// Fault injection over the store seam (RD1). Non-nil makes the read fail the
+	// way a database that is up-but-unhappy fails: an opaque error that is NOT
+	// one of agentdb's not-found sentinels. Nothing in the product may read one
+	// of these as "the row is absent".
+	getWorkerErr       error
+	getProjectEventErr error
 }
 
 func newFakeDispatchStore() *fakeDispatchStore {
@@ -80,6 +87,9 @@ func (f *fakeDispatchStore) ListEnabledSchedules(context.Context) ([]*agentdb.Sc
 }
 
 func (f *fakeDispatchStore) GetWorker(_ context.Context, project, name string) (*agentdb.Worker, error) {
+	if f.getWorkerErr != nil {
+		return nil, f.getWorkerErr
+	}
 	if w, ok := f.workers[project+"/"+name]; ok {
 		return w, nil
 	}
@@ -143,9 +153,15 @@ func (f *fakeDispatchStore) CreateProjectEvent(_ context.Context, ev *agentdb.Pr
 }
 
 func (f *fakeDispatchStore) GetProjectEvent(_ context.Context, project, id string) (*agentdb.ProjectEvent, error) {
+	if f.getProjectEventErr != nil {
+		return nil, f.getProjectEventErr
+	}
 	ev, ok := f.events[id]
 	if !ok || ev.Project != project {
-		return nil, fmt.Errorf("project event not found")
+		// The sentinel the real store returns — the fake used to invent a bare
+		// error, which is exactly the kind of writer/reader mismatch that let an
+		// unclassified read look correct (RD1).
+		return nil, fmt.Errorf("%w: %s", agentdb.ErrProjectEventNotFound, id)
 	}
 	return ev, nil
 }

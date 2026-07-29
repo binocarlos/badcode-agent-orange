@@ -212,7 +212,13 @@ func (i *imageTools) create(ctx context.Context, caller mcpCaller, raw json.RawM
 	}
 
 	// Validate everything BEFORE the snapshot. Committing a container takes
-	// real time and real bytes; a mistyped label must not cost either (§9).
+	// real time and real bytes; a mistyped label must not cost either (§9) —
+	// and neither must an unidentifiable caller (RD4), so the config-log actor
+	// is resolved up here rather than at the write.
+	cw, err := caller.configWrite("")
+	if err != nil {
+		return nil, err
+	}
 	ref, err := agentdb.ParseImageRef(strings.TrimSpace(args.Name))
 	if err != nil {
 		return nil, fmt.Errorf("name: %w", err)
@@ -247,7 +253,7 @@ func (i *imageTools) create(ctx context.Context, caller mcpCaller, raw json.RawM
 		RegistryHandle:   string(encoded),
 		CreatedByWorker:  caller.Worker,
 		CreatedBySession: caller.SessionID,
-	}, agentdb.ConfigWrite{Worker: caller.Worker, Session: caller.SessionID})
+	}, cw)
 	if err != nil {
 		return nil, fmt.Errorf("the environment was snapshotted but the catalogue refused the record, so this image is NOT usable: %w", err)
 	}

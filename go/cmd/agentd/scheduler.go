@@ -21,7 +21,10 @@ package main
 //     `max_instances` queues instead of starting a second instance (§8.4 step 7)
 //     — and the per-project concurrency cap applies to firings too.
 //  4. A MISSING WORKER DISABLES THE SCHEDULE, loudly, with the reason in the
-//     config log (§8.6). Never a silent retry every minute forever.
+//     config log (§8.6). Never a silent retry every minute forever. "Missing"
+//     means agentdb.ErrWorkerNotFound and nothing else — a database that cannot
+//     answer is not evidence about the worker, and disabling on it would write a
+//     durable, permanent, and false reason into the config log (RD1).
 //  5. AND NEITHER DOES ANYTHING ELSE THAT CANNOT POSSIBLY SUCCEED. Rule 4 was
 //     written for one cause; the harm is the pattern. 53 abandoned `* * * * *`
 //     rows, none of which could provision, held every host port between them
@@ -44,6 +47,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -200,12 +204,22 @@ func (s *scheduler) fire(ctx context.Context, sch *agentdb.Schedule, minute time
 	// §8.6: a due schedule whose worker no longer exists is disabled and logged.
 	// Checked BEFORE claiming the occurrence so re-enabling the schedule after
 	// re-hiring the worker does not find its minute already spent.
+	//
+	// Only ErrWorkerNotFound means "no longer exists". Any other error is the
+	// database failing to answer, and MUST NOT be read as an absent worker: this
+	// check runs before ClaimFiring, so it is upstream of the
+	// ScheduleMaxProvisionFailures streak and one blip during the due second
+	// would disable the schedule permanently — with a config-log reason naming a
+	// worker that is sitting right there. Log and return; the next tick retries.
 	worker, err := s.store.GetWorker(ctx, sch.Project, sch.Worker)
-	if err != nil {
+	switch {
+	case errors.Is(err, agentdb.ErrWorkerNotFound):
 		s.logf("[scheduler] schedule %s/%s targets worker %q which no longer exists: disabling",
 			sch.Project, sch.ID, sch.Worker)
 		s.disable(ctx, sch, "worker "+sch.Worker+" no longer exists")
 		return nil
+	case err != nil:
+		return fmt.Errorf("read worker %q: %w", sch.Worker, err)
 	}
 
 	firing, claimed, err := s.store.ClaimFiring(ctx, &agentdb.ScheduleFiring{

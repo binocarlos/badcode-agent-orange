@@ -686,13 +686,11 @@ func (m *managementTools) tools() []*mcpTool {
 // ---------------------------------------------------------------------------
 
 // configWrite builds the who/why for a mutation. The actor is always the token's
-// worker and session — never an argument (§15.2).
-func (m *managementTools) configWrite(caller mcpCaller, rationale string) agentdb.ConfigWrite {
-	return agentdb.ConfigWrite{
-		Worker:    caller.Worker,
-		Session:   caller.SessionID,
-		Rationale: strings.TrimSpace(rationale),
-	}
+// worker and session — never an argument (§15.2) — and a mutation whose actor
+// cannot be established is refused rather than filed as a human edit (RD4; the
+// rule lives on mcpCaller so images and skills share exactly one copy of it).
+func (m *managementTools) configWrite(caller mcpCaller, rationale string) (agentdb.ConfigWrite, error) {
+	return caller.configWrite(rationale)
 }
 
 // refuseFrozen is the frozen-worker boundary (F1, docs/product/10-topology-
@@ -716,7 +714,12 @@ func (m *managementTools) refuseFrozen(ctx context.Context, caller mcpCaller, ta
 		}
 		text += "."
 	} else if caller.SessionID != "" {
-		text += fmt.Sprintf(" Attempted from session %s.", caller.SessionID)
+		text += fmt.Sprintf(" Attempted from session %s, whose worker could not be identified.", caller.SessionID)
+	} else {
+		// RD4: never leave the actor simply absent. Silence here reads exactly
+		// like a human refusal, and this event exists to say which worker tried
+		// to edit the instrument that scores it.
+		text += " The caller could not be identified."
 	}
 	if _, err := m.store.CreateProjectEvent(ctx, &agentdb.ProjectEvent{
 		Project:    caller.Project, // in code, never an argument
@@ -933,7 +936,11 @@ func (m *managementTools) workerCreate(ctx context.Context, caller mcpCaller, ra
 		w.Briefing = agentdb.SelectorList(args.Briefing)
 	}
 
-	if _, err := m.store.UpsertWorker(ctx, w, m.configWrite(caller, args.Rationale)); err != nil {
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.store.UpsertWorker(ctx, w, cw); err != nil {
 		return nil, err
 	}
 	stored, err := m.store.GetWorker(ctx, caller.Project, name)
@@ -1043,7 +1050,11 @@ func (m *managementTools) workerUpdate(ctx context.Context, caller mcpCaller, ra
 		}
 	}
 
-	if _, err := m.store.UpsertWorker(ctx, next, m.configWrite(caller, args.Rationale)); err != nil {
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.store.UpsertWorker(ctx, next, cw); err != nil {
 		return nil, err
 	}
 	stored, err := m.store.GetWorker(ctx, caller.Project, name)
@@ -1116,8 +1127,11 @@ func (m *managementTools) workerPromptWrite(ctx context.Context, caller mcpCalle
 		return nil, m.refuseFrozen(ctx, caller, name, "worker_prompt_write")
 	}
 
-	stored, previous, err := m.store.SetWorkerPrompt(ctx, caller.Project, name, args.SystemPrompt,
-		m.configWrite(caller, args.Rationale))
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	stored, previous, err := m.store.SetWorkerPrompt(ctx, caller.Project, name, args.SystemPrompt, cw)
 	if err != nil {
 		if errors.Is(err, agentdb.ErrWorkerNotFound) {
 			return nil, fmt.Errorf("no worker %q in this project, so nothing was written "+
@@ -1183,8 +1197,11 @@ func (m *managementTools) projectPromptWrite(ctx context.Context, caller mcpCall
 		return nil, err
 	}
 
-	stored, previous, err := m.store.SetProjectPrompt(ctx, caller.Project, args.SystemPrompt,
-		m.configWrite(caller, args.Rationale))
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	stored, previous, err := m.store.SetProjectPrompt(ctx, caller.Project, args.SystemPrompt, cw)
 	if err != nil {
 		return nil, err
 	}
@@ -1337,7 +1354,11 @@ func (m *managementTools) subscriptionCreate(ctx context.Context, caller mcpCall
 		MaxFiringsPerHour: args.MaxFiringsPerHour,
 		Enabled:           enabled,
 	}
-	created, err := m.store.CreateSubscription(ctx, sub, m.configWrite(caller, args.Rationale))
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	created, err := m.store.CreateSubscription(ctx, sub, cw)
 	if err != nil {
 		return nil, err
 	}
@@ -1369,7 +1390,11 @@ func (m *managementTools) subscriptionDelete(ctx context.Context, caller mcpCall
 	if err != nil {
 		return nil, err
 	}
-	if err := m.store.DeleteSubscription(ctx, caller.Project, id, m.configWrite(caller, args.Rationale)); err != nil {
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.store.DeleteSubscription(ctx, caller.Project, id, cw); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -1432,7 +1457,11 @@ func (m *managementTools) scheduleCreate(ctx context.Context, caller mcpCaller, 
 	// The cron is validated by the store (an unparseable expression is never
 	// stored to fail silently at 03:00), which is also where the nickname refusal
 	// lives — one parser, not two.
-	created, err := m.store.CreateSchedule(ctx, sch, m.configWrite(caller, args.Rationale))
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	created, err := m.store.CreateSchedule(ctx, sch, cw)
 	if err != nil {
 		return nil, err
 	}
@@ -1511,7 +1540,11 @@ func (m *managementTools) scheduleUpdate(ctx context.Context, caller mcpCaller, 
 			next.Enabled = v
 		}
 	}
-	if _, err := m.store.UpdateSchedule(ctx, next, m.configWrite(caller, args.Rationale)); err != nil {
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.store.UpdateSchedule(ctx, next, cw); err != nil {
 		return nil, err
 	}
 	stored, err := m.store.GetSchedule(ctx, caller.Project, id)
@@ -1534,7 +1567,11 @@ func (m *managementTools) scheduleDelete(ctx context.Context, caller mcpCaller, 
 	if err != nil {
 		return nil, err
 	}
-	if err := m.store.DeleteSchedule(ctx, caller.Project, id, m.configWrite(caller, args.Rationale)); err != nil {
+	cw, err := m.configWrite(caller, args.Rationale)
+	if err != nil {
+		return nil, err
+	}
+	if err := m.store.DeleteSchedule(ctx, caller.Project, id, cw); err != nil {
 		return nil, err
 	}
 	return map[string]any{

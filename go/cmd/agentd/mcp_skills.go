@@ -290,6 +290,13 @@ func (s *skillTools) create(ctx context.Context, caller mcpCaller, raw json.RawM
 		return nil, fmt.Errorf("labels: %w", err)
 	}
 
+	// RD4: an unidentifiable caller cannot write to the config log, because an
+	// empty actor there means "a human did this".
+	cw, err := caller.configWrite("")
+	if err != nil {
+		return nil, err
+	}
+
 	// §9 read-back: CreateSkill returns the row as the database holds it — that,
 	// and not the caller's struct, is what is echoed. It also writes the
 	// `skill_create` config event in the same transaction (§15.4).
@@ -301,7 +308,7 @@ func (s *skillTools) create(ctx context.Context, caller mcpCaller, raw json.RawM
 		InstallSh:        args.InstallSh,
 		CreatedByWorker:  caller.Worker,
 		CreatedBySession: caller.SessionID,
-	}, agentdb.ConfigWrite{Worker: caller.Worker, Session: caller.SessionID})
+	}, cw)
 	if err != nil {
 		return nil, err
 	}
