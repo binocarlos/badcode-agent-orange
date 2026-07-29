@@ -151,7 +151,7 @@ func buildProxyRequest(endpoint, apiKey, inboundPath string, body []byte, header
 // claude-agent-sdk parser for a single successful text turn. Used by MockHandler.
 const mockSSEStream = "" +
 	"event: message_start\n" +
-	`data: {"type":"message_start","message":{"id":"msg_mock001","type":"message","role":"assistant","content":[],"model":"claude-opus-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n" +
+	`data: {"type":"message_start","message":{"id":"msg_mock001","type":"message","role":"assistant","content":[],"model":"claude-opus-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":22,"cache_read_input_tokens":148}}}` + "\n\n" +
 	"event: content_block_start\n" +
 	`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
 	"event: ping\n" +

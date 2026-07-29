@@ -343,7 +343,19 @@ describe('token totals', () => {
   // the fixture, the fixture matched nothing, and every token total the UI ever
   // showed was 0. If this fixture ever stops looking like a real response, the
   // test is worthless again — re-capture it, don't hand-edit it.
-  const capturedRow = (queryId: string, inputTokens: number, outputTokens: number) => ({
+  //
+  // RD2 (2026-07-29) found the same fixture lying a second way: it wrote a
+  // TWO-KEY usage object, and no real response has ever had one. The provider
+  // bills three input components — `input_tokens`, `cache_creation_input_tokens`
+  // and `cache_read_input_tokens` — none of which contains the others. The
+  // fixture now carries all four fields, and callers state each component.
+  const capturedRow = (
+    queryId: string,
+    inputTokens: number,
+    outputTokens: number,
+    cacheCreationInputTokens = 0,
+    cacheReadInputTokens = 0,
+  ) => ({
     id: '000622c6-f65a-445e-a9b8-45b0270e26f6',
     session_id: '1a4f6f27-4a6e-4f27-a27d-1811fe93c078',
     query_id: queryId,
@@ -361,7 +373,7 @@ describe('token totals', () => {
         timestamp: '2026-07-25T23:29:06.243Z',
         data: {
           model: 'claude-opus-4-5',
-          usage: { inputTokens, outputTokens },
+          usage: { inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens },
           result: 'Hello from the agentd mock model proxy. Set ANTHROPIC_API_KEY for a real agent.',
           status: 'completed',
           queryId,
@@ -372,8 +384,54 @@ describe('token totals', () => {
   })
 
   it('sums the nested query-events shape the route actually serves', () => {
-    const payload = { events: [capturedRow('q-34', 100, 30), capturedRow('q-35', 7, 3)] }
-    expect(sumTokens(payload)).toEqual({ input: 107, output: 33, total: 140 })
+    // Input is the sum of all three billed components: (100+400+0) + (7+0+1500).
+    const payload = {
+      events: [capturedRow('q-34', 100, 30, 400, 0), capturedRow('q-35', 7, 3, 0, 1500)],
+    }
+    expect(sumTokens(payload)).toEqual({ input: 2007, output: 33, total: 2040 })
+  })
+
+  it('counts cache reads — the component that carries most of a cached bill', () => {
+    // RD2. With a large composed prompt the cache read dominates; a reader
+    // that summed only `inputTokens` reported 12 of 8,466 real input tokens
+    // (0.14%) and the UI showed a plausible number that was almost entirely
+    // fiction. This must stay in lockstep with go/agentdb/token_usage.go — the
+    // number an operator reads and the number that stops their jobs are
+    // supposed to be the same number.
+    const payload = [
+      {
+        type: 'query_complete',
+        data: {
+          usage: {
+            inputTokens: 12,
+            outputTokens: 213,
+            cacheCreationInputTokens: 1704,
+            cacheReadInputTokens: 6750,
+          },
+        },
+      },
+    ]
+    expect(sumTokens(payload)).toEqual({ input: 8466, output: 213, total: 8679 })
+  })
+
+  it('counts a usage object that is ONLY cache reads', () => {
+    // A fully-cached turn can bill zero uncached input. Returning null there
+    // would drop the whole envelope and re-zero the total.
+    expect(sumTokens([{ data: { usage: { cacheReadInputTokens: 900 } } }])).toEqual({
+      input: 900,
+      output: 0,
+      total: 900,
+    })
+  })
+
+  it('reads historical two-key envelopes unchanged', () => {
+    // Every envelope stored before 2026-07-29 has only these two keys. Widening
+    // the reader must not make them unreadable.
+    expect(sumTokens([{ data: { usage: { inputTokens: 40, outputTokens: 12 } } }])).toEqual({
+      input: 40,
+      output: 12,
+      total: 52,
+    })
   })
 
   it('sums a flat envelope list just as well', () => {
@@ -388,8 +446,20 @@ describe('token totals', () => {
   it("reads the provider's snake_case usage spelling too", () => {
     // camelCase is one line of one pluggable harness converting the Anthropic
     // wire format; a harness forwarding usage verbatim must not read as zero.
-    const payload = [{ type: 'query_complete', data: { usage: { input_tokens: 12, output_tokens: 4 } } }]
-    expect(sumTokens(payload)).toEqual({ input: 12, output: 4, total: 16 })
+    const payload = [
+      {
+        type: 'query_complete',
+        data: {
+          usage: {
+            input_tokens: 12,
+            output_tokens: 4,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 900,
+          },
+        },
+      },
+    ]
+    expect(sumTokens(payload)).toEqual({ input: 942, output: 4, total: 946 })
   })
 
   it('ignores the flat shape nothing has ever written', () => {

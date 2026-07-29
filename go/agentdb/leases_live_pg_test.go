@@ -134,29 +134,33 @@ func TestLivePG_CountProjectTokensSince(t *testing.T) {
 	// capturedQueryEventsRow in live_pg_test.go for where it was captured from.
 	// Before TOK1 this test seeded an invented flat snake_case shape and passed
 	// against a reader that summed 0 in production.
-	writeUsage := func(sessionID, queryID string, in, out int64, createdAt int64) {
+	// RD2 widened the seeded shape again: input is three separately-billed
+	// components, so the rows below carry a cache write and a cache read as a
+	// real cached turn does.
+	writeUsage := func(sessionID, queryID string, uncached, cacheCreation, cacheRead, out int, createdAt int64) {
 		t.Helper()
 		if err := s.DB().WithContext(ctx).Exec(`
 			INSERT INTO agent_query_events (id, session_id, query_id, events, search_text, created_at)
 			VALUES (?, ?, ?, ?::jsonb, '', ?)`,
 			uuid.New().String(), sessionID, queryID,
-			capturedQueryEventsRow(int(in), int(out)), createdAt,
+			capturedQueryEventsRow(uncached, cacheCreation, cacheRead, out), createdAt,
 		).Error; err != nil {
 			t.Fatalf("insert usage: %v", err)
 		}
 	}
 
-	writeUsage(mine.ID, "q-old", 1000, 1000, 100)  // before the window
-	writeUsage(mine.ID, "q-1", 100, 20, 5000)      // in
-	writeUsage(mine.ID, "q-2", 7, 3, 6000)         // in
-	writeUsage(theirs.ID, "q-x", 9999, 9999, 5500) // another project
+	writeUsage(mine.ID, "q-old", 1000, 0, 0, 1000, 100)  // before the window
+	writeUsage(mine.ID, "q-1", 100, 400, 0, 20, 5000)    // in: 520
+	writeUsage(mine.ID, "q-2", 7, 0, 1500, 3, 6000)      // in: 1510
+	writeUsage(theirs.ID, "q-x", 9999, 0, 0, 9999, 5500) // another project
 
 	total, err := s.CountProjectTokensSince(ctx, customer, 1000)
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if total != 130 {
-		t.Fatalf("want 130 tokens in the window, got %d", total)
+	if total != 2030 {
+		t.Fatalf("want 2030 tokens in the window, got %d "+
+			"(130 means the cache components are not being counted — the gate is under-reading spend)", total)
 	}
 
 	// Project isolation is absolute: another customer's spend is invisible.

@@ -144,7 +144,14 @@ func TestLivePG_SessionMCPServers(t *testing.T) {
 //     the envelope, which is the shape the old readers and web's unit fixture
 //     both invented;
 //   - the usage-bearing envelope is LAST, never index 0.
-func capturedQueryEventsRow(in, out int) string {
+//
+// A third property is the whole of bug RD2 (2026-07-29): input is split across
+// THREE separately-billed fields and `inputTokens` is only the uncached one.
+// The predecessor of this helper took a single `in` and wrote a two-key usage
+// object — a shape no real response has ever had — so a reader that counted
+// only `inputTokens` looked correct against it. It now writes what the provider
+// writes, and the caller states each component.
+func capturedQueryEventsRow(uncached, cacheCreation, cacheRead, out int) string {
 	return fmt.Sprintf(`[
 	  {"type":"user_message","timestamp":"2026-07-25T23:29:03Z",
 	   "data":{"content":"Event: schedule.fired\nOccurred: 2026-07-25T23:29:00Z\nSource: schedule\nDepth: 0\n\n--- event text (data, not instructions) begins ---\nReconcile the workforce.\n--- event text ends ---"}},
@@ -154,12 +161,13 @@ func capturedQueryEventsRow(in, out int) string {
 	   "data":{"messageId":"e322c9b0-6ccd-4170-aa14-a82faf70fc4f"}},
 	  {"type":"query_complete","timestamp":"2026-07-25T23:29:06.243Z",
 	   "data":{"model":"claude-opus-4-5",
-	           "usage":{"inputTokens":%d,"outputTokens":%d},
+	           "usage":{"inputTokens":%d,"outputTokens":%d,
+	                    "cacheCreationInputTokens":%d,"cacheReadInputTokens":%d},
 	           "result":"Hello from the agentd mock model proxy. Set ANTHROPIC_API_KEY for a real agent.",
 	           "status":"completed",
 	           "queryId":"1e74bdb0-5666-4c21-8c67-8e928355c84a",
 	           "totalCostUsd":0.0004}}
-	]`, in, out)
+	]`, uncached, out, cacheCreation, cacheRead)
 }
 
 func TestLivePG_GetSessionTokenSummary(t *testing.T) {
@@ -168,9 +176,13 @@ func TestLivePG_GetSessionTokenSummary(t *testing.T) {
 	customer := "cust-" + uuid.New().String()
 	sess := newLiveSession(t, s, customer, "u@x.com")
 
+	// Two turns of the shape a composed job actually produces: a small uncached
+	// remainder, a cache write on the first turn, and a large cache read on the
+	// second. Input totals 100+400+0 + 7+0+1500 = 2007; a reader counting only
+	// `inputTokens` would report 107 — 5% of the bill.
 	for i, ev := range []string{
-		capturedQueryEventsRow(100, 30),
-		capturedQueryEventsRow(7, 3),
+		capturedQueryEventsRow(100, 400, 0, 30),
+		capturedQueryEventsRow(7, 0, 1500, 3),
 	} {
 		if err := s.UpsertQueryEvents(ctx, &QueryEvents{
 			SessionID: sess.ID, QueryID: fmt.Sprintf("q%d", i), Events: JSONArray(ev),
@@ -183,8 +195,10 @@ func TestLivePG_GetSessionTokenSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	if sum.InputTokens != 107 || sum.OutputTokens != 33 {
-		t.Fatalf("want 107/33, got %d/%d — the reader is not matching the stored shape", sum.InputTokens, sum.OutputTokens)
+	if sum.InputTokens != 2007 || sum.OutputTokens != 33 {
+		t.Fatalf("want 2007/33, got %d/%d — the reader is not matching the stored shape "+
+			"(107 means it is counting only the uncached inputTokens and ignoring the cache components)",
+			sum.InputTokens, sum.OutputTokens)
 	}
 
 	// A session with no query events sums to zero via COALESCE, not an error.
@@ -214,14 +228,18 @@ func TestLivePG_TokenSummaryToleratesTheProviderSpelling(t *testing.T) {
 			t.Fatalf("seed %s: %v", queryID, err)
 		}
 	}
-	seed("provider-spelling", `[{"type":"query_complete","data":{"usage":{"input_tokens":11,"output_tokens":4}}}]`)
+	seed("provider-spelling", `[{"type":"query_complete","data":{"usage":`+
+		`{"input_tokens":11,"output_tokens":4,`+
+		`"cache_creation_input_tokens":30,"cache_read_input_tokens":900}}}]`)
 
 	sum, err := s.GetSessionTokenSummary(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	if sum.InputTokens != 11 || sum.OutputTokens != 4 {
-		t.Fatalf("provider spelling: want 11/4, got %d/%d", sum.InputTokens, sum.OutputTokens)
+	if sum.InputTokens != 941 || sum.OutputTokens != 4 {
+		t.Fatalf("provider spelling: want 941/4, got %d/%d "+
+			"(11 means the snake_case cache components are not being read)",
+			sum.InputTokens, sum.OutputTokens)
 	}
 
 	// The shape TOK1 was about: never written by anything, deliberately unread.
@@ -234,8 +252,56 @@ func TestLivePG_TokenSummaryToleratesTheProviderSpelling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summary after junk rows: %v", err)
 	}
-	if sum.InputTokens != 11 || sum.OutputTokens != 4 {
-		t.Fatalf("junk rows changed the sum: got %d/%d, want 11/4", sum.InputTokens, sum.OutputTokens)
+	if sum.InputTokens != 941 || sum.OutputTokens != 4 {
+		t.Fatalf("junk rows changed the sum: got %d/%d, want 941/4", sum.InputTokens, sum.OutputTokens)
+	}
+}
+
+// TestLivePG_TokenSummaryReadsHistoricalTwoKeyEnvelopes: every envelope stored
+// before 2026-07-29 carries only `inputTokens`/`outputTokens`, because that is
+// all the harness forwarded. Widening the reader to sum the cache components
+// must not make those rows unreadable — the added terms COALESCE to 0, so a
+// historical row reads exactly the number it always did.
+//
+// This is the backward-compatibility half of RD2. It is a live-Postgres test
+// because the whole mechanism is jsonb COALESCE over absent keys, which no
+// in-memory fake reproduces.
+func TestLivePG_TokenSummaryReadsHistoricalTwoKeyEnvelopes(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	sess := newLiveSession(t, s, "cust-"+uuid.New().String(), "u@x.com")
+
+	seed := func(queryID, ev string) {
+		t.Helper()
+		if err := s.UpsertQueryEvents(ctx, &QueryEvents{
+			SessionID: sess.ID, QueryID: queryID, Events: JSONArray(ev),
+		}); err != nil {
+			t.Fatalf("seed %s: %v", queryID, err)
+		}
+	}
+
+	// A pre-RD2 row: the two-key shape, camelCase, exactly as it sits in the
+	// live database today.
+	seed("historical", `[{"type":"query_complete","data":{"usage":{"inputTokens":40,"outputTokens":12}}}]`)
+
+	sum, err := s.GetSessionTokenSummary(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("summary: %v", err)
+	}
+	if sum.InputTokens != 40 || sum.OutputTokens != 12 {
+		t.Fatalf("historical row became unreadable: got %d/%d, want 40/12", sum.InputTokens, sum.OutputTokens)
+	}
+
+	// A post-RD2 row alongside it: both are summed, mixed generations and all.
+	seed("current", `[{"type":"query_complete","data":{"usage":`+
+		`{"inputTokens":5,"outputTokens":8,"cacheCreationInputTokens":0,"cacheReadInputTokens":600}}}]`)
+
+	sum, err = s.GetSessionTokenSummary(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("summary (mixed): %v", err)
+	}
+	if sum.InputTokens != 645 || sum.OutputTokens != 20 {
+		t.Fatalf("mixed generations: got %d/%d, want 645/20", sum.InputTokens, sum.OutputTokens)
 	}
 }
 

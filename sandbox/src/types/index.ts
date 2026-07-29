@@ -95,6 +95,42 @@ export interface ToolUseEndEvent {
   timestamp: string;
 }
 
+/**
+ * The billed token components of one turn, as `query_complete` carries them.
+ *
+ * This is the ONLY thing the product's spend brake can measure, so it has to
+ * be the whole bill. The provider's usage object (`BetaUsage` in
+ * `@anthropic-ai/sdk`) splits input across THREE separately-billed fields, and
+ * `input_tokens` is only one of them:
+ *
+ *   input_tokens                 "The number of input tokens which were used."
+ *   cache_creation_input_tokens  "The number of input tokens used to create the cache entry."
+ *   cache_read_input_tokens      "The number of input tokens read from the cache."
+ *
+ * None of the three includes the others. Until 2026-07-29 the harness forwarded
+ * only the first, so with a large composed prompt and caching active — where
+ * most input arrives as cache reads — the ledger reported a plausible fraction
+ * of true spend and `daily_tokens_hard` fired far too late or never.
+ *
+ * The other members of `BetaUsage` are deliberately NOT forwarded because they
+ * are not additional billed tokens: `cache_creation` is a TTL breakdown OF
+ * `cache_creation_input_tokens`, `output_tokens_details` is a read-only
+ * decomposition of `output_tokens` (which the SDK documents as "the inclusive,
+ * authoritative total used for billing"), `server_tool_use` counts requests
+ * rather than tokens, and `iterations` re-states per-iteration subtotals.
+ * Summing any of them would double-count.
+ *
+ * Key spelling is camelCase because that is what `go/agentdb/token_usage.go`
+ * reads and what every stored envelope carries; the cache fields are optional
+ * so envelopes written before this change stay readable.
+ */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens?: number;
+  cacheReadInputTokens?: number;
+}
+
 export interface QueryCompleteEvent {
   type: 'query_complete';
   data: {
@@ -102,10 +138,7 @@ export interface QueryCompleteEvent {
     status: 'completed' | 'error' | 'cancelled';
     result?: string;
     totalCostUsd?: number;
-    usage?: {
-      inputTokens: number;
-      outputTokens: number;
-    };
+    usage?: TokenUsage;
     model?: string;
   };
   timestamp: string;
