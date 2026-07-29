@@ -333,7 +333,15 @@ test.describe('the daily token budget stops jobs once real spend crosses it', ()
     for (const e of completions) {
       const usage = e.data.usage as Record<string, unknown> | undefined
       expect(usage, 'query_complete must carry data.usage — the whole ledger hangs off it').toBeTruthy()
-      spent += Number(usage!.inputTokens ?? 0) + Number(usage!.outputTokens ?? 0)
+      // All three billed input components, matching go/agentdb/token_usage.go.
+      // RD2: summing only `inputTokens` here would agree with the old broken
+      // reader instead of with the writer — the mistake this spec exists to
+      // catch. The mock bills a cache write and a cache read like a real turn.
+      spent +=
+        Number(usage!.inputTokens ?? 0) +
+        Number(usage!.cacheCreationInputTokens ?? 0) +
+        Number(usage!.cacheReadInputTokens ?? 0) +
+        Number(usage!.outputTokens ?? 0)
     }
     expect(spent, 'a finished mock job must bill more than zero tokens').toBeGreaterThan(0)
 

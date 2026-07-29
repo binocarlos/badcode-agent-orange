@@ -588,6 +588,19 @@ export interface TokenTotals {
  * one PLUGGABLE harness, and `input_tokens` is the provider's own spelling on
  * the wire, so a harness forwarding its usage object verbatim must not read as
  * zero. The Go readers tolerate exactly the same pair.
+ *
+ * Input is the SUM of three separately-billed components, not just
+ * `inputTokens`. The provider bills `input_tokens`,
+ * `cache_creation_input_tokens` and `cache_read_input_tokens` independently and
+ * none contains the others, so with caching active most input arrives as cache
+ * reads. Reading only the first showed a plausible fraction of true spend in the
+ * UI while `go/agentdb/token_usage.go` — the brake's own reader — is summing the
+ * same three. These two must agree, or the number an operator sees is not the
+ * number that stops their jobs.
+ *
+ * A usage object carrying ONLY cache components still counts: `null` is
+ * reserved for "this object has no token counts at all", which is what stops the
+ * walk in sumTokens from descending past a real usage object.
  */
 function readUsage(node: unknown): { input: number; output: number } | null {
   if (!node || typeof node !== 'object' || Array.isArray(node)) return null
@@ -598,10 +611,17 @@ function readUsage(node: unknown): { input: number; output: number } | null {
     }
     return null
   }
-  const input = pick(['inputTokens', 'input_tokens'])
+  const uncached = pick(['inputTokens', 'input_tokens'])
+  const cacheCreation = pick(['cacheCreationInputTokens', 'cache_creation_input_tokens'])
+  const cacheRead = pick(['cacheReadInputTokens', 'cache_read_input_tokens'])
   const output = pick(['outputTokens', 'output_tokens'])
-  if (input === null && output === null) return null
-  return { input: input ?? 0, output: output ?? 0 }
+  if (uncached === null && cacheCreation === null && cacheRead === null && output === null) {
+    return null
+  }
+  return {
+    input: (uncached ?? 0) + (cacheCreation ?? 0) + (cacheRead ?? 0),
+    output: output ?? 0,
+  }
 }
 
 /**

@@ -187,6 +187,197 @@ describe('checkCredentials', () => {
 // (c) ClaudeAgentSdkHarness — scripted turn emission test
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The usage fixture, captured shape.
+//
+// The predecessor of this constant was INVENTED: `{input_tokens, output_tokens}`,
+// two keys, which no real API response has ever had. It matched the reader
+// rather than the writer, and so it could not fail when the writer dropped the
+// two cache fields — the exact fixture-authored-to-match-the-reader failure that
+// TOK1 was filed for and that RD2 caught a second instance of.
+//
+// This is the shape of `BetaUsage` as declared in
+// `sandbox/node_modules/@anthropic-ai/sdk/resources/beta/messages/messages.d.ts`
+// and reached from the agent SDK as `NonNullableUsage` — the type
+// `SDKResultSuccess.usage` and `SDKResultError.usage` are both declared as.
+// The numbers are the interesting case rather than the average one: a large
+// composed prompt with caching active, where the uncached `input_tokens` is a
+// small minority of what is billed (12 of 8,466 input tokens — 0.14%).
+// ---------------------------------------------------------------------------
+const CAPTURED_SHAPE_USAGE = {
+  input_tokens: 12,
+  output_tokens: 213,
+  cache_creation_input_tokens: 1704,
+  cache_read_input_tokens: 6750,
+  cache_creation: { ephemeral_5m_input_tokens: 1704, ephemeral_1h_input_tokens: 0 },
+  output_tokens_details: { reasoning_tokens: 0 },
+  server_tool_use: null,
+  service_tier: 'standard',
+  speed: 'standard',
+  inference_geo: null,
+  iterations: null,
+};
+
+/** What the harness must forward for the above: every billed component. */
+const EXPECTED_FORWARDED_USAGE = {
+  inputTokens: 12,
+  outputTokens: 213,
+  cacheCreationInputTokens: 1704,
+  cacheReadInputTokens: 6750,
+};
+
+/** Run one scripted turn through a real ClaudeAgentSdkHarness, recording emits. */
+async function runScriptedTurn(): Promise<Array<{ method: string; args: unknown[] }>> {
+  const { ClaudeAgentSdkHarness } = await import('./claude-agent-sdk.js');
+  const harness = new ClaudeAgentSdkHarness();
+  const calls: Array<{ method: string; args: unknown[] }> = [];
+  const record =
+    (method: string) =>
+    (...args: unknown[]) => {
+      calls.push({ method, args });
+    };
+  const fakeEmitter = {
+    messageStart: record('messageStart'),
+    contentDelta: record('contentDelta'),
+    thinkingDelta: record('thinkingDelta'),
+    messageEnd: record('messageEnd'),
+    toolUseStart: record('toolUseStart'),
+    toolUseEnd: record('toolUseEnd'),
+    toolProgress: record('toolProgress'),
+    toolInputDelta: record('toolInputDelta'),
+    hookEvent: record('hookEvent'),
+    subagentEvent: record('subagentEvent'),
+    activityUpdate: record('activityUpdate'),
+    systemStatus: record('systemStatus'),
+    sessionInfo: record('sessionInfo'),
+    event: record('event'),
+    endQuery: record('endQuery'),
+    error: record('error'),
+  } as unknown as HarnessEmitter;
+
+  const ctx: TurnContext = {
+    sessionId: 'sess-usage',
+    queryId: 'q-usage',
+    signal: new AbortController().signal,
+    emit: fakeEmitter,
+    resolved: {
+      allowedTools: [],
+      disallowedTools: [],
+      mcpServers: {},
+      sessionMCPServers: {},
+      markers: [],
+    } as ResolvedTools,
+    config: {
+      DEFAULT_MODEL: 'claude-test',
+      DEFAULT_MAX_TURNS: 10,
+      DEFAULT_THINKING_BUDGET_TOKENS: 1000,
+    } as Config,
+  };
+
+  await harness.runTurn({ prompt: 'Say hello', model: 'claude-test' } as QueryRequest, ctx);
+  return calls;
+}
+
+/** The `usage` argument of the single endQuery emitted by a scripted turn. */
+async function forwardedUsage(): Promise<Record<string, unknown> | undefined> {
+  const calls = await runScriptedTurn();
+  const end = calls.find((c) => c.method === 'endQuery');
+  expect(end, 'every turn must end with exactly one endQuery').toBeDefined();
+  return end!.args[3] as Record<string, unknown> | undefined;
+}
+
+// ---------------------------------------------------------------------------
+// RD2 / RD2b — the spend brake's only input
+// ---------------------------------------------------------------------------
+
+describe('token usage forwarding', () => {
+  beforeEach(() => {
+    _mockMessages = [
+      { type: 'system', subtype: 'init', tools: [], model: 'claude-test', mcp_servers: [] },
+      {
+        type: 'result',
+        subtype: 'success',
+        result: 'Hello world',
+        total_cost_usd: 0.031,
+        usage: CAPTURED_SHAPE_USAGE,
+      },
+    ];
+  });
+
+  it('forwards every separately-billed component, not just input_tokens', async () => {
+    expect(await forwardedUsage()).toEqual(EXPECTED_FORWARDED_USAGE);
+  });
+
+  it('does NOT write the two-key shape — the invented fixture is not production output', async () => {
+    // The mirror of TOK1's "the wrong shape appears in zero stored rows".
+    // `{inputTokens, outputTokens}` alone is what the harness used to emit and
+    // what both fixtures asserted; it must never be what production writes
+    // again, because it silently omits ~99% of a cached turn's input bill.
+    const usage = await forwardedUsage();
+    expect(usage).toBeDefined();
+    expect(Object.keys(usage!).sort()).toEqual([
+      'cacheCreationInputTokens',
+      'cacheReadInputTokens',
+      'inputTokens',
+      'outputTokens',
+    ]);
+    expect(usage).not.toEqual({ inputTokens: 12, outputTokens: 213 });
+  });
+
+  it('counts cache reads: the forwarded input dwarfs input_tokens alone', async () => {
+    const usage = (await forwardedUsage())!;
+    const billedInput =
+      (usage.inputTokens as number) +
+      (usage.cacheCreationInputTokens as number) +
+      (usage.cacheReadInputTokens as number);
+    expect(billedInput).toBe(8466);
+    // The pre-fix ledger would have reported 12 — 0.14% of the real bill. A
+    // brake reading that number fires ~700x too late, or never.
+    expect(billedInput).toBeGreaterThan((usage.inputTokens as number) * 100);
+  });
+
+  it('RD2b: a turn that errors after burning tokens is still metered', async () => {
+    // `SDKResultError` declares `usage: NonNullableUsage` and
+    // `total_cost_usd: number` exactly as `SDKResultSuccess` does — the error
+    // result really does carry the bill. Discarding it left the RUNAWAY case,
+    // the one the brake exists for, as the only unmetered one.
+    _mockMessages = [
+      { type: 'system', subtype: 'init', tools: [], model: 'claude-test', mcp_servers: [] },
+      {
+        type: 'result',
+        subtype: 'error_max_turns',
+        errors: ['max turns exceeded'],
+        total_cost_usd: 0.042,
+        usage: CAPTURED_SHAPE_USAGE,
+      },
+    ];
+
+    const calls = await runScriptedTurn();
+    const end = calls.find((c) => c.method === 'endQuery')!;
+    expect(end.args[0]).toBe('error');
+    expect(end.args[2], 'cost must survive the error path too').toBe(0.042);
+    expect(end.args[3]).toEqual(EXPECTED_FORWARDED_USAGE);
+  });
+
+  it('a usage object missing the cache keys reads as zero, never NaN', async () => {
+    // A NaN would cast to NULL in the jsonb read and silently zero the ledger —
+    // the failure class this whole change exists to end.
+    const { readTokenUsage } = await import('./claude-agent-sdk.js');
+    expect(readTokenUsage({ input_tokens: 10, output_tokens: 5 })).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    });
+    expect(readTokenUsage(undefined)).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    });
+  });
+});
+
 describe('ClaudeAgentSdkHarness', () => {
   // The scripted sequence of messages the mock query() will yield.
   // Represents a minimal successful turn:
@@ -213,7 +404,7 @@ describe('ClaudeAgentSdkHarness', () => {
         subtype: 'success',
         result: 'Hello world',
         total_cost_usd: 0.001,
-        usage: { input_tokens: 10, output_tokens: 5 },
+        usage: CAPTURED_SHAPE_USAGE,
       },
     ];
   });
@@ -450,8 +641,8 @@ describe('ClaudeAgentSdkHarness', () => {
         type: 'result',
         subtype: 'error_max_turns',
         errors: ['Maximum turns reached'],
-        total_cost_usd: 0,
-        usage: { input_tokens: 10, output_tokens: 5 },
+        total_cost_usd: 0.017,
+        usage: CAPTURED_SHAPE_USAGE,
       },
     ];
 

@@ -205,7 +205,7 @@ func TurnSSE(turn Turn, turnIdx int) string {
 	var sb strings.Builder
 	sb.WriteString("event: message_start\n")
 	fmt.Fprintf(&sb,
-		`data: {"type":"message_start","message":{"id":%s,"type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`,
+		`data: {"type":"message_start","message":{"id":%s,"type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":22,"cache_read_input_tokens":148}}}`,
 		mustJSON(fmt.Sprintf("msg_mock_%d", turnIdx+1)))
 	sb.WriteString("\n\n")
 

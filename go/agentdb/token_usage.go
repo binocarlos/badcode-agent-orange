@@ -61,10 +61,53 @@ package agentdb
 // This is Postgres-only SQL (jsonb operators, LATERAL). On a store without
 // them the readers return an error, which the router treats as "do not stop the
 // world" — see tokenBudget.Allow.
+
+// Which FIELDS are summed — the second half of the same bug (RD2, 2026-07-29).
+//
+// TOK1 fixed the jsonb PATH; the ledger still under-read, because `input_tokens`
+// is only one of three separately-billed input components. The provider's usage
+// object (`BetaUsage` in `@anthropic-ai/sdk`, reached through the agent SDK's
+// `NonNullableUsage`) documents them as:
+//
+//	input_tokens                 "The number of input tokens which were used."
+//	cache_creation_input_tokens  "The number of input tokens used to create the cache entry."
+//	cache_read_input_tokens      "The number of input tokens read from the cache."
+//
+// None of the three contains the others, and all three are billed. With a large
+// composed prompt and prompt caching active — which is exactly the shape this
+// product creates, since ComposeJob concatenates a core preamble, a project
+// prompt, a worker prompt and a briefing on every job — most input arrives as
+// cache READS. Summing only `input_tokens` therefore reported a plausible
+// non-zero fraction of true spend, so `daily_tokens_hard` fired far too late or
+// never, and nobody investigates a counter that appears to work.
+//
+// Why tokens and not `data.totalCostUsd`, which is also on the envelope and is
+// already truthful: the settings are named `daily_tokens_soft`/`daily_tokens_hard`
+// and are entered, displayed and documented in tokens. Cost is provider-priced
+// and model-dependent, so metering on it would make a fixed ceiling mean a
+// different amount of work per model and silently re-scale every project's brake
+// whenever list prices move. Tokens are the unit the operator chose; the fix is
+// to count all of them. `totalCostUsd` stays stored (and is now written on the
+// error path too), so a future cost-denominated ceiling is a reader change, not
+// a re-instrumentation.
+//
+// Backward compatibility: the cache components are additional COALESCE'd terms,
+// so an envelope written before this change — which has neither key — reads
+// exactly as it did before rather than becoming unreadable.
 const (
 	// usageInputSQL / usageOutputSQL read one envelope (aliased `e`) expanded
 	// by usageEnvelopes. A missing key yields NULL, which COALESCEs to 0.
-	usageInputSQL  = `COALESCE((e->'data'->'usage'->>'inputTokens')::bigint,  (e->'data'->'usage'->>'input_tokens')::bigint,  0)`
+	//
+	// Both spellings are accepted per component for the reason given above:
+	// snake_case is the provider's own wire spelling and the harness is
+	// pluggable.
+	usageInputSQL = `(COALESCE((e->'data'->'usage'->>'inputTokens')::bigint, (e->'data'->'usage'->>'input_tokens')::bigint, 0)` +
+		` + COALESCE((e->'data'->'usage'->>'cacheCreationInputTokens')::bigint, (e->'data'->'usage'->>'cache_creation_input_tokens')::bigint, 0)` +
+		` + COALESCE((e->'data'->'usage'->>'cacheReadInputTokens')::bigint, (e->'data'->'usage'->>'cache_read_input_tokens')::bigint, 0))`
+
+	// Output has exactly one billed field. `output_tokens_details` is a
+	// read-only decomposition of it ("output_tokens remains the inclusive,
+	// authoritative total used for billing"), so adding it would double-count.
 	usageOutputSQL = `COALESCE((e->'data'->'usage'->>'outputTokens')::bigint, (e->'data'->'usage'->>'output_tokens')::bigint, 0)`
 )
 

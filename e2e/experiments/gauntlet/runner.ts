@@ -530,7 +530,12 @@ async function sessionTokens(client: ProjectClient, sessionId: string): Promise<
     }
     if (!node || typeof node !== 'object') return
     const r = node as Record<string, unknown>
-    const counted = ['inputTokens', 'outputTokens', 'input_tokens', 'output_tokens'].filter(
+    const counted = [
+      // All separately-billed components (RD2): the two cache fields carry
+      // most of a cached turn's input bill and were silently uncounted.
+      'inputTokens', 'outputTokens', 'cacheCreationInputTokens', 'cacheReadInputTokens',
+      'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens',
+    ].filter(
       (k) => typeof r[k] === 'number',
     )
     if (counted.length > 0) {
