@@ -58,9 +58,11 @@ without wider context than this file, the design doc, and the files it names.*
 - **`agentdb` live-Postgres cases skip silently** without `AGENTKIT_TEST_POSTGRES_URL` — a green
   plain run does not prove the Postgres paths. Go items must run both commands.
 - **Assert on happens-after signals, never sleeps** in any test that waits.
-- **CI pre-existing break, not yours:** `.github/workflows/ci.yml`'s `web` job runs
-  `yarn install --frozen-lockfile` but `web/` has no yarn.lock on this branch. Known; do not fix
-  it inside a console item; do not "restore" a yarn.lock.
+- ~~**CI pre-existing break:** the `web` job ran `yarn install --frozen-lockfile` with no
+  yarn.lock.~~ **FIXED elsewhere (`59e1ea8`)** — `ci.yml:84` now runs `npm ci`, matching every
+  documented command for the package. Left struck through rather than deleted: an executor who
+  read the old warning and "worked around" it should know the ground moved. Still true: do not
+  restore a `web/yarn.lock`.
 
 ## Design tokens (single source for every item below)
 
