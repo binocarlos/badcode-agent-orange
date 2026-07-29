@@ -37,6 +37,14 @@ pinning that the wrong shape appears in zero stored rows) is the template for th
 **Standing rule, promoted from that lesson:** a fixture must be *captured* from a real writer, not
 authored to match the reader. An invented fixture is a silent-success generator.
 
+**Second standing rule, learned while auditing (RD25):** *a tool reporting "no matches" is not
+evidence of absence.* `grep` silently skips files it deems binary, and five `web/src` files qualify
+— so a clean search over that directory has been meaningless for as long as those bytes have been
+there. The orchestrator's own first attempt to verify this used `$'\x00'`, which bash collapses to
+an empty string, and consequently reported **every** file as affected. Both failures are the same
+shape as the defects we are hunting: a confident negative that was never true. Verify a negative
+with a second, differently-built method before believing it.
+
 ## 3. The audit programme (2026-07-29, in flight)
 
 Three read-only sweeps, no stack, no writes — evidence before items, deliberately:
@@ -416,6 +424,92 @@ commit as this entry, since every agent reads that file.*
 root-owned **directory**, not a file, and `docker-compose.override.yml:11` bind-mounts it at
 `/gcp/key.json` on every bare `docker compose up`. ADC will fail in a way no doc explains. The
 override is gitignored and untracked, so a fresh clone is unaffected — **Kai's tree only.**
+
+### From the browser sweep (2026-07-29)
+
+- [ ] **RD25 — Five UI source files are invisible to `grep`, and three of them are invisible to
+  `git diff`.** *Filed first because it undermines the reliability of every other search anyone has
+  run over `web/src`, including our own audits.* A NUL used as a composite-key separator was
+  written as a **literal byte** rather than an escape, in `components/WorkerEditor.tsx` (offset
+  4168), `useStagedFeed.ts` (5086), `useEvents.ts` (6244), `desk.ts` (22372) and `orgchart.ts`
+  (32200) — **verified by byte-count comparison; exactly those five, offsets confirmed.** GNU grep
+  classifies them as binary and suppresses all output, *reporting no matches* — which reads as
+  "cleared". Demonstrated: `grep -rn "useSessionTokens" web/src` returns five hits, all importers;
+  the **definition** at `useEvents.ts:216` does not appear, and `grep -a` finds it. The three
+  offsets under git's 8000-byte threshold additionally render as `Binary files differ` with a stat
+  line reading **0 insertions, 0 deletions** — so a PR touching the worker editor form, the events
+  hook or the staged feed shows a reviewer nothing at all. One file was already known (the work
+  plan's F2 entry, "normalise someday"); that entry understated it — the problem is not ugly diffs,
+  it is that search silently lies.
+  *Second-order risk:* any tool that round-trips these files as text (a formatter, `sed -i`, a
+  paste through a terminal) will likely drop the NUL, silently turning `` `${type}\0${status}` ``
+  into `` `${type}${status}` `` and making previously-distinct keys collide — with nothing failing
+  at that moment either.
+  **Fix:** replace the five literal bytes with `\0` escapes — behaviour-identical, and the files
+  become text again. Add a CI guard failing the build if any tracked source file contains a raw NUL.
+  *Caution while fixing: this is precisely the kind of edit whose diff is invisible — verify by
+  byte count, not by eye.*
+- [ ] **RD26 — A dropped SSE stream reports the turn as finished, so a truncated answer reads as a
+  complete one.** `checkSessionStatus` returns `null` on *any* failure — network error, timeout,
+  non-2xx — with an empty catch (`web/src/useAgentSession.ts:460-471`), so "the probe failed" and
+  "there is no active query" are the same value. A `null` status falls through to a branch that
+  only `console.log`s (`:534-547`), and the "Connection lost" error is gated behind
+  `reconnectDepth >= MAX_RECONNECT_ATTEMPTS` (`:604-607`), never reached at depth 0. The UI then
+  clears the spinner and calls `stopStuckDetection()` unconditionally (`:672-676`) — switching off
+  the one remaining signal exactly when it would have fired. Meanwhile the agent is still running
+  in its container producing output nobody will see.
+  **Fix:** make `checkSessionStatus` distinguish unreachable from idle, and set the connection-lost
+  error on any stream ending without `query_complete` that cannot be positively confirmed complete.
+- [ ] **RD27 — When the attention route fails, the Desk says "Nothing is waiting on you" and the
+  badge reads 0, with no error shown.** `useAttentionRequests.ts:81-85` sets an empty list on
+  failure but leaves `available` true (only 404/501 count as "unwired"), and `attention.error` is
+  **absent from the error chain** in `useDesk.ts:250` and `useAsksCount.ts:77`. Because `available`
+  stayed true, the designed fallback — showing parked deliveries without their messages
+  (`useDesk.ts:217-219`) — is skipped in exactly the case it was written for. An operator with
+  three workers parked at `awaiting_human` sees a zero badge and a reassuring sentence, and closes
+  the tab; the approvals sit until they time out.
+  **Fix:** add `attention.error` to both chains, and drive the fallback off "did this load succeed"
+  rather than off `available`.
+- [ ] **RD28 — A failed load renders the first-run onboarding screen over an established project.**
+  `useWorkers.ts:56-58` leaves the initial `[]` on failure, and `DeskPage.tsx:113` computes
+  `firstRun = !loading && workerCount === 0`, replacing the entire Desk (`:137`). Same at
+  `WorkersPage.tsx:123` and `WorkerList.tsx:59` (which has no error path at all). An operator with
+  a dozen workers and live jobs is invited to "start from a topology". An error banner is present,
+  but it carries raw server text while the panel carries a confident product sentence — users read
+  the sentence. **The correct pattern is already in-repo**: `TopologyOnboarding.tsx:186` gates its
+  empty state on `error === null`.
+  **Fix:** gate the three first-run/empty states the same way.
+- [ ] **RD29 — Wire-shape drift has no guard, and the risk runs engine→browser.** No current drift:
+  `ProjectSettings` (11 fields), `Worker` (13), `Subscription` (9) and `Schedule` (10) all match
+  their mirrors. But the mechanism is live: `coerceProjectSettings`/`coerceWorker` build a fresh
+  object from an **explicit field list**, so an unknown key is dropped on read; the body helper
+  then spreads that already-lossy object; and `PutProjectSettings`/`PutWorker` are whole-object
+  writes that assign every column — so **the next time any human saves any setting in the console,
+  a newly-added engine field is written back as its zero value.** No test on either side
+  enumerates keys, so both suites stay green throughout. (Schedules are safe: `updateSchedule`
+  patches named fields over a freshly-read row — the server-side shape the other two routes should
+  follow.)
+  **Fix, in the `token_usage.go` discipline — one captured artefact, two readers:** a committed
+  `web/src/wire-shapes.json` of sorted key lists per struct; a Go test that marshals each
+  zero-valued struct and fails if its key set differs; a vitest that fails if
+  `Object.keys(coerceX(fullFixture))` differs. Adding a field on either side then fails the other
+  side's test. The Go half alone catches the direction the risk actually runs.
+
+**Folded into RD2:** the browser inherits the same token undercount — `readUsage`
+(`web/src/events.ts:595-604`) reads only the two uncached fields and `sumTokens` (`:625-645`)
+returns on the first usage-bearing object without descending, so cache fields would be ignored even
+once the harness sends them. A job that burned ~400k tokens can display as ~12k, and an operator
+sizing `daily_tokens_hard` from that number sets a ceiling an order of magnitude too low. **RD2's
+fix must land in the browser in the same change.**
+
+**Cleared by the browser sweep:** no optimistic writes anywhere — every save mutates local state
+only after the await resolves and returns null/false on failure, leaving the editor dirty with a
+banner; the `frozen` field is genuinely closed end to end; `configApi.request` surfaces the
+server's own body text rather than "HTTP 500"; `useEventsOverview` uses `Promise.allSettled` so one
+dead route cannot blank the others *and* reports the failure; `useConfigLog` correctly distinguishes
+"not wired" from "failed" (the distinction RD27 and RD28 are missing, already implemented there);
+topology apply is gated behind a preview with its error rendered; and polling is opt-in, single-
+reload, and cannot restart its own timer.
 
 ## 6. The durability table
 
