@@ -148,10 +148,10 @@ Lockfiles are inconsistent and it matters:
 
 - `sandbox/` tracks **both** `package-lock.json` and a stale `yarn.lock`; npm≥7 keeps the yarn
   lockfile in sync, so an npm install dirties the tree — `git checkout sandbox/yarn.lock` after.
-- `web/` tracks **only** `package-lock.json` (its `yarn.lock` was replaced on this branch), so
-  `npm ci` is the right local command — but CI's `web` job still runs `yarn install
-  --frozen-lockfile`, which has no lockfile to freeze. **That job breaks when this branch reaches
-  `main`; fix `ci.yml` or restore the lockfile before merging.**
+- `web/` tracks **only** `package-lock.json` (its `yarn.lock` was deleted on this branch), so
+  `npm ci` is the right local command — and CI matches: its `web` job runs `npm ci`
+  (`.github/workflows/ci.yml:84`, fixed in `59e1ea8`). *This entry previously warned that the job
+  would break on merge to `main`; that was true when written and is no longer.*
 - `examples/web/` tracks **only** `yarn.lock` (no `package-lock.json`), which is what
   `deploy/web.Dockerfile` uses. Use yarn there, not `npm ci`.
 

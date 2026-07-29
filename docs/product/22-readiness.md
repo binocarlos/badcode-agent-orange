@@ -272,6 +272,124 @@ and `snapshot_reaper.go:21` implying `last_resumed_at` bears on expiry (RD9).
 — a fixture authored to match the reader rather than captured from the writer. Two of the four
 findings are token-metering defects in a system whose only spend brake is token metering.
 
+### From the first-run audit (2026-07-29)
+
+**The finding that matters most in this whole document:** *the journey is polished right up to the
+point that matters, and then stops.* Empty project → first-run card → topology interview → apply →
+success receipt is genuinely good work. Then nothing can run, and the default configuration talks
+to a mock model the UI never labels. Together those two mean the likeliest first hour ends with a
+user who has built an org chart, seen no output, and cannot tell whether nothing fired or the model
+was never real.
+
+- [ ] **RD17 — There is no way to trigger the first job from the UI.** *The blocker.* Verified
+  directly: **no `POST` to `/agent/events` exists anywhere in `web/src` or `examples/web/src`** —
+  every POST is session create/message/cancel/restore, voice, attachments, topology preview/apply,
+  or auth. 11 of the 14 built-in topologies are event-driven only; the three with a schedule fire
+  hourly at :00 at the fastest (`go/topology/solo.go:26-30`). The topology interview *asks* which
+  event type wakes the worker (`go/topology/supervisor.go:82`) and then offers no way to send one.
+  No MCP tool emits events either. The code states the omission deliberately —
+  `web/src/events.ts:33` ("this UI only ever GETs"), `EventReplayPanel.tsx:4-8` ("a 'test' button
+  that quietly posted a real event into a project would be a footgun") — and the replay panel
+  instead prints the curl command for the user to run by hand (`:91`). **It is already a known
+  gap**: `docs/product/15-operator-console-design.md:258-266` says "after applying a topology whose
+  only clock is cron, an operator has no way to make anything happen… **One button.**" Not built.
+  A working side door exists (Workers → worker → Chat tab) but nothing points at it and it
+  exercises the chat path, not the delivery pipeline just configured.
+  **Fix:** build that one button — "Emit this event" on the replay panel, posting the draft it
+  already composes, behind a confirm that says it writes a real event.
+- [ ] **RD18 — Mock mode is invisible, and it is the default.** Both credential lines ship blank
+  in `.env.example:9-10`, so a user following the README exactly gets the mock model. agentd logs
+  it to stdout (`go/cmd/agentd/modelproxy.go:49`); the browser is told nothing — verified that
+  `/auth/config` returns only `{modes, google_client_id}` (`googleauth.go:317-334`) and
+  `examples/web/src/App.tsx:125` hardcodes an Opus label regardless of the actual proxy. The one
+  mitigation is accidental (the unscripted mock's reply self-identifies) and it disappears under a
+  mock script and never applies to a **worker job** — a scheduled job in mock mode writes plausible
+  canned output into Desk, Events and Jobs with no marker anywhere. With RD17 this is a credibility
+  failure, not a UX one: a user who does get output may conclude the product works when no model
+  was ever called.
+  **Fix:** add credential mode (`mock`|`api-key`|`subscription`) to `/auth/config` and render a
+  persistent badge. One field, one component.
+- [ ] **RD19 — An event matching no subscription vanishes silently.** `go/cmd/agentd/router.go:235-247`
+  loops subscriptions, skips non-matches, and marks the event delivered — zero matches is
+  byte-identical to a healthy no-op: no log, no row, no annotation. Write-time validation does not
+  help: `go/agentdb/events.go:477-498` checks the event type's *shape* but never that the worker
+  exists or the type is known, so `worker.faild` is accepted; envelope filter keys are unvalidated
+  and any key the envelope lacks returns false (`router.go:417-420`). Same shape for briefing
+  selectors: `go/compose.go:224-232` skips an empty selector silently, so a typo and "nothing
+  written yet" are indistinguishable and the job runs with a quietly thinner prompt. "My worker
+  didn't wake up" has no observable signal at all.
+  **Fix:** one log line at `router.go:247` on zero matches (project, type, subscriptions
+  considered) and at `compose.go:224`; validate worker existence and filter keys at write time.
+- [ ] **RD20 — Failure reasons never reach the user.** Two audits found this independently, from
+  opposite directions (see also RD15). `dispatch.go:437-438` logs the reason and
+  `UpdateDeliveryStatus` writes status only; the code admits it at `:195-197` and the UI carries
+  the limitation honestly (`web/src/desk.ts:277-279`). So the newcomer's answer to "why did my
+  worker fail?" is `docker compose logs agentd`. Related and equally invisible: `create_error` is
+  populated on provisioning failure and served at `httpapi/lifecycle.go:125` with **zero consumers
+  in `web/src`** — the UI renders a bare `status: "error"`, and the good explanatory message only
+  appears if the user sends a *second* message (`go/runner.go:1376`).
+  **Fix:** a `reason` column on the delivery row, populated from `d.fail(...)` where the string
+  already exists; and read `create_error` wherever `status === "error"` renders.
+- [ ] **RD21 — Doctrine reaches no user today.** Confirmed by the audit and consistent with D5's
+  design: the only caller performing the doctrine mutation is
+  `e2e/experiments/calibration/doctrine.ts`. No topology sets a doctrine `SettingsPatch`; zero
+  occurrences in `web/src` or `examples/web/src`. So a new user applying a topology gets none of
+  it — not the injection-boundary rule, not the frozen-worker rule, not "no effect is a valid
+  result". Defensible while every entry is `candidate`, but it means the doctrine work has **zero
+  effect on the first production seeding** unless someone pastes the block by hand.
+  **Fix:** an opt-in checkbox on topology apply ("seed the project prompt with operations doctrine
+  v1"), or say in `docs/18` that operators should paste it and where it lives. Either way, stop it
+  being invisible.
+- [ ] **RD22 — Postgres credentials are undocumented and the volume initialises once.**
+  `docker-compose.yml:69` builds `DATABASE_URL` from `POSTGRES_USER`/`PASSWORD`/`DB`, defaulting to
+  the literal `agentorange`; `.env.example` has **zero** `POSTGRES` hits. The trap: `pg-data`
+  initialises on first `up`, so setting a password afterwards re-renders `DATABASE_URL` but not the
+  database, and agentd dies with raw gorm text naming neither the `postgres` service nor the stale
+  volume.
+  **Fix:** document the three in `.env.example`, noting a change needs `docker compose down -v`;
+  wrap the connect error with what to check.
+- [ ] **RD23 — Documentation that asserts missing capabilities that exist.** Cheap, and it misleads
+  every newcomer *and* every agent. `docs/18` carries four stale claims, all in the direction of
+  "this doesn't exist" when it does: `snapshot_ttl_days` called inert though `main.go:269,288,296`
+  wires the reaper; "no `GET /agent/images` route" though `httpapi.go:305` registers it and the
+  image picker uses it; "no other HTTP route takes a rationale" though six do; "no server-side
+  worker filter" though `history.go:112-114` implements it and a test calls the doc's text the
+  *old* behaviour. Plus a cross-link to a docs/15 section whose title now says the opposite, and
+  the same reaper claim in `docs/01-architecture.md:280-281`. Also `.env.example:73-74` documents
+  the pre-GC port lifecycle and contradicts itself twenty lines later, and
+  `installations/README.md:75-76` claims `.claude/` is gitignored when `git check-ignore` says it
+  is not.
+  **Fix:** one commit deleting the false claims and repointing the link.
+
+**Smaller code issues worth a sweep item** (from the same audit, not individually filed): nothing
+polls, so the Desk shows nothing new after a job runs until a view switch or reload; a blank system
+prompt saves silently; an invalid API key produces a raw SDK error with **nothing in agentd's log**,
+so the operator has nowhere to look; `BASE_IMAGE` (documented) vs `AGENTKIT_IMAGE` (read) diverge
+outside compose; the org-chart clock deep link drops its arguments; the topology done-screen
+changelog link is dead code; "New session" gives no feedback; a zero-project account dead-ends with
+no create form; and a typo'd project silently creates an empty one (projects are implicit from the
+JWT claim with lazy creation).
+
+**Verified correct, and worth knowing** (the audit's clearing list is unusually informative): cron
+validation is the best diagnostics in the product — write-time 400 naming the field with a worked
+example; **port-pool exhaustion is the best error message in the codebase**, naming the pool, its
+size, what holds it and what to do, and correctly delivered inside the message stream; boot-time
+validation is generally excellent (port range, GC durations, MCP allowlist, backend enums, login
+secrets all fail loudly and actionably); `CLAUDE.md`'s `DATABASE_URL` claim holds and is in fact
+*better* instrumented than stated, with four distinct boot lines announcing the degradation; all 26
+core MCP tool names in `docs/18` match the code exactly; and every command, path, route and
+relative link in the four newcomer docs resolves.
+
+**Already fixed, doc is stale:** `CLAUDE.md`'s warning that CI's web job "breaks when this branch
+reaches `main`" — verified fixed in `59e1ea8`; `.github/workflows/ci.yml:84` runs `npm ci` with a
+comment explaining why. The lockfile inventory around it is still accurate. *Corrected in the same
+commit as this entry, since every agent reads that file.*
+
+**Local-machine hazard, not a repo issue:** `secrets/gcp-key.json` in this working tree is a
+root-owned **directory**, not a file, and `docker-compose.override.yml:11` bind-mounts it at
+`/gcp/key.json` on every bare `docker compose up`. ADC will fail in a way no doc explains. The
+override is gitignored and untracked, so a fresh clone is unaffected — **Kai's tree only.**
+
 ## 6. The durability table
 
 *From the durability audit, 2026-07-29. What survives, what deletes it, and whether it comes back.
