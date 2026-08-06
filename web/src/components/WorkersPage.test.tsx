@@ -16,6 +16,8 @@ let requests: { url: string; method: string; body: unknown }[] = []
 let workers: Record<string, unknown>[]
 let sessions: Record<string, unknown>[]
 let images: Record<string, unknown>[]
+let workersStatus: number
+let putStatus: number
 
 const worker = (name: string, extra: Record<string, unknown> = {}) => ({
   project: 'acme',
@@ -45,6 +47,8 @@ beforeEach(() => {
     { name: 'marketing-tools', version: 1, labels: {}, created_at: 1 },
     { name: 'renderer', version: 1, labels: {}, created_at: 1 },
   ]
+  workersStatus = 200
+  putStatus = 200
   window.history.replaceState(null, '', '/')
   originalFetch = globalThis.fetch
   globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -70,13 +74,21 @@ beforeEach(() => {
         workers = workers.filter((w) => w.name !== name)
         return new Response(null, { status: 204 })
       }
+      if (method === 'PUT' && putStatus !== 200) {
+        return new Response('worker save rejected', { status: putStatus })
+      }
       const stored = { ...worker(name), ...(body as object), name, project: 'acme' }
       const idx = workers.findIndex((w) => w.name === name)
       if (idx === -1) workers.push(stored)
       else workers[idx] = stored
       return json(stored)
     }
-    if (u.includes('/agent/workers')) return json({ workers })
+    if (u.includes('/agent/workers')) {
+      if (workersStatus !== 200) {
+        return new Response('workers: connection refused', { status: workersStatus })
+      }
+      return json({ workers })
+    }
     if (u.includes('/agent/session')) return json({ id: 'new-session', status: 'active', workflowId: 'agent' })
     return json({})
   }) as typeof globalThis.fetch
@@ -201,6 +213,37 @@ describe('topology onboarding entry (T3)', () => {
     await userEvent.click(screen.getByRole('button', { name: /start from a topology/i }))
     await userEvent.click(await screen.findByRole('button', { name: /^cancel$/i }))
     expect(await screen.findByText(/this project has no workers yet/i)).toBeInTheDocument()
+  })
+
+  // RD28: the list failing leaves `workers` at its initial [], which is
+  // indistinguishable from an empty project unless the load error is consulted.
+  // An operator with a dozen workers must not be invited to start over.
+  it('does not offer the empty-project flow when the worker list failed to load', async () => {
+    workersStatus = 500
+    renderPage()
+    expect(await screen.findByText(/workers: connection refused/)).toBeInTheDocument()
+    expect(screen.queryByText(/this project has no workers yet/i)).toBeNull()
+    // And the list itself says it could not load, rather than "No workers yet."
+    expect(screen.getByText(/could not be loaded/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no workers yet/i)).toBeNull()
+  })
+
+  // The gate is the LIST's failure, not any failure: a rejected save says
+  // nothing about whether the list is real, and must not swap the panel out.
+  it('keeps the empty-project flow after a failed save', async () => {
+    workers = []
+    putStatus = 500
+    renderPage()
+    await screen.findByText(/this project has no workers yet/i)
+    await userEvent.click(screen.getByRole('button', { name: /create a worker/i }))
+    await userEvent.type(await screen.findByLabelText(/^name/i), 'new-hire')
+    await userEvent.type(screen.getByLabelText(/system prompt/i), 'do things')
+    await explain()
+    await userEvent.click(screen.getByRole('button', { name: /create worker/i }))
+    expect(await screen.findByText(/worker save rejected/)).toBeInTheDocument()
+    // The list panel still says "No workers yet.", not "could not be loaded".
+    expect(screen.getByText(/no workers yet/i)).toBeInTheDocument()
+    expect(screen.queryByText(/could not be loaded/i)).toBeNull()
   })
 })
 

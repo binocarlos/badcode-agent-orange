@@ -67,7 +67,7 @@ export default function WorkersPage({
   enableChat = true,
   ...apiOptions
 }: WorkersPageProps) {
-  const { workers, loading, error, save, remove, reload } = useWorkers(apiOptions)
+  const { workers, loading, error, loadError, save, remove, reload } = useWorkers(apiOptions)
   // The catalogue is a suggestion list, not a constraint (the field stays free
   // text), so a host that mounts no catalogue route simply gets no dropdown.
   const { imageOptions: catalogueOptions } = useImages(apiOptions)
@@ -120,7 +120,12 @@ export default function WorkersPage({
     isNew || isTopology ? null : (workers.find((w) => w.name === selected) ?? null)
   // An empty project is where the topology flow earns its place (T3): offer it
   // prominently instead of a bare "no workers" shrug.
-  const emptyProject = !loading && workers.length === 0
+  // `loadError === null` matters: `useWorkers` leaves the initial `[]` when the
+  // LIST fails, so without this gate an operator whose fetch failed is invited
+  // to start a project they already have (RD28). The banner below carries why.
+  // Gated on the load error rather than `error` so a failed *save* — which says
+  // nothing about whether the list is real — does not swap the panel out.
+  const emptyProject = !loading && loadError === null && workers.length === 0
 
   const handleSave = useCallback(
     async (draft: WorkerDraft, rationale: string) => {
@@ -150,6 +155,7 @@ export default function WorkersPage({
           workers={workers}
           selected={selected}
           loading={loading}
+          error={loadError}
           onSelect={select}
           onCreate={() => {
             select(NEW_WORKER)

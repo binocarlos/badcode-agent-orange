@@ -126,4 +126,33 @@ describe('useAsksCount', () => {
     await waitFor(() => expect(result.current.loading).toBe(false))
     expect(result.current.count).toBe(0)
   })
+
+  // RD27. The route IS mounted here — it answered 500 — so `available` stays
+  // true and only "did the load succeed" can tell the badge that its empty list
+  // is not an answer. A zero over two parked approvals is the whole defect.
+  it('does not read 0 when the attention route is mounted and fails', async () => {
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const href = String(url)
+      const path = href.split('?')[0]!
+      if (path === '/agent/attention-requests') {
+        return new Response('database is down', { status: 500 })
+      }
+      const bodies: Record<string, unknown> = {
+        '/agent/events': { events: [] },
+        '/agent/deliveries': { deliveries: [parked('d1', 'sess-1'), parked('d2', 'sess-2')] },
+        '/agent/subscriptions': { subscriptions: [] },
+      }
+      return new Response(JSON.stringify(bodies[path] ?? {}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof globalThis.fetch
+
+    const { result } = renderHook(() => useAsksCount())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.count).toBe(2)
+    expect(result.current.asksHaveMessages).toBe(false)
+    // And a mounted route that failed is a real failure, not a shrug.
+    await waitFor(() => expect(result.current.error).toMatch(/database is down/))
+  })
 })

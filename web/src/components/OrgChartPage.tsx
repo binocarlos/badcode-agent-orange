@@ -177,6 +177,7 @@ export default function OrgChartPage({
     workers,
     loading: workersLoading,
     error: workersError,
+    loadError: workersLoadError,
     save: saveWorker,
   } = useWorkers(apiOptions)
   const overview = useEventsOverview({ ...apiOptions, limit, nowSeconds })
@@ -391,7 +392,10 @@ export default function OrgChartPage({
         </Alert>
       )}
 
-      {!workersLoading && workers.length === 0 ? (
+      {/* `workersLoadError === null`: a failed list leaves the initial `[]`,
+          and "this project has no workers yet" over a project that has a dozen
+          is the same lie as RD28's first-run panel. */}
+      {!workersLoading && workersLoadError === null && workers.length === 0 ? (
         <Paper variant="outlined" sx={{ p: 3, maxWidth: 620 }}>
           <Typography variant="subtitle1" sx={{ mb: 0.5 }}>
             This project has no workers yet

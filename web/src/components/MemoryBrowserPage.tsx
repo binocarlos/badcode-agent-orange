@@ -169,7 +169,10 @@ export default function MemoryBrowserPage({
         </Typography>
       )}
 
-      {!loading && available && memories.length === 0 && (
+      {/* `error === null` is the same gate as the Desk's and the worker list's
+          (RD27/RD28): `useMemories` empties the list on failure, so without it
+          a failed search claims the project has never remembered anything. */}
+      {!loading && available && error === null && selectorError === null && memories.length === 0 && (
         <Typography variant="body2" color="text.secondary">
           {selector === '' && query === ''
             ? 'Nothing has been remembered in this project yet. Memories are written by workers through their tools — there is nothing to add here.'

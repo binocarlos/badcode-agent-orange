@@ -24,6 +24,18 @@ export interface WorkersApi {
   loading: boolean
   /** Load/save/delete failure, as the server phrased it. */
   error: string | null
+  /**
+   * The LIST load's failure only, as the server phrased it — null once a load
+   * succeeds, and never set by a failed save or delete.
+   *
+   * `workers` stays the initial `[]` when the load fails, so "empty" and
+   * "unknown" look identical to a caller reading the array; any first-run or
+   * "no workers yet" state must be gated on this being null, or an established
+   * project is invited to start over the moment a fetch fails (RD28). It is
+   * separate from `error` because a failed *save* says nothing about whether
+   * the list is real.
+   */
+  loadError: string | null
   reload: () => Promise<void>
   /** PUT a worker, with the operator's one-line reason (design B3 / K2).
    *  Returns the stored row the server echoed back, or null on failure (the
@@ -44,16 +56,20 @@ export default function useWorkers(options: UseWorkersOptions = {}): WorkersApi 
   const [workers, setWorkers] = useState<Worker[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
     setLoading(true)
     setError(null)
+    setLoadError(null)
     try {
       const data = await request<{ workers?: unknown[] } | null>(listEndpoint)
       const raw = Array.isArray(data?.workers) ? data!.workers! : []
       setWorkers(raw.map((w) => coerceWorker(w)))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed to load workers')
+      const message = err instanceof Error ? err.message : 'failed to load workers'
+      setError(message)
+      setLoadError(message)
     } finally {
       setLoading(false)
     }
@@ -109,7 +125,7 @@ export default function useWorkers(options: UseWorkersOptions = {}): WorkersApi 
     [request, workerEndpoint],
   )
 
-  return { workers, loading, error, reload, save, remove }
+  return { workers, loading, error, loadError, reload, save, remove }
 }
 
 // ---------------------------------------------------------------------------

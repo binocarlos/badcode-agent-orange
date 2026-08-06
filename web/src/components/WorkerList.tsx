@@ -28,6 +28,12 @@ export interface WorkerListProps {
   /** Omitted ⇒ no "New worker" button (e.g. a read-only view). */
   onCreate?: () => void
   loading?: boolean
+  /**
+   * The list's load failure, if any. An empty list after a failure is not an
+   * empty project: with this set the component says the list could not be
+   * loaded instead of "No workers yet" (RD28).
+   */
+  error?: string | null
 }
 
 export default function WorkerList({
@@ -36,6 +42,7 @@ export default function WorkerList({
   onSelect,
   onCreate,
   loading = false,
+  error = null,
 }: WorkerListProps) {
   return (
     <Box>
@@ -55,8 +62,12 @@ export default function WorkerList({
 
       {workers.length === 0 ? (
         <Box sx={{ px: 2, pb: 2 }}>
-          <Typography variant="body2" color="text.secondary">
-            {loading ? 'Loading workers…' : 'No workers yet.'}
+          <Typography variant="body2" color={error !== null && !loading ? 'error' : 'text.secondary'}>
+            {loading
+              ? 'Loading workers…'
+              : error !== null
+                ? 'The worker list could not be loaded.'
+                : 'No workers yet.'}
           </Typography>
         </Box>
       ) : (
