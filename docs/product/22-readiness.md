@@ -568,6 +568,30 @@ dead route cannot blank the others *and* reports the failure; `useConfigLog` cor
 topology apply is gated behind a preview with its error rendered; and polling is opt-in, single-
 reload, and cannot restart its own timer.
 
+### From the embeddable-singleton thread (2026-08-06)
+
+*Filed here rather than in that thread's plan because it is a production-readiness defect that
+predates embeddability and outlives it. Discovered by the parallel session while building the
+project-API-key seam; owned by this workstream.*
+
+- [ ] **RD30 — A container's per-session token is already a full-project credential.**
+  `AGENTKIT_JWT_SECRET` and the "session secret" are the **same value in every real deployment**
+  (`go/cmd/agentd/main.go:129-131`), despite the comment there claiming they are distinct. So the
+  token handed to a session container — a token the model's own harness can read — verifies as a
+  project-scoped JWT against every route the middleware protects. **This is the injection boundary's
+  blast radius**: §6.2.4's boundary stops event text from redirecting a worker's *reasoning*, but a
+  worker that is talked into reading its own environment holds a credential for the whole project's
+  workers, settings, schedules and events. Nothing detects the use, because the token is valid.
+  It becomes materially worse the moment a second credential kind exists (project API keys landed
+  2026-08-06; embed tokens are pending), since the same secret then signs credentials with
+  deliberately different reach.
+  **Fix:** separate signing keys for the two credential classes, with the session key unable to
+  mint or verify a project credential. **The fix changes deployment configuration** (a new secret
+  to set and roll) — state the migration path and a compatible default; do not ship a breaking boot
+  requirement without Kai's nod.
+  *Validation:* go suite + live-Postgres, including a test pinning that a session token is
+  **rejected** by the project routes — proven non-vacuous by reverting.
+
 ## 6. The durability table
 
 *From the durability audit, 2026-07-29. What survives, what deletes it, and whether it comes back.
