@@ -243,7 +243,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   lease reaper "the backstop" — by that line the lease is already released, so it cannot be.
   **Fix:** stamp terminal status first, release the lease second; add an age-based sweep over
   `running` deliveries.
-- [ ] **RD8 — A container whose session row is gone leaks a host port permanently.** `Recover`
+- [x] **RD8 — A container whose session row is gone leaks a host port permanently.** `Recover`
   re-adopts any container labelled with a session id (`go/execenv/docker/dind.go:484`), but with no
   session row `r.Snapshot` fails and the archive loop logs "snapshot failed, keeping the container"
   and `continue`s — every minute, forever (`go/runner.go:1101-1104`). One port from the pool of 100
@@ -272,7 +272,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   `CreateProjectEvent` (`:227`) and `EnsureDelivery` (`:248`) leaves a `schedule.fired` event in
   the user's feed for a job that never ran, with the occurrence permanently consumed.
   **Fix:** per-schedule watermark; emit `schedule.missed` on restart for unevaluated occurrences.
-- [ ] **RD12 — Archiving for idleness permanently mislabels artifacts as lost.**
+- [x] **RD12 — Archiving for idleness permanently mislabels artifacts as lost.**
   `teardownInstance` is shared by `Destroy` and the archive loop and unconditionally calls
   `Artifacts.MarkLost` (`go/runner.go:694`), stamping un-uploaded `live` artifacts as `lost`
   (`agentdb/artifacts.go:141-143`). For the archive path that is false — the snapshot is taken
@@ -282,7 +282,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
 
 **Integrity, cost and polish — real, not urgent.**
 
-- [ ] **RD13 — The config log's append-only guarantee is enforced only in tests, and the fold has
+- [x] **RD13 — The config log's append-only guarantee is enforced only in tests, and the fold has
   no production caller.** `InstallConfigEventGuard` is opt-in and every caller is a test
   (`agentdb/config_events.go:844`); `cmd/agentd/main.go:259-266` states agentd never arms it;
   `config_events` is not in the guarded-table set; migration 026 adds no trigger or `REVOKE`; and
@@ -303,7 +303,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   the *bytes* stay on the bill forever (`artifacts.ArtifactStore` has no Delete method at all).
   **Fix:** remove the previous blob after a successful `SetSnapshotHandle`, and the current one on
   session delete.
-- [ ] **RD15 — "This ran" without "what it said".** `event_deliveries.session_id` is a plain
+- [x] **RD15 — "This ran" without "what it said".** `event_deliveries.session_id` is a plain
   VARCHAR with no foreign key (`migrations.go:352`), so job history outlives the session it points
   at: after a delete the user sees a green `ok` delivery with a dead transcript link. And a
   delivery that fails to start persists no reason — no reason column (admitted at

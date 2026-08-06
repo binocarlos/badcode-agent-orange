@@ -433,7 +433,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   *Validation:* GO + GOPG, with revert-and-fail evidence for the concurrency test especially — a
   race test that passes against the unfixed code is proving nothing.
 
-- [ ] **D4 — RD8 + RD12: the archive loop leaks a port forever, and lies about artifacts.** *After
+- [x] **D4 — RD8 + RD12: the archive loop leaks a port forever, and lies about artifacts.** *After
   D2 merges — same file.*
   (a) **RD8** — `Recover` re-adopts any container labelled with a session id
       (`go/execenv/docker/dind.go:484`), but with no session row `r.Snapshot` fails and the archive
@@ -511,7 +511,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
 
 ## Wave 5 — integrity, cost and record-keeping (real, not urgent)
 
-- [ ] **I1 — RD15 + RD13: the record of what happened must be trustworthy.** *After D3 merges
+- [x] **I1 — RD15 + RD13: the record of what happened must be trustworthy.** *After D3 merges
   (shares `dispatch.go`) and F4 (shares the delivery `reason` column — do not add a second).*
   (a) **RD15** — `event_deliveries.session_id` is a plain VARCHAR with no foreign key
       (`go/agentdb/migrations.go:352`), so job history outlives the session it points at: after a
@@ -859,14 +859,80 @@ how core MCP authenticates.*
   `agentdb/events.go` unformatted at `e799bb0` (D3 fixed it in passing); two files under
   `go/httpapi/` are still unformatted and were left alone under rule 3. Worth one sweep.
 
+### Batch 3 — D4, I1, D5, B5, B6 (2026-08-06, five items, all merged and re-validated)
+
+*Re-validated on the merged tip: GO green, GOPG green (and see the interference finding below),
+WEB 1251 → 1276, SHELL green, 23 stack specs green plus the port-pool pair under `--port-pool 3`
+(run deliberately because D4 is the port-leak item and that spec skips silently otherwise).*
+
+- **(orchestrator) THE FIRST REAL MERGE CONFLICTS OF THE WHOLE RUN — three, after 19 conflict-free
+  merges.** `agentkit.go` (D4 and D5 both documented a new optional `RunnerStore` capability in one
+  doc block — union), `migrations.go` (D5 and I1 both claimed **039**; D5 keeps it since it was
+  already applied to the shared database, I1's trigger became **040**), and `configApi.{ts,test.ts}`
+  (below). The migration collision is the one the plan predicted in its own Standing traps and
+  reserved numbers for — and it still happened, because two items in one batch each took "the next
+  free number" independently. **Reserving a range is not enough; the orchestrator must assign
+  numbers per item at dispatch.**
+- **(orchestrator, MY OWN ERROR) I broke `migrations.go` resolving that conflict, and committed
+  it.** A regex splice across a Go composite literal ate the 039 entry's closing backtick and the
+  next entry's brace; `gofmt` caught it one command later and it was repaired in the same session.
+  Recorded because it is the same class as everything else in this plan: *an automated edit that
+  reported success and produced a broken file.* A merge conflict in a structured literal gets
+  resolved by reading, not by pattern.
+- **(I1/B6) Two executors independently invented the same class under different names** —
+  `ApiError`/`errorStatus` (I1) and `ConfigApiError`/`configApiStatus` (B6). I1's own comment said
+  it was "the material a later fix would use"; B6 *was* that fix, arriving in the same batch.
+  Resolved to B6's, with I1's single consumer rewired; B6's tests already assert everything I1's
+  did. **Two items that reference each other's defects will converge on the same code — dispatch
+  them in one item or in sequence, not in parallel.**
+- **(D5) The item's own prescribed fix was impossible, and the executor said so instead of faking
+  it.** Doc 24 said "set `ActiveQueryID` in the adapters". No adapter *can* know it — a container
+  cannot see inside a turn and the sandbox exposes no route reporting an active query. The runner
+  knows, so `Status` now answers from the runner's own state and from the session row when the
+  process that knew is dead. **Second time in two batches that an item named a defect correctly and
+  prescribed a remedy that does not touch it** (RD7 was the first). That is now a standing warning
+  in the briefs and it keeps paying.
+- **(D5) The id question is settled: the runner's `q-<session>-<n>` is canonical** (it is the
+  `agent_query_events` key, so it is the only id a client can be handed without splitting one turn
+  across two rows), and the sandbox's per-turn uuid stays a transport detail (its replay buffer is
+  keyed by it, so it is the only id that can *attach*). The two are joined from the sandbox's
+  `connected` frame — the only moment the sandbox ever states its id — and stored on the session row
+  as runtime state (migration 039, no config event). **No sandbox change was needed**, which was the
+  constraint the brief set.
+- **(D5, STILL OPEN — the stack confirmation RD6 asked for has NOT been run)** and it cannot be
+  staged in mock mode as things stand: a mock turn completes in about a second, and the compose
+  stack's Go mock proxy has **no delay knob** (`mock-server/`'s `delayMs` belongs to the standalone
+  Vite mock, not to this path), so "kill agentd mid-turn" has no window to land in. D5 wrote a
+  precise, literal recipe — exact SQL, exact URL with the query string, expected values at each step
+  and four named failure signatures — and it is in the D5 report; it is executable the moment a slow
+  turn is possible. **Two ways to close it: add a delay knob to the Go mock proxy (small, and it
+  would serve every future crash test), or run it once against the real API (spend — Kai's call,
+  see G4).** Until then RD6/RD24/D5 rest on unit and live-PG evidence only, and that is stated
+  rather than glossed.
+- **(orchestrator) THE SHARED `ao-test-pg` CANNOT SUPPORT CONCURRENT EXECUTORS, and it produced a
+  false failure report.** D5 reported four httpapi live-PG tests failing "with counts that GROW run
+  to run", and proved they were not its own by reverting everything. On the merged tip, serially,
+  **all four pass — twice, verified with `-v` so it is runs and not a summary line.** Five agents
+  were running the full live-PG suite against one Postgres simultaneously, and those tests count
+  rows in shared tables. **Only the orchestrator's serial GOPG run is authoritative**; an
+  executor's parallel GOPG result is evidence about the rig, not about the code. This also explains
+  the connection-ceiling failure batch 2 recorded.
+- **(B5) The honest answer was a small change, not a large one.** The stuck banners now render off
+  `stuckStatus` rather than `isStreaming`, so B1's armed detector reaches a pixel — while the
+  composer stays usable, which is the constraint that made the original gating look reasonable.
+- **(D4) Both halves needed the *other* arm tested to be worth anything**: the port returns to the
+  pool AND a genuine snapshot failure still keeps its container; the archive path leaves artifact
+  status alone AND `Destroy` still marks lost. A fix to either that broke its twin would have
+  traded a leak for data loss.
+
 ## Follow-up items filed by batch 1 (not yet scheduled)
 
-- [ ] **B5 — The stuck banners cannot fire.** `AgentChat.tsx:603,615` gate both stuck-detection
+- [x] **B5 — The stuck banners cannot fire.** `AgentChat.tsx:603,615` gate both stuck-detection
   banners on `isStreaming`, but every unconfirmed-end path sets `isStreaming = false` (correctly —
   holding it true would disable the composer forever, which is P2's defect in another costume). So
   B1's armed detector reaches no pixel. Decide what an operator should see when a turn's end cannot
   be confirmed, and render it off `stuckStatus` rather than off `isStreaming`.
-- [ ] **D5 — Nothing can actually reach the reconnect path, so D2's fix cannot fire.** *Filed by
+- [x] **D5 — Nothing can actually reach the reconnect path, so D2's fix cannot fire.** *Filed by
   batch 2; the most important open item in this plan, because a tick in doc 22 currently rests on
   it.* Three breaks, all needed: (i) no `execenv` adapter ever sets
   `InstanceStatus.ActiveQueryID` (only reader: `go/runner.go:856`); (ii) the runner persists under
@@ -882,7 +948,7 @@ how core MCP authenticates.*
   events render *and* that `agent_query_events` gains a row. Record the before/after row counts.
   Until this lands, do not describe RD6/RD24 as closed to anyone outside this plan — and it blocks
   the parallel session's T12 as surely as D2 did.
-- [ ] **B6 — `looksUnwired` classifies by message text, not status code.** A 500 whose body contains
+- [x] **B6 — `looksUnwired` classifies by message text, not status code.** A 500 whose body contains
   "not found"/"not configured" is reported to the user as "this deployment does not serve it". Route
   the distinction off the HTTP status (404/501 = unwired) and keep the text match only as a
   fallback. Small; the helper is now shared by three call sites (`configApi.ts`), so one fix covers
