@@ -11,8 +11,33 @@ import { projectClient, TEST_EMAIL, TEST_PASSWORD, uniqueProject } from './api'
 // Selectors are the app's own `data-testid`s where it has them, and accessible
 // roles/labels for the library components, which ship none (see e2e/README.md).
 
-/** View switch ids in App.tsx's ViewNav. */
-export type View = 'chat' | 'workers' | 'settings'
+/**
+ * View switch ids in App.tsx's ViewNav — all eight of them.
+ *
+ * This list used to name only the three views that existed before the operator
+ * console; a spec that reached for `desk` or `chart` did not typecheck.
+ */
+export type View =
+  | 'desk'
+  | 'chart'
+  | 'chat'
+  | 'workers'
+  | 'memory'
+  | 'events'
+  | 'automation'
+  | 'settings'
+
+/** Every view, in the order the nav renders them. */
+export const ALL_VIEWS: readonly View[] = [
+  'desk',
+  'chart',
+  'chat',
+  'workers',
+  'memory',
+  'events',
+  'automation',
+  'settings',
+]
 
 /**
  * Logs in with the stack-e2e password account, clearing any auth state a
