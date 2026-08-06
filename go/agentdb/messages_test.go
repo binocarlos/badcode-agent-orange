@@ -195,9 +195,14 @@ func TestListQueryEvents_OrderAndIsolation(t *testing.T) {
 	s := newSessionTestStore(t)
 	ctx := context.Background()
 
+	// Order is WRITE order (the ordinal, migration 038), not the caller-supplied
+	// created_at. The two agree in production — nothing outside tests supplies
+	// created_at, so it is stamped at insert — and where they can be made to
+	// disagree, write order is the transcript's truth: created_at is only
+	// second-resolution, which is the whole of RD16.
 	seed := []*QueryEvents{
-		{SessionID: "s1", QueryID: "q2", Events: JSONArray(`[2]`), CreatedAt: 200},
-		{SessionID: "s1", QueryID: "q1", Events: JSONArray(`[1]`), CreatedAt: 100},
+		{SessionID: "s1", QueryID: "q1", Events: JSONArray(`[1]`), CreatedAt: 200},
+		{SessionID: "s1", QueryID: "q2", Events: JSONArray(`[2]`), CreatedAt: 100},
 		{SessionID: "other", QueryID: "q1", Events: JSONArray(`[9]`), CreatedAt: 50},
 	}
 	for _, qe := range seed {
@@ -211,7 +216,10 @@ func TestListQueryEvents_OrderAndIsolation(t *testing.T) {
 		t.Fatalf("list: %v", err)
 	}
 	if len(rows) != 2 || rows[0].QueryID != "q1" || rows[1].QueryID != "q2" {
-		t.Fatalf("expected [q1 q2] by created_at ASC, got %+v", rows)
+		t.Fatalf("expected [q1 q2] in write order, got %+v", rows)
+	}
+	if rows[0].Ordinal <= 0 || rows[1].Ordinal <= rows[0].Ordinal {
+		t.Fatalf("ordinals must be positive and strictly increasing, got %d then %d", rows[0].Ordinal, rows[1].Ordinal)
 	}
 
 	empty, err := s.ListQueryEvents(ctx, "none")
