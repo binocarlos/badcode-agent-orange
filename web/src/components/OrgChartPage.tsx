@@ -37,8 +37,8 @@
 // menu without ever dragging.
 //
 // Colour policy is spine.tsx's: the four named values come from the host theme
-// when it has them (`consoleColor`) and fall back to the design's own tokens,
-// so `web/` never depends on `examples/web`'s palette augmentation.
+// when it has them (`consoleTokenColor`) and fall back to the design's own
+// tokens, so `web/` never depends on `examples/web`'s palette augmentation.
 
 import {
   useCallback,
@@ -101,7 +101,7 @@ import {
   type OrgChartPip,
   type OrgChartWire,
 } from '../orgchart.js'
-import { consoleColor } from '../spine.js'
+import { consoleTokenColor, type ConsoleTokenName } from '../spine.js'
 import { tickIntervalMs } from '../useElapsedTicker.js'
 import usePrefersReducedMotion from '../useReducedMotion.js'
 import {
@@ -139,15 +139,12 @@ import {
 /** Identifiers are mono, content is prose (§3.4). */
 const MONO = 'ui-monospace, SFMono-Regular, Menlo, monospace'
 
-/** The design's §3.3 tokens, per mode — the fallback when a host theme carries
- *  no named entries. Same policy, and the same copy, as spine.tsx. */
-const TOKENS = {
-  light: { ember: '#B3541E', steel: '#2F6272', rose: '#A6376A', fault: '#8F2B2B' },
-  dark: { ember: '#E0873F', steel: '#6FA6B8', rose: '#DF7BA4', fault: '#D96C6C' },
-} as const
-
-function token(theme: Theme, name: keyof (typeof TOKENS)['light']): string {
-  return consoleColor(theme, name, TOKENS[theme.palette.mode === 'dark' ? 'dark' : 'light'][name])
+/** A named console colour: the host's palette entry where it has one, the
+ *  design's §3.3 token otherwise. This file used to carry its own copy of that
+ *  token table; `spine.tsx` now exports the one authority (`CONSOLE_TOKENS`,
+ *  via `consoleTokenColor`), so this is a rename, not a policy. */
+function token(theme: Theme, name: ConsoleTokenName): string {
+  return consoleTokenColor(theme, name)
 }
 
 export interface OrgChartPageProps extends ConfigApiOptions {

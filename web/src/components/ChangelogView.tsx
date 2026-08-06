@@ -36,7 +36,7 @@ import {
 } from '@mui/material'
 import { alpha } from '@mui/material/styles'
 import useConfigLog, { type UseConfigLogOptions } from '../useConfigLog.js'
-import { SpineRail, SpineRow, consoleColor } from '../spine.js'
+import { SpineRail, SpineRow, consoleTokenColor } from '../spine.js'
 import { usePrefersReducedMotion } from '../useReducedMotion.js'
 import { formatConfigTimestamp, type ChangelogEntry, type DiffLine } from '../configLog.js'
 
@@ -260,22 +260,16 @@ function ChangelogEntryCard({
   )
 }
 
-/** The design's §3.3 tokens, per mode — the fallback when the host theme has
- *  no named entries, copied here for the same reason `spine.tsx` copies them:
- *  `web/` is a component library and cannot import the host's augmentation. */
-const DIFF_TOKENS = {
-  light: { ember: '#B3541E', fault: '#8F2B2B' },
-  dark: { ember: '#E0873F', fault: '#D96C6C' },
-} as const
-
 /** A diff line's tint: a wash of the named colour, never the raw colour.
  *  The band is the *secondary* cue — the +/− gutter glyph carries the meaning
  *  on its own, so the diff survives greyscale, a still screenshot and a
- *  colour-blind reader (§4.1 rule 4). */
+ *  colour-blind reader (§4.1 rule 4).
+ *
+ *  The ember/fault values come from `spine.tsx`'s exported token table; this
+ *  file used to carry its own copy of them. */
 function diffTint(theme: Theme, kind: 'add' | 'del'): { bg: string; fg: string } {
   const dark = theme.palette.mode === 'dark'
-  const token = kind === 'add' ? 'ember' : 'fault'
-  const base = consoleColor(theme, token, DIFF_TOKENS[dark ? 'dark' : 'light'][token])
+  const base = consoleTokenColor(theme, kind === 'add' ? 'ember' : 'fault')
   return { bg: alpha(base, dark ? 0.22 : 0.12), fg: base }
 }
 

@@ -585,7 +585,10 @@ function buildDeskTrouble(input: BuildDeskInput): DeskTrouble[] {
     if (event.type !== 'worker.freeze_refused') continue
     const target = frozenTargetFromText(event.text)
     const actor = event.envelope.worker
-    const key = `${target} ${actor}`
+    // The key's separator must be a character no worker name can contain. It
+    // was a raw NUL, which made this whole file grep as binary; U+001F holds
+    // the same guarantee and does not.
+    const key = `${target}\u001f${actor}`
     const at = event.occurred_at || event.created_at || 0
     const held = refusals.get(key)
     if (!held) {

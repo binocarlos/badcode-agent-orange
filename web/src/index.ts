@@ -254,9 +254,10 @@ export type { UseSubscriptionsOptions, SubscriptionsApi } from './useSubscriptio
 export { default as useSchedules } from './useSchedules.js'
 export type { UseSchedulesOptions, SchedulesApi } from './useSchedules.js'
 
-// The config log / changelog (F1, owning J4) — §15.10. NOTE: the read route
-// `GET /agent/config-events` does not exist yet (J2/J3 owns it); until it does,
-// pass `fetchConfigEvents`. The exact contract is in configLog.ts's header.
+// The config log / changelog (F1, owning J4) — §15.10. The read route
+// `GET /agent/config-events` is mounted (go/httpapi/config_events.go), so these
+// read it with no host wiring; `fetchConfigEvents` is an override for a host
+// that serves the log elsewhere, not a stopgap. Contract: configLog.ts's header.
 export {
   CONFIG_LOG_ENDPOINT,
   CONFIG_ACTIONS,
