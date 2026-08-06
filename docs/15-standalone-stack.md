@@ -37,7 +37,9 @@ Platinum (goapi) is the proof you can build a host without `agentd`.
 
 - **Auth = JWT delegation.** Apps mint an HS256 JWT (claims `email`, `customer`,
   `job`) signed with `AGENTKIT_JWT_SECRET`; `agentd` only verifies. Leave the secret
-  blank for dev-open mode (local demo only).
+  blank for dev-open mode (local demo only). A token carrying a `sid` claim is a
+  *session* token, a different credential class signed with a different key — the
+  API refuses it, so do not mint app tokens with `sid`.
 - **Streaming.** The app's API server opens the agentd SSE stream and relays it to
   its own frontend. Keep `agentd` private.
 
@@ -372,7 +374,8 @@ stack-level ones:
 | --- | --- |
 | `DATABASE_URL` | Postgres → the product layer exists; unset → sqlite and it does not (above). Compose always sets it |
 | `BASE_IMAGE` | the stack-wide default launch image, reaching `agentd` as `AGENTKIT_IMAGE` (default `agentkit-sandbox:dev`) |
-| `AGENTKIT_JWT_SECRET` | HS256 secret `agentd` verifies incoming JWTs with. Blank = dev-open mode, which also registers `/dev/token`. Required as soon as any login mode is on |
+| `AGENTKIT_JWT_SECRET` | HS256 secret `agentd` verifies incoming API JWTs with. Blank = dev-open mode, which also registers `/dev/token`. Required as soon as any login mode is on |
+| `AGENTKIT_SESSION_JWT_SECRET` | **Optional.** The signing key for per-session container tokens (`SESSION_TOKEN`, verified by the core MCP server). Unset — the normal case — it is **derived** from `AGENTKIT_JWT_SECRET` by HMAC-SHA256, so a container's token is not a project credential and no deployment has to configure anything. Set it only to roll the session key independently of the API secret; setting it to the *same* value as `AGENTKIT_JWT_SECRET` re-opens that hole and `agentd` warns at boot |
 | `GOOGLE_CLIENT_ID` / `AGENTKIT_TEST_LOGIN` | enable Google login (`POST /auth/google`) and password login (`POST /auth/password`). Either one requires `AGENTKIT_JWT_SECRET` and a project map (`AGENTKIT_PROJECT_MAP` / `_FILE`), and replaces `/dev/token` with `POST /auth/project-token`. `AGENTKIT_TEST_LOGIN` grants **all** projects — test/dev only |
 | `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` | model credentials. Both blank = mock model. Both set = the API key wins (proxy mode) |
 | `AGENTKIT_SELF_URL` | how a session container nested in DinD reaches `agentd` (`http://172.17.0.1:8099`). **Not** a browser-reachable URL — see permalinks below |
