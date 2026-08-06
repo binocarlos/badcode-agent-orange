@@ -30,6 +30,19 @@ export interface Schedule {
   id: string
   project: string
   worker: string
+  /**
+   * The NAME of a long-lived session each firing sends `input` to, instead of
+   * starting a fresh job for a worker (engine: `Schedule.TargetSession`,
+   * migration 036). Exactly one of `worker` and `target_session` is set — the
+   * engine enforces the XOR — so a row with this set has a blank `worker`.
+   *
+   * Read-only here: no editor in this package writes it, and the PUT route
+   * patches named fields over a freshly-read row, so omitting it from
+   * `scheduleBody` cannot clear it. It is mirrored so a session-mode schedule
+   * is *legible* rather than rendering as a schedule with no target — and so
+   * the wire-shape guard (wire-shapes.json) has something to match.
+   */
+  target_session?: string
   /** Standard 5-field cron expression, in agentd's local time zone. */
   cron: string
   /** The instruction this trigger delivers — it becomes the event text. */
@@ -63,6 +76,7 @@ export function newScheduleDraft(project = ''): ScheduleDraft {
     id: '',
     project,
     worker: '',
+    target_session: '',
     cron: '',
     input: '',
     enabled: true,
@@ -81,6 +95,7 @@ export function coerceSchedule(raw: unknown, project = ''): Schedule {
     id: str(r.id),
     project: str(r.project, project),
     worker: str(r.worker),
+    target_session: str(r.target_session),
     cron: str(r.cron),
     input: str(r.input),
     enabled: bool(r.enabled, true),
