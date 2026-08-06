@@ -519,7 +519,7 @@ type Schedule struct {
 
 ## Tickets
 
-### T1: Project map object form   [Status: pending | Model: sonnet]
+### T1: Project map object form   [Status: done | Model: sonnet]
 - **Scope:** Extend `parseProjectMap` to accept `{users, projects}` while still accepting
   the flat `{email: [projects]}` form. Validate `api_key_env` is a plausible env var name
   and `allowed_origins` entries are absolute `https://` (or `http://localhost…`) origins
@@ -533,10 +533,32 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'ProjectMap' -count=1`
 - **Depends on:** —
-- [ ] done
+- [x] done
 - Notes:
+  - **`parseProjectMap` keeps its exact old signature** `([]byte) (projectMap, error)` — it is now
+    a thin wrapper reading the users half of whichever form arrived, so `googleauth_test.go`'s
+    existing cases pass unmodified. The new entry point is `parseProjectSettings` returning
+    `*projectSettings{users, projects}`; `loadProjectSettings` / `loadProjectMap` mirror the pair.
+  - **Form detection is by value shape**, as instructed: probe into
+    `map[string]json.RawMessage`, look at the first non-whitespace byte of each value —
+    `[` is legacy, `{` is the object form. A file mixing both is a descriptive error, not a guess.
+    (An email key genuinely can be `users@…`, so key names prove nothing.)
+  - Validation added: project ids must satisfy the existing `validProjectID` kebab-case regex
+    (≤64 chars, matching `/auth/project-token`); `api_key_env` must be a plausible env var name
+    (`^[A-Za-z_][A-Za-z0-9_]*$`); each `allowed_origins` entry must be `scheme://host[:port]` with
+    **no path, query, fragment or userinfo**, scheme `https` except loopback, which may be `http`.
+    Every message names the offending project. Trailing slashes are rejected rather than trimmed —
+    an origin list feeding CSP `frame-ancestors` should not be silently rewritten.
+  - `"*"` in `allowed_origins` fails the absolute-origin check, so a project cannot accidentally
+    become framable by anyone.
+  - Legal by design and asserted: a project in `projects` that no user is a member of. That is
+    exactly the API-key-only integration shape. An object form with *neither* users nor projects
+    is an error, mirroring the flat form's empty-map rule.
+  - `main.go` still calls `loadProjectMap` — wiring the projects half is T2's.
+  - Validation re-run: `go test ./cmd/agentd/ -run 'ProjectMap' -count=1` ✅ (also the whole
+    package, plus `go build ./... && go vet ./...`).
 
-### T2: API key resolution from env   [Status: pending | Model: sonnet]
+### T2: API key resolution from env   [Status: done | Model: sonnet]
 - **Scope:** New `apikey.go` implementing the `projectKeys` interface: at boot, read each
   project's `api_key_env` from `getenv`, build a value→project index, constant-time compare
   on lookup. Empty/missing env var → project has no key, logged once. Key shorter than 24
@@ -548,8 +570,34 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'APIKey' -count=1 && go build ./...`
 - **Depends on:** T1
+- [x] done
+- Notes:
+  - `go/cmd/agentd/apikey.go`: `projectKeyIndex` implements the `projectKeys` interface from the
+    design verbatim, plus `hasKeys()` (T4 needs it to decide dev-open) and `projectConfigsOf`
+    (nil-tolerant accessor so a map-less deployment is not a special case at each call site).
+  - `ProjectForKey` scans **every** entry with no early exit and compares with
+    `crypto/subtle.ConstantTimeCompare`, so neither the comparison count nor the duration depends
+    on how much of a guessed key was correct.
+  - **Key values are trimmed** before indexing. Not in the ticket, but a key mounted from a file
+    or a compose `env_file` routinely arrives with a trailing newline, and chasing that through a
+    constant-time compare is a bad afternoon. Trimming weakens nothing.
+  - Boot errors as specified: below 24 chars (message quotes the actual length), and two projects
+    resolving to the same value (message names both projects *and* both env vars). Exactly 24 is
+    accepted — the rule is "at least". Projects are visited in sorted order so which
+    misconfiguration is reported first is deterministic across restarts.
+  - Empty/missing env var → keyless, one log line per project naming the variable, plus a summary
+    line. Never fatal.
+  - **`main.go` wiring required moving the project-map load out of the `if loginEnabled` block.**
+    It is now loaded once via a new `loadProjectSettingsOptional` (returns `nil, nil` when neither
+    env var is set) before the login section, because the `projects` half is needed by an
+    embed-only deployment that has no console login at all. The previous behaviour is preserved
+    exactly: with a login mode on and no map, agentd still fatals — just with a clearer message.
+  - `apiKeys` is constructed at boot and currently parked behind `_ = apiKeys`; its consumers are
+    T4 (middleware) and T10 (embed-token route), which will remove the blank assignment.
+  - Validation re-run: `go test ./cmd/agentd/ -run 'APIKey' -count=1 && go build ./...` ✅ (also
+    the whole `cmd/agentd` package and `go vet ./...`).
 
-### T3: Scoped claims in devclaims   [Status: pending | Model: sonnet]
+### T3: Scoped claims in devclaims   [Status: done | Model: sonnet]
 - **Scope:** Add an optional `scope` claim carried **per token, not per issuer**. `Issue(ctx,
   scope ContextScope, sessionID)` (`go/extension/devclaims/devclaims.go:37-48`) already writes a
   `sid` claim, so an issuer-level scope would force a fresh `Issuer` per embed-token request and
@@ -563,8 +611,35 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./extension/devclaims/ -count=1`
 - **Depends on:** —
+- [x] done
+- Notes:
+  - **Asked question, answered: no, `sid` alone would NOT have sufficed — an explicit `scope`
+    claim is right.** The reasoning, since the ticket asks for it on the record:
+    `sid` already has a live, different meaning. It is read at `go/cmd/agentd/mcpserver.go:464` to
+    identify *which session is calling* a core MCP tool, and `go/runner.go:1911` stamps it on the
+    per-session token every container carries. The decisive fact is at `main.go:129-131`:
+    `sessionSecret := envOr("AGENTKIT_JWT_SECRET", "dev-secret")` — so whenever
+    `AGENTKIT_JWT_SECRET` is set, which is every real deployment, **the session-token secret and
+    the API-token secret are the same value**. Making the middleware read `sid` as an
+    authorization scope would therefore silently re-interpret every container's token. The
+    direction of that change happens to be fail-closed, which is why it is not an outstanding
+    vulnerability, but it would have been a semantic change to a credential family this ticket
+    has no business touching. Two questions ("who minted this" / "what may it touch") get two
+    claims.
+  - Added: `IssueScoped(ctx, cs, sessionID, scope)` on the existing `*Issuer` — **per token, not
+    per issuer**, as instructed. `Issue` is now a one-line delegation to it, so there is a single
+    claim-building path. An empty scope writes **no claim at all**, so existing tokens are
+    byte-identical to before; asserted by `TestIssueWithoutScopeCarriesNoScopeClaim`.
+  - Also exported the scope *vocabulary*, so the `"session:<id>"` string format lives in one place
+    rather than being re-spelled in `auth.go` (T4) and `embedtoken.go` (T10): `ScopeClaim`,
+    `SessionScope(id)`, `ParseSessionScope(scope) (id, ok)`. `ParseSessionScope` rejects `""`,
+    `"session:"` with nothing after it, and any other scope kind.
+  - **T10 will need `NewWithTTL(secret, ttl).IssueScoped(...)`** for its per-request clamped TTL.
+    TTL stayed an issuer property on purpose — unlike a scope, it genuinely describes an issuer,
+    and constructing a two-field struct per request is free.
+  - Validation re-run: `go test ./extension/devclaims/ -count=1` ✅; full `go test ./...` ✅.
 
-### T4: Auth middleware accepts API keys and enforces embed scope   [Status: pending | Model: opus]
+### T4: Auth middleware accepts API keys and enforces embed scope   [Status: done | Model: opus]
 - **Scope:** Rework `jwtAuthMiddleware` into a middleware that tries `X-API-Key` first, then
   `Authorization: Bearer`. Extend `principal` with `EmbedSession`. Add an exported helper that
   route handlers use to reject a scoped principal on a non-matching session id. Preserve the
@@ -581,8 +656,32 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'Auth' -count=1 && go vet ./...`
 - **Depends on:** T2, T3
+- [x] done
+- Notes:
+  - `jwtAuthMiddleware` → `apiAuthMiddleware(secret, keys, next)`. Order: `X-API-Key` first, then
+    dev-open, then `Authorization: Bearer`. **A bad key never falls through** to the bearer path or
+    to dev-open — a caller that sent a key meant to use it, and a silent downgrade on a typo is
+    exactly how a project ends up authenticated as `demo`. Pinned by
+    `TestAuthMiddleware_BadAPIKeyDoesNotFallThroughToJWT`.
+  - Dev-open is now `len(secret) == 0 && !keys.hasKeys()`, computed once at wiring time. With a key
+    configured and no JWT secret, unauthenticated requests 401 while the key itself still works.
+  - `principal` gained `embedSession`, read from the `scope` claim through
+    `devclaims.ParseSessionScope`. A scope of an unrecognised kind (`project:…`) yields **no**
+    session scope rather than being treated as unrestricted-and-fine; there is a test for it.
+    `identityFromRequest` maps it to `httpapi.Identity.SessionScope`, where T5 already enforces it.
+  - **Deviation, small and deliberate:** `hasKeys() bool` was added to the `projectKeys` interface
+    (the design's Interfaces section lists two methods). The middleware needs it, and the
+    alternatives — passing the concrete `*projectKeyIndex`, or threading a separate `devOpen bool`
+    from `main.go` — either orphan the interface or create two sources of truth for one decision.
+  - **No helper was added in `cmd/agentd`**, per the ticket's own correction: the routes are
+    `httpapi` handlers and the import only goes one way. The API-key principal's email is
+    `api-key:<project>` (`apiKeyEmail`), synthetic on purpose so an audit trail never records a
+    key's action as the empty-actor spelling a human edit uses.
+  - Also fixed the now-stale reference to `jwtAuthMiddleware` in `googleauth.go`'s package comment.
+  - Validation re-run: `go test ./cmd/agentd/ -run 'Auth' -count=1 && go vet ./...` ✅; full
+    `go build ./... && go test ./...` ✅.
 
-### T5: BLOCKING — enforce tenancy on session-by-ID routes   [Status: pending | Model: opus]
+### T5: BLOCKING — enforce tenancy on session-by-ID routes   [Status: done | Model: opus]
 - **Scope:** Apply the existing `ownsSession` check (`go/httpapi/lifecycle.go:195-217`,
   404-not-403 convention) to `Stream`, `Reconnect`, `SendMessage` (`go/httpapi/stream.go:36,65,96`),
   `Status`, `Cancel` (`lifecycle.go:40,70`), `Messages`, `QueryEvents` (`history.go:22,69`).
@@ -605,6 +704,39 @@ type Schedule struct {
 - **Validation:** `cd go && go test ./httpapi/ -count=1`
 - **Depends on:** T4
 - **Note:** No third-party API key may be issued before this lands.
+- [x] done
+- Notes:
+  - **Taken before T4**, on instruction, because it is the blocking precondition. That meant
+    pulling one line of T4's scope forward: `httpapi.Identity.SessionScope` is added here (it is
+    in T5's own file list) since the enforcement is meaningless without the field. T4 now only has
+    to *populate* it in `identityFromRequest`.
+  - **Enforcement lives in one place:** `ownsSession` (`go/httpapi/lifecycle.go`) gained a
+    `scopeAllows` pre-check, so every route already routed through it — Delete, Snapshot, Archive,
+    Restore, Artifacts, CreateArtifact, Upload — inherits scope confinement for free. The scope
+    check runs *before* the store lookup so a scoped credential cannot probe sibling session ids
+    by response timing. `GetSession` keeps its own inline tenancy check (it already loads the row,
+    and going through `ownsSession` would load it twice) and calls `scopeAllows` explicitly.
+  - **Seven routes gained the check:** `Stream`, `Reconnect`, `SendMessage`, `Status`, `Cancel`,
+    `Messages`, `QueryEvents`. On the three SSE routes it runs before any header is written —
+    once the response commits to `200 text/event-stream` the only refusal left is an error frame,
+    which a client renders as a broken session rather than a missing one.
+  - **Legacy branch — decision: authenticate and authorize it identically.** `identify` +
+    `ownsSession` were hoisted *above* the `AgentDB == nil` fork in both `Messages` and
+    `QueryEvents`, so one gate covers both arms; `listQueryEventsLegacy` now takes the session id
+    as a parameter and no longer identifies. Refusing the path outright was rejected: the sqlite
+    fallback is the zero-config demo, and `ownsSession` already works there (it falls back to
+    `cfg.Store`), so closing the hole cost nothing that refusing would have saved.
+  - The empty-customer skip is preserved and pinned by
+    `TestUnscopedIdentityStillReachesUnownedSessions` — dev-open mode still works.
+  - Behaviour change worth knowing: `Status` on a session id with no row now answers **404**
+    instead of consulting the Runner. That matches what `DeleteSession`/`Snapshot` already did.
+  - Tenancy-contract comment at `go/httpapi/httpapi.go` rewritten: the library now enforces,
+    rather than delegating to the host.
+  - Tests: `go/httpapi/session_tenancy_test.go` (new) — cross-project 404 across all eight
+    by-ID routes with a runner-reached tripwire, scope confinement both ways, scope on the
+    already-guarded routes, the dev-open control, and the legacy path.
+  - Validation re-run: `go test ./httpapi/ -count=1` ✅; full gate
+    `go build ./... && go vet ./... && go test ./...` ✅.
 
 ### T6: Session names — schema and store   [Status: pending | Model: sonnet]
 - **Scope:** Migration adding `sessions.name TEXT NULL` with a unique index on
@@ -899,3 +1031,49 @@ type Schedule struct {
 ## Discovered Issues Log
 
 (appended by executors during implementation)
+
+- **T5 — the legacy branch did have authentication, just not authorization.** The ticket says
+  the `listQueryEventsLegacy` fall-through "has neither auth nor tenancy today". Half right:
+  `listQueryEventsLegacy` called `h.identify(w, r)` as its first act (`go/httpapi/history.go:157`
+  before this change), so an unauthenticated request was already refused. What it genuinely lacked
+  was the ownership check. The hole was real but narrower than described, and the fix is the same
+  either way. Nothing was changed on the strength of the misdescription.
+- **T5 — `SessionScope` was added to `httpapi.Identity` here, not in T4.** Sequencing consequence
+  of taking T5 first; the field is listed in both tickets' file sets, and T4's remaining share is
+  populating it in `identityFromRequest`. Flagged so T4's executor does not try to add it twice.
+- **T3 — `AGENTKIT_JWT_SECRET` and the "session secret" are the same value in every real
+  deployment.** `go/cmd/agentd/main.go:129-131` reads
+  `jwtSecret := os.Getenv("AGENTKIT_JWT_SECRET")` and
+  `sessionSecret := envOr("AGENTKIT_JWT_SECRET", "dev-secret")`. The comment above them says "Two
+  secrets, deliberately", and they diverge only in the dev-open case where `AGENTKIT_JWT_SECRET`
+  is unset. Consequence, which pre-dates this plan: a container's per-session token (signed with
+  `sessionSecret`, `sid` set) is already a structurally valid credential for `jwtAuthMiddleware`,
+  and is accepted there with **full project scope**. Not exploited by anything in-repo and not
+  changed by this plan — but it is the reason T3 refused to overload `sid` as the embed scope, and
+  it is worth its own ticket some day (giving the session-token family its own secret, or having
+  the API middleware refuse tokens carrying a `sid`).
+- **T4 — ⚠️ HIGH: the embed scope confines session-by-ID routes only. An embed token can still
+  reach every project-wide route.** The design's credential table says an embed token grants
+  "Read/stream/message on **exactly one session**", but the mechanism it specifies —
+  `Identity.SessionScope` checked inside `ownsSession` — is reachable only from routes that take a
+  session id. An embed token still carries `customer: <project>`, so as specified it can call
+  `PUT /agent/workers/{name}`, `PUT /agent/project-settings`, `POST /agent/events`,
+  `GET /agent/memories`, the schedule CRUD, and so on. That credential is handed to a browser
+  inside a third-party page via a URL fragment, so this is a real privilege escalation, not a
+  theoretical one — it is bounded only by the token's 15-minute TTL.
+  **Not acted on**, because closing it means a new project-wide rule ("a scoped identity may touch
+  only session routes"), which is a design decision and the layering section says the enforcement
+  point is decided. Options, cheapest first: (a) `httpapi` refuses any request from an identity
+  with a non-empty `SessionScope` unless the handler opted in — one check in `Mux`, an allowlist of
+  session routes; (b) `apiAuthMiddleware` strips `customer` from scoped principals and the session
+  routes resolve tenancy from the session row instead. **This should be resolved before any embed
+  token is minted for a real third party (i.e. before T10 ships to production), the same way T5
+  gated the API key.**
+- **T4 — an API key sees an empty session list by default.** `httpapi.ListSessions` filters on
+  `id.UserEmail` unless `?user_email=*` is passed (`go/httpapi/history.go:102-107`). An API key's
+  synthetic email is `api-key:<project>`, which matches no session row, so
+  `GET /agent/sessions` with a key returns `[]` rather than the project's sessions. Not a bug —
+  the documented lookup path is `GET /agent/sessions/by-name/{name}` (T7) — but it is a trap for
+  an integrator and **T14 must document `?user_email=*`**.
+- **T5 — eight routes, not seven.** `GetSession` was not in the ticket's list because it already
+  had a tenancy check, but it needed the *scope* leg adding, so the tests cover eight by-ID routes.
