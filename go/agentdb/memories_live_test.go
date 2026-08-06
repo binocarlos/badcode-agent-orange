@@ -42,7 +42,7 @@ func newLiveProject(t *testing.T, s *Store) string {
 
 func mustCreateMemory(t *testing.T, s *Store, m *Memory, emb []float32) *Memory {
 	t.Helper()
-	got, err := s.CreateMemory(context.Background(), m, emb)
+	got, _, err := s.CreateMemory(context.Background(), m, emb)
 	if err != nil {
 		t.Fatalf("create memory %q: %v", m.Content, err)
 	}
@@ -59,7 +59,11 @@ func resultIDs(res []*MemorySearchResult) []string {
 
 func requireVectorColumn(t *testing.T, s *Store) {
 	t.Helper()
-	if !s.memoryHasVectorColumn(context.Background()) {
+	ok, err := s.MemoryVectorColumn(context.Background())
+	if err != nil {
+		t.Fatalf("probe content_embedding: %v", err)
+	}
+	if !ok {
 		t.Skip("pgvector column absent on this Postgres — semantic-leg test not applicable")
 	}
 }
@@ -119,7 +123,7 @@ func TestMemoriesLiveCreateValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.CreateMemory(ctx, tc.mem, tc.emb)
+			_, _, err := s.CreateMemory(ctx, tc.mem, tc.emb)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("want error containing %q, got %v", tc.wantErr, err)
 			}
@@ -127,7 +131,7 @@ func TestMemoriesLiveCreateValidation(t *testing.T) {
 	}
 
 	// A nil embedding is a first-class case, not an error (§7.5/§7.6.5).
-	if _, err := s.CreateMemory(ctx, &Memory{Project: project, Content: "no embedder configured"}, nil); err != nil {
+	if _, _, err := s.CreateMemory(ctx, &Memory{Project: project, Content: "no embedder configured"}, nil); err != nil {
 		t.Fatalf("nil embedding must be allowed: %v", err)
 	}
 }

@@ -304,7 +304,9 @@ func (s *Store) ApplyTopology(ctx context.Context, app TopologyApplication, cw C
 				return fmt.Errorf("agentdb: nil memory seed")
 			}
 			m.Project = app.Project
-			stored, err := txs.CreateMemory(ctx, m, nil)
+			// Seeds carry no embedding by design, so `embedded` is false here
+			// for a reason a caller never has to interpret — discarded.
+			stored, _, err := txs.CreateMemory(ctx, m, nil)
 			if err != nil {
 				return err
 			}

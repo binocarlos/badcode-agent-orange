@@ -97,6 +97,11 @@ func main() {
 	} else {
 		log.Printf("[agentd] embeddings=%s", envOr("AGENTKIT_EMBEDDING_BACKEND", "none"))
 	}
+	// …and whether the database can actually hold a vector. Loud here, at boot,
+	// rather than at the first search that silently came back keyword-only.
+	if agentDB != nil {
+		reportMemoryVectorColumn(ctx, agentDB.MemoryVectorColumn, embedder != nil, log.Printf)
+	}
 	blobs, closeBlobs, err := newBlobs(ctx, blobCfg)
 	must(err)
 	defer closeBlobs() //nolint:errcheck

@@ -274,7 +274,7 @@ func TestListMemories_LivePG(t *testing.T) {
 
 	seed := func(project, content string, labels agentdb.LabelSet) {
 		t.Helper()
-		if _, err := store.CreateMemory(context.Background(), &agentdb.Memory{
+		if _, _, err := store.CreateMemory(context.Background(), &agentdb.Memory{
 			Project: project, Labels: labels, Content: content,
 			CreatedByWorker: "email-answerer", CreatedBySession: "sess-1",
 		}, nil); err != nil {

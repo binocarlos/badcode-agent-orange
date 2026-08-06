@@ -20,10 +20,16 @@ import (
 type Store struct {
 	gdb *gorm.DB
 
-	// memVecOnce/memVecOK cache whether the pgvector column on `memories`
+	// memVecKnown/memVecOK cache whether the pgvector column on `memories`
 	// exists (migration 022 adds it only where the extension is available).
-	memVecOnce sync.Once
-	memVecOK   bool
+	// A *failed* probe caches nothing: this was a sync.Once latched on
+	// `err == nil && n > 0`, so one transient query error pinned the whole
+	// process to keyword-only search and blamed an absent column (RD3).
+	// "The query failed" and "the column is absent" are different answers and
+	// only the second one is a deployment fact.
+	memVecMu    sync.Mutex
+	memVecKnown bool
+	memVecOK    bool
 
 	// configHook is J3's post-commit seam: WithConfigEvent calls it with the
 	// committed record once the transaction has landed, and the host turns that
