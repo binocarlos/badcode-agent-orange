@@ -685,15 +685,39 @@ func (r *runnerImpl) Destroy(ctx context.Context, ref SessionRef) error {
 	// nothing, the container appears afterwards owned by nobody, and its host
 	// port is never released.
 	r.markCreateAbandoned(ref.SessionID)
-	return r.teardownInstance(ctx, ref)
+	// Deleting a session really does end its workspace: anything still `live`
+	// and never uploaded is gone, and saying so is the truth.
+	return r.teardownInstance(ctx, ref, markArtifactsLost)
 }
+
+// markArtifactsLost / keepArtifactStatus are teardownInstance's second argument,
+// named rather than a bare bool because they are the difference between "the
+// files are gone" and "the files come back on the next message" — and the
+// caller, not the function, is the only place that knows which.
+const (
+	markArtifactsLost  = true
+	keepArtifactStatus = false
+)
 
 // teardownInstance is Destroy without the "the session is gone" meaning: it
 // removes the container and forgets the instance, but leaves any in-flight
 // create alone. The archive loop uses it — archiving a session that has gone
 // idle snapshots it and drops the container, but the session very much still
 // exists and will be restored on its next message.
-func (r *runnerImpl) teardownInstance(ctx context.Context, ref SessionRef) error {
+//
+// lostArtifacts says whether losing the container loses the workspace with it.
+// For Destroy it does. For the ARCHIVE path it does not: the snapshot is taken
+// first and the files come back on restore, so stamping still-`live` artifacts
+// `lost` there is a false statement about a user's files that nothing ever
+// regresses — a session archived once for idleness would carry `lost` artifacts
+// for the rest of its life while the bytes sat safely inside its snapshot.
+//
+// Note what the archive path gives up by skipping it: MarkLost also PROMOTES
+// live artifacts that already have bytes to `extracted`. Not doing that leaves
+// them `live`, which after an archive is still the true statement (the file is
+// in the workspace, and the workspace returns), and the promotion happens on
+// the eventual real Destroy. Skipping is lossless; stamping was not.
+func (r *runnerImpl) teardownInstance(ctx context.Context, ref SessionRef, lostArtifacts bool) error {
 	inst := r.get(ref.SessionID)
 	if inst != nil {
 		env, err := r.workerEnvFor(ref.SessionID)
@@ -706,6 +730,9 @@ func (r *runnerImpl) teardownInstance(ctx context.Context, ref SessionRef) error
 					worker.Caps.Tenancy == execenv.TenancyShared {
 					// Destroy on a shared instance is a DELETE /sessions/:id, not a container teardown.
 					r.forget(ref.SessionID)
+					if !lostArtifacts {
+						return nil
+					}
 					return r.deps.Artifacts.MarkLost(ctx, ref.SessionID)
 				}
 			}
@@ -715,6 +742,11 @@ func (r *runnerImpl) teardownInstance(ctx context.Context, ref SessionRef) error
 		}
 	}
 	r.forget(ref.SessionID)
+	if !lostArtifacts {
+		// The workspace is not gone — it is inside the snapshot this teardown
+		// was preceded by. Say nothing rather than something false.
+		return nil
+	}
 	// Artifacts not yet extracted are lost when the workspace is gone.
 	return r.deps.Artifacts.MarkLost(ctx, ref.SessionID)
 }
@@ -1261,18 +1293,63 @@ func (r *runnerImpl) archiveIdleOnce(ctx context.Context) {
 			continue
 		}
 		if _, err := r.Snapshot(ctx, SessionRef{SessionID: sid}); err != nil {
+			// Two very different situations reach this line, and keeping the
+			// container is only right for one of them.
+			//
+			// (1) The snapshot genuinely failed for a session that still exists
+			//     — registry down, disk full, engine hiccup. The container's
+			//     filesystem is then the only copy of that conversation's
+			//     workspace, so we keep it and try again next sweep.
+			//
+			// (2) The container is an ORPHAN: Recover re-adopts any container
+			//     labelled with a session id, so one can outlive its row, and
+			//     with no row Snapshot cannot even store the handle. Retrying
+			//     that every minute is not resilience, it is a permanent leak of
+			//     one host port from a pool of 100 (plus, less visibly, a full
+			//     image commit and blob upload every single minute).
+			//
+			// Only a store that can answer definitely gets to distinguish them,
+			// and only a definite "the row is not there" destroys anything —
+			// see SessionExistenceChecker.
+			if r.sessionRowIsGone(ctx, sid) {
+				log.Printf("agentkit: archive session %s: no session row — this container is an orphan (snapshot could not be recorded: %v); destroying it and releasing its host port", sid, err)
+				if derr := r.Destroy(ctx, SessionRef{SessionID: sid}); derr != nil {
+					log.Printf("agentkit: archive session %s: destroying the orphan container failed: %v", sid, derr)
+				}
+				continue
+			}
 			log.Printf("agentkit: archive session %s: snapshot failed, keeping the container: %v", sid, err)
 			continue
 		}
 		// teardownInstance, not Destroy: the session is being ARCHIVED, not
-		// deleted. Cancelling a create for it would be a lie.
-		if err := r.teardownInstance(ctx, SessionRef{SessionID: sid}); err != nil {
+		// deleted. Cancelling a create for it would be a lie — and so would
+		// marking its artifacts lost, since the snapshot above is exactly what
+		// brings them back (RD12).
+		if err := r.teardownInstance(ctx, SessionRef{SessionID: sid}, keepArtifactStatus); err != nil {
 			log.Printf("agentkit: archive session %s: releasing the container failed: %v", sid, err)
 			continue
 		}
 		log.Printf("agentkit: archived session %s — idle for over %s; container and host port released, the session resumes from its snapshot on the next message",
 			sid, timeout)
 	}
+}
+
+// sessionRowIsGone answers "may this container be destroyed because nothing owns
+// it any more?" and it answers false unless it is CERTAIN. Uncertainty has three
+// spellings and all three mean "leave it alone": the store does not implement
+// the capability, the store returned an error (a database blip must never
+// destroy a live session's container), or the row is there.
+func (r *runnerImpl) sessionRowIsGone(ctx context.Context, sessionID string) bool {
+	checker, ok := r.deps.Store.(SessionExistenceChecker)
+	if !ok {
+		return false
+	}
+	exists, err := checker.SessionExists(ctx, sessionID)
+	if err != nil {
+		log.Printf("agentkit: archive session %s: cannot tell whether the session row exists (%v) — keeping the container", sessionID, err)
+		return false
+	}
+	return !exists
 }
 
 // --- helpers ----------------------------------------------------------------

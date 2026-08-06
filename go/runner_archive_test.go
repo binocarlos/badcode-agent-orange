@@ -400,6 +400,258 @@ func TestArchiveDoesNotCancelAnInFlightCreate(t *testing.T) {
 	}
 }
 
+// ── Orphaned containers and artifact truth (doc 22, RD8 + RD12) ──────────────
+
+// snapshotFailingEnv is a portLeasingEnv whose Snapshot always fails. It stands
+// for the ordinary bad day — registry down, disk full, engine hiccup — as
+// opposed to an orphan, and exists so the two can be told apart in a test rather
+// than only in prose.
+type snapshotFailingEnv struct {
+	*portLeasingEnv
+}
+
+func (e *snapshotFailingEnv) Snapshot(ctx context.Context, id execenv.InstanceID, opts execenv.SnapshotOptions) (execenv.ImageRef, error) {
+	e.MockExecutionEnvironment.Record("Snapshot", string(id), opts.ForceFull)
+	return "", errors.New("commit: no space left on device")
+}
+
+// TestArchiveDestroysAnOrphanedContainer is RD8. Recover re-adopts any container
+// labelled with a session id, so a container can outlive its row — and with no
+// row Snapshot cannot store the handle, so it fails. Before the fix the sweep
+// logged "keeping the container" and continued, EVERY MINUTE, FOR EVER: one host
+// port from a pool of 100 gone until the process restarted.
+//
+// The assertion is deliberately the user-visible consequence rather than the log
+// line: the pool of exactly one is empty, and after the sweep somebody else can
+// start a session with it.
+func TestArchiveDestroysAnOrphanedContainer(t *testing.T) {
+	ctx := context.Background()
+	env := newPortLeasingEnv(t, 40100, 40100) // a pool of exactly one
+	r, store, _ := newGCRunner(t, env, Policy{ArchiveTimeout: time.Minute})
+
+	store.Seed(&agentdb.Session{ID: "s-orphan", Customer: "acme", Job: "j1"})
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{SessionID: "s-orphan", Customer: "acme", Job: "j1"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, _, free := env.ports.Stats(); free != 0 {
+		t.Fatalf("free ports after one session = %d, want 0", free)
+	}
+
+	// The row goes; the container stays. This is exactly the state Recover
+	// produces after a restart that re-adopts a container whose session was
+	// deleted while agentd was down.
+	if err := store.DeleteSession(ctx, "s-orphan"); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+
+	r.setIdle("s-orphan", time.Hour)
+	r.archiveIdleOnce(ctx)
+
+	if inst := r.get("s-orphan"); inst != nil {
+		t.Errorf("the orphaned container is still tracked (%+v) — the sweep will keep it for ever", inst)
+	}
+	_, _, free := env.ports.Stats()
+	if free != 1 {
+		t.Fatalf("free ports after the sweep = %d, want 1 — the orphan leaked its host port", free)
+	}
+
+	// The reclaimed port is usable, which is the whole point.
+	store.Seed(&agentdb.Session{ID: "s-next", Customer: "acme", Job: "j1"})
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{SessionID: "s-next", Customer: "acme", Job: "j1"}); err != nil {
+		t.Fatalf("CreateSession(s-next) after reclaiming the orphan's port: %v", err)
+	}
+
+	// And a second sweep has nothing left to do — the leak was the REPETITION.
+	r.setIdle("s-orphan", time.Hour)
+	r.archiveIdleOnce(ctx)
+}
+
+// TestArchiveKeepsTheContainerWhenSnapshotFailsForALiveSession is the other arm,
+// and it is the reason RD8's fix is a row probe and not "destroy on snapshot
+// failure". For a session that still exists, the container's filesystem is the
+// only copy of its workspace: destroying it because a registry was briefly down
+// would turn a retryable blip into permanent data loss. A fix that conflated the
+// two would pass the test above and fail this one.
+func TestArchiveKeepsTheContainerWhenSnapshotFailsForALiveSession(t *testing.T) {
+	ctx := context.Background()
+	env := &snapshotFailingEnv{portLeasingEnv: newPortLeasingEnv(t, 40110, 40110)}
+	r, store, _ := newGCRunner(t, env, Policy{ArchiveTimeout: time.Minute})
+
+	store.Seed(&agentdb.Session{ID: "s-live", Customer: "acme", Job: "j1"})
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{SessionID: "s-live", Customer: "acme", Job: "j1"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	r.setIdle("s-live", time.Hour)
+	r.archiveIdleOnce(ctx)
+
+	if inst := r.get("s-live"); inst == nil {
+		t.Fatal("a snapshot failure destroyed a LIVE session's container — its workspace was the only copy")
+	}
+	if _, _, free := env.ports.Stats(); free != 0 {
+		t.Errorf("free ports = %d, want 0 — the container should still hold its port", free)
+	}
+	if sess, err := store.GetSession(ctx, "s-live"); err != nil || sess == nil {
+		t.Fatalf("the session row must be untouched: %v", err)
+	}
+}
+
+// unreachableStore is a MemStore whose existence probe fails, standing for the
+// half-second the database is unreachable.
+type unreachableStore struct {
+	*agentkittest.MemStore
+}
+
+func (s *unreachableStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	return false, errors.New("dial tcp 127.0.0.1:5432: connection refused")
+}
+
+// TestArchiveKeepsTheContainerWhenTheRowCannotBeChecked pins the contract that
+// makes RD8's fix safe to run every minute against a production database: only a
+// DEFINITE "the row is not there" destroys a container. A store that errors, and
+// a store that does not implement the probe at all, must both leave the
+// container exactly where it was. Getting this backwards would turn a database
+// blip into a fleet-wide teardown — a far worse bug than the one being fixed.
+func TestArchiveKeepsTheContainerWhenTheRowCannotBeChecked(t *testing.T) {
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name  string
+		store func(*agentkittest.MemStore) RunnerStore
+	}{
+		{"store errors", func(m *agentkittest.MemStore) RunnerStore { return &unreachableStore{MemStore: m} }},
+		{"store cannot answer at all", func(m *agentkittest.MemStore) RunnerStore { return noExistenceStore{m} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := agentkittest.NewMemStore()
+			mem.Seed(&agentdb.Session{ID: "s1", Customer: "acme", Job: "j1"})
+			env := execenv.NewMock()
+			runner, err := NewRunner(Deps{
+				Env:       env,
+				Registry:  imageregistry.NewMock(),
+				Store:     tc.store(mem),
+				Artifacts: artifacts.NewMock(),
+				Claims:    agentkittest.StaticClaims{Token: "test-token"},
+				Events:    events.NewPipeline(events.NewMockSink()),
+				Policy:    Policy{BaseImage: "agentkit-sandbox:test", ArchiveTimeout: time.Minute},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner: %v", err)
+			}
+			r := runner.(*runnerImpl)
+			if _, err := r.CreateSession(ctx, CreateSessionRequest{SessionID: "s1", Customer: "acme", Job: "j1"}); err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			// Orphan it in the underlying store, so the ONLY thing standing
+			// between this container and destruction is the probe's caution.
+			if err := mem.DeleteSession(ctx, "s1"); err != nil {
+				t.Fatalf("DeleteSession: %v", err)
+			}
+
+			r.setIdle("s1", time.Hour)
+			r.archiveIdleOnce(ctx)
+
+			if inst := r.get("s1"); inst == nil {
+				t.Fatal("the container was destroyed on an UNCERTAIN answer — a database blip must never do that")
+			}
+		})
+	}
+}
+
+// noExistenceStore hides MemStore's SessionExists behind a type that does not
+// promote it, modelling a host store predating the optional capability.
+type noExistenceStore struct{ inner *agentkittest.MemStore }
+
+func (s noExistenceStore) GetSession(ctx context.Context, id string) (*agentdb.Session, error) {
+	return s.inner.GetSession(ctx, id)
+}
+func (s noExistenceStore) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agentdb.Session, error) {
+	return s.inner.UpdateSession(ctx, sess)
+}
+func (s noExistenceStore) PersistQueryEventsFlat(ctx context.Context, sessionID, queryID string, evs []events.Envelope, searchText string) error {
+	return s.inner.PersistQueryEventsFlat(ctx, sessionID, queryID, evs, searchText)
+}
+func (s noExistenceStore) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
+	return s.inner.ListQueryEventsFlat(ctx, sessionID)
+}
+func (s noExistenceStore) GetSnapshotHandle(ctx context.Context, sessionID string) (imageregistry.Handle, bool, error) {
+	return s.inner.GetSnapshotHandle(ctx, sessionID)
+}
+func (s noExistenceStore) SetSnapshotHandle(ctx context.Context, sessionID string, h imageregistry.Handle) error {
+	return s.inner.SetSnapshotHandle(ctx, sessionID, h)
+}
+func (s noExistenceStore) GetWorkerBinding(ctx context.Context, sessionID string) (string, bool, error) {
+	return s.inner.GetWorkerBinding(ctx, sessionID)
+}
+func (s noExistenceStore) SetWorkerBinding(ctx context.Context, sessionID, workerID string) error {
+	return s.inner.SetWorkerBinding(ctx, sessionID, workerID)
+}
+func (s noExistenceStore) ClearWorkerBinding(ctx context.Context, sessionID string) error {
+	return s.inner.ClearWorkerBinding(ctx, sessionID)
+}
+
+// TestArchiveDoesNotMarkArtifactsLost is RD12, and it is the test gc.go's header
+// comment points at. teardownInstance is shared by Destroy and the archive loop
+// and used to call MarkLost unconditionally, so an ordinary idle archive stamped
+// still-`live` artifacts `lost` — permanently, because nothing regresses the
+// status — for files the snapshot brings straight back on restore.
+//
+// Both arms are asserted here: the archive leaves the status alone, and Destroy
+// (where the workspace really is gone) still tells the truth.
+func TestArchiveDoesNotMarkArtifactsLost(t *testing.T) {
+	ctx := context.Background()
+	env := execenv.NewMock()
+	r, store, _ := newGCRunner(t, env, Policy{ArchiveTimeout: time.Minute})
+	arts := r.deps.Artifacts.(*artifacts.MockArtifactStore)
+
+	store.Seed(&agentdb.Session{ID: "s-art", Customer: "acme", Job: "j1"})
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{SessionID: "s-art", Customer: "acme", Job: "j1"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// A file the agent wrote and nobody has uploaded: live, no bytes anywhere
+	// but the workspace. This is precisely the row MarkLost condemns.
+	if _, err := arts.Save(ctx, &artifacts.Artifact{
+		SessionID: "s-art",
+		FilePath:  "report.md",
+		Status:    artifacts.StatusLive,
+	}, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	r.setIdle("s-art", time.Hour)
+	r.archiveIdleOnce(ctx)
+
+	if n := env.Count("Snapshot"); n != 1 {
+		t.Fatalf("the sweep did not archive the session (Snapshot calls = %d)", n)
+	}
+	if n := arts.Count("MarkLost"); n != 0 {
+		t.Errorf("the archive path called MarkLost %d time(s) — the files come back on restore", n)
+	}
+	list, err := arts.List(ctx, "s-art")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("List = %v, %v; want one artifact", list, err)
+	}
+	if list[0].Status != artifacts.StatusLive {
+		t.Fatalf("artifact status after an idle archive = %q, want %q — archiving is not losing",
+			list[0].Status, artifacts.StatusLive)
+	}
+
+	// Destroy is the case where the claim is true, and it must keep saying so.
+	if err := r.Destroy(ctx, SessionRef{SessionID: "s-art"}); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if n := arts.Count("MarkLost"); n != 1 {
+		t.Errorf("Destroy called MarkLost %d time(s), want 1 — deleting a session DOES lose the workspace", n)
+	}
+	list, err = arts.List(ctx, "s-art")
+	if err != nil || len(list) != 1 {
+		t.Fatalf("List after Destroy = %v, %v", list, err)
+	}
+	if list[0].Status != artifacts.StatusLost {
+		t.Errorf("artifact status after Destroy = %q, want %q", list[0].Status, artifacts.StatusLost)
+	}
+}
+
 // ── The snapshot TTL reaper ──────────────────────────────────────────────────
 
 // lockedReapWorld makes the reaper fakes (snapshot_reaper_test.go) safe to hand
