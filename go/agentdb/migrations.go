@@ -718,6 +718,62 @@ var agentMigrations = []migration{
 		`,
 	},
 	{
+		// Session names (T6 of design/2026-08-06-embeddable-agent-orange.md):
+		// the stable handle an embedding application addresses a session by,
+		// because it cannot know a uuid it did not mint and should not have to
+		// store one to render an iframe.
+		//
+		// NULLABLE with no DEFAULT, so the millions of existing rows are simply
+		// unnamed rather than all claiming ''. That leaves two spellings of "no
+		// name" in one column — NULL for everything older than this migration,
+		// '' for everything GORM writes after it — and the index clause has to
+		// exclude both. It cannot be `WHERE name IS NOT NULL` alone: the second
+		// unnamed session created after this lands would collide with the
+		// first, which is every console chat in the project.
+		//
+		// The index is what actually enforces uniqueness. agentdb.CreateSession
+		// maps its violation to ErrSessionNameTaken; it does NOT pre-check with
+		// a SELECT, because two racing creates of the same name would both pass
+		// such a check (same reasoning as the image-version index, migration
+		// 025).
+		//
+		// (customer, name) and not (name): names are project-scoped, per P5 —
+		// two projects may each have a `hypothesis-a` and neither can see the
+		// other's.
+		Name: "035_session_names",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS name TEXT;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_name
+				ON agent_sessions(customer, name) WHERE name IS NOT NULL AND name <> '';
+		`,
+	},
+	{
+		// Session-mode schedules (T9 of
+		// design/2026-08-06-embeddable-agent-orange.md): a schedule may target a
+		// long-lived NAMED session instead of a worker, and deliver its `input`
+		// to that session as the next message rather than starting a fresh job
+		// in a fresh container.
+		//
+		// NOT NULL DEFAULT '' rather than nullable — the opposite of migration
+		// 035's `name`, and for a reason. `worker` beside it is already NOT
+		// NULL, and the mutual exclusion the scheduler branches on reads
+		// "exactly one of these two strings is non-empty" (agentdb.Schedule,
+		// validateSchedule). A nullable column would give that rule three states
+		// to mean "not this mode" instead of one, and there is no partial index
+		// here that a NULL would buy anything for: nothing ever looks a schedule
+		// up BY its target session.
+		//
+		// The DEFAULT is on the column and NOT on the gorm tag, per the
+		// convention stated on agentdb.Schedule: a declared gorm default makes
+		// GORM omit the zero value on write, which is how a field ends up
+		// unwritable. Here the DDL default only serves the existing worker-mode
+		// rows this ALTER backfills.
+		Name: "036_schedule_target_session",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS target_session TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
 		// Why a job failed (RD18/RD20, and the same column RD15 asks for — there
 		// is exactly one). dispatch.go has always known the reason ("host port
 		// pool is exhausted", "worker not found") and only ever logged it, so

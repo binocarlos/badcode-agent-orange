@@ -56,17 +56,48 @@ var (
 // Schedule is one cron entry (§8.6). Identity is the uuid; `project` is the
 // hard tenancy namespace and matches the `customer` claim on the caller's token.
 //
-// Deliberately no gorm `default:` tags: GORM substitutes a declared default for
-// a zero value on write, which would make `enabled: false` silently persist as
-// true. The column DEFAULTs live in migration 024 for rows written outside this
-// store; NewSchedule/validateSchedule own the in-Go defaulting.
+// Deliberately no gorm `default:` tags — with the single, argued exception on
+// TargetSession below: GORM substitutes a declared default for a zero value on
+// write, which would make `enabled: false` silently persist as true. The column
+// DEFAULTs live in migrations 024 and 036 for rows written outside this store;
+// NewSchedule/validateSchedule own the in-Go defaulting.
 type Schedule struct {
 	ID      string `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	Project string `json:"project" gorm:"type:varchar(255);not null;index:idx_schedules_project"`
 	// Worker is the worker a firing starts a job for. A due schedule whose
 	// worker no longer exists is disabled and logged (§8.6) — never retried
 	// forever — which is the scheduler's job, not this store's.
+	//
+	// Empty exactly when TargetSession is set: the two are the schedule's two
+	// modes and validateSchedule enforces the XOR.
 	Worker string `json:"worker" gorm:"type:varchar(255);not null"`
+	// TargetSession is the NAME (Session.Name, never a uuid) of a long-lived
+	// session a firing sends Input to as its next message, instead of starting
+	// a fresh job in a fresh container (migration 036; T9 of
+	// design/2026-08-06-embeddable-agent-orange.md).
+	//
+	// A name and not an id because the schedule outlives nothing else about the
+	// session: an embedding application that stored `hypothesis-a` in its own
+	// row can attach a schedule without ever having seen a uuid. Names are
+	// immutable and project-unique, so the reference cannot go stale silently —
+	// it can only go absent, which the scheduler answers by disabling the row
+	// the same way it does for a missing worker.
+	//
+	// This mode is what makes "the same conversation, woken daily" expressible.
+	// The worker mode is still the right one for anything that should start
+	// clean each time; see docs/product/04-events-and-schedules.md.
+	//
+	// The `default:''` tag is the ONE place this struct declares a default, and
+	// it is safe for the reason the note above says the others are not: the
+	// hazard is that GORM omits a zero value when a default is declared, so a
+	// deliberate zero silently persists as the default. Here the zero value and
+	// the default are the same string, so there is nothing to lose. It is
+	// present because the tag is what AutoMigrate builds the sqlite test schema
+	// from, and without it that schema is STRICTER than the production one
+	// (migration 036 carries `DEFAULT ''`) — a row inserted around the store
+	// would fail on sqlite and succeed on Postgres, which is the worst possible
+	// direction for a test schema to differ in.
+	TargetSession string `json:"target_session,omitempty" gorm:"type:varchar(255);not null;default:''"`
 	// Cron is a standard 5-field expression, evaluated in the stack-local time
 	// zone (TZ on agentd, default UTC). Validated on write: an unparseable
 	// expression is refused, never stored to fail silently at 03:00.
@@ -88,9 +119,15 @@ type Schedule struct {
 
 func (Schedule) TableName() string { return "schedules" }
 
-// NewSchedule returns a Schedule with the spec's default applied (enabled). Use
-// it rather than a bare &Schedule{}: `Enabled` is a plain bool, so a zero-valued
-// struct would persist a schedule that never fires.
+// NewSchedule returns a worker-mode Schedule with the spec's default applied
+// (enabled). Use it rather than a bare &Schedule{}: `Enabled` is a plain bool,
+// so a zero-valued struct would persist a schedule that never fires.
+//
+// It does not refuse an empty worker, because the caller may be about to set
+// TargetSession instead (the HTTP layer builds both modes through this one
+// constructor and lets validateSchedule adjudicate). What it must never do is
+// leave BOTH unset — that is validateSchedule's rule, in one place, so the two
+// write paths cannot disagree about what a targetless schedule means.
 func NewSchedule(project, worker, cron, input string) *Schedule {
 	return &Schedule{
 		Project: project,
@@ -98,6 +135,21 @@ func NewSchedule(project, worker, cron, input string) *Schedule {
 		Cron:    cron,
 		Input:   input,
 		Enabled: true,
+	}
+}
+
+// NewSessionSchedule is the session-mode twin: each firing sends `input` to the
+// named session as its next message rather than starting a job. Separate
+// constructor rather than a fifth argument to NewSchedule, so the ~30 existing
+// worker-mode call sites stay untouched and the two modes are legible at the
+// call site instead of being told apart by which argument is blank.
+func NewSessionSchedule(project, sessionName, cron, input string) *Schedule {
+	return &Schedule{
+		Project:       project,
+		TargetSession: sessionName,
+		Cron:          cron,
+		Input:         input,
+		Enabled:       true,
 	}
 }
 
@@ -116,10 +168,15 @@ type ScheduleFiring struct {
 	ScheduledFor string `json:"scheduled_for" gorm:"type:varchar(20);not null;uniqueIndex:idx_schedule_firings_occurrence,priority:2"`
 	Project      string `json:"project" gorm:"type:varchar(255);not null;index:idx_schedule_firings_project"`
 	// EventID is the `schedule.fired` event this occurrence produced, stamped
-	// after the event lands. Empty means the process died between claiming the
-	// occurrence and creating the event: the occurrence is consumed and that
-	// firing is skipped, which is exactly §8.6's skip-missed posture — a stale
-	// morning is never replayed.
+	// after the event lands. On a WORKER schedule, empty means the process died
+	// between claiming the occurrence and creating the event: the occurrence is
+	// consumed and that firing is skipped, which is exactly §8.6's skip-missed
+	// posture — a stale morning is never replayed.
+	//
+	// On a SESSION schedule it is always empty, because that mode produces no
+	// event at all: the firing is a message into an existing conversation, not
+	// a trigger on the event spine (see Schedule.TargetSession). The row still
+	// exists, and claiming it is still what makes the firing happen once.
 	EventID string `json:"event_id" gorm:"type:varchar(36)"`
 	FiredAt int64  `json:"fired_at"`
 }
@@ -141,9 +198,27 @@ func validateSchedule(s *Schedule) error {
 	if strings.TrimSpace(s.Project) == "" {
 		return fmt.Errorf("%w: project is required", ErrScheduleInvalid)
 	}
+	// Exactly one target. A schedule with neither has nothing to wake and would
+	// sit enabled forever doing nothing; one with both is a genuine ambiguity
+	// (start a job AND message a session?) that no reader of the row could
+	// resolve, so it is refused at the boundary rather than resolved by
+	// precedence somewhere in the scheduler.
 	s.Worker = strings.TrimSpace(s.Worker)
-	if s.Worker == "" {
-		return fmt.Errorf("%w: worker is required", ErrScheduleInvalid)
+	s.TargetSession = strings.TrimSpace(s.TargetSession)
+	switch {
+	case s.Worker == "" && s.TargetSession == "":
+		return fmt.Errorf("%w: a schedule must target either a worker or a session (target_session)", ErrScheduleInvalid)
+	case s.Worker != "" && s.TargetSession != "":
+		return fmt.Errorf("%w: a schedule targets a worker or a session, never both (worker %q, target_session %q)",
+			ErrScheduleInvalid, s.Worker, s.TargetSession)
+	}
+	if s.TargetSession != "" {
+		// The same rule CreateSession applies, checked here so a schedule
+		// pointing at a name no session could ever hold is refused on write
+		// rather than disabling itself at 03:00.
+		if err := ValidateSessionName(s.TargetSession); err != nil {
+			return fmt.Errorf("%w: target_session: %w", ErrScheduleInvalid, err)
+		}
 	}
 	s.Cron = strings.TrimSpace(s.Cron)
 	if s.Cron == "" {
@@ -242,6 +317,11 @@ func (s *Store) UpdateSchedule(ctx context.Context, sch *Schedule, cw ConfigWrit
 		return nil, err
 	}
 	existing.Worker = sch.Worker
+	// Copied too, so a session schedule survives an ordinary edit of its cron.
+	// Switching a row between the two modes is possible but takes both fields in
+	// one write (the XOR is checked above), which is what stops a half-applied
+	// update leaving a schedule with two targets or none.
+	existing.TargetSession = sch.TargetSession
 	existing.Cron = sch.Cron
 	existing.Input = sch.Input
 	existing.Enabled = sch.Enabled

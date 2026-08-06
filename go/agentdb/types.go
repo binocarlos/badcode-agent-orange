@@ -129,6 +129,22 @@ type Session struct {
 	// agentdb/attention.go; NO gorm `default:` tag, because a declared default
 	// makes GORM omit the false value and the flag could never be cleared.
 	AttentionRequested bool `json:"attention_requested,omitempty"`
+	// Name is the OPTIONAL stable handle a host addresses this session by
+	// instead of its uuid — `hypothesis-a` rather than 9f8c2a10-… — so an
+	// embedding application can keep the name in its own row and resolve it
+	// later (migration 035; design/2026-08-06-embeddable-agent-orange.md).
+	//
+	// Unique per project, kebab-case, ≤64 chars, and IMMUTABLE: the permission
+	// tag is `<-:create`, so no UPDATE this store emits carries the column at
+	// all. A name handed to a third party is a promise — an iframe URL, a
+	// schedule target, a row in someone else's database — and a rename would
+	// silently re-point every one of them at nothing.
+	//
+	// Empty means unnamed, which is what every console chat is. Migration 035's
+	// unique index is PARTIAL for exactly that reason, and excludes BOTH
+	// spellings of "no name": rows written before 035 hold NULL, rows written
+	// since hold ''.
+	Name string `json:"name,omitempty" gorm:"type:text;<-:create"`
 	// CreateError is WHY this session failed to start, recorded by the Runner
 	// when a create fails and cleared when one succeeds.
 	//

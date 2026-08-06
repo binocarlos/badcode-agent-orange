@@ -139,6 +139,63 @@ func (m *MCPServers) Scan(value any) error {
 	return nil
 }
 
+// Session naming (migration 035). A name is OPTIONAL; when present it is the
+// project-unique, immutable handle described on Session.Name.
+var (
+	// ErrSessionNameTaken means another session in the same project already
+	// holds this name. Terminal, never retryable: the caller must pick another
+	// name (the HTTP layer answers 409).
+	ErrSessionNameTaken = errors.New("agentdb: session name already taken")
+	// ErrSessionNameInvalid wraps every name-shape rejection (400, not 409 —
+	// re-trying with the same name will never work).
+	ErrSessionNameInvalid = errors.New("agentdb: invalid session name")
+	// ErrSessionNotFound is returned by GetSessionByName for a name that is
+	// absent, malformed, or in another project — deliberately the same answer
+	// for all three, so a caller cannot probe another project's names.
+	ErrSessionNotFound = errors.New("agentdb: session not found")
+)
+
+// sessionNameRe is the same kebab-case shape as worker names, skill names and
+// project ids (`validProjectID` in cmd/agentd/googleauth.go). Names travel in
+// URL paths — /embed/session/<name>, /agent/sessions/by-name/<name> — so the
+// charset is deliberately the smallest one that is unambiguous in a path
+// segment: nothing to escape, nothing to traverse with, no case to fold.
+var sessionNameRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// maxSessionNameLen matches the limit the project map applies to project ids.
+const maxSessionNameLen = 64
+
+// ValidateSessionName is the identity rule, exported so the HTTP layer can
+// refuse a bad name before a session is provisioned rather than after. The
+// empty string is NOT a valid name — "unnamed" is expressed by not calling
+// this, and letting "" through here would make the empty name a lookup key that
+// matches every anonymous chat session in the project.
+func ValidateSessionName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: name is required", ErrSessionNameInvalid)
+	}
+	if len(name) > maxSessionNameLen {
+		return fmt.Errorf("%w: name is %d chars, max %d", ErrSessionNameInvalid, len(name), maxSessionNameLen)
+	}
+	if !sessionNameRe.MatchString(name) {
+		return fmt.Errorf("%w: name %q is not kebab-case (lowercase letters, digits and single hyphens)", ErrSessionNameInvalid, name)
+	}
+	return nil
+}
+
+// isSessionNameCollision reports whether err is migration 035's unique-index
+// violation rather than some other unique violation — chiefly a duplicate
+// primary key, which the caller must not be told is a name clash. Both backends
+// name the offending index or column in the message, and only this index has
+// "name" in it (the table is `agent_sessions`, the PK index `agent_sessions_pkey`
+// — neither contains the substring). Same shape as isConfigSeqCollision.
+func isSessionNameCollision(err error) bool {
+	if !isUniqueViolation(err) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "name")
+}
+
 func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, error) {
 	if session.ID == "" {
 		session.ID = uuid.New().String()
@@ -152,10 +209,50 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 	if session.UserEmail == "" {
 		return nil, fmt.Errorf("user_email is required")
 	}
+	if session.Name != "" {
+		if err := ValidateSessionName(session.Name); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.gdb.WithContext(ctx).Create(session).Error; err != nil {
+		// Uniqueness is the index's job, not a prior SELECT's: two racing
+		// creates of one name would both pass a pre-check and one of them would
+		// still have to lose here.
+		if session.Name != "" && isSessionNameCollision(err) {
+			return nil, fmt.Errorf("%w: %q in project %q", ErrSessionNameTaken, session.Name, session.Customer)
+		}
 		return nil, fmt.Errorf("failed to create agent session: %w", err)
 	}
 	return session, nil
+}
+
+// GetSessionByName resolves a project-scoped session name to its row. It is the
+// only lookup an embedding application needs: it stores the name it chose and
+// never has to persist a session uuid.
+//
+// There is no by-name UPDATE or DELETE counterpart, and no rename anywhere in
+// this store — see Session.Name.
+func (s *Store) GetSessionByName(ctx context.Context, customer, name string) (*Session, error) {
+	if customer == "" {
+		// A caller bug, not a miss: an unscoped name lookup would cross the
+		// tenancy boundary the (customer, name) index is built on.
+		return nil, fmt.Errorf("cannot get agent session by name without customer")
+	}
+	if err := ValidateSessionName(name); err != nil {
+		// A name that cannot exist is reported as absent rather than invalid:
+		// the caller's only sane response is the same 404 either way, and it
+		// keeps "" from matching the unnamed rows.
+		return nil, fmt.Errorf("%w: %q in project %q", ErrSessionNotFound, name, customer)
+	}
+	var session Session
+	err := s.gdb.WithContext(ctx).Where("customer = ? AND name = ?", customer, name).First(&session).Error
+	if err != nil {
+		if isNotFound(err) {
+			return nil, fmt.Errorf("%w: %q in project %q", ErrSessionNotFound, name, customer)
+		}
+		return nil, fmt.Errorf("failed to get agent session by name: %w", err)
+	}
+	return &session, nil
 }
 
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {

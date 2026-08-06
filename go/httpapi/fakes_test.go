@@ -131,6 +131,7 @@ func (s stubStore) ClearWorkerBinding(context.Context, string) error       { ret
 type stubArtifacts struct {
 	listFn func(context.Context, string) ([]*artifacts.Artifact, error)
 	saveFn func(context.Context, *artifacts.Artifact, io.Reader) (*artifacts.Artifact, error)
+	loadFn func(context.Context, string) (*artifacts.Artifact, io.ReadCloser, error)
 }
 
 func (s *stubArtifacts) List(ctx context.Context, sessionID string) ([]*artifacts.Artifact, error) {
@@ -147,7 +148,10 @@ func (s *stubArtifacts) Save(ctx context.Context, art *artifacts.Artifact, conte
 	return art, nil
 }
 
-func (s *stubArtifacts) Load(context.Context, string) (*artifacts.Artifact, io.ReadCloser, error) {
+func (s *stubArtifacts) Load(ctx context.Context, artifactID string) (*artifacts.Artifact, io.ReadCloser, error) {
+	if s.loadFn != nil {
+		return s.loadFn(ctx, artifactID)
+	}
 	return nil, nil, nil
 }
 

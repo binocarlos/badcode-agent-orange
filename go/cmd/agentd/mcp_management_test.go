@@ -40,6 +40,9 @@ type fakeManagementStore struct {
 	settings      map[string]*agentdb.ProjectSettings
 	subscriptions map[string]*agentdb.Subscription // project|id
 	schedules     map[string]*agentdb.Schedule
+	// namedSessions keys session names by project|name — a session-mode
+	// schedule's target is checked against them at write time (T9).
+	namedSessions map[string]*agentdb.Session
 	memories      []*agentdb.Memory
 	// events records every project event the tools emitted — the
 	// worker.freeze_refused signal is asserted against this (F1).
@@ -62,6 +65,7 @@ func newFakeManagementStore() *fakeManagementStore {
 		settings:      map[string]*agentdb.ProjectSettings{},
 		subscriptions: map[string]*agentdb.Subscription{},
 		schedules:     map[string]*agentdb.Schedule{},
+		namedSessions: map[string]*agentdb.Session{},
 		writes:        map[string][]agentdb.ConfigWrite{},
 	}
 }
@@ -207,6 +211,22 @@ func (f *fakeManagementStore) DeleteSubscription(_ context.Context, project, id 
 	f.note("DeleteSubscription", cw)
 	delete(f.subscriptions, key(project, id))
 	return nil
+}
+
+func (f *fakeManagementStore) addNamedSession(project, name string) *agentdb.Session {
+	sess := &agentdb.Session{ID: f.id("sess"), Customer: project, Name: name}
+	f.namedSessions[key(project, name)] = sess
+	return sess
+}
+
+func (f *fakeManagementStore) GetSessionByName(_ context.Context, customer, name string) (*agentdb.Session, error) {
+	f.scope(customer)
+	s, ok := f.namedSessions[key(customer, name)]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q in project %q", agentdb.ErrSessionNotFound, name, customer)
+	}
+	copied := *s
+	return &copied, nil
 }
 
 func (f *fakeManagementStore) ListSchedules(_ context.Context, project string) ([]*agentdb.Schedule, error) {
@@ -1038,6 +1058,15 @@ func TestManagementToolsScheduleCreateValidates(t *testing.T) {
 		{"garbage cron", map[string]any{"worker": "email-answerer", "cron": "every morning", "input": "x"}, "cron"},
 		{"blank input", map[string]any{"worker": "email-answerer", "cron": "0 10 * * *", "input": "  "}, "input is required"},
 		{"unknown worker", map[string]any{"worker": "nobody", "cron": "0 10 * * *", "input": "x"}, "no worker"},
+		// The T9 XOR, refused with a sentence the model can act on rather than a
+		// schema failure it cannot read.
+		{"no target", map[string]any{"cron": "0 10 * * *", "input": "x"}, "either worker"},
+		{"both targets", map[string]any{
+			"worker": "email-answerer", "target_session": "hypothesis-a", "cron": "0 10 * * *", "input": "x",
+		}, "not both"},
+		{"unknown session", map[string]any{
+			"target_session": "nobody-home", "cron": "0 10 * * *", "input": "x",
+		}, "no session named"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1053,6 +1082,54 @@ func TestManagementToolsScheduleCreateValidates(t *testing.T) {
 				t.Fatalf("nothing may be stored")
 			}
 		})
+	}
+}
+
+// TestManagementToolsScheduleCreateSessionMode: a worker may put a long-lived
+// session on a cron (T9), and the row it writes carries the session name instead
+// of a worker. The tool description is asserted too, because what a resumed
+// session does and does not refresh is the single thing a model is most likely
+// to assume backwards — and the description is the only place it can read it.
+func TestManagementToolsScheduleCreateSessionMode(t *testing.T) {
+	store, tools := seededTools(t)
+	store.addNamedSession("acme", "hypothesis-a")
+
+	res, err := invokeTool(t, tools, "schedule_create", testCaller(), map[string]any{
+		"target_session": "hypothesis-a",
+		"cron":           "0 7 * * *",
+		"input":          "read the newest research memory and update your view",
+	})
+	if err != nil {
+		t.Fatalf("schedule_create: %v", err)
+	}
+	// Asserted on the JSON the model actually sees, not on the Go struct: a
+	// field that never made it onto the wire would be invisible otherwise.
+	if res["target_session"] != "hypothesis-a" || res["worker"] != "" {
+		t.Fatalf("session mode did not round-trip through the tool: %+v", res)
+	}
+
+	var created *agentdb.Schedule
+	for _, s := range store.schedules {
+		created = s
+	}
+	if created == nil || created.TargetSession != "hypothesis-a" || created.Worker != "" {
+		t.Fatalf("stored row is not a session schedule: %+v", created)
+	}
+
+	// The description must state the three refresh answers. A model that thinks a
+	// resumed session picked up a new tool, or that editing a prompt is how you
+	// hand it today's numbers, writes a loop that silently never works.
+	var desc string
+	for _, tool := range tools {
+		if tool.Name == "schedule_create" {
+			desc = tool.Description
+		}
+	}
+	for _, want := range []string{"target_session", "every single turn", "fixed when the container",
+		"Briefings are assembled", "memory_current"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("schedule_create's description must explain %q:\n%s", want, desc)
+		}
 	}
 }
 

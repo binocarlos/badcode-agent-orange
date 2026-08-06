@@ -436,7 +436,13 @@ func TestSchedulesValidation(t *testing.T) {
 		wantErr string
 	}{
 		{"no project", &Schedule{Worker: "w", Cron: "* * * * *"}, "project is required"},
-		{"no worker", &Schedule{Project: "acme", Cron: "* * * * *"}, "worker is required"},
+		// Was "worker is required" before migration 036 gave a schedule a second
+		// kind of target; the rule is now the XOR below, not a required field.
+		{"no target", &Schedule{Project: "acme", Cron: "* * * * *"}, "must target either a worker or a session"},
+		{"both targets", &Schedule{Project: "acme", Worker: "w", TargetSession: "hypothesis-a", Cron: "* * * * *"},
+			"never both"},
+		{"target session is not a session name", &Schedule{Project: "acme", TargetSession: "Hypothesis A", Cron: "* * * * *"},
+			"kebab-case"},
 		{"no cron", &Schedule{Project: "acme", Worker: "w"}, "cron is required"},
 		{"unparseable cron", &Schedule{Project: "acme", Worker: "w", Cron: "0 99 * * *"}, "out of range"},
 		{"nickname cron", &Schedule{Project: "acme", Worker: "w", Cron: "@hourly"}, "nicknames"},
@@ -648,5 +654,98 @@ func TestSchedulesFiringValidation(t *testing.T) {
 				t.Fatalf("expected a refusal")
 			}
 		})
+	}
+}
+
+// ── Session-mode schedules (T9, migration 036) ──────────────────────────────
+
+// TestSessionScheduleRoundTrips is the store half of session mode: a schedule
+// with no worker and a session NAME persists, reads back with both fields
+// intact, and survives an ordinary edit of the cron — which is the case that
+// would silently demote it to a targetless row if UpdateSchedule forgot to copy
+// the column.
+func TestSessionScheduleRoundTrips(t *testing.T) {
+	s := newScheduleStore(t)
+	ctx := context.Background()
+
+	created, err := s.CreateSchedule(ctx,
+		NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "research the hypothesis and update the summary"),
+		ConfigWrite{})
+	if err != nil {
+		t.Fatalf("create session schedule: %v", err)
+	}
+	if created.Worker != "" || created.TargetSession != "hypothesis-a" {
+		t.Fatalf("session mode must store a target session and no worker: %+v", created)
+	}
+
+	got, err := s.GetSchedule(ctx, "acme", created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.TargetSession != "hypothesis-a" {
+		t.Fatalf("target session did not persist: %+v", got)
+	}
+
+	got.Cron = "0 8 * * *"
+	updated, err := s.UpdateSchedule(ctx, got, ConfigWrite{})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.TargetSession != "hypothesis-a" || updated.Worker != "" {
+		t.Fatalf("an edit of the cron must not change the target: %+v", updated)
+	}
+	reread, _ := s.GetSchedule(ctx, "acme", created.ID)
+	if reread.TargetSession != "hypothesis-a" || reread.Cron != "0 8 * * *" {
+		t.Fatalf("update did not persist: %+v", reread)
+	}
+}
+
+// TestScheduleCannotBeUpdatedIntoTwoTargets: the XOR is enforced on the update
+// path too, not only on create — pointing an existing session schedule at a
+// worker without clearing the session is the realistic way a row ends up
+// ambiguous.
+func TestScheduleCannotBeUpdatedIntoTwoTargets(t *testing.T) {
+	s := newScheduleStore(t)
+	ctx := context.Background()
+
+	created, err := s.CreateSchedule(ctx,
+		NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "wake up"), ConfigWrite{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created.Worker = "reviewer"
+	if _, err := s.UpdateSchedule(ctx, created, ConfigWrite{}); !errors.Is(err, ErrScheduleInvalid) {
+		t.Fatalf("want ErrScheduleInvalid for a two-target update, got %v", err)
+	}
+	// And the stored row is untouched.
+	reread, _ := s.GetSchedule(ctx, "acme", created.ID)
+	if reread.Worker != "" || reread.TargetSession != "hypothesis-a" {
+		t.Fatalf("a refused update wrote anyway: %+v", reread)
+	}
+}
+
+// TestScheduleCanBeSwitchedBetweenModes pins the one hazard of the `default:”`
+// gorm tag on TargetSession: GORM omits a zero-valued field when a default is
+// declared, and if that applied to updates a schedule could never be switched
+// back out of session mode — the cleared target would silently persist as the
+// old name. Both fields move in one write, which is the only way the XOR
+// permits a mode change.
+func TestScheduleCanBeSwitchedBetweenModes(t *testing.T) {
+	s := newScheduleStore(t)
+	ctx := context.Background()
+
+	created, err := s.CreateSchedule(ctx,
+		NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "wake up"), ConfigWrite{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created.TargetSession = ""
+	created.Worker = "reviewer"
+	if _, err := s.UpdateSchedule(ctx, created, ConfigWrite{}); err != nil {
+		t.Fatalf("switch to worker mode: %v", err)
+	}
+	got, _ := s.GetSchedule(ctx, "acme", created.ID)
+	if got.TargetSession != "" || got.Worker != "reviewer" {
+		t.Fatalf("clearing the target did not persist: %+v", got)
 	}
 }

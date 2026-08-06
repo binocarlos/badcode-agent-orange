@@ -232,3 +232,64 @@ func TestSessionAwaitsHumanLivePG(t *testing.T) {
 		t.Fatalf("a resolved request is not outstanding: %v err=%v", awaits, err)
 	}
 }
+
+// TestSchedulesLivePGTargetSession is migration 036's live half. The sqlite
+// tests prove the XOR in Go and nothing about the column: only Postgres runs
+// the ALTER, and only Postgres can tell us that the pre-036 rows this deployment
+// already holds came through it with a usable value rather than a NULL that
+// GORM would scan into a string and fail on.
+func TestSchedulesLivePGTargetSession(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	project := liveScheduleProject(t, s)
+
+	// A worker-mode row written around the store — i.e. exactly the shape every
+	// schedule in the database had before 036 — must read back with an empty
+	// target, not an error.
+	legacyID := uuid.New().String()
+	if err := s.DB().WithContext(ctx).Exec(
+		`INSERT INTO schedules (id, project, worker, cron, input, enabled, created_at, updated_at)
+		 VALUES (?, ?, 'tweeter', '* * * * *', 'tweet', true, 0, 0)`, legacyID, project).Error; err != nil {
+		t.Fatalf("raw insert (is the 036 DEFAULT missing?): %v", err)
+	}
+	legacy, err := s.GetSchedule(ctx, project, legacyID)
+	if err != nil {
+		t.Fatalf("get the pre-036 row: %v", err)
+	}
+	if legacy.TargetSession != "" {
+		t.Fatalf("a worker schedule must have no target session: %+v", legacy)
+	}
+
+	created, err := s.CreateSchedule(ctx,
+		NewSessionSchedule(project, "hypothesis-a", "0 7 * * *", "research and update"), ConfigWrite{})
+	if err != nil {
+		t.Fatalf("create session schedule: %v", err)
+	}
+	got, err := s.GetSchedule(ctx, project, created.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.TargetSession != "hypothesis-a" || got.Worker != "" {
+		t.Fatalf("session mode did not round-trip through Postgres: %+v", got)
+	}
+
+	// ListEnabledSchedules is what the scheduler polls, and it is the read that
+	// has to carry the target — a firing that lost it would silently become a
+	// targetless worker schedule.
+	enabled, err := s.ListEnabledSchedules(ctx)
+	if err != nil {
+		t.Fatalf("list enabled: %v", err)
+	}
+	found := false
+	for _, sch := range enabled {
+		if sch.ID == created.ID {
+			found = true
+			if sch.TargetSession != "hypothesis-a" {
+				t.Fatalf("the scheduler's own read lost the target: %+v", sch)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("the session schedule is not in the scheduler's poll")
+	}
+}

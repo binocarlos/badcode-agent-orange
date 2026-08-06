@@ -388,7 +388,11 @@ func main() {
 		})
 		go rt.Run(ctx)
 
-		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate})
+		// Sessions is the Runner, narrowed to SendMessage+Status
+		// (sessionMessenger): a session-mode schedule wakes an EXISTING named
+		// session instead of dispatching a job, and that is the whole extra
+		// capability it gets. Deliberately not the whole *Runner — see the seam.
+		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate, Sessions: runner})
 		go sched.Run(ctx)
 
 		attention = newAttentionService(agentDB, permalinks)

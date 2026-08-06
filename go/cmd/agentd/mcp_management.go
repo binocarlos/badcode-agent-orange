@@ -105,6 +105,9 @@ type managementStore interface {
 	CreateSchedule(ctx context.Context, sch *agentdb.Schedule, cw agentdb.ConfigWrite) (*agentdb.Schedule, error)
 	UpdateSchedule(ctx context.Context, sch *agentdb.Schedule, cw agentdb.ConfigWrite) (*agentdb.Schedule, error)
 	DeleteSchedule(ctx context.Context, project, id string, cw agentdb.ConfigWrite) error
+	// A session-mode schedule's target, checked at write time the same way a
+	// worker target is (T9).
+	GetSessionByName(ctx context.Context, customer, name string) (*agentdb.Session, error)
 	// the prompt-revision memory (§9)
 	CreateMemory(ctx context.Context, m *agentdb.Memory, embedding []float32) (*agentdb.Memory, bool, error)
 	// the worker.freeze_refused signal (F1): a refused write against a frozen
@@ -240,18 +243,22 @@ func toSubscriptionRecord(s *agentdb.Subscription) subscriptionRecord {
 }
 
 type scheduleRecord struct {
-	ID        string `json:"id"`
-	Worker    string `json:"worker"`
-	Cron      string `json:"cron"`
-	Input     string `json:"input"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
+	ID     string `json:"id"`
+	Worker string `json:"worker"`
+	// TargetSession is set on session-mode rows instead of Worker; omitted on
+	// worker rows so a listing does not spend context on a field that is blank
+	// for almost every schedule in almost every project.
+	TargetSession string `json:"target_session,omitempty"`
+	Cron          string `json:"cron"`
+	Input         string `json:"input"`
+	Enabled       bool   `json:"enabled"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
 }
 
 func toScheduleRecord(s *agentdb.Schedule) scheduleRecord {
 	return scheduleRecord{
-		ID: s.ID, Worker: s.Worker, Cron: s.Cron, Input: s.Input,
+		ID: s.ID, Worker: s.Worker, TargetSession: s.TargetSession, Cron: s.Cron, Input: s.Input,
 		Enabled: s.Enabled, CreatedAt: s.CreatedAt, UpdatedAt: s.UpdatedAt,
 	}
 }
@@ -393,26 +400,59 @@ The subscription as it last stood is echoed back and kept in the config log, so 
 To pause routing to a worker without touching the wiring, disable the worker ` +
 	`instead (worker_update with enabled:false).`
 
-const scheduleListDescription = `List this project's schedules: which worker runs on which cron, ` +
+const scheduleListDescription = `List this project's schedules: what runs on which cron, ` +
 	`and — the important column — what INPUT each firing delivers.
+
+A row carries either a worker (each firing starts a fresh job) or a ` +
+	`target_session (each firing sends the input to that existing session as its ` +
+	`next message).
 
 Two rows targeting one worker with different inputs ("10:00 → write the morning ` +
 	`tweet", "17:00 → write the evening tweet") is the normal shape, not a ` +
 	`duplicate.`
 
-const scheduleCreateDescription = `Put a worker on a cron: at each firing, start a job for it ` +
-	`whose first message is the input text.
+const scheduleCreateDescription = `Put something on a cron. Give EITHER a worker or a ` +
+	`target_session, never both:
+
+- worker: each firing starts a NEW job — a fresh session in a fresh container — ` +
+	`whose first message is the input text. Use this when the work should start ` +
+	`clean each time.
+- target_session: each firing sends the input text to an EXISTING named session ` +
+	`as its next message, continuing that same conversation. Use this when the ` +
+	`history matters, or when a human is reading along.
 
 cron is a standard 5-field expression (minute hour day-of-month month ` +
 	`day-of-week) in the stack's local time zone. Nicknames like @daily are ` +
 	`refused — write "0 0 * * *".
 
-input is the centre of gravity: the schedule says not only WHEN the worker runs ` +
-	`but WHAT IT IS TOLD each time. Write it as an instruction, not a label.
+input is the centre of gravity: the schedule says not only WHEN it runs but ` +
+	`WHAT IT IS TOLD each time. Write it as an instruction, not a label.
 
 Firings missed while the system was down are skipped, never replayed — a ` +
 	`tweet-writer must not wake to a backlog of stale mornings. A firing for a ` +
-	`worker already at its max_instances queues rather than starting a second copy.`
+	`worker already at its max_instances queues rather than starting a second copy. ` +
+	`A firing for a session that is already mid-turn is SKIPPED, not queued.
+
+WHAT WAKING A SESSION DOES AND DOES NOT REFRESH — worth getting right, because ` +
+	`it is easy to assume backwards. If the session was archived it is restored ` +
+	`first: its files, its workspace and its conversation history all come back. ` +
+	`Then:
+
+- Its SYSTEM PROMPT: a chat session (one a human started) re-resolves its prompt ` +
+	`from the live configuration on every single turn, so edits you make to the ` +
+	`project prompt or to its worker's prompt DO reach it at the next firing. A ` +
+	`session that was itself started by a dispatched job froze its composed prompt ` +
+	`when it was created and keeps that text forever.
+- Its TOOLS: neither kind refreshes. The MCP tool set is fixed when the container ` +
+	`is built, and a restore rebuilds the same container. Adding a tool to a ` +
+	`project does not reach a session that already exists.
+- Its BRIEFING: neither kind gets one. Briefings are assembled at job composition ` +
+	`time, so a chat session has never had one and waking it does not create one.
+
+So the way fresh state reaches a long-lived session is the memory tools AT ` +
+	`MESSAGE TIME: write what you learned with memory_write, and tell the session ` +
+	`in the input to read it with memory_current. Do not try to deliver state by ` +
+	`editing a prompt and expecting a resumed session to have absorbed it.`
 
 const scheduleUpdateDescription = `Change a schedule's fields: worker, cron, input, enabled. Pass ` +
 	`only what you want to change.
@@ -620,18 +660,31 @@ func (m *managementTools) tools() []*mcpTool {
 			Name:        "schedule_create",
 			Description: scheduleCreateDescription,
 			InputSchema: objectSchema(map[string]any{
-				"worker": map[string]any{"type": "string", "description": "The worker to start a job for."},
+				"worker": map[string]any{
+					"type":        "string",
+					"description": "The worker to start a fresh job for. Give this OR target_session, not both.",
+				},
+				"target_session": map[string]any{
+					"type": "string",
+					"description": "The NAME of an existing session to send the input to as its next " +
+						"message, continuing that conversation. Give this OR worker, not both.",
+				},
 				"cron": map[string]any{
 					"type":        "string",
 					"description": "Standard 5-field cron expression, stack-local time. Nicknames (@daily) are refused.",
 				},
 				"input": map[string]any{
-					"type":        "string",
-					"description": "What the worker is told at each firing — this becomes the job's first message.",
+					"type": "string",
+					"description": "What is delivered at each firing — the job's first message, or the " +
+						"session's next message.",
 				},
 				"enabled":   map[string]any{"type": "boolean", "description": "Optional; defaults to true."},
 				"rationale": map[string]any{"type": "string", "description": "Optional commit-message why."},
-			}, []string{"worker", "cron", "input"}),
+				// Neither target is required at the schema level, because exactly one
+				// is: JSON Schema can express that with oneOf, but the harness flattens
+				// required lists, so the XOR is enforced in the handler with an error
+				// the model can act on instead of a validation failure it cannot read.
+			}, []string{"cron", "input"}),
 			Handler: m.scheduleCreate,
 		},
 		{
@@ -1428,11 +1481,12 @@ func (m *managementTools) scheduleList(ctx context.Context, caller mcpCaller, ra
 }
 
 type scheduleCreateArgs struct {
-	Worker    string `json:"worker"`
-	Cron      string `json:"cron"`
-	Input     string `json:"input"`
-	Enabled   *bool  `json:"enabled"`
-	Rationale string `json:"rationale"`
+	Worker        string `json:"worker"`
+	TargetSession string `json:"target_session"`
+	Cron          string `json:"cron"`
+	Input         string `json:"input"`
+	Enabled       *bool  `json:"enabled"`
+	Rationale     string `json:"rationale"`
 }
 
 func (m *managementTools) scheduleCreate(ctx context.Context, caller mcpCaller, raw json.RawMessage) (any, error) {
@@ -1441,20 +1495,43 @@ func (m *managementTools) scheduleCreate(ctx context.Context, caller mcpCaller, 
 		return nil, err
 	}
 	worker := strings.TrimSpace(args.Worker)
-	if worker == "" {
-		return nil, errors.New("worker is required")
+	targetSession := strings.TrimSpace(args.TargetSession)
+	// The XOR, answered here rather than by the store, so the model gets a
+	// sentence telling it what to do next instead of a validation error.
+	switch {
+	case worker == "" && targetSession == "":
+		return nil, errors.New("give either worker (each firing starts a fresh job) or target_session " +
+			"(each firing sends the input to that existing session as its next message)")
+	case worker != "" && targetSession != "":
+		return nil, errors.New("give worker OR target_session, not both: a firing either starts a new " +
+			"job or continues an existing session, and a row asking for both has no meaning")
 	}
-	if _, err := m.store.GetWorker(ctx, caller.Project, worker); err != nil {
-		if errors.Is(err, agentdb.ErrWorkerNotFound) {
-			return nil, fmt.Errorf("no worker %q in this project — create it first with worker_create", worker)
+	if worker != "" {
+		if _, err := m.store.GetWorker(ctx, caller.Project, worker); err != nil {
+			if errors.Is(err, agentdb.ErrWorkerNotFound) {
+				return nil, fmt.Errorf("no worker %q in this project — create it first with worker_create", worker)
+			}
+			return nil, err
 		}
-		return nil, err
+	}
+	if targetSession != "" {
+		// Checked here for the same reason the worker is: a schedule pointed at
+		// a session that does not exist disables itself the first time it comes
+		// due, and finding that out at 03:00 is worse than being told now.
+		if _, err := m.store.GetSessionByName(ctx, caller.Project, targetSession); err != nil {
+			if errors.Is(err, agentdb.ErrSessionNotFound) {
+				return nil, fmt.Errorf("no session named %q in this project: a schedule pointed at a "+
+					"missing session is disabled the first time it comes due", targetSession)
+			}
+			return nil, err
+		}
 	}
 	if strings.TrimSpace(args.Input) == "" {
-		return nil, errors.New("input is required: it is what the worker is TOLD at each firing, " +
-			"and it becomes the job's first message")
+		return nil, errors.New("input is required: it is what is DELIVERED at each firing — the job's " +
+			"first message, or the session's next message")
 	}
 	sch := agentdb.NewSchedule(caller.Project, worker, strings.TrimSpace(args.Cron), args.Input)
+	sch.TargetSession = targetSession
 	if args.Enabled != nil {
 		sch.Enabled = *args.Enabled
 	}
