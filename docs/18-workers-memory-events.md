@@ -226,8 +226,11 @@ A delivery for a **disabled** worker also records `failed`. Since `worker_update
 is the intended way to retire a worker (there is no `worker_delete` tool), every event that
 matches a retired worker's subscription keeps adding a failed-looking row to job history for as
 long as that subscription exists. Delete the subscription too, or expect the noise. A failed
-delivery records **no reason** — `event_deliveries` has no such column, so the cause is only in
-agentd's log (`[dispatch] delivery … failed: …`).
+delivery records **why** it failed: `event_deliveries.failure_reason` carries the same sentence
+agentd logs (`[dispatch] delivery … failed: …`), it is served on `GET /agent/deliveries`, and the
+console shows it on the Desk's trouble stack and in the job table. Rows that failed before that
+column existed (engine migration 037) carry an empty reason, and the UI says so rather than
+inventing one.
 
 `GET /agent/events` and `GET /agent/deliveries` are the read paths the UI's events view uses.
 
@@ -444,8 +447,8 @@ Stated plainly because each one will otherwise be discovered the hard way.
   one whose bytes cannot be materialised. The delivery is marked `failed` and **no session is
   created** — §13.3 forbids falling back to the project default, because a worker that was pointed
   at an environment and quietly got a different one is the drift §13 exists to prevent. The reason
-  is in agentd's log (`[dispatch] delivery … failed: compose: …`); the delivery row itself carries
-  no reason column.
+  is in agentd's log (`[dispatch] delivery … failed: compose: …`) and on the delivery row itself
+  (`failure_reason`, migration 037).
 - **"Chat with this worker" opens a plain session.** The UI sends a `worker` field; the
   create-session HTTP body has no such field, so it is dropped. The result is an uncomposed
   session — no core preamble, no worker prompt, no briefing, **and no core MCP tools** — never a

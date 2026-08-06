@@ -264,8 +264,14 @@ type EventDelivery struct {
 	// (event_id, subscription_id) idempotency index covers both paths unchanged.
 	ScheduleID string `json:"schedule_id" gorm:"type:varchar(36)"`
 	// Status is one of DeliveryStatuses.
-	Status    string `json:"status" gorm:"type:varchar(30);not null"`
-	StartedAt int64  `json:"started_at"`
+	Status string `json:"status" gorm:"type:varchar(30);not null"`
+	// FailureReason is why this job could not start or did not finish — the
+	// string dispatch already formats and used only to log (RD20/RD15). Empty
+	// whenever nothing failed, and empty on an older row that failed before
+	// migration 037; "" and "no reason recorded" are the same fact and the UI
+	// says so rather than inventing one. Added by migration 037.
+	FailureReason string `json:"failure_reason" gorm:"column:failure_reason;type:text"`
+	StartedAt     int64  `json:"started_at"`
 	EndedAt   int64  `json:"ended_at"`
 	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
@@ -716,6 +722,12 @@ func (s *Store) findDeliveryPair(ctx context.Context, eventID, subscriptionID st
 type DeliveryStatusUpdate struct {
 	Status    string
 	SessionID string
+	// FailureReason is written when non-empty, exactly like SessionID: a caller
+	// that has no reason must not erase one an earlier transition recorded. The
+	// only way to clear it is a transition to a NON-failed status, which does so
+	// deliberately — a delivery that succeeded on a later attempt must not still
+	// show why an earlier one did not (RD20).
+	FailureReason string
 }
 
 // UpdateDeliveryStatus moves a delivery through the vocabulary and stamps the
@@ -741,6 +753,13 @@ func (s *Store) UpdateDeliveryStatus(ctx context.Context, project, id string, u 
 	d.Status = u.Status
 	if u.SessionID != "" {
 		d.SessionID = u.SessionID
+	}
+	if u.FailureReason != "" {
+		d.FailureReason = u.FailureReason
+	} else if u.Status != DeliveryFailed {
+		// Not failed ⇒ no reason. Leaving a stale one behind would make a green
+		// row carry a red explanation, which is a worse lie than saying nothing.
+		d.FailureReason = ""
 	}
 	now := eventsNow()
 	if u.Status == DeliveryRunning && d.StartedAt == 0 {

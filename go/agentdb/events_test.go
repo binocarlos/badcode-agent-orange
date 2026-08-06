@@ -549,6 +549,64 @@ func TestDeliveriesLifecycleTimestamps(t *testing.T) {
 	}
 }
 
+// TestDeliveryFailureReason pins RD20's column: the reason dispatch already
+// knows must survive the write and come back out of the store, an omitted
+// reason must not erase a recorded one, and a delivery that stops being failed
+// must not keep carrying a red explanation on a green row.
+func TestDeliveryFailureReason(t *testing.T) {
+	s := newEventStore(t)
+	ctx := context.Background()
+	ev := seedEvent(t, s, "acme", "email.received", "hello")
+	sub := seedSubscription(t, s, "acme", "email.received", "answerer")
+	d, _, err := s.EnsureDelivery(ctx, &EventDelivery{
+		Project: "acme", EventID: ev.ID, SubscriptionID: sub.ID,
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if d.FailureReason != "" {
+		t.Fatalf("a pending delivery must carry no reason: %+v", d)
+	}
+
+	const reason = "start job: host port pool is exhausted"
+	failed, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID,
+		DeliveryStatusUpdate{Status: DeliveryFailed, FailureReason: reason})
+	if err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if failed.FailureReason != reason {
+		t.Fatalf("failure_reason = %q, want %q", failed.FailureReason, reason)
+	}
+
+	// Read back through the list surface the API serves — a reason that only
+	// exists on the returned struct would never reach a browser.
+	rows, err := s.ListDeliveries(ctx, DeliveryQuery{Project: "acme", Status: DeliveryFailed})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FailureReason != reason {
+		t.Fatalf("listed rows lost the reason: %+v", rows)
+	}
+
+	// A later failed transition that carries no reason keeps the one recorded.
+	again, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID, DeliveryStatusUpdate{Status: DeliveryFailed})
+	if err != nil {
+		t.Fatalf("re-fail: %v", err)
+	}
+	if again.FailureReason != reason {
+		t.Fatalf("an omitted reason must not erase one: %q", again.FailureReason)
+	}
+
+	// Not failed any more ⇒ no reason.
+	ok, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID, DeliveryStatusUpdate{Status: DeliveryOK})
+	if err != nil {
+		t.Fatalf("ok: %v", err)
+	}
+	if ok.FailureReason != "" {
+		t.Fatalf("a non-failed delivery must carry no reason: %q", ok.FailureReason)
+	}
+}
+
 // TestDeliveriesFiringCount covers what max_firings_per_hour is measured
 // against: deliveries that consumed a firing, excluding the rate_limited rows
 // that record refusals.

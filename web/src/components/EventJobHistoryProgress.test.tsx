@@ -25,6 +25,7 @@ function delivery(over: Partial<EventDelivery>): EventDelivery {
     subscription_id: 's1',
     session_id: 'sess-1',
     status: 'running',
+    failure_reason: '',
     started_at: NOW - 300,
     ended_at: 0,
     created_at: NOW - 300,
@@ -169,5 +170,27 @@ describe('a finished job', () => {
     // And it does not tick: a finished row has no step line either.
     expect(screen.queryByTestId('job-step-line')).toBeNull()
     expect(within(screen.getByTestId('job-produced').closest('td')!).getByText('open')).toBeTruthy()
+  })
+})
+
+// RD20: before the reason reached this table, the answer to "why did my worker
+// fail?" was `docker compose logs agentd`.
+describe('a failed job', () => {
+  it('shows the reason the engine recorded', async () => {
+    renderTable(
+      delivery({
+        status: 'failed',
+        ended_at: NOW - 60,
+        failure_reason: 'start job: host port pool is exhausted',
+      }),
+    )
+    const reason = await screen.findByTestId('job-failure-reason')
+    expect(reason.textContent).toBe('start job: host port pool is exhausted')
+  })
+
+  it('renders no reason line when none was recorded', async () => {
+    renderTable(delivery({ status: 'failed', ended_at: NOW - 60, failure_reason: '' }))
+    await screen.findByTestId('job-span')
+    expect(screen.queryByTestId('job-failure-reason')).toBeNull()
   })
 })

@@ -233,6 +233,14 @@ func (f *fakeDispatchStore) UpdateDeliveryStatus(_ context.Context, project, id 
 			if u.SessionID != "" {
 				d.SessionID = u.SessionID
 			}
+			// Mirrors the real store (agentdb.UpdateDeliveryStatus): a reason is
+			// written when given, kept when omitted, and cleared the moment the
+			// row stops being failed.
+			if u.FailureReason != "" {
+				d.FailureReason = u.FailureReason
+			} else if u.Status != agentdb.DeliveryFailed {
+				d.FailureReason = ""
+			}
 			return d, nil
 		}
 	}

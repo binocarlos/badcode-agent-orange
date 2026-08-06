@@ -536,6 +536,52 @@ describe('trouble', () => {
     expect(item.sessionId).toBe('sess-c')
   })
 
+  // RD20: the engine records WHY a delivery failed (migration 037). The Desk
+  // shows the engine's own words; the "no reason" sentence is the fallback for
+  // a row that has none, not the standing answer it used to be.
+  it('shows the recorded failure reason, freshest first', () => {
+    const desk = buildDesk(
+      input({
+        deliveries: [
+          delivery({
+            id: 'f1',
+            status: 'failed',
+            created_at: NOW - 7200,
+            failure_reason: 'start job: worker not found',
+          }),
+          delivery({
+            id: 'f2',
+            status: 'failed',
+            created_at: NOW - 60,
+            failure_reason: 'start job: host port pool is exhausted',
+          }),
+        ],
+        subscriptions: [subscription({ worker: 'invoice-parser' })],
+      }),
+    )
+    expect(desk.trouble[0]!.detail).toBe('start job: host port pool is exhausted')
+  })
+
+  it('never lets a blank reason overwrite one that says something', () => {
+    const desk = buildDesk(
+      input({
+        deliveries: [
+          delivery({
+            id: 'f1',
+            status: 'failed',
+            created_at: NOW - 7200,
+            failure_reason: 'start job: worker not found',
+          }),
+          // Newer, but recorded nothing — an older agentd, or a path that had
+          // no reason to give.
+          delivery({ id: 'f2', status: 'failed', created_at: NOW - 60, failure_reason: '' }),
+        ],
+        subscriptions: [subscription({ worker: 'invoice-parser' })],
+      }),
+    )
+    expect(desk.trouble[0]!.detail).toBe('start job: worker not found')
+  })
+
   it('counts one failure in the singular, and admits when the subscription is gone', () => {
     const desk = buildDesk(
       input({

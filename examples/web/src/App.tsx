@@ -5,6 +5,7 @@ import {
   AgentChat,
   AgentSessionList,
   AutomationPage,
+  CredentialModeBadge,
   DeskPage,
   EventsPage,
   MemoryBrowserPage,
@@ -127,15 +128,26 @@ export default function App() {
   const project = auth?.selectedProject ?? null;
   const projectToken = auth?.projects.find((p) => p.id === project)?.token ?? null;
 
+  // Which model actually answers (RD18). agentd computes it from its own
+  // credentials and reports it on /auth/config; the shell never guesses.
+  const credentialMode = authConfig?.credential_mode ?? null;
+
   const chatConfig = useMemo(() => {
     const token = devMode ? devToken : projectToken;
     return {
       apiBaseUrl: API,
       // Raw token — the chat-ui hook/provider prepend "Bearer " themselves.
       getAuthToken: () => token ?? "",
-      models: [{ id: "claude-opus-4-5", label: "Opus" }],
+      // The id is what the server is asked for; the LABEL must not claim Opus
+      // answered when the offline mock did.
+      models: [
+        {
+          id: "claude-opus-4-5",
+          label: credentialMode === "mock" ? "Opus (mock — no model called)" : "Opus",
+        },
+      ],
     };
-  }, [devMode, devToken, projectToken]);
+  }, [devMode, devToken, projectToken, credentialMode]);
 
   if (authConfig === null) return null; // waiting for /auth/config
 
@@ -148,6 +160,9 @@ export default function App() {
         <AgentChatProvider config={chatConfig}>
           <Box sx={{ display: "flex", height: "100vh" }}>
             <Box sx={{ width: 280, borderRight: 1, borderColor: "divider" }}>
+              <Box sx={{ px: 1.5, py: 1 }}>
+                <CredentialModeBadge mode={credentialMode} />
+              </Box>
               <DevSessionList />
             </Box>
             <Box sx={{ flex: 1 }}><AgentChat /></Box>
@@ -183,6 +198,7 @@ export default function App() {
       <AgentChatProvider key={project} config={chatConfig}>
         <ProjectWorkspace
           auth={auth}
+          credentialMode={credentialMode}
           project={project}
           onSwitchProject={selectProject}
           onCreateProject={createProject}
@@ -203,12 +219,15 @@ export default function App() {
  */
 function ProjectWorkspace({
   auth,
+  credentialMode,
   project,
   onSwitchProject,
   onCreateProject,
   onSignOut,
 }: {
   auth: AuthState;
+  /** "mock" | "api-key" | "subscription" from /auth/config; null when unknown. */
+  credentialMode: string | null;
   project: string;
   onSwitchProject: (projectID: string) => void;
   onCreateProject: (projectID: string) => Promise<void>;
@@ -252,6 +271,11 @@ function ProjectWorkspace({
   return (
     <Box sx={{ display: "flex", height: "100vh" }}>
       <Box sx={{ width: 280, borderRight: 1, borderColor: "divider", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        {/* Which model answers, on every view, permanently (RD18). In mock mode
+            — the default — everything below this line is canned output. */}
+        <Box sx={{ px: 1.5, pt: 1.5 }}>
+          <CredentialModeBadge mode={credentialMode} />
+        </Box>
         <ViewNav view={view} onChange={setView} asks={openAsks} />
         {/* The sidebar stays mounted in every view: it carries the project
             switcher and the session list, which are how you leave a view. */}

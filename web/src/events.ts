@@ -98,6 +98,13 @@ export interface EventDelivery {
   subscription_id: string
   session_id: string
   status: string
+  /**
+   * Why this job failed, as the dispatcher recorded it (RD20 — the column the
+   * engine gained in migration 037). '' when nothing failed, and '' on a row
+   * that failed before the column existed: "no reason recorded" and "no reason"
+   * are the same fact, and the UI says so rather than inventing one.
+   */
+  failure_reason: string
   started_at: number
   ended_at: number
   created_at: number
@@ -164,6 +171,7 @@ export function coerceDelivery(raw: unknown): EventDelivery {
     subscription_id: str(r.subscription_id),
     session_id: str(r.session_id),
     status: str(r.status),
+    failure_reason: str(r.failure_reason),
     started_at: num(r.started_at),
     ended_at: num(r.ended_at),
     created_at: num(r.created_at),

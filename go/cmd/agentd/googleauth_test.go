@@ -484,7 +484,7 @@ func TestAuthConfigHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			authConfigHandler(tt.clientID, tt.password)(rec, httptest.NewRequest(http.MethodGet, "/auth/config", nil))
+			authConfigHandler(tt.clientID, tt.password, credentialModeMock)(rec, httptest.NewRequest(http.MethodGet, "/auth/config", nil))
 			var resp struct {
 				Modes          []string `json:"modes"`
 				GoogleClientID string   `json:"google_client_id"`

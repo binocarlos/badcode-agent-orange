@@ -246,6 +246,19 @@ function JobHistoryRow({
       </TableCell>
       <TableCell>
         <DeliveryStatusChip status={job.status} />
+        {/* Why it failed, from the delivery row itself (RD20). Before the
+            engine recorded it, the only copy was agentd's stdout — which is not
+            an answer you can give a user looking at this table. */}
+        {job.delivery.failure_reason ? (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            data-testid="job-failure-reason"
+          >
+            {job.delivery.failure_reason}
+          </Typography>
+        ) : null}
       </TableCell>
       <TableCell align="right">
         <JobTokensCell sessionId={job.sessionId} session={session} />

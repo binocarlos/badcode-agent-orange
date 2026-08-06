@@ -98,6 +98,7 @@ function job(over: {
       subscription_id: subscription,
       session_id: '',
       status,
+      failure_reason: '',
       started_at: startedAt,
       ended_at: 0,
       created_at: createdAt,
