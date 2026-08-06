@@ -274,9 +274,9 @@ type EventDelivery struct {
 	// says so rather than inventing one. Added by migration 037.
 	FailureReason string `json:"failure_reason" gorm:"column:failure_reason;type:text"`
 	StartedAt     int64  `json:"started_at"`
-	EndedAt   int64  `json:"ended_at"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	EndedAt       int64  `json:"ended_at"`
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (EventDelivery) TableName() string { return "event_deliveries" }
@@ -818,6 +818,82 @@ type DeliveryStatusUpdate struct {
 	// deliberately — a delivery that succeeded on a later attempt must not still
 	// show why an earlier one did not (RD20).
 	FailureReason string
+}
+
+// ErrDeliveryNotPending is returned by ClaimDelivery when the row was not
+// `pending` at the moment of the write — i.e. somebody else claimed it first.
+// It is not a failure: the loser must drop the delivery and do nothing.
+var ErrDeliveryNotPending = errors.New("delivery is not pending")
+
+// ClaimDelivery is the atomic pending→running transition (RD10).
+//
+// UpdateDeliveryStatus is a read-then-Save: two goroutines that both read a
+// `pending` row both write `running`, and BOTH then start a job — the same
+// worker runs twice, which for an outbound action (send the email, post the
+// message) means the user's action happens twice. `DrainPending` really does
+// run from two goroutines in one process (the router poll and the scheduler
+// poll), so this is not a distributed-systems hypothetical.
+//
+// The guard is a single conditional UPDATE with `status = 'pending'` in the
+// WHERE clause. Exactly one writer can see RowsAffected == 1, whatever the
+// interleaving, because the database serialises the row write; every other
+// caller gets ErrDeliveryNotPending and stops. That is the whole mechanism —
+// no in-memory snapshot can substitute for it, because the snapshot is what
+// both racers already agree on.
+//
+// It stamps started_at like the running transition it replaces, and leaves
+// session_id alone: the id does not exist yet at claim time and is written by
+// the caller's OnSessionCreated hook a moment later.
+func (s *Store) ClaimDelivery(ctx context.Context, project, id string) (*EventDelivery, error) {
+	if project == "" || id == "" {
+		return nil, fmt.Errorf("project and id are required")
+	}
+	now := eventsNow()
+	res := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("project = ? AND id = ? AND status = ?", project, id, DeliveryPending).
+		Updates(map[string]any{
+			"status":     DeliveryRunning,
+			"started_at": now,
+			"updated_at": now,
+		})
+	if res.Error != nil {
+		return nil, fmt.Errorf("failed to claim delivery: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// Either the row is gone or another claimer won. Both mean the same
+		// thing to the caller, and neither is an error worth waking anyone.
+		return nil, ErrDeliveryNotPending
+	}
+	var d EventDelivery
+	if err := s.gdb.WithContext(ctx).Where("project = ? AND id = ?", project, id).First(&d).Error; err != nil {
+		return nil, fmt.Errorf("failed to read the claimed delivery: %w", err)
+	}
+	return &d, nil
+}
+
+// ListStaleRunningDeliveries returns deliveries stuck at `running` since before
+// `startedBefore` (unix seconds), across every project, oldest first.
+//
+// It exists because the lease reaper cannot see a wedged delivery (RD7): the
+// reaper's input is `lease_expires_at > 0`, so a job that released its lease
+// and then failed to stamp its terminal status is invisible to it FOREVER,
+// holding one `max_instances` and one `max_concurrent_jobs` slot for the life
+// of the project. Nothing else swept deliveries by age.
+//
+// A row with started_at unset is NOT returned. Every path to `running` stamps
+// it (ClaimDelivery, and UpdateDeliveryStatus before it), so an unstamped
+// running row is a shape this code does not understand — and a sweep that
+// closes rows it does not understand is how a live job gets reported failed.
+func (s *Store) ListStaleRunningDeliveries(ctx context.Context, startedBefore int64, limit int) ([]*EventDelivery, error) {
+	out := []*EventDelivery{}
+	if err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("status = ?", DeliveryRunning).
+		Where("started_at > 0 AND started_at < ?", startedBefore).
+		Order("started_at ASC, id ASC").
+		Limit(clampLimit(limit)).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list stale running deliveries: %w", err)
+	}
+	return out, nil
 }
 
 // UpdateDeliveryStatus moves a delivery through the vocabulary and stamps the

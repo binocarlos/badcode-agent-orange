@@ -41,12 +41,16 @@ type fakeRouterStore struct {
 }
 
 func newFakeRouterStore() *fakeRouterStore {
-	return &fakeRouterStore{
+	f := &fakeRouterStore{
 		fakeDispatchStore: newFakeDispatchStore(),
 		clock:             time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC),
 		sessions:          map[string]*agentdb.Session{},
 		tokens:            map[string]int64{},
 	}
+	// A claim stamps started_at from the test clock, exactly as the real store
+	// stamps it from the database clock — that is what the stale sweep ages.
+	f.claimAt = func() int64 { return f.clock.Unix() }
+	return f
 }
 
 // The fake must satisfy every seam the production wiring binds, or the tests
@@ -256,11 +260,34 @@ func (f *fakeRouterStore) RenewSessionLease(_ context.Context, sessionID string,
 	return nil
 }
 
+// ReleaseSessionLease mirrors the real store's compare-and-set: only a caller
+// that finds the lease HELD may release it, and everyone else is told so. The
+// reaper's at-most-once claim rests on exactly this (agentdb/leases.go).
 func (f *fakeRouterStore) ReleaseSessionLease(_ context.Context, sessionID string) error {
-	if s, ok := f.sessions[sessionID]; ok {
-		s.LeaseExpiresAt = agentdb.SessionLeaseUnset
+	s, ok := f.sessions[sessionID]
+	if !ok || s.LeaseExpiresAt <= agentdb.SessionLeaseUnset {
+		return agentdb.ErrSessionLeaseNotHeld
 	}
+	s.LeaseExpiresAt = agentdb.SessionLeaseUnset
 	return nil
+}
+
+// ListStaleRunningDeliveries is the stale-delivery sweep's input (RD7).
+func (f *fakeRouterStore) ListStaleRunningDeliveries(_ context.Context, startedBefore int64, limit int) ([]*agentdb.EventDelivery, error) {
+	out := []*agentdb.EventDelivery{}
+	for _, d := range f.deliveries {
+		// Mirrors the real query exactly, including its refusal to touch a
+		// running row with no started_at — a shape the sweep does not
+		// understand must not be closed by it.
+		if d.Status != agentdb.DeliveryRunning || d.StartedAt <= 0 || d.StartedAt >= startedBefore {
+			continue
+		}
+		out = append(out, d)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // ── budget ledger ───────────────────────────────────────────────────────────
@@ -346,7 +373,7 @@ func (s *fakeJobStarter) StartJob(ctx context.Context, in startJobInput) (string
 	}
 	s.store.sessions[id].LeaseExpiresAt = agentdb.SessionLeaseUnset
 	if in.OnSessionEnded != nil {
-		in.OnSessionEnded(ctx, id, s.endErr)
+		_ = in.OnSessionEnded(ctx, id, s.endErr)
 	}
 	return id, nil
 }

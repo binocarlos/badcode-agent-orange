@@ -35,6 +35,12 @@ type fakeDispatchStore struct {
 	disabled    map[string]string // schedule id → rationale
 	createdRows int
 	seq         int
+	// claims counts winning ClaimDelivery calls (RD10); claimNow is the
+	// started_at a claim stamps, so the stale-delivery sweep can be aged.
+	claims int
+	// claimAt supplies the started_at a claim stamps, mirroring the real store.
+	// The router fake points it at its own clock so a test can age a delivery.
+	claimAt func() int64
 
 	// Fault injection over the store seam (RD1). Non-nil makes the read fail the
 	// way a database that is up-but-unhappy fails: an opaque error that is NOT
@@ -42,6 +48,10 @@ type fakeDispatchStore struct {
 	// of these as "the row is absent".
 	getWorkerErr       error
 	getProjectEventErr error
+	// failDeliveryWriteFor makes the status write fail for the named statuses,
+	// the way a database that is up-but-unhappy fails. RD7's wedge begins
+	// exactly there: `settle` only LOGS that error.
+	failDeliveryWriteFor map[string]bool
 }
 
 func newFakeDispatchStore() *fakeDispatchStore {
@@ -227,6 +237,9 @@ func (f *fakeDispatchStore) ListPendingDeliveries(_ context.Context, project, wo
 }
 
 func (f *fakeDispatchStore) UpdateDeliveryStatus(_ context.Context, project, id string, u agentdb.DeliveryStatusUpdate) (*agentdb.EventDelivery, error) {
+	if f.failDeliveryWriteFor[u.Status] {
+		return nil, fmt.Errorf("the delivery status write failed")
+	}
 	for _, d := range f.deliveries {
 		if d.ID == id && d.Project == project {
 			d.Status = u.Status
@@ -245,6 +258,27 @@ func (f *fakeDispatchStore) UpdateDeliveryStatus(_ context.Context, project, id 
 		}
 	}
 	return nil, fmt.Errorf("delivery not found")
+}
+
+// ClaimDelivery mirrors the real store's conditional UPDATE: pending→running or
+// ErrDeliveryNotPending, never a read-then-write. `claims` counts every call
+// that won, which is what the double-dispatch tests assert on.
+func (f *fakeDispatchStore) ClaimDelivery(_ context.Context, project, id string) (*agentdb.EventDelivery, error) {
+	for _, d := range f.deliveries {
+		if d.ID != id || d.Project != project {
+			continue
+		}
+		if d.Status != agentdb.DeliveryPending {
+			return nil, agentdb.ErrDeliveryNotPending
+		}
+		d.Status = agentdb.DeliveryRunning
+		if d.StartedAt == 0 && f.claimAt != nil {
+			d.StartedAt = f.claimAt()
+		}
+		f.claims++
+		return d, nil
+	}
+	return nil, agentdb.ErrDeliveryNotPending
 }
 
 // recordingStarter is a sessionStarter that records what it was asked to run.
