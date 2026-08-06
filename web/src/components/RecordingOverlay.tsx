@@ -4,7 +4,8 @@
 // See ../../docs/90-provenance-map.md.
 
 import { useCallback, useRef, useState } from 'react'
-import { Box, Button, Typography } from '@mui/material'
+import { Box, Button, Typography, useTheme } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import StopIcon from '@mui/icons-material/Stop'
 import CloseIcon from '@mui/icons-material/Close'
 
@@ -17,6 +18,7 @@ interface RecordingOverlayProps {
 }
 
 export default function RecordingOverlay({ stream, isRecording, onStop, onCancel, compact }: RecordingOverlayProps) {
+  const theme = useTheme()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const audioCtxRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
@@ -95,7 +97,8 @@ export default function RecordingOverlay({ stream, isRecording, onStop, onCancel
         const x = i * (barWidth + gap)
         const y = (h - barHeight) / 2
 
-        ctx.fillStyle = `rgba(59, 130, 246, ${0.4 + val * 0.6})`
+        // Canvas takes literal colours, so the bar tint is mixed here rather than via sx.
+        ctx.fillStyle = alpha(theme.palette.primary.main, 0.4 + val * 0.6)
         ctx.beginPath()
         ctx.roundRect(x, y, barWidth, barHeight, 1)
         ctx.fill()
@@ -128,9 +131,9 @@ export default function RecordingOverlay({ stream, isRecording, onStop, onCancel
         px: compact ? 1.5 : 2,
         py: 0.75,
         height,
-        backgroundColor: 'rgba(239, 68, 68, 0.06)',
+        backgroundColor: (t) => alpha(t.palette.error.main, 0.06),
         borderRadius: '10px',
-        border: '1px solid rgba(239, 68, 68, 0.2)',
+        border: '1px solid', borderColor: (t) => alpha(t.palette.error.main, 0.2),
       }}
     >
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
@@ -139,7 +142,7 @@ export default function RecordingOverlay({ stream, isRecording, onStop, onCancel
             width: 8,
             height: 8,
             borderRadius: '50%',
-            backgroundColor: '#ef4444',
+            backgroundColor: 'error.main',
             animation: 'recDotPulse 1s ease-in-out infinite',
             '@keyframes recDotPulse': {
               '0%, 100%': { opacity: 1 },
@@ -147,10 +150,10 @@ export default function RecordingOverlay({ stream, isRecording, onStop, onCancel
             },
           }}
         />
-        <Typography sx={{ fontSize: compact ? 12 : 13, fontWeight: 600, color: '#ef4444', whiteSpace: 'nowrap' }}>
+        <Typography sx={{ fontSize: compact ? 12 : 13, fontWeight: 600, color: 'error.main', whiteSpace: 'nowrap' }}>
           Recording
         </Typography>
-        <Typography sx={{ fontSize: compact ? 11 : 12, color: '#9ca3af', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+        <Typography sx={{ fontSize: compact ? 11 : 12, color: 'text.disabled', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
           {timeStr}
         </Typography>
       </Box>
@@ -194,8 +197,8 @@ export default function RecordingOverlay({ stream, isRecording, onStop, onCancel
             minWidth: 0,
             px: compact ? 0.75 : 1,
             py: 0.25,
-            color: '#6b7280',
-            borderColor: '#d1d5db',
+            color: 'text.secondary',
+            borderColor: 'divider',
           }}
         >
           <CloseIcon sx={{ fontSize: compact ? 14 : 16 }} />

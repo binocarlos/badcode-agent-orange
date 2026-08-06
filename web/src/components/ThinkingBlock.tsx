@@ -55,7 +55,7 @@ export default function ThinkingBlock({ content, isActivelyThinking }: ThinkingB
           gap: 0,
           cursor: !isActivelyThinking ? 'pointer' : 'default',
           userSelect: 'none',
-          '&:hover': !isActivelyThinking ? { backgroundColor: '#f5f5f5' } : {},
+          '&:hover': !isActivelyThinking ? { backgroundColor: 'action.hover' } : {},
         }}
       >
         {isActivelyThinking && (
@@ -82,7 +82,7 @@ export default function ThinkingBlock({ content, isActivelyThinking }: ThinkingB
           <Typography
             variant="caption"
             sx={{
-              color: '#bbb',
+              color: 'text.disabled',
               fontSize: 11,
               mx: '6px',
               overflow: 'hidden',
@@ -95,7 +95,7 @@ export default function ThinkingBlock({ content, isActivelyThinking }: ThinkingB
           </Typography>
         )}
         {!isActivelyThinking && (
-          <Typography variant="caption" sx={{ color: '#bbb', fontSize: 13, ml: 'auto', flexShrink: 0, pl: '8px' }}>
+          <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: 13, ml: 'auto', flexShrink: 0, pl: '8px' }}>
             {expanded ? '−' : '+'}
           </Typography>
         )}
@@ -107,7 +107,7 @@ export default function ThinkingBlock({ content, isActivelyThinking }: ThinkingB
             px: '10px',
             pb: '8px',
             fontSize: 12,
-            color: '#9e9e9e',
+            color: 'text.disabled',
             lineHeight: 1.5,
             whiteSpace: 'pre-wrap',
             ...(isActivelyThinking ? { maxHeight: 200, overflowY: 'auto' } : {}),

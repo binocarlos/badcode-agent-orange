@@ -35,7 +35,7 @@ export default function AskUserCard({ question, onAnswer, onAdvance, disabled }:
       </Typography>
 
       {question.context && (
-        <Typography sx={{ color: '#4b5563', fontSize: 13, mb: 1 }}>
+        <Typography sx={{ color: 'text.secondary', fontSize: 13, mb: 1 }}>
           {question.context}
         </Typography>
       )}
@@ -72,7 +72,7 @@ export default function AskUserCard({ question, onAnswer, onAdvance, disabled }:
                 borderColor: isSelected ? 'primary.main' : 'divider',
                 '&:hover': {
                   backgroundColor: 'action.hover',
-                  borderColor: 'rgba(0,0,0,0.15)',
+                  borderColor: 'divider',
                   color: 'text.primary',
                 },
               }}

@@ -17,12 +17,12 @@ export default function ArtifactCsvPreview({ csvContent, maxRows = 3 }: Artifact
   if (columns.length === 0) return null
 
   return (
-    <Box sx={{ border: '1px solid #e5e7eb', borderRadius: '6px', overflow: 'hidden' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.5, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f1f5f9' }}>
-        <Typography sx={{ fontSize: 11, color: '#64748b', fontWeight: 500 }}>
+    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '6px', overflow: 'hidden' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 1.5, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', backgroundColor: 'action.hover' }}>
+        <Typography sx={{ fontSize: 11, color: 'text.secondary', fontWeight: 500 }}>
           {totalRows} rows
         </Typography>
-        <Typography sx={{ fontSize: 11, color: '#94a3b8' }}>
+        <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
           {columns.length} columns
         </Typography>
       </Box>
@@ -36,11 +36,11 @@ export default function ArtifactCsvPreview({ csvContent, maxRows = 3 }: Artifact
                   style={{
                     textAlign: 'left',
                     padding: '4px 8px',
-                    borderBottom: '1px solid #e5e7eb',
-                    backgroundColor: '#f8fafc',
+                    borderBottom: '1px solid', borderColor: 'divider',
+                    backgroundColor: 'action.hover',
                     fontWeight: 600,
                     fontSize: 11,
-                    color: '#374151',
+                    color: 'text.primary',
                     whiteSpace: 'nowrap',
                   }}
                 >
@@ -57,9 +57,9 @@ export default function ArtifactCsvPreview({ csvContent, maxRows = 3 }: Artifact
                     key={ci}
                     style={{
                       padding: '3px 8px',
-                      borderBottom: '1px solid #f3f4f6',
+                      borderBottom: '1px solid', borderColor: 'divider',
                       fontSize: 11,
-                      color: '#6b7280',
+                      color: 'text.secondary',
                       whiteSpace: 'nowrap',
                     }}
                   >
@@ -72,8 +72,8 @@ export default function ArtifactCsvPreview({ csvContent, maxRows = 3 }: Artifact
         </table>
       </Box>
       {totalRows > maxRows && (
-        <Box sx={{ px: 1.5, py: 0.5, borderTop: '1px solid #e5e7eb', textAlign: 'center' }}>
-          <Typography sx={{ fontSize: 11, color: '#94a3b8' }}>
+        <Box sx={{ px: 1.5, py: 0.5, borderTop: '1px solid', borderColor: 'divider', textAlign: 'center' }}>
+          <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
             +{totalRows - maxRows} more rows
           </Typography>
         </Box>

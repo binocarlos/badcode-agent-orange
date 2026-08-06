@@ -53,7 +53,7 @@ export default function CodeCreatedBlock({ filePath, code }: CodeCreatedBlockPro
     <Box
       data-testid="code-created-block"
       sx={{
-        border: '1px solid #e5e7eb',
+        border: '1px solid', borderColor: 'divider',
         borderRadius: '8px',
         overflow: 'hidden',
         my: 1,
@@ -66,8 +66,8 @@ export default function CodeCreatedBlock({ filePath, code }: CodeCreatedBlockPro
           gap: 1,
           px: 1.5,
           py: 0.75,
-          backgroundColor: '#f1f5f9',
-          borderBottom: '1px solid #e5e7eb',
+          backgroundColor: 'action.hover',
+          borderBottom: '1px solid', borderColor: 'divider',
         }}
       >
         <Typography component="span" sx={{ fontSize: 14 }}>
@@ -87,11 +87,11 @@ export default function CodeCreatedBlock({ filePath, code }: CodeCreatedBlockPro
             height: 20,
             fontSize: 11,
             fontWeight: 500,
-            backgroundColor: '#e2e8f0',
-            color: '#475569',
+            backgroundColor: 'divider',
+            color: 'text.secondary',
           }}
         />
-        <Typography sx={{ fontSize: 11, color: '#94a3b8' }}>
+        <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
           {totalLines} lines
         </Typography>
         <IconButton
@@ -99,7 +99,7 @@ export default function CodeCreatedBlock({ filePath, code }: CodeCreatedBlockPro
           onClick={handleCopy}
           title="Copy code"
           aria-label="copy code"
-          sx={{ color: copied ? '#22c55e' : '#6b7280', ml: 0.5 }}
+          sx={{ color: copied ? 'success.main' : 'text.secondary', ml: 0.5 }}
         >
           {copied ? <CheckIcon sx={{ fontSize: 16 }} /> : <ContentCopyIcon sx={{ fontSize: 16 }} />}
         </IconButton>
@@ -115,7 +115,7 @@ export default function CodeCreatedBlock({ filePath, code }: CodeCreatedBlockPro
           fontFamily: '"Fira Code", "Consolas", monospace',
           overflow: 'auto',
           maxHeight: expanded ? 'none' : 400,
-          backgroundColor: '#fafafa',
+          backgroundColor: 'background.default',
           whiteSpace: 'pre',
         }}
       >
@@ -128,13 +128,13 @@ export default function CodeCreatedBlock({ filePath, code }: CodeCreatedBlockPro
           sx={{
             px: 1.5,
             py: 0.5,
-            borderTop: '1px solid #e5e7eb',
+            borderTop: '1px solid', borderColor: 'divider',
             textAlign: 'center',
             cursor: 'pointer',
-            '&:hover': { backgroundColor: '#f9fafb' },
+            '&:hover': { backgroundColor: 'action.hover' },
           }}
         >
-          <Typography sx={{ fontSize: 12, color: '#2563eb', fontWeight: 500 }}>
+          <Typography sx={{ fontSize: 12, color: 'primary.main', fontWeight: 500 }}>
             {expanded ? 'Show less' : `Show all ${totalLines} lines`}
           </Typography>
         </Box>

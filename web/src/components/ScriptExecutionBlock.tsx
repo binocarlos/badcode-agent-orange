@@ -35,14 +35,14 @@ export default function ScriptExecutionBlock({
     : outputLines.slice(0, DEFAULT_VISIBLE_LINES).join('\n')
 
   const statusIcon = status === 'running' ? '⏳' : status === 'error' ? '✗' : '✓'
-  const statusColor = status === 'running' ? '#3b82f6' : status === 'error' ? '#9ca3af' : '#22c55e'
-  const borderColor = '#e5e7eb'
+  const statusColor = status === 'running' ? 'primary.main' : status === 'error' ? 'text.disabled' : 'success.main'
 
   return (
     <Box
       data-testid="script-execution-block"
       sx={{
-        border: `1px solid ${borderColor}`,
+        border: '1px solid',
+        borderColor: 'divider',
         borderRadius: '8px',
         overflow: 'hidden',
         my: 1,
@@ -55,8 +55,8 @@ export default function ScriptExecutionBlock({
           gap: 1,
           px: 1.5,
           py: 0.75,
-          backgroundColor: '#f1f5f9',
-          borderBottom: '1px solid #e5e7eb',
+          backgroundColor: 'action.hover',
+          borderBottom: '1px solid', borderColor: 'divider',
         }}
       >
         <Typography component="span" sx={{ fontSize: 14, color: statusColor }}>
@@ -75,12 +75,12 @@ export default function ScriptExecutionBlock({
             height: 20,
             fontSize: 11,
             fontWeight: 500,
-            backgroundColor: '#e2e8f0',
-            color: '#475569',
+            backgroundColor: 'divider',
+            color: 'text.secondary',
           }}
         />
         {elapsedSeconds !== undefined && (
-          <Typography sx={{ fontSize: 11, color: '#94a3b8', ml: 'auto' }}>
+          <Typography sx={{ fontSize: 11, color: 'text.disabled', ml: 'auto' }}>
             {elapsedSeconds.toFixed(1)}s
           </Typography>
         )}

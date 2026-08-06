@@ -178,7 +178,7 @@ export default function ChatInputToolbar({
                     height: compact ? 28 : 34,
                     borderRadius: '6px',
                     objectFit: 'cover',
-                    border: '1px solid #e5e7eb',
+                    border: '1px solid', borderColor: 'divider',
                     opacity: a.uploadState === 'uploading' ? 0.5 : 1,
                   }}
                 />
@@ -197,9 +197,9 @@ export default function ChatInputToolbar({
                     right: -6,
                     width: 16,
                     height: 16,
-                    backgroundColor: '#fff',
-                    border: '1px solid #d1d5db',
-                    '&:hover': { backgroundColor: '#f3f4f6' },
+                    backgroundColor: 'background.paper',
+                    border: '1px solid', borderColor: 'divider',
+                    '&:hover': { backgroundColor: 'action.hover' },
                   }}
                 >
                   <CloseIcon sx={{ fontSize: 10 }} />
@@ -220,7 +220,7 @@ export default function ChatInputToolbar({
 
       {/* Error display */}
       {error && (
-        <Typography sx={{ fontSize: compact ? 11 : 12, color: '#ef4444', px: 0.5 }}>
+        <Typography sx={{ fontSize: compact ? 11 : 12, color: 'error.main', px: 0.5 }}>
           {error}
         </Typography>
       )}

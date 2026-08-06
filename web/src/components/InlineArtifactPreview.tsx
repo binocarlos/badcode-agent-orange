@@ -9,7 +9,8 @@
 // See ../../docs/90-provenance-map.md.
 
 import React, { useState, useRef, useCallback } from 'react'
-import { Box, Typography, IconButton } from '@mui/material'
+import { Box, Typography, IconButton, useTheme } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import {
   Download as DownloadIcon,
   Fullscreen as FullscreenIcon,
@@ -129,8 +130,8 @@ export default function InlineArtifactPreview({
 
   if (artifact.status === 'lost') {
     return (
-      <Box sx={{ border: '1px solid #e5e7eb', borderRadius: '8px', p: 1.5, mt: 1, backgroundColor: '#f9fafb' }}>
-        <Typography sx={{ fontSize: 13, color: '#6b7280' }}>
+      <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '8px', p: 1.5, mt: 1, backgroundColor: 'action.hover' }}>
+        <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>
           {artifact.label} — no longer available
         </Typography>
       </Box>
@@ -192,17 +193,17 @@ export default function InlineArtifactPreview({
     return (
       <Box sx={{
         mt: 1,
-        border: '1.5px solid #3b82f6',
+        border: '1.5px solid', borderColor: 'primary.main',
         borderRadius: '8px',
         overflow: 'hidden',
-        boxShadow: '0 1px 6px rgba(59, 130, 246, 0.15)',
+        boxShadow: (t) => `0 1px 6px ${alpha(t.palette.primary.main, 0.15)}`,
       }}>
         {isReady ? (
           <WebappIframe src={iframeSrc} title={artifact.label || 'Interactive Visualization'} />
         ) : (
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 1.5, backgroundColor: '#f8fafc' }}>
-            <Box sx={{ width: 28, height: 28, border: '3px solid #3b82f6', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } } }} />
-            <Typography sx={{ color: '#6b7280', fontSize: 13 }}>Uploading to cloud storage...</Typography>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 300, gap: 1.5, backgroundColor: 'action.hover' }}>
+            <Box sx={{ width: 28, height: 28, border: '3px solid', borderColor: 'primary.main', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } } }} />
+            <Typography sx={{ color: 'text.secondary', fontSize: 13 }}>Uploading to cloud storage...</Typography>
           </Box>
         )}
         <WebappCaptionBar
@@ -217,7 +218,7 @@ export default function InlineArtifactPreview({
 
   if (artifact.artifactType === 'report') {
     return (
-      <Box onClick={handleClick} sx={{ mt: 1, border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden', cursor: 'pointer', '&:hover': { borderColor: '#93c5fd' } }}>
+      <Box onClick={handleClick} sx={{ mt: 1, border: '1px solid', borderColor: 'divider', borderRadius: '8px', overflow: 'hidden', cursor: 'pointer', '&:hover': { borderColor: 'primary.light' } }}>
         {content?.text ? (
           <Box sx={{ p: 1.5, maxHeight: 150, overflow: 'hidden' }}>
             <AgentMarkdown content={content.text.slice(0, 500)} />
@@ -234,10 +235,10 @@ export default function InlineArtifactPreview({
 
   // Generic file artifact
   return (
-    <Box onClick={handleClick} sx={{ mt: 1, border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden', backgroundColor: '#f9fafb', cursor: 'pointer', '&:hover': { borderColor: '#93c5fd' } }}>
+    <Box onClick={handleClick} sx={{ mt: 1, border: '1px solid', borderColor: 'divider', borderRadius: '8px', overflow: 'hidden', backgroundColor: 'action.hover', cursor: 'pointer', '&:hover': { borderColor: 'primary.light' } }}>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 1.5 }}>
         <Typography sx={{ fontSize: 20 }}>📄</Typography>
-        <Typography sx={{ fontSize: 13, color: '#374151', fontWeight: 500 }}>{artifact.fileName}</Typography>
+        <Typography sx={{ fontSize: 13, color: 'text.primary', fontWeight: 500 }}>{artifact.fileName}</Typography>
       </Box>
       <CaptionBar artifact={artifact} onDownload={handleDownload} />
     </Box>
@@ -265,12 +266,12 @@ function ImagePreview({ artifact, sessionId, onClick, onDownload, dataUrl, apiBa
   }
 
   return (
-    <Box onClick={onClick} sx={{ display: 'inline-block', border: '1px solid #e5e7eb', borderRadius: '8px', mt: 1, overflow: 'hidden', backgroundColor: '#f9fafb', cursor: 'pointer', maxWidth: '75%', '&:hover': { borderColor: '#93c5fd' } }}>
+    <Box onClick={onClick} sx={{ display: 'inline-block', border: '1px solid', borderColor: 'divider', borderRadius: '8px', mt: 1, overflow: 'hidden', backgroundColor: 'action.hover', cursor: 'pointer', maxWidth: '75%', '&:hover': { borderColor: 'primary.light' } }}>
       {blobUrl ? (
         <img src={blobUrl} alt={artifact.label} style={{ display: 'block', maxWidth: '100%', maxHeight: 200, objectFit: 'contain' }} />
       ) : (
         <Box sx={{ p: 2, textAlign: 'center' }}>
-          <Typography sx={{ fontSize: 12, color: '#94a3b8' }}>Loading image...</Typography>
+          <Typography sx={{ fontSize: 12, color: 'text.disabled' }}>Loading image...</Typography>
         </Box>
       )}
       <CaptionBar artifact={artifact} onDownload={onDownload} />
@@ -280,18 +281,18 @@ function ImagePreview({ artifact, sessionId, onClick, onDownload, dataUrl, apiBa
 
 function CaptionBar({ artifact, onDownload }: { artifact: ArtifactInfo; onDownload: (e: React.MouseEvent) => void }) {
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '6px 10px', borderTop: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '6px 10px', borderTop: '1px solid', borderColor: 'divider', backgroundColor: 'action.hover' }}>
       <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography sx={{ fontSize: 13, fontWeight: 600, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {artifact.label}
         </Typography>
         {artifact.description && (
-          <Typography sx={{ fontSize: 12, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Typography sx={{ fontSize: 12, color: 'text.secondary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {artifact.description}
           </Typography>
         )}
       </Box>
-      <IconButton size="small" onClick={onDownload} aria-label="download" sx={{ color: '#2563eb', ml: 0.5 }}>
+      <IconButton size="small" onClick={onDownload} aria-label="download" sx={{ color: 'primary.main', ml: 0.5 }}>
         <DownloadIcon sx={{ fontSize: 18 }} />
       </IconButton>
     </Box>
@@ -304,7 +305,7 @@ function WebappIframe({ src, title }: { src: string; title: string }) {
     <Box sx={{ position: 'relative', backgroundColor: '#0f172a' }}>
       {loading && (
         <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1 }}>
-          <Typography sx={{ fontSize: 13, color: '#94a3b8' }}>Loading visualization...</Typography>
+          <Typography sx={{ fontSize: 13, color: 'text.disabled' }}>Loading visualization...</Typography>
         </Box>
       )}
       <iframe
@@ -320,27 +321,27 @@ function WebappIframe({ src, title }: { src: string; title: string }) {
 
 function WebappCaptionBar({ artifact, onDownload, onFullscreen, onPublish }: { artifact: ArtifactInfo; onDownload: (e: React.MouseEvent) => void; onFullscreen: () => void; onPublish?: () => void }) {
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '6px 10px', borderTop: '1px solid #e5e7eb', backgroundColor: '#f9fafb' }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', p: '6px 10px', borderTop: '1px solid', borderColor: 'divider', backgroundColor: 'action.hover' }}>
       <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography sx={{ fontSize: 13, fontWeight: 600, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {artifact.label}
         </Typography>
         {artifact.description && (
-          <Typography sx={{ fontSize: 12, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Typography sx={{ fontSize: 12, color: 'text.secondary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {artifact.description}
           </Typography>
         )}
       </Box>
       <Box sx={{ display: 'flex', gap: 0.25 }}>
         {onPublish && (
-          <IconButton size="small" onClick={onPublish} aria-label="publish" sx={{ color: '#2563eb' }}>
+          <IconButton size="small" onClick={onPublish} aria-label="publish" sx={{ color: 'primary.main' }}>
             <ShareIcon sx={{ fontSize: 18 }} />
           </IconButton>
         )}
-        <IconButton size="small" onClick={onFullscreen} aria-label="fullscreen" sx={{ color: '#2563eb' }}>
+        <IconButton size="small" onClick={onFullscreen} aria-label="fullscreen" sx={{ color: 'primary.main' }}>
           <FullscreenIcon sx={{ fontSize: 18 }} />
         </IconButton>
-        <IconButton size="small" onClick={onDownload} aria-label="download" sx={{ color: '#2563eb' }}>
+        <IconButton size="small" onClick={onDownload} aria-label="download" sx={{ color: 'primary.main' }}>
           <DownloadIcon sx={{ fontSize: 18 }} />
         </IconButton>
       </Box>
@@ -351,11 +352,11 @@ function WebappCaptionBar({ artifact, onDownload, onFullscreen, onPublish }: { a
 function CodePreview({ code, fileName }: { code: string; fileName: string }) {
   const lines = code.split('\n').slice(0, 5).join('\n')
   return (
-    <Box sx={{ border: '1px solid #e5e7eb', borderRadius: '6px', overflow: 'hidden' }}>
-      <Box sx={{ px: 1.5, py: 0.75, backgroundColor: '#f1f5f9', borderBottom: '1px solid #e5e7eb', display: 'flex', gap: 1, alignItems: 'center' }}>
-        <Typography sx={{ fontSize: 11, fontWeight: 600, color: '#374151' }}>{fileName}</Typography>
+    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '6px', overflow: 'hidden' }}>
+      <Box sx={{ px: 1.5, py: 0.75, backgroundColor: 'action.hover', borderBottom: '1px solid', borderColor: 'divider', display: 'flex', gap: 1, alignItems: 'center' }}>
+        <Typography sx={{ fontSize: 11, fontWeight: 600, color: 'text.primary' }}>{fileName}</Typography>
       </Box>
-      <Box component="pre" sx={{ m: 0, p: '8px 12px', fontSize: 11, color: '#374151', fontFamily: 'monospace', overflow: 'hidden', maxHeight: 90, whiteSpace: 'pre' }}>
+      <Box component="pre" sx={{ m: 0, p: '8px 12px', fontSize: 11, color: 'text.primary', fontFamily: 'monospace', overflow: 'hidden', maxHeight: 90, whiteSpace: 'pre' }}>
         {lines}
       </Box>
     </Box>
@@ -363,15 +364,16 @@ function CodePreview({ code, fileName }: { code: string; fileName: string }) {
 }
 
 function CsvPreview({ csv }: { csv: string }) {
+  const theme = useTheme()
   const rows = csv.trim().split('\n').slice(0, 4)
   return (
-    <Box sx={{ border: '1px solid #e5e7eb', borderRadius: '6px', overflow: 'auto', maxHeight: 90 }}>
+    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '6px', overflow: 'auto', maxHeight: 90 }}>
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
         <tbody>
           {rows.map((row, i) => (
             <tr key={i}>
               {row.split(',').map((cell, j) => (
-                <td key={j} style={{ padding: '2px 8px', border: '1px solid #e5e7eb', color: i === 0 ? '#374151' : '#6b7280', fontWeight: i === 0 ? 600 : 400 }}>
+                <td key={j} style={{ padding: '2px 8px', border: `1px solid `, color: i === 0 ? theme.palette.text.primary : theme.palette.text.secondary, fontWeight: i === 0 ? 600 : 400 }}>
                   {cell.trim()}
                 </td>
               ))}
@@ -385,16 +387,16 @@ function CsvPreview({ csv }: { csv: string }) {
 
 function LoadingCard() {
   return (
-    <Box sx={{ p: 1.5, border: '1px solid #e5e7eb', borderRadius: '6px', backgroundColor: '#f8fafc' }}>
-      <Typography sx={{ fontSize: 12, color: '#94a3b8' }}>Loading preview...</Typography>
+    <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: '6px', backgroundColor: 'action.hover' }}>
+      <Typography sx={{ fontSize: 12, color: 'text.disabled' }}>Loading preview...</Typography>
     </Box>
   )
 }
 
 function ErrorCard({ message }: { message: string }) {
   return (
-    <Box sx={{ p: 1.5, border: '1px solid #e5e7eb', borderRadius: '6px', backgroundColor: '#fef2f2' }}>
-      <Typography sx={{ fontSize: 12, color: '#ef4444' }}>Failed to load: {message}</Typography>
+    <Box sx={{ p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: '6px', backgroundColor: (t) => alpha(t.palette.error.main, 0.08) }}>
+      <Typography sx={{ fontSize: 12, color: 'error.main' }}>Failed to load: {message}</Typography>
     </Box>
   )
 }
