@@ -31,6 +31,7 @@
       "enabled",
       "id",
       "input",
+      "last_evaluated",
       "last_provision_error",
       "project",
       "provision_failures",

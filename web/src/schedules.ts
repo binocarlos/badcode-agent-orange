@@ -59,6 +59,12 @@ export interface Schedule {
   provision_failures?: number
   /** Why the most recent start failed, kept so an operator can recover. */
   last_provision_error?: string
+  /**
+   * The last occurrence the scheduler evaluated (RD11's watermark). Runtime
+   * state, read-only here — no editor writes it. Mirrored so the wire-shape
+   * guard stays satisfied and so this side can never silently drop it.
+   */
+  last_evaluated?: string
 }
 
 /** A schedule being edited. Same shape; the alias makes props read honestly. */
@@ -84,6 +90,7 @@ export function newScheduleDraft(project = ''): ScheduleDraft {
     updated_at: 0,
     provision_failures: 0,
     last_provision_error: '',
+    last_evaluated: '',
   }
 }
 
@@ -103,6 +110,7 @@ export function coerceSchedule(raw: unknown, project = ''): Schedule {
     updated_at: num(r.updated_at),
     provision_failures: num(r.provision_failures),
     last_provision_error: str(r.last_provision_error),
+    last_evaluated: str(r.last_evaluated),
   }
 }
 
