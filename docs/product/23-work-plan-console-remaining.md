@@ -97,7 +97,7 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 
 ## R3 — Turn the live tail on *(the pill and pause toggle are inert)*
 
-- [ ] W4 built staged arrivals, the "N new" pill and the "Pause live updates" toggle, but gated
+- [x] W4 built staged arrivals, the "N new" pill and the "Pause live updates" toggle, but gated
   them behind an opt-in `refreshMs` that nothing passes (doc 21 DIL). In
   `examples/web/src/App.tsx`, pass `refreshMs={15000}` to `DeskPage` and the Events surface
   (check the exact prop plumbing in `useDesk`/`EventsPage` — W4's report says both accept it).
@@ -205,6 +205,22 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 - **(R2) `helpers/ui.ts`'s `View` type still named only chat/workers/settings** — three of the
   eight views. Any console spec fails to typecheck before it fails to run. Now all eight, plus
   `ALL_VIEWS`.
+- **(R3) `SCENE=burst` is a FUNCTION OF FETCH COUNT AND THE COUNTER NEVER RESETS** while the stub
+  process lives. `burstDeliveries()` increments `fetches`; `burstEvents()` only *reads* it. So
+  (a) a stub that has already served a few fetches is pinned at the last reveal step and shows a
+  **still life** — my first arrival probe measured a flat 7 rows for 80s and looked like a failure
+  of R3, when it was an exhausted fixture; and (b) events only grow when *deliveries* are being
+  fetched, so a surface that reads events alone would never see an arrival.
+  **Restart the stub before any arrival measurement.** On a fresh stub the Events feed went
+  9 → 11 → 13 rows without a reload, then held.
+- **(R3) Verify polling by counting requests, not by looking.** `page.on('request')` filtered to
+  `/agent/` gives an unambiguous number: Desk 14 and Events 6 requests per 35s with the timer on,
+  and **0 for both when paused**. A screenshot cannot tell "polling and unchanged" from "not
+  polling", which is exactly the bug R3 fixes.
+- **(R3) The "N new" pill did not appear** in either surface during the arrival runs — the rows
+  simply landed at the top of the feed. Not investigated further (new rows without a reload is
+  what the item asked to see, and it is unambiguous). If the pill is meant to stage arrivals even
+  at rest, that is a separate question for whoever owns `useStagedFeed`.
 - **(R2) A fast green test here is not necessarily a hollow one.** The topology+job test passes
   in ~8s, which looks too quick for a container job; it is real — `docker compose logs agentd`
   shows `[router] … cx-scribe.task → cx-scribe (<session>) = started`. Worth knowing before
