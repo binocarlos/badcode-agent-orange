@@ -72,8 +72,10 @@ layer, and files absent from `overlay/` are inherited unchanged. `COPY` can only
 — to *drop* an inherited file or package, add an explicit `RUN rm …` / `npm uninstall …` after
 the `COPY` (those are permitted; only the four runtime-contract directives above are forbidden).
 
-> **`.claude/` is gitignored** in this repo. Files committed under
-> `installations/*/overlay/.claude/` must be force-added: `git add -f installations/<name>/overlay/.claude`.
+> **Note on `.claude/`.** This repo does **not** gitignore it (checked with `git check-ignore`;
+> `.gitignore` carries no such rule), so files under `installations/*/overlay/.claude/` commit
+> normally — no `git add -f` needed. If you vendor this layout into a repo whose own `.gitignore`
+> *does* exclude `.claude/`, that is where the force-add becomes necessary.
 
 ## Building (manual, for now)
 

@@ -265,8 +265,8 @@ scheduler, dispatch gate and core MCP tool server in `cmd/agentd/`.
 
 ## Control flow: lifecycle in the background
 
-The lifecycle is **running-or-archived** — there is no warm suspended state and no idle reaper. The
-Runner starts two background loops, each only when configured:
+The lifecycle is **running-or-archived** — there is no warm suspended state. The Runner starts two
+background loops, each only when configured:
 
 - **Archive loop** (`runner.go`, started by `Start` when `Policy.ArchiveTimeout > 0`) — every 60s it
   finds sessions idle past `ArchiveTimeout`, skips any with pending flushes and any whose engine
@@ -277,9 +277,13 @@ Runner starts two background loops, each only when configured:
   image versions whose expiry has passed. The TTL itself is a product-layer setting
   (`project_settings.snapshot_ttl_days`); this loop is only how often the engine looks.
 
-Neither loop is on by default, and **`cmd/agentd` sets neither knob** — in the standalone stack a
-session holds its container until something explicitly destroys it, and no snapshot is ever reaped.
-The loops are there for a host that wants them.
+Neither loop is on by default *in the library* — a host that wants them sets the knobs. **`cmd/agentd`
+sets both** (`cmd/agentd/gc.go`): `AGENTKIT_SESSION_IDLE_TIMEOUT` (30m) drives the archive loop and
+`AGENTKIT_SNAPSHOT_REAP_INTERVAL` (6h) drives the reaper, each disabled by the literal `off`. So in
+the standalone stack a session idle for half an hour is snapshotted and its container (and host
+port) released, and expired snapshots are swept four times a day. The reaper additionally needs
+`Deps.Snapshots`, which agentd wires only on Postgres — on the sqlite fallback there is no image
+catalogue to sweep.
 
 **Restore is lazy.** A destroyed session is brought back on its *next message*, inside
 `ensureRunning`: materialize the snapshot, provision a fresh instance (possibly on a different
