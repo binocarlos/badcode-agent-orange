@@ -164,9 +164,18 @@ func TestDeleteSession(t *testing.T) {
 	if _, err := s.GetSession(ctx, "s1"); err == nil {
 		t.Fatalf("expected not-found after delete")
 	}
-	// Deleting a nonexistent session is a no-op, not an error.
-	if err := s.DeleteSession(ctx, "never-existed"); err != nil {
-		t.Fatalf("delete nonexistent: %v", err)
+	// Deleting a session that is not there is an ERROR, and specifically
+	// ErrSessionNotFound. This assertion used to read "a no-op, not an error",
+	// which is the shape doc 22's RD5 filed as its second defect: the handler
+	// answered 204 whatever happened, so a delete that deleted nothing reported
+	// success. The HTTP layer's only honest answer here is 404, and it cannot
+	// give one if the store says "fine".
+	if err := s.DeleteSession(ctx, "never-existed"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("delete nonexistent: want ErrSessionNotFound, got %v", err)
+	}
+	// Same for a second delete of an already soft-deleted session.
+	if err := s.DeleteSession(ctx, "s1"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("double delete: want ErrSessionNotFound, got %v", err)
 	}
 }
 

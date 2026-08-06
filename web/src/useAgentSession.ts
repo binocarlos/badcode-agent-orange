@@ -104,6 +104,9 @@ interface UseAgentSessionReturn {
   createSession: (req: CreateAgentSessionRequest) => Promise<string | null>
   sendMessage: (content: string, model?: string, attachmentIds?: string[]) => Promise<void>
   cancelSession: () => Promise<void>
+  /** Delete this session. REJECTS with the server's message on failure, and
+   *  leaves the local session in place when it does. Ask the user first — this
+   *  destroys the conversation. */
   deleteSession: () => Promise<void>
   loadPersonas: (customer: string) => Promise<void>
   resumeSession: (sessionId: string) => Promise<void>
@@ -756,18 +759,24 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
 
+  // The hook's own delete (no in-repo caller today; part of the exported API a
+  // host may drive). It REJECTS on failure and clears nothing in that case —
+  // doc 22 RD5: this used to swallow every error and then wipe the local
+  // session anyway, so a delete the server refused looked exactly like one it
+  // performed. Callers must ask the user first and show the rejection;
+  // AgentSessionList is the worked example.
   const deleteSession = useCallback(async () => {
     if (!session) return
     abortControllerRef.current?.abort()
-    try {
-      await apiFetch(endpoints.deleteSession(session.id), { method: 'DELETE' })
-      resetEventState()
-      setSession(null)
-      setMessages([])
-      setIsStreaming(false)
-    } catch {
-      // Silently handle delete errors
+    const resp = await apiFetch(endpoints.deleteSession(session.id), { method: 'DELETE' })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(body.trim() !== '' ? body.trim() : `HTTP ${resp.status}`)
     }
+    resetEventState()
+    setSession(null)
+    setMessages([])
+    setIsStreaming(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
 

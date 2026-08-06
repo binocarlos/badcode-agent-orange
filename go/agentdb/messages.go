@@ -95,6 +95,10 @@ func (s *Store) DeleteMessagesForSession(ctx context.Context, sessionID string) 
 	return nil
 }
 
+// SearchMessages is a listing, so it obeys the soft-delete filter (migration
+// 041): a deleted session's messages survive in the table but must not surface
+// here, or search would hand the user back a conversation the UI told them was
+// gone — and hand them a session id every by-id route now 404s.
 func (s *Store) SearchMessages(ctx context.Context, query *MessageSearchQuery) ([]*MessageSearchResult, error) {
 	limit := query.Limit
 	if limit <= 0 {
@@ -117,7 +121,8 @@ func (s *Store) SearchMessages(ctx context.Context, query *MessageSearchQuery) (
 			ts_rank_cd(m.content_tsv, plainto_tsquery('english', ?)) AS rank
 		FROM agent_messages m
 		JOIN agent_sessions s ON m.session_id = s.id
-		WHERE s.customer = ?
+		WHERE s.deleted_at = 0
+			AND s.customer = ?
 			AND m.content_tsv @@ plainto_tsquery('english', ?)`
 
 	args := []any{query.Query, query.Customer, query.Query}

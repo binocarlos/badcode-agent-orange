@@ -928,6 +928,52 @@ var agentMigrations = []migration{
 				FOR EACH ROW EXECUTE FUNCTION agentdb_config_events_append_only();
 		`,
 	},
+	{
+		// Sessions are SOFT-deleted from here on (doc 22 RD5, work-plan D1).
+		//
+		// `agent_query_events.session_id` cascades (migration 013, and the same
+		// for agent_messages and agent_artifacts), and DELETE /agent/session/{id}
+		// was a hard row delete fired from an unguarded icon button. One click
+		// destroyed the whole conversation, irreversibly, with no tombstone and
+		// no export — which is why the 2026-07-28 calibration run found
+		// `agent_query_events` empty for every session. `deleted_at` breaks that:
+		// the row survives, so the cascade never fires and the transcript stays.
+		//
+		// SECONDS since the epoch (every other timestamp on this table is
+		// `time.Now().Unix()`), 0 while the session is live. NOT NULL DEFAULT 0
+		// in the DDL rather than a gorm `default:` tag, per the store convention
+		// — 0 is a meaningful value here and a declared gorm default would make
+		// GORM omit it on write.
+		//
+		// # Why the name index is narrowed rather than left alone
+		//
+		// Migration 035 made (customer, name) unique for every named row. With a
+		// tombstone that never goes away — the purge is deliberately not built,
+		// see the work plan's G3 — an un-narrowed index would let a deleted
+		// session hold its name FOREVER, against a row nothing lists and nobody
+		// can see. The embedding application that named it (`hypothesis-a`) would
+		// get "name already taken" from an invisible ghost, with no recovery
+		// short of SQL. Adding `deleted_at = 0` frees the name at delete time.
+		//
+		// The cost is stated rather than hidden: a stale URL for a deleted
+		// session's name, once that name is reused, resolves to the NEW session
+		// instead of 404ing. That takes two deliberate human acts (delete, then
+		// re-create under the same name) inside one project, and Session.Name's
+		// immutability promise — that a name never moves while its session lives
+		// — is untouched.
+		//
+		// The tombstone KEEPS its `name` value: an operator reading the row later
+		// (or the purge G3 may authorise) can still see what it was called.
+		Name: "041_agent_sessions_deleted_at",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS deleted_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_deleted_at ON agent_sessions(deleted_at);
+			DROP INDEX IF EXISTS idx_agent_sessions_name;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_name
+				ON agent_sessions(customer, name)
+				WHERE name IS NOT NULL AND name <> '' AND deleted_at = 0;
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration

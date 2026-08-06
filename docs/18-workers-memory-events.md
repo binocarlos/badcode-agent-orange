@@ -549,11 +549,18 @@ Stated plainly because each one will otherwise be discovered the hard way.
 - **Semantic memory search is off in the shipped stack.** See §11.
 - **A job outlives the session it ran in** (RD15). `event_deliveries.session_id` has no foreign
   key, so deleting a session leaves its job history behind pointing at nothing. The history is
-  right to survive — it is the record that the job ran — but the transcript is gone for good, and
-  the Jobs table now says **"transcript deleted"** in place of the link for any row whose session
-  read came back 404. Only the rows that fetched (the first `tokenAutoLoad` of them, which is what
-  the token column already costs) can know; further down the table the link stays and finds out on
-  click. Nothing recovers the transcript — session delete is a hard delete with a cascade.
+  right to survive — it is the record that the job ran — and the Jobs table says **"transcript
+  deleted"** in place of the link for any row whose session read came back 404. Only the rows that
+  fetched (the first `tokenAutoLoad` of them, which is what the token column already costs) can
+  know; further down the table the link stays and finds out on click.
+- **Deleting a session is now a SOFT delete** (RD5, migration 041). It used to be a hard row delete
+  whose FK cascade destroyed the transcript, the messages and the artifact index — from an
+  unguarded icon button. Today the UI asks first, naming what goes, and the server stamps
+  `agent_sessions.deleted_at`: the session leaves every listing and every by-id and by-name lookup,
+  its container is released, and the transcript stays in `agent_query_events`. **Nothing in the
+  product brings it back or exports it** — there is no undelete and no operator purge, deliberately
+  (the retention rule is an open decision, work plan doc 24 G3). A deleted session's *name* is
+  released for reuse; the tombstone keeps the name it had.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
   tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
   said, never what it did.

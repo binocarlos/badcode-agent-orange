@@ -190,14 +190,24 @@ func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Remove the session row too — a deleted session must not linger in
-	// listings. Runner.Destroy only tears down the runtime instance.
+	// Mark the session deleted too — it must not linger in listings.
+	// Runner.Destroy only tears down the runtime instance.
+	//
+	// The error is REPORTED, not discarded (doc 22 RD5): this used to be `_ =`
+	// followed by an unconditional 204, so a delete that failed told the caller
+	// it had succeeded and the session reappeared on the next refresh.
 	if h.cfg.AgentDB != nil {
-		_ = h.cfg.AgentDB.DeleteSession(r.Context(), sid)
+		if err := h.cfg.AgentDB.DeleteSession(r.Context(), sid); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	} else if del, ok := h.cfg.Store.(interface {
 		DeleteSession(ctx context.Context, id string) error
 	}); ok {
-		_ = del.DeleteSession(r.Context(), sid)
+		if err := del.DeleteSession(r.Context(), sid); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

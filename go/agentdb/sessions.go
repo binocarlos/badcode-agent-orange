@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/imageregistry"
 	"github.com/google/uuid"
@@ -245,7 +246,13 @@ func (s *Store) GetSessionByName(ctx context.Context, customer, name string) (*S
 		return nil, fmt.Errorf("%w: %q in project %q", ErrSessionNotFound, name, customer)
 	}
 	var session Session
-	err := s.gdb.WithContext(ctx).Where("customer = ? AND name = ?", customer, name).First(&session).Error
+	// `deleted_at = 0`: a soft-deleted session must not be findable by name
+	// either (migration 041). Its name is also free for a new session to take —
+	// the unique index skips tombstones — so the two halves have to agree, or a
+	// name would resolve to a deleted row while a live row held it too.
+	err := s.gdb.WithContext(ctx).
+		Where("customer = ? AND name = ? AND deleted_at = 0", customer, name).
+		First(&session).Error
 	if err != nil {
 		if isNotFound(err) {
 			return nil, fmt.Errorf("%w: %q in project %q", ErrSessionNotFound, name, customer)
@@ -255,12 +262,17 @@ func (s *Store) GetSessionByName(ctx context.Context, customer, name string) (*S
 	return &session, nil
 }
 
+// GetSession loads a LIVE session row. A soft-deleted session (migration 041)
+// answers "not found", which is what makes delete stick: this is the lookup
+// httpapi.ownsSession performs before every session-by-ID route, so a deleted
+// session cannot be messaged, streamed, restored, snapshotted or deleted twice.
+// Only the tombstone's bytes remain, for the purge the work plan's G3 gates.
 func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	if id == "" {
 		return nil, fmt.Errorf("cannot get agent session without ID")
 	}
 	var session Session
-	if err := s.gdb.WithContext(ctx).Where("id = ?", id).First(&session).Error; err != nil {
+	if err := s.gdb.WithContext(ctx).Where("id = ? AND deleted_at = 0", id).First(&session).Error; err != nil {
 		return nil, fmt.Errorf("failed to get agent session: %w", err)
 	}
 	return &session, nil
@@ -279,7 +291,11 @@ func (s *Store) SessionExists(ctx context.Context, id string) (bool, error) {
 		return false, fmt.Errorf("cannot check agent session without ID")
 	}
 	var n int64
-	if err := s.gdb.WithContext(ctx).Model(&Session{}).Where("id = ?", id).Count(&n).Error; err != nil {
+	// A soft-deleted session counts as ABSENT: the archive loop's question is
+	// "does anything still own this container?", and nothing does — the user
+	// deleted it. Answering "present" would leave the container and its host
+	// port held by a session no surface can reach.
+	if err := s.gdb.WithContext(ctx).Model(&Session{}).Where("id = ? AND deleted_at = 0", id).Count(&n).Error; err != nil {
 		return false, fmt.Errorf("failed to check agent session %q: %w", id, err)
 	}
 	return n > 0, nil
@@ -296,13 +312,37 @@ func (s *Store) UpdateSession(ctx context.Context, session *Session) (*Session, 
 	return session, nil
 }
 
+// DeleteSession soft-deletes a session: it stamps `deleted_at` instead of
+// removing the row (migration 041, doc 22 RD5).
+//
+// The row IS the index to the conversation — agent_query_events, agent_messages
+// and agent_artifacts all cascade off it — so a hard delete here destroyed
+// everything the user and the model had said, from a one-click icon button,
+// with no way back. After this the session disappears from every listing and
+// every by-id and by-name lookup, its container is released by the caller
+// (Runner.Destroy), and the transcript stays on disk until an operator purge
+// that does not exist yet and is not this function's to invent (work plan G3).
+//
+// It is NOT idempotent, deliberately: deleting a session that is already gone
+// returns ErrSessionNotFound rather than nil, because the HTTP layer's only
+// honest answer to "delete something that isn't there" is 404 — and RD5's
+// second defect was exactly a delete that reported success without doing
+// anything.
 func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	if id == "" {
 		return fmt.Errorf("cannot delete agent session without ID")
 	}
-	result := s.gdb.WithContext(ctx).Delete(&Session{}, "id = ?", id)
+	// Model(&Session{}).Update, not Save(row): a read-modify-write would race a
+	// concurrent delete into reporting two successes, and `Name` is `<-:create`
+	// so a whole-row Save could not carry it anyway.
+	result := s.gdb.WithContext(ctx).Model(&Session{}).
+		Where("id = ? AND deleted_at = 0", id).
+		Update("deleted_at", time.Now().Unix())
 	if result.Error != nil {
 		return fmt.Errorf("failed to delete agent session: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("%w: %q", ErrSessionNotFound, id)
 	}
 	return nil
 }
@@ -316,7 +356,12 @@ func (s *Store) ListSessions(ctx context.Context, query *SessionQuery) ([]*Sessi
 			COALESCE(tc.cnt, 0) as tool_call_count`).
 		Joins("LEFT JOIN (SELECT session_id, COUNT(*) as cnt FROM agent_artifacts GROUP BY session_id) ac ON agent_sessions.id = ac.session_id").
 		Joins("LEFT JOIN (SELECT session_id, COUNT(*) as cnt FROM agent_messages GROUP BY session_id) mc ON agent_sessions.id = mc.session_id").
-		Joins("LEFT JOIN (SELECT session_id, COUNT(*) as cnt FROM agent_messages WHERE tool_name != '' GROUP BY session_id) tc ON agent_sessions.id = tc.session_id")
+		Joins("LEFT JOIN (SELECT session_id, COUNT(*) as cnt FROM agent_messages WHERE tool_name != '' GROUP BY session_id) tc ON agent_sessions.id = tc.session_id").
+		// Soft-deleted sessions are gone from every listing (migration 041).
+		// Unconditional, not a SessionQuery option: there is no caller today
+		// that should see a tombstone, and an opt-in flag would be the first
+		// half of the purge the work plan's G3 gates.
+		Where("agent_sessions.deleted_at = 0")
 
 	if query != nil {
 		if query.ID != "" {
@@ -546,7 +591,7 @@ func (s *Store) ListSessionUsers(ctx context.Context, customer string) ([]string
 	var emails []string
 	err := s.gdb.WithContext(ctx).
 		Model(&Session{}).
-		Where("customer = ?", customer).
+		Where("customer = ? AND deleted_at = 0", customer).
 		Distinct("user_email").
 		Order("user_email").
 		Pluck("user_email", &emails).Error
