@@ -242,6 +242,27 @@ func (s *Store) PersistQueryEventsFlat(ctx context.Context, sessionID, queryID s
 	return nil
 }
 
+// ListQueryEventsFlatForQuery returns the events persisted for ONE turn — the
+// optional RunnerStore capability that lets a reconnect append to a turn instead
+// of replacing it (see events.Splice). Implemented here so the sqlite fallback
+// does not silently lose reconnected turns the Postgres store keeps.
+func (s *Store) ListQueryEventsFlatForQuery(ctx context.Context, sessionID, queryID string) ([]events.Envelope, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT payload FROM query_events WHERE session_id=? AND query_id=?`, sessionID, queryID)
+	var payload string
+	if err := row.Scan(&payload); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlitestore: ListQueryEventsFlatForQuery %q/%q: %w", sessionID, queryID, err)
+	}
+	var evs []events.Envelope
+	if err := json.Unmarshal([]byte(payload), &evs); err != nil {
+		return nil, fmt.Errorf("sqlitestore: ListQueryEventsFlatForQuery unmarshal: %w", err)
+	}
+	return evs, nil
+}
+
 // ListQueryEventsFlat returns all events for a session as a flat slice.
 func (s *Store) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	rows, err := s.db.QueryContext(ctx,

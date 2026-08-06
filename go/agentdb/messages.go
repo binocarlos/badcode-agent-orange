@@ -209,6 +209,33 @@ func (s *Store) PersistQueryEventsFlat(ctx context.Context, sessionID, queryID s
 	})
 }
 
+// ListQueryEventsFlatForQuery returns the events already persisted for ONE turn.
+// It is the read half of the reconnect merge (see events.Splice): a stream that
+// re-attaches to a turn nobody in this process owns any more must append to what
+// the previous generation wrote, not replace it.
+//
+// Absent row -> (nil, nil): a turn nothing has persisted yet is not an error.
+func (s *Store) ListQueryEventsFlatForQuery(ctx context.Context, sessionID, queryID string) ([]events.Envelope, error) {
+	var rows []*QueryEvents
+	if err := s.gdb.WithContext(ctx).
+		Where("session_id = ? AND query_id = ?", sessionID, queryID).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list agent query events for query: %w", err)
+	}
+	var out []events.Envelope
+	for _, r := range rows {
+		if len(r.Events) == 0 {
+			continue
+		}
+		var batch []events.Envelope
+		if err := json.Unmarshal([]byte(r.Events), &batch); err != nil {
+			return nil, fmt.Errorf("agentdb: decode query events for %s/%s: %w", sessionID, r.QueryID, err)
+		}
+		out = append(out, batch...)
+	}
+	return out, nil
+}
+
 // ListQueryEventsFlat returns all events for a session as a flat []events.Envelope.
 func (s *Store) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	rows, err := s.ListQueryEvents(ctx, sessionID)

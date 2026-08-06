@@ -50,6 +50,17 @@ const (
 
 // RunnerStore is the minimal DB surface the Runner and Fleet require. Both
 // *agentdb.Store and agentkittest.MemStore satisfy this interface.
+//
+// One OPTIONAL capability is probed for by type assertion rather than required
+// here, because RunnerStore is host-implemented and adding a method to it breaks
+// every host:
+//
+//	ListQueryEventsFlatForQuery(ctx, sessionID, queryID) ([]events.Envelope, error)
+//
+// A store that implements it lets Runner.Stream persist what a reconnect drains
+// out of the in-image replay buffer (merged onto what the turn already has — see
+// events.Splice). A store that does not keeps the previous behaviour: the
+// reconnect relays bytes to the browser and persists nothing.
 type RunnerStore interface {
 	GetSession(ctx context.Context, id string) (*agentdb.Session, error)
 	UpdateSession(ctx context.Context, session *agentdb.Session) (*agentdb.Session, error)
@@ -164,6 +175,14 @@ type Policy struct {
 	// container, not the host). Deliberately excluded from user-image throwaway
 	// builds so dev binds never alter snapshotted images.
 	Mounts []execenv.Mount
+
+	// EventFlushCadence is how often an in-flight turn's collected events are
+	// flushed to the store, so a crash mid-turn does not lose everything the model
+	// said. 0 selects the default (DefaultEventFlushCadence); a NEGATIVE value
+	// disables periodic flushing, restoring the persist-once-at-query_complete
+	// behaviour. Tests use a tiny value; production wants seconds, not
+	// milliseconds — every flush is a full re-write of the turn's row.
+	EventFlushCadence time.Duration
 
 	// TrustedWorkload declares that the workloads run in this Runner are trusted
 	// (e.g. an internal dev box or a known-safe CI job). When true, shared-tenancy

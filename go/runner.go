@@ -112,6 +112,22 @@ type runnerImpl struct {
 	// of it onwards and be torn down under its own stream.
 	held map[string]int
 
+	// persistOwners counts the goroutines in this process currently persisting a
+	// turn for a session. It is the single-writer rule for a session's
+	// transcript: SendMessage always owns the turn it dispatches, and a Stream
+	// attachment persists ONLY when nobody else does.
+	//
+	// This is what stops a reconnect from duplicating a live turn. Both
+	// attachments receive every event the sandbox sends (sendEventDirect writes
+	// to all registered streams), so two writers would record the same words
+	// twice — and they would not even collide on one row, because the id the
+	// runner persists under (`q-<session>-<n>`) is not the id the sandbox streams
+	// under (a uuid). The claim, not the row key, is the guarantee.
+	persistOwners map[string]int
+
+	// flushCadence is how often an in-flight turn is flushed to the store.
+	flushCadence time.Duration
+
 	// creating holds one guard per IN-FLIGHT create, keyed by session id. It is
 	// how a Destroy tells a create that is still provisioning that its session
 	// is gone — see createGuard. Entries live only for the duration of a create.
@@ -156,15 +172,24 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 		userImageHandles: map[string]imageregistry.Handle{},
 		progress:         newProgressStore(),
 		creating:         map[string]*createGuard{},
+		persistOwners:    map[string]int{},
 		stop:             make(chan struct{}),
 	}
 	r.sink = &storeSink{store: deps.Store, pending: map[string]int{}}
+	r.flushCadence = resolveFlushCadence(deps.Policy.EventFlushCadence)
 	if deps.Events != nil {
 		r.pipeline = deps.Events
 	} else {
 		// Default pipeline: persist via the host SessionStore, with an
 		// artifact_registered marker hook that pulls bytes + saves them.
-		r.pipeline = events.NewPipeline(r.sink,
+		//
+		// WITH A CADENCE: without one the model's output becomes durable exactly
+		// once, at query_complete, and until then it lives only in a local slice
+		// inside pipeline.Run. Kill agentd (or the machine) mid-turn and every
+		// word the model said is gone — while the human's prompt survives,
+		// because seedUserMessage wrote it before the turn was dispatched. The
+		// transcript then records a question nobody answered. (RD6.)
+		r.pipeline = events.NewPipelineWithCadence(r.sink, r.flushCadence,
 			struct {
 				Type events.Type
 				Hook events.MarkerHook
@@ -940,6 +965,11 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 		}}
 	}
 
+	// Own the transcript for the duration of the pipeline: while this runs it is
+	// the authoritative writer, and a Stream attachment must not also write.
+	// Deferred, not released inline: a claim leaked by a panic would silently
+	// disable reconnect persistence for this session for the process's life.
+	defer r.ownTurnPersist(ref.SessionID)()
 	res, err := r.pipeline.Run(ctx, q, resp.Body, w)
 	r.touch(ref.SessionID)
 	// The turn has settled and (crucially) been persisted: emit the §8.2
@@ -968,13 +998,143 @@ func (r *runnerImpl) Stream(ctx context.Context, ref SessionRef, opts StreamOpti
 	if ref.ScopedToken != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+ref.ScopedToken)
 	}
+	// Decide BEFORE attaching whether this attachment persists what it drains,
+	// and read the turn's existing events while no event of it can have reached
+	// us yet — see streamPersistSink. Ordering matters: a base read after the
+	// first frame arrived could contain an event this stream also sees, and the
+	// splice would then have to guess.
+	sink, persist := r.streamPersistSink(ctx, ref.SessionID, opts.QueryID)
+	if persist {
+		defer sink.release()
+	}
+
 	resp, err := r.deps.HTTPClient.Do(httpReq)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	_, err = io.Copy(w, resp.Body)
+	if !persist {
+		_, err = io.Copy(w, resp.Body)
+		return err
+	}
+	// Run the SSE through a pipeline so what the sandbox replays out of its
+	// in-RAM buffer becomes durable. Without this, a turn that outlived agentd
+	// renders perfectly in the browser and is never written down: the buffer is
+	// dropped the moment the turn completes, and the harness then holds a turn
+	// Postgres never recorded (RD6/RD24).
+	//
+	// No MarkerHooks: they are side effects (pull artifact bytes, catalogue a
+	// skill) owned by the turn's dispatcher, and firing them again off a replay
+	// would perform them twice.
+	pl := events.NewPipelineWithCadence(sink, r.flushCadence)
+	q := events.QueryContext{SessionID: ref.SessionID, QueryID: opts.QueryID}
+	_, err = pl.Run(ctx, q, resp.Body, w)
 	return err
+}
+
+// streamPersistSink decides whether this stream attachment should persist, and
+// if so returns the sink that merges its events onto whatever the turn already
+// has. ok=false means "relay only", which is what Stream has always done.
+//
+// It declines when:
+//   - there is no query id (nothing to key a row on),
+//   - the host store cannot read one turn's events back (the optional
+//     ListQueryEventsFlatForQuery capability on RunnerStore) — without it a write
+//     would REPLACE the turn's row with the tail of it, erasing the human's
+//     prompt to save the model's reply,
+//   - or some other goroutine in this process is already persisting this
+//     session's transcript, which is the single-writer rule (see persistOwners).
+func (r *runnerImpl) streamPersistSink(ctx context.Context, sessionID, queryID string) (*streamSink, bool) {
+	if queryID == "" || r.deps.Store == nil {
+		return nil, false
+	}
+	reader, ok := r.deps.Store.(queryEventReader)
+	if !ok {
+		return nil, false
+	}
+	release, ok := r.claimTurnPersist(sessionID)
+	if !ok {
+		return nil, false
+	}
+	base, err := reader.ListQueryEventsFlatForQuery(ctx, sessionID, queryID)
+	if err != nil {
+		// Reading the base failed, so a write could only clobber. Relay instead.
+		log.Printf("agentkit: stream persist %s/%s: read existing events: %v", sessionID, queryID, err)
+		release()
+		return nil, false
+	}
+	return &streamSink{inner: r.sink, base: base, release: release}, true
+}
+
+// queryEventReader is the optional RunnerStore capability that makes a reconnect
+// durable. Documented on RunnerStore; implemented by *agentdb.Store and MemStore.
+type queryEventReader interface {
+	ListQueryEventsFlatForQuery(ctx context.Context, sessionID, queryID string) ([]events.Envelope, error)
+}
+
+// streamSink persists a reconnect's events APPENDED to what the turn already
+// holds, instead of replacing it. See events.Splice for the join, and
+// streamPersistSink for why base is read before the stream is attached.
+type streamSink struct {
+	inner   *storeSink
+	base    []events.Envelope
+	release func()
+}
+
+func (s *streamSink) BeginFlush(sessionID string) { s.inner.BeginFlush(sessionID) }
+func (s *streamSink) EndFlush(sessionID string)   { s.inner.EndFlush(sessionID) }
+
+func (s *streamSink) PersistQueryEvents(ctx context.Context, sessionID, queryID string, evs []events.Envelope, _ string) error {
+	merged := events.Splice(s.base, evs)
+	// The search text is recomputed over the merged turn: derived from the
+	// argument alone it would shrink to the tail, so a full-text search would
+	// stop finding the first half of every interrupted conversation.
+	return s.inner.PersistQueryEvents(ctx, sessionID, queryID, merged, events.ExtractSearchText(merged))
+}
+
+// ownTurnPersist claims a session's transcript unconditionally, for the caller
+// that dispatched the turn. Returns the release.
+func (r *runnerImpl) ownTurnPersist(sessionID string) func() {
+	r.mu.Lock()
+	r.persistOwners[sessionID]++
+	r.mu.Unlock()
+	return func() { r.releaseTurnPersist(sessionID) }
+}
+
+// claimTurnPersist claims a session's transcript only if nobody holds it.
+func (r *runnerImpl) claimTurnPersist(sessionID string) (func(), bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.persistOwners[sessionID] > 0 {
+		return nil, false
+	}
+	r.persistOwners[sessionID]++
+	return func() { r.releaseTurnPersist(sessionID) }, true
+}
+
+func (r *runnerImpl) releaseTurnPersist(sessionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if n := r.persistOwners[sessionID]; n <= 1 {
+		delete(r.persistOwners, sessionID)
+	} else {
+		r.persistOwners[sessionID] = n - 1
+	}
+}
+
+// DefaultEventFlushCadence is how often an in-flight turn is flushed to the
+// store when Policy.EventFlushCadence is unset. Two seconds is what the
+// orchestrator this pipeline was ported from used.
+const DefaultEventFlushCadence = 2 * time.Second
+
+func resolveFlushCadence(d time.Duration) time.Duration {
+	if d == 0 {
+		return DefaultEventFlushCadence
+	}
+	if d < 0 {
+		return 0
+	}
+	return d
 }
 
 func (r *runnerImpl) Stop(ctx context.Context, ref SessionRef) error {

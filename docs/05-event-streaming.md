@@ -148,6 +148,30 @@ Replay exists at two layers, and both are kept:
 The host (Go) sits between them: `Runner.Stream` proxies the in-image buffer for reconnects;
 `RunnerStore.ListQueryEventsFlat` feeds durable replay.
 
+### The two writes that make a turn survive a crash (D2 / doc 22 RD6+RD24)
+
+The pipeline persists on a **cadence** (`Policy.EventFlushCadence`, default 2s) as well as at
+`query_complete`. Without the cadence the model's output existed only in a slice inside
+`pipeline.Run` until the turn ended: kill agentd mid-turn and the transcript kept the human's
+question — `seedUserMessage` writes that before the turn is dispatched — and nothing else.
+
+`Runner.Stream` runs its SSE through a pipeline too, so what the in-image buffer replays to a
+reconnecting client is **written down**, not just rendered. Three rules keep that from
+double-recording a turn:
+
+- **One writer per session at a time.** `SendMessage` owns the turn it dispatched; a stream
+  attachment persists only when nobody else is. Both attachments receive every event the sandbox
+  sends, so two writers would record the same words twice.
+- **Append, never replace.** A reconnect sees only what the sandbox buffered *since the previous
+  stream detached*, so writing it as the whole turn would erase the earlier half. `events.Splice`
+  joins the new events onto the stored ones, absorbing any overlap.
+- **Only against a store that can read one turn back** — the optional
+  `ListQueryEventsFlatForQuery` capability on `RunnerStore`. Without it the stream relays and
+  persists nothing, exactly as before.
+
+What is still lost: events the dying process read off the socket but had not yet flushed. The
+sandbox buffers only while no stream is attached, so those are in neither place.
+
 ## The single reducer (the invariant we must not break)
 
 **There is exactly one codepath that reconstructs UI from events** — the `agentEventReducer` — and it

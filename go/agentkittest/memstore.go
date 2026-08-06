@@ -96,6 +96,20 @@ func (s *MemStore) PersistQueryEventsFlat(ctx context.Context, sessionID, queryI
 	return nil
 }
 
+// ListQueryEventsFlatForQuery returns the events persisted for ONE turn — the
+// read half of the reconnect merge (agentkit's queryEventReader capability).
+func (s *MemStore) ListQueryEventsFlatForQuery(ctx context.Context, sessionID, queryID string) ([]events.Envelope, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	evs, ok := s.queryEvents[sessionID+"\x00"+queryID]
+	if !ok {
+		return nil, nil
+	}
+	out := make([]events.Envelope, len(evs))
+	copy(out, evs)
+	return out, nil
+}
+
 func (s *MemStore) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
