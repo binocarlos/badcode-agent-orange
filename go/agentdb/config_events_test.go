@@ -657,6 +657,12 @@ func TestMutationsAreLogged(t *testing.T) {
 			"MarkCustomImageReaped",
 			"MarkCustomImageResumed",
 			"MarkProjectEventDelivered",
+			// Grown once more on 2026-08-06 by RD11's watermark (migration 041):
+			// `last_evaluated` is the scheduler's progress marker, written every
+			// minute per schedule so that "nothing was due" and "nobody was
+			// running" stop looking identical. Runtime state, exactly like the
+			// router's `delivered` watermark two entries up.
+			"NoteScheduleEvaluated",
 			"NoteScheduleProvisionFailure",
 			// Grown once more on 2026-08-06 by RD13's append-only trigger
 			// (migration 039): PurgeConfigEvents is the one sanctioned way to

@@ -928,6 +928,33 @@ var agentMigrations = []migration{
 				FOR EACH ROW EXECUTE FUNCTION agentdb_config_events_append_only();
 		`,
 	},
+	{
+		// A missed schedule occurrence stops being indistinguishable from one
+		// that was never scheduled (RD11).
+		//
+		// `schedules.last_evaluated` is the per-schedule WATERMARK: the
+		// wall-clock minute a tick last looked at this row. It is what lets the
+		// scheduler tell "nothing was due" from "nobody was running", which is
+		// the whole finding — before it, an hour of downtime left no firing row,
+		// no event, no delivery and nothing saying sixty occurrences went by.
+		//
+		// `schedule_firings.missed` marks an occurrence RECORDED AFTER THE FACT:
+		// a row that exists to say "this minute came and went unevaluated", not
+		// to say a job ran. The catch-up never starts a job — §8.6's skip-missed
+		// posture is unchanged and deliberate (see scheduler.go) — so the row and
+		// the `schedule.missed` event are the entire remedy.
+		//
+		// Both are runtime state, not configuration: no config event, exactly
+		// like `provision_failures` (migration 031) and the router's `delivered`
+		// watermark. Both are NOT NULL with a DDL default and NO gorm `default:`
+		// tag, per the convention on agentdb.Schedule — '' and false are the
+		// meaningful zero values here (never evaluated; a real firing).
+		Name: "041_schedule_watermark",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_evaluated TEXT NOT NULL DEFAULT '';
+			ALTER TABLE schedule_firings ADD COLUMN IF NOT EXISTS missed BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration

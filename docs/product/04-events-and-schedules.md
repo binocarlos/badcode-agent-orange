@@ -64,6 +64,11 @@ through the design conversation this list's growth requires):
 - **`subscription.throttled`** — emitted when `max_firings_per_hour` (§8.3) drops deliveries
   for a subscription; at most one per subscription per rolling-60-minute window. Envelope:
   `source: "core"`, `depth: 0` — carries neither `worker` nor `session_id`.
+- **`schedule.missed`** — emitted when a schedule's occurrences went by with nobody evaluating
+  them (RD11: agentd was down, or a firing was claimed by a process that died before it could
+  write the job). One event per gap, not one per occurrence; `text` names the count, the range
+  and the instruction that was never delivered. Envelope `source: "schedule"`, `depth: 0`, the
+  same as `schedule.fired`. **It replaces the work rather than accompanying it** — see §8.6.
 - **`config.changed`** — emitted alongside every config-log append (§15): a management
   mutation happened. `text` = a human-readable description of the change, including the
   rationale. Envelope from the acting session — `source: "worker"` (with `worker` and
@@ -173,6 +178,18 @@ finds due enabled entries, and starts a job per entry with event
 through the identical composition path (§6.2) as every other trigger. Firings missed while
 agentd is down are **skipped, not replayed** (a tweet-writer must not wake to a backlog of
 stale mornings); this is documented behaviour, and per-project `max_concurrent_jobs` applies.
+
+**Skipped is not the same as invisible (RD11).** Each schedule carries a watermark
+(`last_evaluated`, the wall-clock minute a tick last looked at the row). A tick that finds a gap
+walks the minutes nobody evaluated, records each matching occurrence as a `missed` firing, and
+appends **one** `schedule.missed` event naming the count, the range and the instruction that was
+not delivered. Nothing is run: the event replaces the work, it does not accompany it. Before this,
+an hour of downtime left no firing row, no event and no delivery, so "my 9am job never ran" and
+"you never scheduled a 9am job" were the same observation. Bounds: a single catch-up looks back at
+most 7 days and writes at most 60 rows (the most recent ones), while the event always states the
+true total. A schedule that has never been evaluated reports nothing — there is no evidence about
+the time before anybody was looking. A worker can subscribe to `schedule.missed` like any other
+event if a project wants to react to its own outages.
 Firings are idempotent: each firing records a unique occurrence key
 `(schedule_id, scheduled_for)`, so a crash/retry cannot double-fire the same occurrence. A due
 schedule whose worker no longer exists is disabled and logged — not silently retried forever.

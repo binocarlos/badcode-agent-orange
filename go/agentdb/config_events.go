@@ -837,6 +837,12 @@ var ConfigMutationExempt = map[string]string{
 	"SetConfigEventHook": "J3's post-commit seam: it installs the in-process callback that turns a committed " +
 		"record into the routable `config.changed` event (§15.8). It touches no table at all — it is process " +
 		"wiring, called once at boot, and the classifier only flags it because \"Config\" is a configuration noun",
+	"NoteScheduleEvaluated": "§15.3 rule 3: the scheduler's per-schedule WATERMARK (RD11) — the wall-clock " +
+		"minute a tick last looked at the row. It is the exact analogue of MarkProjectEventDelivered on the " +
+		"event log: runtime progress, written every minute by a loop, decided by nobody. Logging it as a " +
+		"configuration change would append one record per schedule per minute forever and bury the changelog " +
+		"it shares. It writes the guarded `schedules` table outside the seam, as NoteScheduleProvisionFailure " +
+		"already does, and touches exactly one column no editor can set",
 	"NoteScheduleProvisionFailure": "§15.3 rule 3: a counter of CONSECUTIVE firings that could not be turned " +
 		"into a job is an observation, not a decision — the same kind of runtime state as " +
 		"MarkProjectEventDelivered's watermark. It is also self-defeatingly noisy as a config event: the " +

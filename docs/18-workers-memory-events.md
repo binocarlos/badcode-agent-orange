@@ -171,8 +171,14 @@ rewiring is delete + create.
 nicknames like `@daily` are **refused**, not expanded. The `input` column is the design's centre
 of gravity: it is the instruction the firing delivers, so "10:00 → write the morning tweet" and
 "17:00 → write the evening tweet" are two rows targeting one worker. Firings missed while agentd
-was down are **skipped, not replayed**. A due schedule whose worker no longer exists is disabled
-and logged.
+was down are **skipped, not replayed — but they are recorded**: each schedule keeps a watermark
+(`last_evaluated`), and the first tick after a gap writes a `missed` firing row per unevaluated
+occurrence and appends **one** `schedule.missed` event naming the count, the range and the
+instruction that was not delivered. Nothing is re-run at boot, deliberately (see
+`docs/product/04-events-and-schedules.md` §8.6); a catch-up looks back at most 7 days and records
+at most 60 rows, and the event always carries the true total. A schedule nobody has evaluated yet
+reports nothing. Subscribe a worker to `schedule.missed` if you want the project to react to its
+own downtime. A due schedule whose worker no longer exists is disabled and logged.
 
 A schedule is also disabled after **five consecutive firings that could not start a job at all** —
 the worker is gone or disabled, composition refused, or the session would not provision. Fifty-three

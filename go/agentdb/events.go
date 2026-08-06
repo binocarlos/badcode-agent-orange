@@ -323,24 +323,8 @@ func clampLimit(n int) int {
 // CreateProjectEvent appends an event. The caller (ingestion handler or an
 // internal emitter) owns the envelope — the store only checks it is coherent.
 func (s *Store) CreateProjectEvent(ctx context.Context, ev *ProjectEvent) (*ProjectEvent, error) {
-	if ev == nil {
-		return nil, fmt.Errorf("project event is required")
-	}
-	if strings.TrimSpace(ev.Project) == "" {
-		return nil, fmt.Errorf("project is required")
-	}
-	if strings.TrimSpace(ev.Type) == "" {
-		return nil, fmt.Errorf("event type is required")
-	}
-	if ev.Envelope.Source == "" {
-		return nil, fmt.Errorf("envelope source is required (one of %s)", strings.Join(EventSources, "|"))
-	}
-	if !validEventSource(ev.Envelope.Source) {
-		return nil, fmt.Errorf("invalid envelope source %q (want one of %s)",
-			ev.Envelope.Source, strings.Join(EventSources, "|"))
-	}
-	if ev.Envelope.Depth < 0 {
-		return nil, fmt.Errorf("envelope depth must not be negative")
+	if err := validateProjectEvent(ev); err != nil {
+		return nil, err
 	}
 	if ev.ID == "" {
 		ev.ID = uuid.New().String()
@@ -352,6 +336,33 @@ func (s *Store) CreateProjectEvent(ctx context.Context, ev *ProjectEvent) (*Proj
 		return nil, fmt.Errorf("failed to create project event: %w", err)
 	}
 	return ev, nil
+}
+
+// validateProjectEvent is CreateProjectEvent's shape check, extracted so the
+// scheduler's transactional write (RecordFiringJob) applies exactly the same
+// rules. Two write paths that validated differently would be a way for a row to
+// exist that no reader expects.
+func validateProjectEvent(ev *ProjectEvent) error {
+	if ev == nil {
+		return fmt.Errorf("project event is required")
+	}
+	if strings.TrimSpace(ev.Project) == "" {
+		return fmt.Errorf("project is required")
+	}
+	if strings.TrimSpace(ev.Type) == "" {
+		return fmt.Errorf("event type is required")
+	}
+	if ev.Envelope.Source == "" {
+		return fmt.Errorf("envelope source is required (one of %s)", strings.Join(EventSources, "|"))
+	}
+	if !validEventSource(ev.Envelope.Source) {
+		return fmt.Errorf("invalid envelope source %q (want one of %s)",
+			ev.Envelope.Source, strings.Join(EventSources, "|"))
+	}
+	if ev.Envelope.Depth < 0 {
+		return fmt.Errorf("envelope depth must not be negative")
+	}
+	return nil
 }
 
 func validEventSource(src string) bool {
@@ -758,24 +769,8 @@ func (s *Store) DeleteSubscription(ctx context.Context, project, id string, cw C
 // returns created=true; every later call returns the stored row untouched with
 // created=false. A crashed router that retries therefore cannot double-deliver.
 func (s *Store) EnsureDelivery(ctx context.Context, d *EventDelivery) (*EventDelivery, bool, error) {
-	if d == nil {
-		return nil, false, fmt.Errorf("delivery is required")
-	}
-	if strings.TrimSpace(d.Project) == "" {
-		return nil, false, fmt.Errorf("project is required")
-	}
-	if d.EventID == "" {
-		return nil, false, fmt.Errorf("event_id is required")
-	}
-	if d.SubscriptionID == "" {
-		return nil, false, fmt.Errorf("subscription_id is required")
-	}
-	if d.Status == "" {
-		d.Status = DeliveryPending
-	}
-	if !ValidDeliveryStatus(d.Status) {
-		return nil, false, fmt.Errorf("invalid delivery status %q (want one of %s)",
-			d.Status, strings.Join(DeliveryStatuses, "|"))
+	if err := validateDelivery(d); err != nil {
+		return nil, false, err
 	}
 	if existing, err := s.findDeliveryPair(ctx, d.EventID, d.SubscriptionID); err == nil {
 		return existing, false, nil
@@ -794,6 +789,34 @@ func (s *Store) EnsureDelivery(ctx context.Context, d *EventDelivery) (*EventDel
 		return nil, false, fmt.Errorf("failed to create delivery: %w", err)
 	}
 	return d, true, nil
+}
+
+// validateDelivery is EnsureDelivery's shape check (and its one defaulting
+// step), extracted for the same reason validateProjectEvent is: the scheduler's
+// transactional write creates a delivery without going through EnsureDelivery —
+// it has just created the event, so there is nothing to be idempotent against —
+// and it must not be allowed to write a shape EnsureDelivery would refuse.
+func validateDelivery(d *EventDelivery) error {
+	if d == nil {
+		return fmt.Errorf("delivery is required")
+	}
+	if strings.TrimSpace(d.Project) == "" {
+		return fmt.Errorf("project is required")
+	}
+	if d.EventID == "" {
+		return fmt.Errorf("event_id is required")
+	}
+	if d.SubscriptionID == "" {
+		return fmt.Errorf("subscription_id is required")
+	}
+	if d.Status == "" {
+		d.Status = DeliveryPending
+	}
+	if !ValidDeliveryStatus(d.Status) {
+		return fmt.Errorf("invalid delivery status %q (want one of %s)",
+			d.Status, strings.Join(DeliveryStatuses, "|"))
+	}
+	return nil
 }
 
 func (s *Store) findDeliveryPair(ctx context.Context, eventID, subscriptionID string) (*EventDelivery, error) {
