@@ -133,7 +133,7 @@ in each case.
   that goes unmetered.
   *Validation:* sandbox typecheck + tests, go suite + live-Postgres, and the budget-gate e2e
   proven non-vacuous by reverting (TOK1's discipline).
-- [ ] **RD3 — `memory_create` reports `"embedded": true` while storing a row with no embedding,
+- [x] **RD3 — `memory_create` reports `"embedded": true` while storing a row with no embedding,
   permanently.** `go/agentdb/memories.go:137` drops the vector from the INSERT when the
   `content_embedding` column is absent; `go/cmd/agentd/mcp_memory.go:288` reports
   `Embedded: vec != nil` — true whenever the *embedder* returned a vector, regardless of what was
@@ -195,7 +195,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   **Fix:** `deleted_at` on `agent_sessions`, listings filtered on it, cascade retained for a
   separate operator purge; a confirmation step in the UI; and stop discarding the error.
   *Validation:* go suite + live-Postgres + web tests.
-- [ ] **RD6 — A crash mid-turn loses the model's entire response.** *Amended 2026-07-29 after the
+- [x] **RD6 — A crash mid-turn loses the model's entire response.** *Amended 2026-07-29 after the
   sandbox-buffering question was settled by reading; the open question is now closed.* The user's
   **prompt survives** — `seedUserMessage` writes it to `agent_query_events` before the sandbox is
   called, under `context.WithoutCancel` (`go/runner.go:2338-2353`, called at `:892`). What is lost
@@ -221,7 +221,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   *One stack confirmation remains, now a check rather than an unknown:* start a long turn,
   `docker kill` the **agentd** container, restart, hit `/reconnect`, and observe that the events
   render while `agent_query_events` gains no row.
-- [ ] **RD24 — After an agentd restart, the model remembers a turn the user cannot see.**
+- [x] **RD24 — After an agentd restart, the model remembers a turn the user cannot see.**
   Rehydration from the database runs **only** on the snapshot-restore path; the orphan-recover path
   deliberately skips it because it re-adopts a still-running container that already holds its
   in-memory history (the code says so at `go/runner.go:1396-1402`, verified). Combined with RD6,
@@ -233,7 +233,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   out, and the divergence heals invisibly.
   **Fix:** falls out of RD6(b) — if reconnect drains the buffer into Postgres, the two views
   reconverge. Worth an explicit test either way.
-- [ ] **RD7 — A job can wedge in `running` forever, permanently consuming two capacity slots.**
+- [x] **RD7 — A job can wedge in `running` forever, permanently consuming two capacity slots.**
   `settle` releases the session lease *before* stamping the delivery's terminal status
   (`go/cmd/agentd/dispatch.go:619` then `:621`). A crash in that window — or a failed status write,
   whose error is only logged — leaves `status='running'` with `lease_expires_at=0`, and
@@ -252,13 +252,13 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
 
 **Before sustained use — these degrade a working deployment over days.**
 
-- [ ] **RD9 — A snapshot in daily use is reaped out from under the user.** `snapshotExpired` tests
+- [x] **RD9 — A snapshot in daily use is reaped out from under the user.** `snapshotExpired` tests
   only `ci.ExpiresAt` (`go/cmd/agentd/snapshot_reaper.go:196`); `last_resumed_at` is stamped on
   every launch (`imageresolver.go:122-125`) but does not extend expiry, despite the reaper's own
   header implying it bears on it. A worker pinned to a named image gets a hard
   `ErrCustomImageUnmaterialisable` 30 days after burn regardless of use.
   **Fix:** extend expiry on resume, or warn before reaping anything recently resumed.
-- [ ] **RD10 — Two concurrent drains can double-dispatch one delivery**, so a user's job runs
+- [x] **RD10 — Two concurrent drains can double-dispatch one delivery**, so a user's job runs
   twice. `UpdateDeliveryStatus` is a read-then-`Save` with no compare-and-set on
   `status='pending'` (`go/agentdb/events.go:733-757`); the only guard is against an in-memory
   snapshot (`dispatch.go:209`). `DrainPending` runs from two goroutines in one process — the router
@@ -309,7 +309,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   delivery that fails to start persists no reason — no reason column (admitted at
   `dispatch.go:432-435`), no `worker.failed` emitted.
   **Fix:** a `failure_reason` column; render a "transcript deleted" state rather than a broken link.
-- [ ] **RD16 — Transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
+- [x] **RD16 — Transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
   `created_at ASC` (`agentdb/messages.go:188`) where `created_at` is `time.Now().Unix()` —
   **seconds** (`:167`) — and the id is a random uuid. Two queries in the same second replay in
   arbitrary order. This is the identical hazard migration 028 added `revision` to fix for skills;
@@ -574,7 +574,7 @@ reload, and cannot restart its own timer.
 predates embeddability and outlives it. Discovered by the parallel session while building the
 project-API-key seam; owned by this workstream.*
 
-- [ ] **RD30 — A container's per-session token is already a full-project credential.**
+- [x] **RD30 — A container's per-session token is already a full-project credential.**
   `AGENTKIT_JWT_SECRET` and the "session secret" are the **same value in every real deployment**
   (`go/cmd/agentd/main.go:129-131`), despite the comment there claiming they are distinct. So the
   token handed to a session container — a token the model's own harness can read — verifies as a

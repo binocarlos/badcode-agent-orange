@@ -375,7 +375,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   on delete produces a non-2xx; the UI does not delete without confirmation.
   *Validation:* GO + GOPG + WEB, plus E2E if `product-ui` covers deletion.
 
-- [ ] **D2 — RD6 + RD24: a crash mid-turn loses everything the model said.** The user's **prompt
+- [x] **D2 — RD6 + RD24: a crash mid-turn loses everything the model said.** The user's **prompt
   survives** (`seedUserMessage` writes it under `context.WithoutCancel`, `go/runner.go:2338-2353`,
   called at `:892`). The model's output becomes durable exactly once, at `query_complete`
   (`runner.go:943` → `go/events/pipeline.go:200-227`), and until then it lives in the `collected
@@ -405,7 +405,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   hit `/reconnect`, and observe that events render **and** `agent_query_events` now gains a row.
   Record the before/after row counts.
 
-- [ ] **D3 — RD7 + RD10: a job wedges forever, or runs twice.** Both are ordering/atomicity defects
+- [x] **D3 — RD7 + RD10: a job wedges forever, or runs twice.** Both are ordering/atomicity defects
   in `go/cmd/agentd/dispatch.go`; one item because they touch the same paths.
   (a) **RD7** — `settle` releases the session lease *before* stamping the delivery's terminal status
       (`dispatch.go:632-637`: `releaseLease` then `onEnded`). A crash in that window — or a failed
@@ -457,7 +457,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
 
 ## Wave 4 — degrades a working deployment over days
 
-- [ ] **S1 — RD9: a snapshot in daily use is reaped out from under the user.** `snapshotExpired`
+- [x] **S1 — RD9: a snapshot in daily use is reaped out from under the user.** `snapshotExpired`
   tests only `ci.ExpiresAt` (**`go/snapshot_reaper.go:195`** — note: doc 22 cites
   `go/cmd/agentd/snapshot_reaper.go`, which does not exist; the file is at the module root).
   `last_resumed_at` is stamped on every launch (`go/cmd/agentd/imageresolver.go:119-125`) but does
@@ -486,7 +486,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   narrow window between event creation and delivery is closed or its remnant is visible.
   *Validation:* GO + GOPG.
 
-- [ ] **S3 — RD3: `memory_create` reports `"embedded": true` while storing a row with no
+- [x] **S3 — RD3: `memory_create` reports `"embedded": true` while storing a row with no
   embedding, permanently.** `go/agentdb/memories.go:137` drops the vector from the INSERT when the
   `content_embedding` column is absent; `go/cmd/agentd/mcp_memory.go:288` reports
   `Embedded: vec != nil` — true whenever the **embedder** returned a vector, regardless of what was
@@ -537,7 +537,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   gone renders the deleted state.
   *Validation:* GO + GOPG + WEB.
 
-- [ ] **I2 — RD16: transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
+- [x] **I2 — RD16: transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
   `created_at ASC` (`go/agentdb/messages.go:188`) where `created_at` is `time.Now().Unix()` —
   **seconds** (`:167`) — and the id is a random uuid. Two queries in the same second replay in
   arbitrary order, so a user's transcript can render out of order and a replay disagrees with what
@@ -550,7 +550,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   pre/post-migration rows still replay sensibly.
   *Validation:* GO + GOPG.
 
-- [ ] **I3 — RD30: a session token must not be a project credential.** *Filed by the parallel
+- [x] **I3 — RD30: a session token must not be a project credential.** *Filed by the parallel
   embeddable-singleton thread on 2026-08-06 and adopted here — it predates embeddability and
   outlives it.* `AGENTKIT_JWT_SECRET` and the "session secret" are the **same value in every real
   deployment** (`go/cmd/agentd/main.go:129-131`), despite the comment there claiming otherwise. The
@@ -758,6 +758,107 @@ and all 13 topology specs under `--mock-script`.*
   suite's summary line will not tell you which you got** — the same misreading as the serial-describe
   finding above, in a different disguise.
 
+### Batch 2 — Waves 3, 4 and 5 (2026-08-06, six items, all merged and re-validated)
+
+*D2, D3, S1, S3, I2, I3. Merged conflict-free (again — `messages.go` was rewritten by both D2 and
+I2, `types.go` by both S1 and I2, `main.go` by both S3 and I3), then re-validated on the merged tip:
+GO green, GOPG green (31 packages), WEB 1251, SHELL green, and 22 stack specs green including
+session-MCP — which independently exercises I3's session-secret change, since a container's token is
+how core MCP authenticates.*
+
+- **(D2, OPEN — THE RECONNECT FIX CANNOT FIRE TODAY; filed as D5)** The engine half is done and
+  proven, but **three independent breaks stand between it and a real user**, and no single one of
+  them is visible from the others. (i) `execenv.InstanceStatus.ActiveQueryID` is **never set by any
+  adapter** — the only reader is `runner.go:856`. (ii) **The runner and the sandbox disagree about
+  what a query id is**: agentd persists under `q-<sessionID>-<n>` while the sandbox generates its
+  own uuid per turn, and the sandbox's is the one a client would reconnect with. (iii) *Found by the
+  orchestrator while checking D2's claim:* the **browser never sends the id it already has** —
+  `useAgentSession.ts:574` logs `status.activeQuery.queryId` and the very next line calls
+  `endpoints.reconnect(sessionId)` with no query string, while the server reads `queryId` from
+  exactly there (`httpapi/stream.go:62,94`). **RD6 and RD24 are ticked because the engine change is
+  correct, merged and revert-proven — but the path is inert end to end until D5 lands. Anyone
+  reading those ticks as "a reconnect now persists the turn" would be wrong.** This is the plan's
+  own thesis biting the plan: a fix that reports success and does nothing.
+- **(D2) An irreducible loss window remains, and it is documented rather than papered over.** Events
+  the dying process read off the socket but had not yet flushed are in neither the sandbox buffer
+  nor the row; the new cadence bounds it to ~2s of output. Closing it entirely would need the
+  sandbox to keep buffering while a stream is attached — a sandbox change, out of scope and
+  deliberately not smuggled in.
+- **(D2) The dedup worry in the item was the wrong worry.** The sandbox buffers only while NO stream
+  is attached, so a reconnect sees a *suffix*, never a repeat — but writing that suffix as the whole
+  row would have **erased the pre-crash half including the human's prompt**. Hence `events.Splice`
+  (append, absorbing the largest exact overlap, idempotent) plus a single-writer claim per session.
+  Both were revert-proven: without the claim the model's words are recorded twice; without Splice
+  the reconnect erases the prompt.
+- **(D3) RD7's STATED FIX WOULD HAVE CHANGED NOTHING.** Doc 22 and doc 24 both say "stamp terminal
+  status first, release the lease second". The executor implemented exactly that and the ordering
+  test *still failed* — because the failure mode RD7 itself names is **a failed status write**, and
+  reordering two writes does not help when one of them is the thing that fails. The real fix needed
+  the sweep. *An item can state the defect correctly and prescribe a remedy that does not touch it.*
+- **(D3) RD10's blast radius is worse than filed.** Doc 22 describes the loser producing a spurious
+  `worker.failed{lost}`. In the unfixed run, **8 racing drains over one pending delivery created 8
+  jobs** — 8 sessions, 8 containers, 8 host ports from a pool of 100. Reproduced on demand, then
+  fixed to exactly one.
+- **(D3) The shared `ao-test-pg` is near its connection ceiling.** Twelve concurrent connections from
+  one test produced `FATAL: sorry, too many clients already`. Cause: `openLivePG`/`openLiveStore`
+  open a fresh pool per test and never close it, so connections accumulate across a package run.
+  Capped in the new test; **the leak itself is untouched and will bite the next concurrency test.**
+- **(S1) RD9's premise is half wrong, and the executor was right to refuse it.** The non-extending
+  expiry was **not an oversight — it was a deliberate, argued decision stated in three places**
+  (`customimages.go:642`: "a resume that quietly bought another 30 days would make the operator's
+  storage bill a function of use"), with a **live test asserting the old policy**. Taking RD9's
+  literal "extend expiry on resume" would have meant deleting an assertion someone wrote on purpose.
+  The landed fix defers at *reap* time instead, keeping the stamped promise honest. Also: doc 22's
+  "misleading header" citation is wrong — `:21` implies nothing about expiry.
+- **(S1) `last_resumed_at` had ZERO readers** before this change: written on every launch for
+  months, consumed by nothing. A field whose entire documented purpose was "so an operator can see
+  it" that no operator surface reads. Worth a sweep for its siblings.
+- **(I2) RD16 is worse than "arbitrary within a second", and reliably so.** With no tie-break
+  Postgres returns heap order, and **an UPDATE relocates a row to the end of the heap** — so every
+  re-persist of a turn (which the pipeline does routinely) dragged that turn to the *end of the
+  transcript*, regardless of timestamps. Transcripts were not occasionally ambiguous; they were
+  routinely reordered.
+- **(I2) `agentdb` is not Postgres-only in test** — `newSessionTestStore` builds tables with gorm
+  AutoMigrate against **sqlite**, so any raw SQL added to a store method must parse on both dialects.
+  This binds every remaining Go item that touches `agentdb` (D1, S2, I1).
+- **(I3) The fix turned out non-breaking, so the escalation clause never fired.** The session key is
+  derived from the API secret: no new configuration, cannot fail at boot, and an operator still gets
+  a real knob (`AGENTKIT_SESSION_JWT_SECRET`). **But it opened a new hole that had to be closed in
+  the same commit** — a new secret env var is by default forwardable into session containers via
+  `AGENTKIT_MCP_ENV`, and forwarding the *session signing key* would let one session mint tokens for
+  every other session, strictly worse than RD30. Added to `mcpenv.go`'s reserved list. *Any future
+  secret-shaped env var inherits this trap.*
+- **(I3) `/dev/token` was minting an API credential with the session issuer** — invisible while the
+  two secrets were the same string, and it would have broken the e2e stack overlay the moment the
+  keys diverged. A second, quieter instance of the same conflation, mentioned in no document.
+- **(I3) An unforwarded variable is a silent no-op.** Adding `AGENTKIT_SESSION_JWT_SECRET` to
+  `.env.example` without the matching `docker-compose.yml` line would have shipped a documented knob
+  that does nothing in the stack — this plan's exact thesis, in the fix for this plan's own item.
+  Both landed together.
+- **(S3) The absent-column case can be tested against the shared database without harming it** —
+  `search_path=<throwaway schema>` in the connection URL makes the `vector` type unresolvable, so
+  migration 022's DO block takes its own EXCEPTION path and the column is genuinely never created.
+  The orchestrator's warning (that ao-test-pg's healthy default would make this test vacuous) was
+  right, and this is the answer to it.
+- **(S3) `storePromptRevision` had the same defect and is now covered for free.** It embeds every
+  prompt-revision memory — *the record the self-improvement loop is supposed to find years later* —
+  and on a pgvector-less Postgres it stored an unfindable row while reporting `stored: true`.
+- **(S3) The browser guesses whether the semantic leg is on.** `web/src/memories.ts:316-333`
+  (`semanticLegLooksOff`) inspects result snippets for query words because, its own comment says,
+  "the route never says whether it embedded the query". Same defect class as RD3, one layer up.
+  Now fixable — the store knows the answer; the route still does not say it.
+- **(all six) The stale-worktree trap fired on EVERY executor in this batch** — six of six, on the
+  same divergent `dc49595 wip` lineage. Fourteen of fourteen executors across both batches where the
+  base was reported. This is not decaying and rule 2 is the single highest-yield line in the briefs.
+- **(S3, I2) Two more false negatives from executors' own commands** — a `grep -v` substring pattern
+  that silently swallowed a second file, and a `grep -E "^ok +github"` that matched nothing because
+  `go test` separates `ok` from the package name with **tabs**. Fourth and fifth instances of this
+  shape in the plan's history. *Every "clean" grep in this workstream should be assumed guilty until
+  a second method agrees.*
+- **(orchestrator) `gofmt` dirt is accumulating across merges.** F4's `FailureReason` insertion left
+  `agentdb/events.go` unformatted at `e799bb0` (D3 fixed it in passing); two files under
+  `go/httpapi/` are still unformatted and were left alone under rule 3. Worth one sweep.
+
 ## Follow-up items filed by batch 1 (not yet scheduled)
 
 - [ ] **B5 — The stuck banners cannot fire.** `AgentChat.tsx:603,615` gate both stuck-detection
@@ -765,6 +866,22 @@ and all 13 topology specs under `--mock-script`.*
   holding it true would disable the composer forever, which is P2's defect in another costume). So
   B1's armed detector reaches no pixel. Decide what an operator should see when a turn's end cannot
   be confirmed, and render it off `stuckStatus` rather than off `isStreaming`.
+- [ ] **D5 — Nothing can actually reach the reconnect path, so D2's fix cannot fire.** *Filed by
+  batch 2; the most important open item in this plan, because a tick in doc 22 currently rests on
+  it.* Three breaks, all needed: (i) no `execenv` adapter ever sets
+  `InstanceStatus.ActiveQueryID` (only reader: `go/runner.go:856`); (ii) the runner persists under
+  `q-<sessionID>-<n>` while the sandbox streams under its own per-turn uuid — **two id spaces**, and
+  a reconnect keyed by the sandbox's id writes a different row unless they are reconciled; (iii) the
+  browser has the right id and drops it — `web/src/useAgentSession.ts:574` logs
+  `status.activeQuery.queryId`, the next line calls `endpoints.reconnect(sessionId)` with no query
+  string, and `go/httpapi/stream.go:62,94` reads `queryId` from exactly there.
+  **Fix:** settle the id question first (whose id is canonical, and how the other side learns it) —
+  that decision drives the rest. Then set `ActiveQueryID` in the adapters and send the id from the
+  browser. **Validation must be the stack confirmation RD6 asked for and nobody has yet run**: start
+  a long turn, `docker kill` the agentd container, restart, reconnect, and observe both that the
+  events render *and* that `agent_query_events` gains a row. Record the before/after row counts.
+  Until this lands, do not describe RD6/RD24 as closed to anyone outside this plan — and it blocks
+  the parallel session's T12 as surely as D2 did.
 - [ ] **B6 — `looksUnwired` classifies by message text, not status code.** A 500 whose body contains
   "not found"/"not configured" is reported to the user as "this deployment does not serve it". Route
   the distinction off the HTTP status (404/501 = unwired) and keep the text match only as a
