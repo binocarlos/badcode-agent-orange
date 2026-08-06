@@ -121,12 +121,12 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 
 ## R5 — Mechanical debt sweep *(small, self-contained)*
 
-- [ ] **Token-table copies**: `ChangelogView.tsx` and `OrgChartPage.tsx` still carry hand-copied
+- [x] **Token-table copies**: `ChangelogView.tsx` and `OrgChartPage.tsx` still carry hand-copied
   ember/fault token values predating `spine.tsx`'s exported `CONSOLE_TOKENS` (doc 21 DIL said
   "one authority plus two legacy copies"). Point both at the export; delete the copies.
-- [ ] **Stale comment**: `web/src/index.ts`'s config-log export block still says the read route
+- [x] **Stale comment**: `web/src/index.ts`'s config-log export block still says the read route
   does not exist (third of three found; the other two were fixed in V1). Fix it.
-- [ ] **Non-UTF8 bytes**: `useEvents.ts`, `desk.ts`, `DeskPage.tsx` grep as binary from stray
+- [x] **Non-UTF8 bytes**: `useEvents.ts`, `desk.ts`, `DeskPage.tsx` grep as binary from stray
   non-UTF8 bytes (NOT the U+2212 minus characters, which are legitimate). Find and normalise
   the offending bytes so `grep -n` works again — byte-level diff before/after to prove nothing
   else changed. **Leave `WorkerEditor.tsx` alone** — its NUL bytes are live sentinel values.
@@ -236,6 +236,27 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
   *failure* reproduces exactly — a plain `docker compose up` with the committed `.env` leaves
   agentd `Exited (1)` on `gcsblob: … read /gcp/key.json: is a directory`. A warning nobody has
   re-run is worth much less than one that has been.
+- **(R5) The "non-UTF8 bytes" are not non-UTF8 — they are raw NULs, and they are load-bearing.**
+  All three named files are valid UTF-8. `useEvents.ts` and `desk.ts` each built a composite
+  cache key with a literal NUL as the separator (`` `${type}<NUL>${status}<NUL>${limit}` `` and
+  `` `${target}<NUL>${actor}` ``), chosen precisely because no filter value or worker name can
+  contain one. So this was never stray rubbish to delete: the fix has to *preserve the
+  collision guarantee*. Both are now an explicit U+001F escape written as six ASCII characters,
+  so the source holds no control byte at all. Both keys are ephemeral (a render-phase ref-guard;
+  a `Map` grouping key inside one call), so nothing persisted changes shape.
+- **(R5) `DeskPage.tsx` needed nothing** — 0 NUL bytes, valid UTF-8, and `grep -n` already works
+  on it. That part of the item was stale.
+- **(R5) Why `desk.ts` diffed as TEXT in git while `useEvents.ts` diffed as `Bin`, with the same
+  defect**: git's binary heuristic only scans the **first ~8000 bytes** for a NUL, whereas grep
+  scans the whole file. `useEvents.ts`'s NULs sat at byte 6244 (git saw them → binary diffs);
+  `desk.ts`'s sat at byte 22372 (git never looked that far → readable diffs, invisible to grep).
+  That asymmetry is why the two files behaved differently and why nobody noticed for so long.
+  `useEvents.ts` will keep diffing as `Bin` for exactly one commit — the old blob is still
+  binary — and reads as text from then on.
+- **(R5) `consoleTokenColor` already *was* both legacy helpers.** OrgChartPage's `token()` and
+  ChangelogView's `diffTint()` each reimplemented "host palette entry, else design token" over a
+  private copy of the table, so pointing them at the export was a deletion, not a rewrite. No
+  test changed; the values are identical by construction.
 - **(R2) A fast green test here is not necessarily a hollow one.** The topology+job test passes
   in ~8s, which looks too quick for a container job; it is real — `docker compose logs agentd`
   shows `[router] … cx-scribe.task → cx-scribe (<session>) = started`. Worth knowing before
