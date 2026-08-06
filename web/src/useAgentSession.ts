@@ -491,10 +491,14 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
     }
   }
 
-  const attemptReconnect = async (sessionId: string): Promise<Response | null> => {
+  // queryId names the turn to reattach to. It is not optional in practice: the
+  // server keys the reattach on it, and a reconnect without one attaches to
+  // nothing and quietly persists nothing (doc 24 D5). It comes from the status
+  // probe, which is the only thing that knows a turn is in flight.
+  const attemptReconnect = async (sessionId: string, queryId?: string): Promise<Response | null> => {
     try {
       const resp = await apiFetch(
-        endpoints.reconnect(sessionId),
+        endpoints.reconnect(sessionId, queryId),
         { signal: AbortSignal.timeout(AGENT_QUERY_TIMEOUT_MS) }
       )
       if (resp.ok && resp.headers.get('content-type')?.includes('text/event-stream')) {
@@ -572,7 +576,7 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
             console.warn(`[SSE] Status probe failed (${status.reason}) — cannot confirm the turn finished`)
           } else if (status.activeQuery) {
             console.log(`[SSE] Active query found (${status.activeQuery.queryId}) — reconnecting`)
-            const reconnectResp = await attemptReconnect(sessionIdRef.current)
+            const reconnectResp = await attemptReconnect(sessionIdRef.current, status.activeQuery.queryId)
             if (reconnectResp) {
               return await readSSEStream(reconnectResp, reconnectDepth + 1, expectedSessionId)
             }
@@ -969,7 +973,7 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
           abortControllerRef.current = abortController
           startStuckDetection()
 
-          const reconnectResp = await attemptReconnect(sessionId)
+          const reconnectResp = await attemptReconnect(sessionId, status.activeQuery.queryId)
           let confirmedComplete = false
           if (reconnectResp) {
             confirmedComplete = await readSSEStream(reconnectResp, 0, sessionId)

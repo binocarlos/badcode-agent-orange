@@ -51,9 +51,9 @@ const (
 // RunnerStore is the minimal DB surface the Runner and Fleet require. Both
 // *agentdb.Store and agentkittest.MemStore satisfy this interface.
 //
-// One OPTIONAL capability is probed for by type assertion rather than required
-// here, because RunnerStore is host-implemented and adding a method to it breaks
-// every host:
+// Two OPTIONAL capabilities are probed for by type assertion rather than
+// required here, because RunnerStore is host-implemented and adding a method to
+// it breaks every host:
 //
 //	ListQueryEventsFlatForQuery(ctx, sessionID, queryID) ([]events.Envelope, error)
 //
@@ -61,6 +61,16 @@ const (
 // out of the in-image replay buffer (merged onto what the turn already has — see
 // events.Splice). A store that does not keeps the previous behaviour: the
 // reconnect relays bytes to the browser and persists nothing.
+//
+//	SetActiveQuery(ctx, sessionID, queryID, sandboxQueryID string) error
+//	GetActiveQuery(ctx, sessionID string) (queryID, sandboxQueryID string, err error)
+//	ClearActiveQuery(ctx, sessionID, queryID string) error
+//
+// A store that implements these lets an in-flight turn outlive the process
+// running it: Status can still name the turn after a restart, and Stream can
+// still translate that name into the id the in-image agent's replay buffer is
+// keyed by. Without them a turn is only reconnectable from the process that
+// dispatched it — which is not the process a crash leaves you with.
 type RunnerStore interface {
 	GetSession(ctx context.Context, id string) (*agentdb.Session, error)
 	UpdateSession(ctx context.Context, session *agentdb.Session) (*agentdb.Session, error)

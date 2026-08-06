@@ -149,8 +149,18 @@ type Session struct {
 	// and migration 031's columns have none: a declared default makes GORM omit
 	// the zero value on write, so the field could never be cleared. The DEFAULT
 	// lives in migration 032's SQL.
-	CreateError    string `json:"create_error,omitempty"`
-	ArtifactCount  int    `json:"artifact_count" gorm:"->;<-:false"`
+	CreateError string `json:"create_error,omitempty"`
+	// ActiveQueryID / ActiveSandboxQueryID are the in-flight turn's two ids —
+	// the runner's persistence key and the in-image agent's stream key. Written
+	// by agentdb/activequery.go, read after an agentd restart to answer "is a
+	// turn still running, and how do I attach to it?" (D5, doc 22 RD6/RD24).
+	//
+	// NO gorm `default:` tags, for the same reason CreateError has none: a
+	// declared default makes GORM omit the zero value on write, so the columns
+	// could never be cleared. The DEFAULTs live in migration 039's SQL.
+	ActiveQueryID        string `json:"active_query_id,omitempty"`
+	ActiveSandboxQueryID string `json:"active_sandbox_query_id,omitempty"`
+	ArtifactCount        int    `json:"artifact_count" gorm:"->;<-:false"`
 	MessageCount   int    `json:"message_count" gorm:"->;<-:false"`
 	ToolCallCount  int    `json:"tool_call_count" gorm:"->;<-:false"`
 	ContainerState string `json:"container_state" gorm:"-"`

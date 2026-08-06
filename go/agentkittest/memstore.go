@@ -26,6 +26,7 @@ type MemStore struct {
 	sessions       map[string]*agentdb.Session
 	queryEvents    map[string][]events.Envelope // key: sessionID+"\x00"+queryID
 	workerBindings map[string]string            // sessionID -> workerID
+	activeQueries  map[string][2]string         // sessionID -> {runner queryID, sandbox queryID}
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -34,7 +35,38 @@ func NewMemStore() *MemStore {
 		sessions:       map[string]*agentdb.Session{},
 		queryEvents:    map[string][]events.Envelope{},
 		workerBindings: map[string]string{},
+		activeQueries:  map[string][2]string{},
 	}
+}
+
+// SetActiveQuery / GetActiveQuery / ClearActiveQuery mirror the optional
+// active-query capability on *agentdb.Store: the join between the runner's
+// persistence id for a turn and the sandbox's stream id for the same turn.
+// Kept in a side map rather than on the session row so a runner test that never
+// seeded a session still exercises the path (see agentdb/activequery.go).
+func (s *MemStore) SetActiveQuery(ctx context.Context, sessionID, queryID, sandboxQueryID string) error {
+	s.mu.Lock()
+	s.activeQueries[sessionID] = [2]string{queryID, sandboxQueryID}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *MemStore) GetActiveQuery(ctx context.Context, sessionID string) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := s.activeQueries[sessionID]
+	return ids[0], ids[1], nil
+}
+
+// ClearActiveQuery is conditional on queryID still being the recorded turn —
+// see the store's version for why an unconditional clear loses live turns.
+func (s *MemStore) ClearActiveQuery(ctx context.Context, sessionID, queryID string) error {
+	s.mu.Lock()
+	if s.activeQueries[sessionID][0] == queryID {
+		delete(s.activeQueries, sessionID)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // Seed inserts a session row (the host would normally persist it before CreateSession).

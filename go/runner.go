@@ -125,6 +125,16 @@ type runnerImpl struct {
 	// under (a uuid). The claim, not the row key, is the guarantee.
 	persistOwners map[string]int
 
+	// activeQueries is the in-flight turn per session: the runner's own query id
+	// and, once the sandbox's `connected` frame arrives, the id the SANDBOX
+	// minted for the same turn. Two ids because there are two id spaces — see
+	// agentdb/activequery.go — and a reconnect needs both: the sandbox's to
+	// attach to its replay buffer, the runner's to write the row.
+	//
+	// Mirrored to the store, because the case this exists for (agentd is killed
+	// mid-turn) is exactly the case that empties this map.
+	activeQueries map[string]activeQueryIDs
+
 	// flushCadence is how often an in-flight turn is flushed to the store.
 	flushCadence time.Duration
 
@@ -173,6 +183,7 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 		progress:         newProgressStore(),
 		creating:         map[string]*createGuard{},
 		persistOwners:    map[string]int{},
+		activeQueries:    map[string]activeQueryIDs{},
 		stop:             make(chan struct{}),
 	}
 	r.sink = &storeSink{store: deps.Store, pending: map[string]int{}}
@@ -207,6 +218,13 @@ func newRunnerImpl(deps Deps) *runnerImpl {
 				Type events.Type
 				Hook events.MarkerHook
 			}{Type: events.Error, Hook: r.onQueryError},
+			// Learn the id the SANDBOX minted for this turn. It arrives in the
+			// first frame of the turn's SSE and is the only key that can attach
+			// to the sandbox's replay buffer later — see onConnected.
+			struct {
+				Type events.Type
+				Hook events.MarkerHook
+			}{Type: events.Connected, Hook: r.onConnected},
 		)
 	}
 	return r
@@ -853,7 +871,16 @@ func (r *runnerImpl) Status(ctx context.Context, ref SessionRef) (*SessionStatus
 	if st.State == execenv.StateRunning {
 		addr = inst.Address
 	}
-	return &SessionStatus{SessionID: ref.SessionID, RuntimeState: string(st.State), ActiveQueryID: st.ActiveQueryID, SandboxAddress: addr, HasSnapshot: hasSnap, Progress: prog}, nil
+	// The in-flight query id comes from the RUNNER, not from the environment:
+	// no execenv adapter has ever set InstanceStatus.ActiveQueryID (a container
+	// cannot see inside the turn), so reading it there always answered "nothing
+	// is running" and no client could ever reach /reconnect. The adapter's value
+	// is still honoured if one ever sets it.
+	activeQueryID := r.reportedActiveQueryID(ctx, ref.SessionID)
+	if activeQueryID == "" {
+		activeQueryID = st.ActiveQueryID
+	}
+	return &SessionStatus{SessionID: ref.SessionID, RuntimeState: string(st.State), ActiveQueryID: activeQueryID, SandboxAddress: addr, HasSnapshot: hasSnap, Progress: prog}, nil
 }
 
 func (r *runnerImpl) RunningSessions(ctx context.Context) (map[string]bool, error) {
@@ -926,6 +953,12 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 	// end-of-turn write supersedes this seed rather than duplicating it.
 	r.seedUserMessage(ctx, ref.SessionID, queryID, msg.Content)
 
+	// Record the turn as in flight, under the runner's id, before anything can
+	// go wrong — this is what a later Status answers with and what a reconnect
+	// keys on. The sandbox's own id for the turn joins it a moment later, from
+	// the `connected` frame (onConnected).
+	r.beginActiveQuery(ctx, ref.SessionID, queryID)
+
 	// attachments must be a JSON array: a nil slice marshals to null, which the
 	// in-image agent's schema rejects ("expected array, received null").
 	attachments := msg.Attachments
@@ -972,6 +1005,14 @@ func (r *runnerImpl) SendMessage(ctx context.Context, ref SessionRef, msg SendMe
 	defer r.ownTurnPersist(ref.SessionID)()
 	res, err := r.pipeline.Run(ctx, q, resp.Body, w)
 	r.touch(ref.SessionID)
+	// Forget the turn ONLY if it settled. "cancelled" means this goroutine
+	// stopped watching (the browser navigated away, the process is going down) —
+	// the sandbox carries on and buffers the rest, and the record of what is
+	// running is the only route back to it. Leaving it set is what makes
+	// /reconnect possible; Status re-checks the row before advertising it.
+	if res.Status != "cancelled" {
+		r.endActiveQuery(ctx, ref.SessionID, queryID)
+	}
 	// The turn has settled and (crucially) been persisted: emit the §8.2
 	// internal event for it, if this session is a worker job.
 	r.emitJobOutcome(ctx, ref.SessionID, queryID, res, err)
@@ -990,7 +1031,14 @@ func (r *runnerImpl) Stream(ctx context.Context, ref SessionRef, opts StreamOpti
 	// GET /sessions/:sessionId/stream/:queryId replays the in-image buffer and
 	// then streams live — no separate /reconnect endpoint exists in the contract
 	// (doc 07 HTTP contract table).
-	path := "/sessions/" + ref.SessionID + "/stream/" + opts.QueryID
+	//
+	// The path is keyed by the SANDBOX's id for the turn, which is not the id
+	// the caller holds: clients speak the runner's `q-<session>-<n>` because
+	// that is the row they are asking to be continued. Translate here, and here
+	// only — everything downstream (the sink, the splice, the row) stays on the
+	// runner's id, so a reconnect can never manufacture a second row for one
+	// turn. See "the in-flight turn's two ids" below.
+	path := "/sessions/" + ref.SessionID + "/stream/" + r.sandboxStreamID(ctx, ref.SessionID, opts.QueryID)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, inst.Address+path, nil)
 	if err != nil {
 		return err
@@ -1028,8 +1076,197 @@ func (r *runnerImpl) Stream(ctx context.Context, ref SessionRef, opts StreamOpti
 	// would perform them twice.
 	pl := events.NewPipelineWithCadence(sink, r.flushCadence)
 	q := events.QueryContext{SessionID: ref.SessionID, QueryID: opts.QueryID}
-	_, err = pl.Run(ctx, q, resp.Body, w)
+	res, err := pl.Run(ctx, q, resp.Body, w)
+	// A reconnect that drained the turn to its end is the turn's end: retire the
+	// in-flight record, or Status would keep offering a reconnect to a turn that
+	// is finished and whose buffer the sandbox has already dropped.
+	if res.Status != "cancelled" {
+		r.endActiveQuery(ctx, ref.SessionID, opts.QueryID)
+	}
 	return err
+}
+
+// --- the in-flight turn's two ids (D5) --------------------------------------
+//
+// The runner and the in-image agent do not agree on what a query id is, and
+// both are right about their own half:
+//
+//   - the RUNNER mints `q-<session>-<n>` before it dispatches, and every
+//     agent_query_events row for the turn is keyed by it. It is what a client
+//     is told (GET /status → activeQuery.queryId) and what it must send back
+//     (GET /reconnect?queryId=…), because it is the row a reconnect must
+//     APPEND to. A reconnect that persisted under any other id would leave one
+//     turn split across two rows, which reads as two turns.
+//   - the SANDBOX mints a uuid per turn and keys its in-RAM replay buffer
+//     `sessionId:uuid`. Attaching with anything else silently attaches to an
+//     empty buffer: a 200, a heartbeat, and none of the answer.
+//
+// So the runner's id is canonical, the sandbox's is a transport detail, and the
+// runner translates. It learns the sandbox's from the `connected` frame of the
+// turn it dispatched (onConnected) and remembers the pair — in memory, and in
+// the store, because the case the whole mechanism exists for is the one that
+// empties memory.
+
+// activeQueryIDs is one in-flight turn, named in both id spaces.
+type activeQueryIDs struct {
+	// QueryID is the runner's — the key its rows are written under.
+	QueryID string
+	// SandboxQueryID is the in-image agent's — the key its replay buffer uses.
+	// Empty between dispatching a turn and seeing its `connected` frame.
+	SandboxQueryID string
+}
+
+// activeQueryStore is the optional RunnerStore capability that lets an in-flight
+// turn survive agentd's death. Documented on RunnerStore; implemented by
+// *agentdb.Store and agentkittest.MemStore. A store without it keeps the
+// previous behaviour in every respect except one: after a restart the runner no
+// longer knows a turn was running, so nothing reconnects to it.
+type activeQueryStore interface {
+	SetActiveQuery(ctx context.Context, sessionID, queryID, sandboxQueryID string) error
+	GetActiveQuery(ctx context.Context, sessionID string) (string, string, error)
+	ClearActiveQuery(ctx context.Context, sessionID, queryID string) error
+}
+
+// beginActiveQuery records a turn as in flight, before it is dispatched.
+func (r *runnerImpl) beginActiveQuery(ctx context.Context, sessionID, queryID string) {
+	r.mu.Lock()
+	r.activeQueries[sessionID] = activeQueryIDs{QueryID: queryID}
+	r.mu.Unlock()
+	r.writeActiveQuery(ctx, sessionID, queryID, "")
+}
+
+// onConnected joins the two id spaces. It is a MarkerHook on the turn's own
+// pipeline: the sandbox announces its id in the first frame it sends, which is
+// the only time it is ever stated.
+func (r *runnerImpl) onConnected(ctx context.Context, q events.QueryContext, ev events.Envelope) {
+	sandboxID, _ := ev.Data["queryId"].(string)
+	if sandboxID == "" || sandboxID == q.QueryID {
+		return
+	}
+	r.mu.Lock()
+	if cur, ok := r.activeQueries[q.SessionID]; ok && cur.QueryID != q.QueryID {
+		// A newer turn already owns this session; this frame belongs to a turn
+		// that has been superseded. Recording it would make the live turn
+		// unreconnectable.
+		r.mu.Unlock()
+		return
+	}
+	r.activeQueries[q.SessionID] = activeQueryIDs{QueryID: q.QueryID, SandboxQueryID: sandboxID}
+	r.mu.Unlock()
+	r.writeActiveQuery(ctx, q.SessionID, q.QueryID, sandboxID)
+}
+
+// endActiveQuery forgets a turn, in memory and in the store, if it is still the
+// recorded one. Called only when the turn is known to have SETTLED — never
+// merely because the goroutine watching it went away, since a turn whose client
+// vanished is precisely the turn a reconnect has to find.
+func (r *runnerImpl) endActiveQuery(ctx context.Context, sessionID, queryID string) {
+	r.mu.Lock()
+	if cur, ok := r.activeQueries[sessionID]; ok && cur.QueryID == queryID {
+		delete(r.activeQueries, sessionID)
+	}
+	r.mu.Unlock()
+	store, ok := r.deps.Store.(activeQueryStore)
+	if !ok {
+		return
+	}
+	// WithoutCancel for the same reason the pipeline persists detached: the
+	// commonest way to reach here is a context that has just been cancelled.
+	if err := store.ClearActiveQuery(context.WithoutCancel(ctx), sessionID, queryID); err != nil {
+		log.Printf("agentkit: clear active query %s/%s: %v", sessionID, queryID, err)
+	}
+}
+
+func (r *runnerImpl) writeActiveQuery(ctx context.Context, sessionID, queryID, sandboxQueryID string) {
+	store, ok := r.deps.Store.(activeQueryStore)
+	if !ok {
+		return
+	}
+	if err := store.SetActiveQuery(context.WithoutCancel(ctx), sessionID, queryID, sandboxQueryID); err != nil {
+		// Not fatal to the turn: the turn still runs and still persists. What is
+		// lost is the ability to find it again after a restart.
+		log.Printf("agentkit: record active query %s/%s: %v", sessionID, queryID, err)
+	}
+}
+
+// sandboxStreamID answers "which id do I attach to the sandbox with, to read the
+// turn the caller named?". Memory first (this process dispatched it), then the
+// store (a previous process did, and died). Falls back to the caller's own id,
+// which is right for a caller that already speaks the sandbox's id space and
+// harmless otherwise — an unknown key attaches to an empty buffer.
+func (r *runnerImpl) sandboxStreamID(ctx context.Context, sessionID, queryID string) string {
+	if queryID == "" {
+		return queryID
+	}
+	r.mu.Lock()
+	cur, ok := r.activeQueries[sessionID]
+	r.mu.Unlock()
+	if ok && cur.QueryID == queryID && cur.SandboxQueryID != "" {
+		return cur.SandboxQueryID
+	}
+	store, sok := r.deps.Store.(activeQueryStore)
+	if !sok {
+		return queryID
+	}
+	qid, sandboxID, err := store.GetActiveQuery(ctx, sessionID)
+	if err != nil {
+		log.Printf("agentkit: read active query %s: %v", sessionID, err)
+		return queryID
+	}
+	if qid == queryID && sandboxID != "" {
+		return sandboxID
+	}
+	return queryID
+}
+
+// reportedActiveQueryID is what Status tells a client is running. It is the id
+// the client will hand back on /reconnect, so it must be the RUNNER's.
+//
+// The store's copy is treated as a claim, not a fact: it is left behind
+// deliberately when a turn's watcher goes away (that is what makes the turn
+// findable), so a turn that finished unobserved would otherwise be advertised as
+// running for ever. If the turn's own row already holds a query_complete, it is
+// over and this says so.
+func (r *runnerImpl) reportedActiveQueryID(ctx context.Context, sessionID string) string {
+	r.mu.Lock()
+	cur, ok := r.activeQueries[sessionID]
+	r.mu.Unlock()
+	if ok {
+		return cur.QueryID
+	}
+	store, sok := r.deps.Store.(activeQueryStore)
+	if !sok {
+		return ""
+	}
+	qid, _, err := store.GetActiveQuery(ctx, sessionID)
+	if err != nil {
+		log.Printf("agentkit: read active query %s: %v", sessionID, err)
+		return ""
+	}
+	if qid == "" || r.turnAlreadySettled(ctx, sessionID, qid) {
+		return ""
+	}
+	return qid
+}
+
+// turnAlreadySettled reports whether the persisted row for a turn already holds
+// its end. Unknowable stores (no per-query read) answer "no", which errs towards
+// offering a reconnect that finds nothing rather than hiding one that would.
+func (r *runnerImpl) turnAlreadySettled(ctx context.Context, sessionID, queryID string) bool {
+	reader, ok := r.deps.Store.(queryEventReader)
+	if !ok {
+		return false
+	}
+	evs, err := reader.ListQueryEventsFlatForQuery(ctx, sessionID, queryID)
+	if err != nil {
+		return false
+	}
+	for _, ev := range evs {
+		if ev.Type == events.QueryComplete {
+			return true
+		}
+	}
+	return false
 }
 
 // streamPersistSink decides whether this stream attachment should persist, and

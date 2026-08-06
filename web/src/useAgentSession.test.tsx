@@ -260,3 +260,71 @@ describe('a session that failed to start explains itself', () => {
     })
   })
 })
+
+// D5: the browser HAD the id and dropped it. `checkSessionStatus` read
+// `activeQuery.queryId`, logged it, and then called the reconnect endpoint with
+// no query string — while the server reads `queryId` from exactly there
+// (go/httpapi/stream.go). The result was a reconnect that attached to nothing,
+// rendered nothing, and (since D2) persisted nothing: the fix underneath it
+// could never fire.
+describe('a reconnect names the turn it is reattaching to', () => {
+  let originalFetch: typeof globalThis.fetch
+  const fetchedUrls: string[] = []
+
+  beforeEach(() => {
+    fetchedUrls.length = 0
+    originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const urlStr = String(url)
+      fetchedUrls.push(urlStr)
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      if (urlStr.includes('/query-events')) return json({ events: [] })
+      if (urlStr.includes('/messages')) return json({ messages: [], total: 0 })
+      if (urlStr.includes('/artifacts')) return json({ artifacts: [] })
+      // A turn IS in flight, and the server names it.
+      if (urlStr.includes('/status')) {
+        return json({ sandboxState: 'running', activeQuery: { queryId: 'q-sess-live-3' } })
+      }
+      // The reconnect itself: answer with a non-SSE body so the hook gives up
+      // immediately. What is under test is the URL, not the stream.
+      if (urlStr.includes('/reconnect')) return json({})
+      if (urlStr.includes('/agent/session/')) {
+        return json({ id: 'sess-live', status: 'active', workflow_id: 'agent' })
+      }
+      return json({})
+    }) as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('sends the active queryId on the reconnect URL', async () => {
+    const { result } = renderHook(() => useAgentSession({ apiBaseUrl: '' }))
+    await act(async () => {
+      await result.current.resumeSession('sess-live')
+    })
+
+    const reconnects = fetchedUrls.filter((u) => u.includes('/reconnect'))
+    expect(reconnects.length).toBeGreaterThan(0)
+    for (const u of reconnects) {
+      expect(u).toContain('queryId=q-sess-live-3')
+    }
+
+    await act(async () => {
+      result.current.clearSession()
+    })
+  })
+
+  it('DEFAULT_ENDPOINTS.reconnect carries the id, and omits the query string without one', () => {
+    expect(DEFAULT_ENDPOINTS.reconnect('abc', 'q-abc-1')).toBe(
+      '/agent/session/abc/reconnect?queryId=q-abc-1',
+    )
+    expect(DEFAULT_ENDPOINTS.reconnect('abc')).toBe('/agent/session/abc/reconnect')
+  })
+})

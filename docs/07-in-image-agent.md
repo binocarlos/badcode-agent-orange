@@ -98,6 +98,18 @@ first frame is a `connected` event carrying the generated `queryId` so the calle
 via `GET /sessions/:id/stream/:queryId`. A `heartbeat` event fires every 15s. The event vocabulary is
 canonical and shared with Go/web ([05](05-event-streaming.md)).
 
+> **Two id spaces, and the engine owns the join.** The `queryId` in that `connected` frame is the
+> SANDBOX's — it mints a uuid per turn and keys its replay buffer `sessionId:queryId`, so it is the
+> only id that can attach to the buffer. The engine persists the same turn under an id of its own
+> (`q-<session>-<n>`), which is what `agent_query_events` rows are keyed by and therefore the id a
+> **client** is given (`GET /status` → `activeQuery.queryId`) and must send back
+> (`GET /agent/session/:id/reconnect?queryId=…`). The runner reads the sandbox's id off the
+> `connected` frame, records the pair on the session row (`active_query_id` /
+> `active_sandbox_query_id`, so it survives an agentd restart) and translates when it attaches —
+> `go/agentdb/activequery.go` and `runnerImpl.sandboxStreamID`. Do not "simplify" this by having a
+> client reconnect with the sandbox's id: the reconnect persists what it drains, and under that id
+> it would write a second row and split one turn in two.
+
 ### Configuration (env injected by the engine)
 
 The `ExecutionEnvironment` injects these as `ProvisionSpec.Env`. Parsed and defaulted in

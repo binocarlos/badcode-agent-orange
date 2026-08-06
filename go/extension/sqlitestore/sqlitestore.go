@@ -107,6 +107,16 @@ CREATE TABLE IF NOT EXISTS query_events (
 	if err := addColumnIfMissing(db, "sessions", "create_error", `TEXT NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	// The in-flight turn's two ids (agentdb migration 039's columns, here).
+	// Without them a turn interrupted by this process dying is unfindable
+	// afterwards: nothing knows a turn was running, and nothing knows the id the
+	// in-image agent's replay buffer is keyed by.
+	if err := addColumnIfMissing(db, "sessions", "active_query_id", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "sessions", "active_sandbox_query_id", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -320,4 +330,50 @@ func (s *Store) SetWorkerBinding(ctx context.Context, sessionID, workerID string
 // ClearWorkerBinding removes the sticky binding for sessionID.
 func (s *Store) ClearWorkerBinding(ctx context.Context, sessionID string) error {
 	return s.SetWorkerBinding(ctx, sessionID, "")
+}
+
+// SetActiveQuery records the in-flight turn: the runner's id for it (the key its
+// rows are written under) and the in-image agent's (the key its replay buffer is
+// keyed by). See agentdb/activequery.go for why both are needed.
+func (s *Store) SetActiveQuery(ctx context.Context, sessionID, queryID, sandboxQueryID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions(id, active_query_id, active_sandbox_query_id) VALUES(?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET active_query_id=excluded.active_query_id,
+		                               active_sandbox_query_id=excluded.active_sandbox_query_id`,
+		sessionID, queryID, sandboxQueryID,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlitestore: SetActiveQuery %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// GetActiveQuery returns the in-flight turn's (runner id, sandbox id); both
+// empty when nothing is recorded as running.
+func (s *Store) GetActiveQuery(ctx context.Context, sessionID string) (string, string, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT active_query_id, active_sandbox_query_id FROM sessions WHERE id=?`, sessionID)
+	var qid, sqid string
+	if err := row.Scan(&qid, &sqid); err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("sqlitestore: GetActiveQuery %q: %w", sessionID, err)
+	}
+	return qid, sqid, nil
+}
+
+// ClearActiveQuery forgets the in-flight turn, but only if queryID is still the
+// recorded one — an interrupted turn that a newer turn has replaced must not be
+// able to erase its successor's ids.
+func (s *Store) ClearActiveQuery(ctx context.Context, sessionID, queryID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET active_query_id='', active_sandbox_query_id=''
+		 WHERE id=? AND active_query_id=?`,
+		sessionID, queryID,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlitestore: ClearActiveQuery %q: %w", sessionID, err)
+	}
+	return nil
 }

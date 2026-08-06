@@ -787,6 +787,27 @@ var agentMigrations = []migration{
 				ON agent_query_events(session_id, ordinal);
 		`,
 	},
+	{
+		// D5 — the in-flight turn, written down so a RESTARTED agentd can still
+		// answer "is a turn running, and under what id?".
+		//
+		// Two ids, because there are two id spaces and both are needed:
+		//   active_query_id         — the runner's `q-<session>-<n>`, the key
+		//                             agent_query_events rows are written under
+		//                             and the id a client reconnects WITH.
+		//   active_sandbox_query_id — the uuid the in-image agent minted for the
+		//                             same turn, which is the key its in-RAM
+		//                             replay buffer is stored under and therefore
+		//                             the only id that can ATTACH to it.
+		// Held in process memory as well; the columns exist for exactly the case
+		// that erases memory (RD6's crash), so they are runtime state on the
+		// session row like lease_expires_at — no config event (§15.3 rule 3).
+		Name: "039_agent_sessions_active_query",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_query_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_sandbox_query_id TEXT NOT NULL DEFAULT '';
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration
