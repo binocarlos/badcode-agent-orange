@@ -94,6 +94,115 @@ func TestProjectMap_Resolve(t *testing.T) {
 	}
 }
 
+// --- the object form ---
+
+// The object form carries per-project config (API key env var, framing origins)
+// alongside the user→projects map the flat form has always been. Both forms stay
+// valid forever: the flat one is what every existing deployment has mounted.
+func TestParseProjectMapObjectForm(t *testing.T) {
+	raw := `{
+	  "users":    {"Kai@Example.COM": ["wolf", "demo"]},
+	  "projects": {
+	    "wolf":     {"api_key_env": "WOLF_API_KEY", "allowed_origins": ["https://wolf.badcode.dev", "http://localhost:5173"]},
+	    "unwanted": {}
+	  }
+	}`
+	s, err := parseProjectSettings([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := s.users["kai@example.com"]; len(got) != 2 || got[0] != "wolf" {
+		t.Fatalf("users = %v", s.users)
+	}
+	if got := s.projects["wolf"].APIKeyEnv; got != "WOLF_API_KEY" {
+		t.Fatalf("api_key_env = %q", got)
+	}
+	if got := s.projects["wolf"].AllowedOrigins; len(got) != 2 || got[1] != "http://localhost:5173" {
+		t.Fatalf("allowed_origins = %v", got)
+	}
+	// A project nobody is a member of is legal: an API-key-only integration has
+	// no console users at all.
+	if _, ok := s.projects["unwanted"]; !ok {
+		t.Fatal("a project referenced by no user was dropped")
+	}
+}
+
+// parseProjectMap keeps its old signature and old behaviour — it is what the
+// login handlers take — and simply reads the users half of whichever form
+// arrived.
+func TestParseProjectMapAcceptsBothForms(t *testing.T) {
+	for _, raw := range []string{
+		`{"a@b.c": ["p1"]}`,
+		`{"users": {"a@b.c": ["p1"]}}`,
+		`{"users": {"a@b.c": ["p1"]}, "projects": {"p1": {"api_key_env": "P1_KEY"}}}`,
+	} {
+		pm, err := parseProjectMap([]byte(raw))
+		if err != nil {
+			t.Fatalf("parse(%s): %v", raw, err)
+		}
+		if len(pm["a@b.c"]) != 1 || pm["a@b.c"][0] != "p1" {
+			t.Fatalf("parse(%s) = %v", raw, pm)
+		}
+	}
+}
+
+func TestParseProjectMapObjectFormErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string // substring the message must contain
+	}{
+		{"unknown top-level key", `{"users": {"a@b.c": ["p"]}, "teams": {}}`, "teams"},
+		{"mixed forms", `{"a@b.c": ["p"], "projects": {"p": {}}}`, "mixes"},
+		{"bad env var name", `{"projects": {"wolf": {"api_key_env": "WOLF-API-KEY"}}}`, "wolf"},
+		{"origin with a path", `{"projects": {"wolf": {"allowed_origins": ["https://wolf.dev/embed"]}}}`, "wolf"},
+		{"origin not absolute", `{"projects": {"wolf": {"allowed_origins": ["wolf.dev"]}}}`, "wolf"},
+		{"origin plain http", `{"projects": {"wolf": {"allowed_origins": ["http://wolf.dev"]}}}`, "wolf"},
+		{"origin wildcard", `{"projects": {"wolf": {"allowed_origins": ["*"]}}}`, "wolf"},
+		{"bad project id", `{"projects": {"Wolf_Prod": {}}}`, "Wolf_Prod"},
+		{"nothing at all", `{"users": {}, "projects": {}}`, "empty"},
+		{"user with no projects", `{"users": {"a@b.c": []}}`, "a@b.c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseProjectSettings([]byte(tt.raw))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not name %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// A localhost origin over plain http is the one http exception — it is what a
+// Vite dev server serves the embedding app from.
+func TestParseProjectMapAllowsLocalhostOverHTTP(t *testing.T) {
+	for _, origin := range []string{"http://localhost:5173", "http://127.0.0.1:8080", "http://localhost"} {
+		raw := `{"projects": {"wolf": {"allowed_origins": ["` + origin + `"]}}}`
+		if _, err := parseProjectSettings([]byte(raw)); err != nil {
+			t.Fatalf("%s: %v", origin, err)
+		}
+	}
+}
+
+func TestLoadProjectMapReadsTheObjectForm(t *testing.T) {
+	env := map[string]string{
+		"AGENTKIT_PROJECT_MAP": `{"users": {"a@b.c": ["wolf"]}, "projects": {"wolf": {"api_key_env": "WOLF_API_KEY"}}}`,
+	}
+	s, err := loadProjectSettings(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s.projects["wolf"].APIKeyEnv != "WOLF_API_KEY" {
+		t.Fatalf("projects = %v", s.projects)
+	}
+	if len(s.users["a@b.c"]) != 1 {
+		t.Fatalf("users = %v", s.users)
+	}
+}
+
 // fakeTokeninfo serves a scripted Google tokeninfo response.
 func fakeTokeninfo(t *testing.T, status int, body map[string]string) *httptest.Server {
 	t.Helper()

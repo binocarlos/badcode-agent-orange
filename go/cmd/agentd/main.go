@@ -396,12 +396,29 @@ func main() {
 	root.HandleFunc("/health", healthHandler)
 	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != ""))
 
+	// The project map is loaded once, here, whether or not a login mode is on:
+	// its "projects" half carries per-project ops config (API key env var names,
+	// framing origins) that a login-less, embed-only deployment still needs. It
+	// stays optional — the zero-config demo mounts no map at all.
+	projectCfg, err := loadProjectSettingsOptional(os.Getenv)
+	must(err)
+	// Resolving env → key values is a boot-time act: a short key or one value
+	// granting two projects fails the process rather than degrading quietly.
+	apiKeys, err := newProjectKeys(projectConfigsOf(projectCfg), os.Getenv, log.Printf)
+	must(err)
+	if projectCfg != nil {
+		log.Printf("[agentd] project map: %d mapped account(s), %d configured project(s)",
+			len(projectCfg.users), len(projectCfg.projects))
+	}
+
 	if loginEnabled {
 		if len(jwtSecret) == 0 {
 			log.Fatal("[agentd] login modes require AGENTKIT_JWT_SECRET (dev-open auth would ignore the minted tokens)")
 		}
-		pm, err := loadProjectMap(os.Getenv)
-		must(err)
+		if projectCfg == nil {
+			log.Fatal("[agentd] login modes require a project map: set AGENTKIT_PROJECT_MAP or AGENTKIT_PROJECT_MAP_FILE")
+		}
+		pm := projectCfg.users
 		loginIssuer := devclaims.NewWithTTL(jwtSecret, 12*time.Hour)
 		if googleClientID != "" {
 			root.HandleFunc("POST /auth/google", authGoogleHandler(
@@ -466,8 +483,8 @@ func main() {
 		log.Printf("[agentd] core mcp DISABLED (no DATABASE_URL): memory requires Postgres")
 	}
 
-	// Everything else goes through auth.
-	root.Handle("/", jwtAuthMiddleware(jwtSecret, apiMux))
+	// Everything else goes through auth: a project API key, or a bearer JWT.
+	root.Handle("/", apiAuthMiddleware(jwtSecret, apiKeys, apiMux))
 
 	// ── Serve ────────────────────────────────────────────────────────────────────
 	addr := envOr("ADDR", ":8099")

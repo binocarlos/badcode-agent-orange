@@ -2,8 +2,8 @@
 // password login for tests. Both verify an identity, look the email up in the
 // hard-coded email → projects map, and mint one project-scoped HS256 JWT per
 // allowed project ("project" is the existing customer claim/column — a pure
-// namespacing concept, no project table). The existing jwtAuthMiddleware
-// verifies the minted tokens; nothing downstream changes.
+// namespacing concept, no project table). apiAuthMiddleware verifies the minted
+// tokens on its bearer-token path; nothing downstream changes.
 package main
 
 import (
@@ -34,15 +34,132 @@ const projectWildcard = "*"
 // like "apples-oranges". Keeps arbitrary strings out of the customer column.
 var validProjectID = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// parseProjectMap decodes the JSON email → project-IDs map, lowercasing emails
-// and rejecting entries that could silently grant nothing or everything.
-func parseProjectMap(raw []byte) (projectMap, error) {
+// projectConfig is the per-project half of the object form: ops config for a
+// project that a third-party application integrates with. Both fields are
+// optional — a project with neither is just a namespace, exactly as before.
+type projectConfig struct {
+	// APIKeyEnv names the environment variable holding this project's API key.
+	// The key value itself is never written in the map; only the variable name
+	// is, so the map stays safe to commit and mount. Empty ⇒ no key (see T2).
+	APIKeyEnv string `json:"api_key_env"`
+	// AllowedOrigins lists the origins permitted to frame this project's embed
+	// page. It drives Content-Security-Policy: frame-ancestors — not CORS; no
+	// browser ever makes a cross-origin request to agentd by design.
+	AllowedOrigins []string `json:"allowed_origins"`
+}
+
+// projectSettings is the whole parsed map file: who may log in, and per-project
+// ops config. The flat legacy form parses into this with an empty projects half.
+type projectSettings struct {
+	users    projectMap
+	projects map[string]projectConfig
+}
+
+// envVarName is a plausible environment variable name — the shell's own rule.
+// Catching "WOLF-API-KEY" at boot beats discovering at runtime that a project
+// silently has no key.
+var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// parseProjectSettings decodes either form of the project map.
+//
+//	legacy: {"kai@badcode.dev": ["wolf", "demo"]}
+//	object: {"users": {...}, "projects": {"wolf": {"api_key_env": …}}}
+//
+// The two are told apart by the *shape of the values*, not by key names: an
+// email address is a perfectly legal JSON key and there is nothing structural
+// stopping someone being called "users@…", so keys prove nothing. Legacy values
+// are arrays; object-form values are objects. A file mixing both is an error
+// rather than a guess.
+func parseProjectSettings(raw []byte) (*projectSettings, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, fmt.Errorf("project map: %w", err)
+	}
+	if len(probe) == 0 {
+		return nil, fmt.Errorf("project map: empty")
+	}
+	var arrays, objects int
+	for _, v := range probe {
+		switch firstJSONToken(v) {
+		case '[':
+			arrays++
+		case '{':
+			objects++
+		}
+	}
+	switch {
+	case arrays > 0 && objects > 0:
+		return nil, fmt.Errorf("project map: mixes the flat form (email → [projects]) with the object form ({\"users\": …, \"projects\": …}); use one or the other")
+	case objects > 0:
+		return parseProjectSettingsObjectForm(probe)
+	default:
+		users, err := parseUsers(raw)
+		if err != nil {
+			return nil, err
+		}
+		return &projectSettings{users: users, projects: map[string]projectConfig{}}, nil
+	}
+}
+
+// firstJSONToken returns the first non-whitespace byte of a raw JSON value.
+func firstJSONToken(v json.RawMessage) byte {
+	for _, b := range v {
+		if b != ' ' && b != '\t' && b != '\n' && b != '\r' {
+			return b
+		}
+	}
+	return 0
+}
+
+func parseProjectSettingsObjectForm(probe map[string]json.RawMessage) (*projectSettings, error) {
+	for k := range probe {
+		if k != "users" && k != "projects" {
+			return nil, fmt.Errorf("project map: unknown top-level key %q (the object form takes only \"users\" and \"projects\")", k)
+		}
+	}
+	out := &projectSettings{users: projectMap{}, projects: map[string]projectConfig{}}
+	if rawUsers, ok := probe["users"]; ok {
+		users, err := parseUsers(rawUsers)
+		if err != nil {
+			return nil, err
+		}
+		out.users = users
+	}
+	if rawProjects, ok := probe["projects"]; ok {
+		var projects map[string]projectConfig
+		if err := json.Unmarshal(rawProjects, &projects); err != nil {
+			return nil, fmt.Errorf("project map: projects: %w", err)
+		}
+		for id, cfg := range projects {
+			if !validProjectID.MatchString(id) || len(id) > 64 {
+				return nil, fmt.Errorf("project map: project %q is not a valid project id (want kebab-case, e.g. apples-oranges)", id)
+			}
+			if cfg.APIKeyEnv != "" && !envVarName.MatchString(cfg.APIKeyEnv) {
+				return nil, fmt.Errorf("project map: project %q: api_key_env %q is not a valid environment variable name", id, cfg.APIKeyEnv)
+			}
+			for _, origin := range cfg.AllowedOrigins {
+				if err := validateOrigin(origin); err != nil {
+					return nil, fmt.Errorf("project map: project %q: allowed_origins: %w", id, err)
+				}
+			}
+			out.projects[id] = cfg
+		}
+	}
+	// An object form that grants nobody a login and configures no project is a
+	// mistake worth failing on, the same way an empty flat map is.
+	if len(out.users) == 0 && len(out.projects) == 0 {
+		return nil, fmt.Errorf("project map: empty (neither users nor projects)")
+	}
+	return out, nil
+}
+
+// parseUsers decodes the email → project-IDs map, lowercasing emails and
+// rejecting entries that could silently grant nothing or everything. It is the
+// whole of the legacy form and the "users" half of the object form.
+func parseUsers(raw []byte) (projectMap, error) {
 	var in map[string][]string
 	if err := json.Unmarshal(raw, &in); err != nil {
 		return nil, fmt.Errorf("project map: %w", err)
-	}
-	if len(in) == 0 {
-		return nil, fmt.Errorf("project map: empty")
 	}
 	out := make(projectMap, len(in))
 	for email, projects := range in {
@@ -63,20 +180,77 @@ func parseProjectMap(raw []byte) (projectMap, error) {
 	return out, nil
 }
 
-// loadProjectMap reads the map from AGENTKIT_PROJECT_MAP (inline JSON, wins)
-// or AGENTKIT_PROJECT_MAP_FILE (path to a mounted JSON file).
-func loadProjectMap(getenv func(string) string) (projectMap, error) {
+// validateOrigin accepts scheme://host[:port] and nothing else. Origins land in
+// a CSP frame-ancestors list, where a path is meaningless and a wildcard would
+// let anyone frame the project — so both are refused rather than trimmed.
+// Plain http is allowed only for loopback, which is where a dev server lives.
+func validateOrigin(origin string) error {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return fmt.Errorf("%q is not a URL: %w", origin, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Errorf("%q must be an absolute origin, e.g. https://wolf.badcode.dev", origin)
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("%q must be scheme://host[:port] with no path, query or fragment", origin)
+	}
+	switch u.Scheme {
+	case "https":
+	case "http":
+		if h := u.Hostname(); h != "localhost" && h != "127.0.0.1" && h != "::1" {
+			return fmt.Errorf("%q must use https (plain http is allowed only for localhost)", origin)
+		}
+	default:
+		return fmt.Errorf("%q has scheme %q; want https", origin, u.Scheme)
+	}
+	return nil
+}
+
+// parseProjectMap decodes either form and returns just the user→projects half —
+// what the login handlers need. Its signature is unchanged from before the
+// object form existed.
+func parseProjectMap(raw []byte) (projectMap, error) {
+	s, err := parseProjectSettings(raw)
+	if err != nil {
+		return nil, err
+	}
+	return s.users, nil
+}
+
+// loadProjectSettings reads the map from AGENTKIT_PROJECT_MAP (inline JSON,
+// wins) or AGENTKIT_PROJECT_MAP_FILE (path to a mounted JSON file).
+func loadProjectSettings(getenv func(string) string) (*projectSettings, error) {
 	if inline := getenv("AGENTKIT_PROJECT_MAP"); inline != "" {
-		return parseProjectMap([]byte(inline))
+		return parseProjectSettings([]byte(inline))
 	}
 	if path := getenv("AGENTKIT_PROJECT_MAP_FILE"); path != "" {
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("project map file: %w", err)
 		}
-		return parseProjectMap(raw)
+		return parseProjectSettings(raw)
 	}
 	return nil, fmt.Errorf("no project map: set AGENTKIT_PROJECT_MAP or AGENTKIT_PROJECT_MAP_FILE")
+}
+
+// loadProjectSettingsOptional is loadProjectSettings but tolerant of the map
+// being absent entirely: it returns (nil, nil) when neither env var is set. The
+// zero-config demo has no map at all, and it must still boot.
+func loadProjectSettingsOptional(getenv func(string) string) (*projectSettings, error) {
+	if getenv("AGENTKIT_PROJECT_MAP") == "" && getenv("AGENTKIT_PROJECT_MAP_FILE") == "" {
+		return nil, nil
+	}
+	return loadProjectSettings(getenv)
+}
+
+// loadProjectMap is loadProjectSettings' user-half shorthand.
+func loadProjectMap(getenv func(string) string) (projectMap, error) {
+	s, err := loadProjectSettings(getenv)
+	if err != nil {
+		return nil, err
+	}
+	return s.users, nil
 }
 
 // allProjects returns the deduplicated union of every concrete project in the
