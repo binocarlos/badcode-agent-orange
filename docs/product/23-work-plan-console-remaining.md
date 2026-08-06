@@ -53,7 +53,7 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 
 ## R1 — Chat-side dark-mode sweep *(the last visible defect; do this first)*
 
-- [ ] The ~18 chat-era components carry hardcoded light-mode colours that break dark mode
+- [x] The ~18 chat-era components carry hardcoded light-mode colours that break dark mode
   (filed by TH1, doc 16 DIL): `AgentChat`, `ChatHistoryDrawer`, `ChatInputToolbar`,
   `ToolCallGroup`, `ThinkingBlock`, `ScriptExecutionBlock`, `CodeCreatedBlock`, `AskUserCard`,
   `RecordingOverlay`, `InlineArtifactPreview`, and the Artifact family (`ArtifactCodePreview`,
@@ -143,3 +143,36 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 ## Discovered Issues Log
 
 *(append here; the orchestrator files nothing for you)*
+
+- **(R1) The item's own sweep grep misses CSS colour keywords.** `#hex|rgba?\(` does not match
+  `backgroundColor: 'white'` — six such sites existed (ArtifactGrid's card, five in
+  ArtifactViewer), and the ArtifactGrid one was a bright white slab in dark mode that the grep
+  swore was clean. **A colour sweep must also grep `'(white|black|grey|gray|red|…)'`.** Found by
+  looking at the screenshot, not by grepping — which is the item's own point about eyes.
+- **(R1) A palette token cannot live in a `border` shorthand.** MUI resolves `borderColor:
+  'divider'` but not `border: '1px solid divider'`, so 56 sites had to split into
+  `border: '1px solid', borderColor: 'divider'`. Safe because a zero-width side takes no colour.
+- **(R1) The dangerous failure mode: tokens in plain `style=` props fail SILENTLY.** `style={{
+  color: 'text.secondary' }}` is not an error to React, TS or the linter — it emits an invalid CSS
+  colour and the text renders as inherited. Only four sites were affected (ToolCallGroup's
+  `renderValue` + image border, InlineArtifactPreview's CSV `<td>`, RecordingOverlay's canvas
+  `fillStyle`) but a blind sed sweep would have shipped them. **Grep `style={{` before any
+  token sweep** and route those through `useTheme()`.
+- **(R1) The three Prism blocks were pinned to `themes.vsLight` and self-fence** — the `<pre>`
+  spreads the theme's own `backgroundColor`, so a dark UI got a white code slab rather than
+  unreadable text. Now mode-aware (`vsDark` under a dark palette); `prism-react-renderer` already
+  ships both, so no new dependency. Doc 16's "Prism may stay light if fenced" allowance is true
+  but reads worse than the one-line fix.
+- **(R1) `ChatHistoryDrawer.getStatusColor` now returns `string | ((t: Theme) => string)`** for
+  `bg` — the two tinted states (error, published) have no palette token that works in both modes,
+  so they are mixed with `alpha()` at use time. sx accepts a theme callback per property; the
+  consumers needed no change.
+- **(R1) The fixture rig shoots NO chat view.** `shoot-app3.mjs` walks the product-layer views
+  only, so R1's own validation target ("a dark-mode Chat view screenshot") does not exist in the
+  rig, and the stub serves no session with messages for the real Chat page to render. Verified
+  instead with a throwaway harness (an extra Vite entry in `examples/web` mounting the chat
+  components against fixture data under `darkTheme`, served by `yarn dev`, screenshotted, then
+  deleted). Nothing was committed. **If chat rendering needs regression cover, that harness wants
+  to become a real fixture** — it is the only way to see these components at all.
+- **(R1, pre-existing) `shoot-app3.mjs` logs `trace click: locator.click: Timeout 3000ms
+  exceeded`** and continues; all 14 screenshots are still produced. Present before this work.
