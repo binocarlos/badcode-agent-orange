@@ -17,6 +17,18 @@ on:
   pull_request:
 
 jobs:
+  # Repo-wide source hygiene. Cheap, and it guards a class of defect that
+  # defeats review itself: a raw NUL byte in a source file makes grep report
+  # "no matches" and git report "Binary files differ / 0 insertions, 0
+  # deletions". Five web/src files carried one for months (doc 22 RD25) and
+  # every search over that directory was silently wrong for as long.
+  hygiene:
+    name: Hygiene (no raw NUL bytes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-no-nul-bytes.sh
+
   go:
     name: Go (build · test · vet)
     runs-on: ubuntu-latest
