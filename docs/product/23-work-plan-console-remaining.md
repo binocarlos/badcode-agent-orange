@@ -75,7 +75,7 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 
 ## R2 — e2e feature specs for the console *(the missing regression net)*
 
-- [ ] Nothing in `e2e/features/` covers the new views. Add `console.stack.spec.ts` in the
+- [x] Nothing in `e2e/features/` covers the new views. Add `console.stack.spec.ts` in the
   existing pattern (look at `product-ui.stack.spec.ts` and `topologies.stack.spec.ts` for the
   helpers, auth and run-scoped-project conventions; `e2e/run-stack-e2e.sh` runs the rig —
   **serial resource**, mock mode). Cover, minimally:
@@ -176,3 +176,36 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
   to become a real fixture** — it is the only way to see these components at all.
 - **(R1, pre-existing) `shoot-app3.mjs` logs `trace click: locator.click: Timeout 3000ms
   exceeded`** and continues; all 14 screenshots are still produced. Present before this work.
+- **(R2, OPEN — TWO PRE-EXISTING RED TESTS IN `product-ui.stack.spec.ts`)** and they are not
+  R1's doing. R2's own validation asked for product-ui to still be green; it is not, and it was
+  not before either. Both fail deterministically (twice each), in mock mode, on a stack with 100
+  free ports:
+  (a) *"project settings: edit, save, and survive a reload"* — the page renders, both fields
+      hold the typed text (verified in the failure screenshot), but **`Save settings` stays
+      `disabled`**, i.e. the page never becomes dirty, and the test times out at 240s clicking it.
+      Reads like the settings fetch resolving *after* the fill and re-seeding the dirty baseline
+      from the typed values.
+  (b) *"a turn interrupted by a reload is still persisted"* — the chat textarea is never enabled
+      within 120s.
+  **Proven pre-existing by bisecting the built image, not by argument**: the 17 R1 files were
+  reverted to `42856c0` with `git checkout <sha> -- <paths>`, `web` rebuilt, and product-ui
+  re-run — *the same two tests failed identically*. Files were then restored from the R1 commit
+  and the image rebuilt. Neither failure is in a surface R1 touched (ProjectSettingsPage is a
+  product-layer page). **Someone should own these two**; they are the reason nobody should read
+  a red product-ui as evidence about console work.
+- **(R2) `wire-proposal` is a testid starting `wire-`**, so the obvious
+  `locator('[data-testid^="wire-"]').count()` silently counts the open dialog alongside the
+  chart's wires. Every wire count in the spec is scoped inside `org-chart-canvas`. This is the
+  same family as OC2's "pins `^wire-` by count" note — the prefix is load-bearing and now
+  shared with a dialog.
+- **(R2) The plate's keyboard path is the whole reason the chart is testable.** `node-<name>`
+  takes focus and answers Enter by opening the same actions menu the pointer opens, so
+  drag-to-wire can be exercised without synthesising a drag. If that handler is ever removed,
+  these tests go with it.
+- **(R2) `helpers/ui.ts`'s `View` type still named only chat/workers/settings** — three of the
+  eight views. Any console spec fails to typecheck before it fails to run. Now all eight, plus
+  `ALL_VIEWS`.
+- **(R2) A fast green test here is not necessarily a hollow one.** The topology+job test passes
+  in ~8s, which looks too quick for a container job; it is real — `docker compose logs agentd`
+  shows `[router] … cx-scribe.task → cx-scribe (<session>) = started`. Worth knowing before
+  someone "fixes" the test for being suspiciously fast.
