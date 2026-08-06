@@ -30,11 +30,26 @@ func newFakeScheduleStore(rows ...*agentdb.Schedule) *fakeScheduleStore {
 	return f
 }
 
+// fakeScheduleTargetXOR mirrors the one rule of agentdb.validateSchedule this
+// layer's behaviour depends on: exactly one of worker and target_session. The
+// fake has to enforce it, or a handler that dropped `target_session` on the
+// floor would still look correct here.
+func fakeScheduleTargetXOR(s *agentdb.Schedule) error {
+	switch {
+	case s.Worker == "" && s.TargetSession == "":
+		return fmt.Errorf("%w: a schedule must target either a worker or a session (target_session)",
+			agentdb.ErrScheduleInvalid)
+	case s.Worker != "" && s.TargetSession != "":
+		return fmt.Errorf("%w: a schedule targets a worker or a session, never both", agentdb.ErrScheduleInvalid)
+	}
+	return nil
+}
+
 func (f *fakeScheduleStore) CreateSchedule(_ context.Context, s *agentdb.Schedule, cw agentdb.ConfigWrite) (*agentdb.Schedule, error) {
 	f.lastWrite = cw
 	f.writes++
-	if s.Worker == "" {
-		return nil, fmt.Errorf("%w: worker is required", agentdb.ErrScheduleInvalid)
+	if err := fakeScheduleTargetXOR(s); err != nil {
+		return nil, err
 	}
 	if _, err := agentdb.ParseCron(s.Cron); err != nil {
 		return nil, fmt.Errorf("%w: %w", agentdb.ErrScheduleInvalid, err)
@@ -71,6 +86,9 @@ func (f *fakeScheduleStore) UpdateSchedule(_ context.Context, s *agentdb.Schedul
 	existing, ok := f.rows[s.ID]
 	if !ok || existing.Project != s.Project {
 		return nil, fmt.Errorf("%w: %s", agentdb.ErrScheduleNotFound, s.ID)
+	}
+	if err := fakeScheduleTargetXOR(s); err != nil {
+		return nil, err
 	}
 	if _, err := agentdb.ParseCron(s.Cron); err != nil {
 		return nil, fmt.Errorf("%w: %w", agentdb.ErrScheduleInvalid, err)
@@ -277,5 +295,57 @@ func TestSchedulesHTTPMethodNotAllowed(t *testing.T) {
 	h.Schedules(rec, scheduleReq("DELETE", "/agent/schedules", "", ""))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("want 405, got %d", rec.Code)
+	}
+}
+
+// TestSchedulesHTTPSessionMode covers the second target a schedule can have
+// (T9): a firing that wakes an existing NAMED session instead of starting a
+// job. The route's whole job here is to carry the field through and let the
+// store adjudicate — including the case an integrator will hit first, sending
+// both targets.
+func TestSchedulesHTTPSessionMode(t *testing.T) {
+	store := newFakeScheduleStore()
+	h := scheduleHandlers(t, store, nil)
+
+	rec := httptest.NewRecorder()
+	h.Schedules(rec, scheduleReq("POST", "/agent/schedules", "",
+		`{"target_session":"hypothesis-a","cron":"0 7 * * *","input":"research and update the summary"}`))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status %d body=%s", rec.Code, rec.Body)
+	}
+	var created agentdb.Schedule
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if created.TargetSession != "hypothesis-a" || created.Worker != "" {
+		t.Fatalf("session mode did not round-trip: %+v", created)
+	}
+
+	// An ordinary edit of the cron must not lose the target — the field is
+	// absent from this body, and absent means "leave it alone".
+	rec = httptest.NewRecorder()
+	h.Schedule(rec, scheduleReq("PUT", "/agent/schedules/"+created.ID, created.ID, `{"cron":"0 8 * * *"}`))
+	if rec.Code != 200 {
+		t.Fatalf("update status %d body=%s", rec.Code, rec.Body)
+	}
+	var updated agentdb.Schedule
+	_ = json.Unmarshal(rec.Body.Bytes(), &updated)
+	if updated.TargetSession != "hypothesis-a" || updated.Cron != "0 8 * * *" {
+		t.Fatalf("an edit of the cron changed the target: %+v", updated)
+	}
+
+	// Two targets is a 400, not a precedence rule.
+	rec = httptest.NewRecorder()
+	h.Schedules(rec, scheduleReq("POST", "/agent/schedules", "",
+		`{"worker":"reviewer","target_session":"hypothesis-a","cron":"0 7 * * *","input":"x"}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("two targets: want 400, got %d (%s)", rec.Code, rec.Body)
+	}
+	// …and so is naming a worker on an existing session schedule, which is how
+	// a mode switch would be attempted.
+	rec = httptest.NewRecorder()
+	h.Schedule(rec, scheduleReq("PUT", "/agent/schedules/"+created.ID, created.ID, `{"worker":"reviewer"}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("switching a session schedule to a worker: want 400, got %d (%s)", rec.Code, rec.Body)
 	}
 }

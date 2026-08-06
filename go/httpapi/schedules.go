@@ -47,11 +47,16 @@ var _ ScheduleStore = (*agentdb.Store)(nil)
 // commit message when the operator has one — an empty one is a fine record of a
 // UI tweak, not an omission.
 type scheduleBody struct {
-	Worker    string `json:"worker"`
-	Cron      string `json:"cron"`
-	Input     string `json:"input"`
-	Enabled   *bool  `json:"enabled"`
-	Rationale string `json:"rationale"`
+	Worker string `json:"worker"`
+	// TargetSession is the other mode: the NAME of a long-lived session each
+	// firing sends `input` to as its next message, instead of starting a job.
+	// Exactly one of worker and target_session may be set — the store enforces
+	// it, so both write paths give the same answer.
+	TargetSession string `json:"target_session"`
+	Cron          string `json:"cron"`
+	Input         string `json:"input"`
+	Enabled       *bool  `json:"enabled"`
+	Rationale     string `json:"rationale"`
 }
 
 // schedules returns the configured store, or writes 501 and returns nil when the
@@ -126,6 +131,11 @@ func (h *Handlers) createSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sch := agentdb.NewSchedule(id.Customer, strings.TrimSpace(body.Worker), strings.TrimSpace(body.Cron), body.Input)
+	// Both modes are built through the one constructor and adjudicated by the
+	// store's XOR rule, so "neither target" and "both targets" are refused in
+	// exactly one place and answer 400 here rather than in a second copy of the
+	// rule that could drift.
+	sch.TargetSession = strings.TrimSpace(body.TargetSession)
 	if body.Enabled != nil {
 		sch.Enabled = *body.Enabled
 	}
@@ -179,6 +189,14 @@ func (h *Handlers) updateSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if v := strings.TrimSpace(body.Worker); v != "" {
 		existing.Worker = v
+	}
+	// Absent means "leave it alone", so a schedule cannot be switched between
+	// its two modes by one field: naming a worker on a session schedule (or vice
+	// versa) leaves both set and the store answers 400. Changing mode is a
+	// delete and a create, which is the honest shape — the two modes have
+	// nothing in common but the cron.
+	if v := strings.TrimSpace(body.TargetSession); v != "" {
+		existing.TargetSession = v
 	}
 	if v := strings.TrimSpace(body.Cron); v != "" {
 		existing.Cron = v

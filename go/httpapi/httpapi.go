@@ -94,6 +94,22 @@ type Config struct {
 	// Workers: auto-filled from AgentDB, 501 without one.
 	Topologies TopologyStore
 
+	// SessionNames backs the optional `name` on POST /agent/session and the
+	// by-name lookup routes (sessions_byname.go). Same defaulting rule as
+	// Workers: auto-filled from AgentDB, and 501 without one — the sqlite
+	// fallback's store has no name column and no unique index to enforce with.
+	//
+	// A host that sets this explicitly must point it at the SAME store as Store:
+	// a named create inserts the row through here and everything afterwards
+	// reads it through Store.
+	SessionNames SessionNameStore
+
+	// ArtifactPaths backs the ?path= leg of the by-name artifact routes
+	// (artifacts_download.go). Same defaulting rule as Workers: auto-filled
+	// from AgentDB, 501 without one — the sqlite fallback's artifact index is
+	// an in-process map with nothing to query by path.
+	ArtifactPaths ArtifactPathStore
+
 	// Catalogue backs GET /agent/images and GET /agent/skills (design B4) —
 	// read-only, the browser-side mirror of the image/skill MCP tools. Same
 	// defaulting rule as Workers: auto-filled from AgentDB, 501 without one.
@@ -120,6 +136,13 @@ type Config struct {
 //
 // Identity.SessionScope is enforced in the same place: a credential carrying it
 // may touch only that one session id, whatever its Customer says.
+//
+// The by-name routes (sessions_byname.go) reach the same two rules through
+// resolveSessionByName instead: the store query is scoped to Identity.Customer
+// so a foreign name never matches, and the scope leg is applied to the resolved
+// id. Absent, malformed and foreign names are one indistinguishable 404 — a
+// name is chosen by whoever created it and is far more guessable than a uuid,
+// so a distinguishable answer here would be a project-membership oracle.
 //
 // ListSessions and SearchMessages still return an empty array without an
 // AgentDB: the library has no catalog to enumerate, so the host overrides those.
@@ -171,6 +194,12 @@ func New(cfg Config) (*Handlers, error) {
 	}
 	if cfg.Catalogue == nil && cfg.AgentDB != nil {
 		cfg.Catalogue = cfg.AgentDB
+	}
+	if cfg.SessionNames == nil && cfg.AgentDB != nil {
+		cfg.SessionNames = cfg.AgentDB
+	}
+	if cfg.ArtifactPaths == nil && cfg.AgentDB != nil {
+		cfg.ArtifactPaths = cfg.AgentDB
 	}
 	// The event routes ride on the same database as the rich read paths unless
 	// a host deliberately supplies its own store.
@@ -234,11 +263,22 @@ type Endpoints struct {
 	QueryEvents    string // "GET /agent/session/{id}/query-events"
 	ListSessions   string // "GET /agent/sessions"
 	SearchMessages string // "GET /agent/messages/search"
-	Artifacts      string // "GET /agent/session/{id}/artifacts"
-	CreateArtifact string // "POST /agent/session/{id}/artifacts"
-	Upload         string // "POST /agent/session/{id}/upload"
-	Snapshot       string // "POST /agent/session/{id}/snapshot"
-	Archive        string // "POST /agent/session/{id}/archive"
+
+	// The by-name lookup (T7). A separate pattern rather than an overload of
+	// GetSession: a name and a uuid must never be interchangeable in one path
+	// segment, or "hypothesis-a" and a mistyped id become the same request.
+	GetSessionByName string // "GET /agent/sessions/by-name/{name}"
+	// The by-name artifact routes (T8): the same two reads as Artifacts and
+	// the download route, addressed by the name the integrator chose.
+	SessionArtifactsByName    string // "GET /agent/sessions/by-name/{name}/artifacts"
+	SessionArtifactFileByName string // "GET /agent/sessions/by-name/{name}/artifacts/file"
+
+	Artifacts        string // "GET /agent/session/{id}/artifacts"
+	CreateArtifact   string // "POST /agent/session/{id}/artifacts"
+	Upload           string // "POST /agent/session/{id}/upload"
+	DownloadArtifact string // "GET /agent/artifacts/{id}/download"
+	Snapshot         string // "POST /agent/session/{id}/snapshot"
+	Archive          string // "POST /agent/session/{id}/archive"
 	// Project settings (§5) — project inferred from the JWT, never the path.
 	GetProjectSettings string // "GET /agent/project-settings"
 	PutProjectSettings string // "PUT /agent/project-settings"
@@ -267,10 +307,8 @@ type Endpoints struct {
 	// The image/skill catalogues (B4) — read-only; the project comes from the
 	// JWT. There is no write counterpart: both catalogues are append-only and
 	// are written only from inside a session (§13.4, §14.2).
-	ListImages string // "GET /agent/images"
-	ListSkills string // "GET /agent/skills"
-	// TODO: an artifact download route (GET by artifact ID, backed by
-	// ArtifactStore.Load) is intentionally deferred — add it here when needed.
+	ListImages   string // "GET /agent/images"
+	ListSkills   string // "GET /agent/skills"
 	ListWorkers  string // "GET /agent/workers"
 	GetWorker    string // "GET /agent/workers/{name}"
 	PutWorker    string // "PUT /agent/workers/{name}"
@@ -292,15 +330,21 @@ var DefaultEndpoints = Endpoints{
 	QueryEvents:    "GET /agent/session/{id}/query-events",
 	ListSessions:   "GET /agent/sessions",
 	SearchMessages: "GET /agent/messages/search",
-	Artifacts:      "GET /agent/session/{id}/artifacts",
-	CreateArtifact: "POST /agent/session/{id}/artifacts",
-	Upload:         "POST /agent/session/{id}/upload",
-	Snapshot:       "POST /agent/session/{id}/snapshot",
-	Archive:        "POST /agent/session/{id}/archive",
-	ListWorkers:    "GET /agent/workers",
-	GetWorker:      "GET /agent/workers/{name}",
-	PutWorker:      "PUT /agent/workers/{name}",
-	DeleteWorker:   "DELETE /agent/workers/{name}",
+
+	GetSessionByName:          "GET /agent/sessions/by-name/{name}",
+	SessionArtifactsByName:    "GET /agent/sessions/by-name/{name}/artifacts",
+	SessionArtifactFileByName: "GET /agent/sessions/by-name/{name}/artifacts/file",
+
+	Artifacts:        "GET /agent/session/{id}/artifacts",
+	CreateArtifact:   "POST /agent/session/{id}/artifacts",
+	Upload:           "POST /agent/session/{id}/upload",
+	DownloadArtifact: "GET /agent/artifacts/{id}/download",
+	Snapshot:         "POST /agent/session/{id}/snapshot",
+	Archive:          "POST /agent/session/{id}/archive",
+	ListWorkers:      "GET /agent/workers",
+	GetWorker:        "GET /agent/workers/{name}",
+	PutWorker:        "PUT /agent/workers/{name}",
+	DeleteWorker:     "DELETE /agent/workers/{name}",
 
 	GetProjectSettings: "GET /agent/project-settings",
 	PutProjectSettings: "PUT /agent/project-settings",
@@ -394,6 +438,11 @@ func (h *Handlers) Mux() *http.ServeMux {
 		e.ApplyTopology:     h.ApplyTopologyHandler,
 		e.ListImages:        h.ListImages,
 		e.ListSkills:        h.ListSkills,
+		e.GetSessionByName:  h.GetSessionByName,
+
+		e.DownloadArtifact:          h.DownloadArtifact,
+		e.SessionArtifactsByName:    h.SessionArtifactsByName,
+		e.SessionArtifactFileByName: h.SessionArtifactFileByName,
 	} {
 		if pattern != "" {
 			m.HandleFunc(pattern, handler)

@@ -10,9 +10,7 @@ import (
 // artifactsConfigured reports whether an ArtifactStore is wired. When it is nil
 // it writes a 501 and returns false; otherwise it returns true and writes nothing.
 //
-// TODO: an artifact *download* route (GET by artifact ID, backed by
-// ArtifactStore.Load) is intentionally deferred — that is why stubArtifacts.Load
-// is currently unexercised by these handlers.
+// The download route that reads bytes back out lives in artifacts_download.go.
 func (h *Handlers) artifactsConfigured(w http.ResponseWriter) bool {
 	if h.cfg.Artifacts == nil {
 		http.Error(w, "artifacts not configured", http.StatusNotImplemented)

@@ -738,7 +738,7 @@ type Schedule struct {
   - Validation re-run: `go test ./httpapi/ -count=1` ✅; full gate
     `go build ./... && go vet ./... && go test ./...` ✅.
 
-### T6: Session names — schema and store   [Status: pending | Model: sonnet]
+### T6: Session names — schema and store   [Status: done | Model: sonnet]
 - **Scope:** Migration adding `sessions.name TEXT NULL` with a unique index on
   `(customer, name)` (partial index excluding NULL). Add `Name` to the session type; validate
   kebab-case ≤64 chars on create; add `GetSessionByName(ctx, customer, name)`; map the unique
@@ -751,8 +751,34 @@ type Schedule struct {
 - **Validation:** `cd go && go test ./agentdb/ -count=1` (set `AGENTKIT_TEST_POSTGRES_URL` to a
   throwaway database to exercise the live-PG twins — a green run without it does not prove the index)
 - **Depends on:** —
+- [x] done
+- Notes:
+  - Migration **`035_session_names`** (not the `035_session_names_and_session_schedules` the File
+    Structure section named — T9 took its own `036`). Column `agent_sessions.name TEXT NULL` plus a
+    partial unique index on `(customer, name)`.
+  - **Deviation, load-bearing: the index predicate is `WHERE name IS NOT NULL AND name <> ''`, not
+    the ticket's "excluding NULL".** Both spellings of "unnamed" live in that one column — every
+    pre-035 row holds NULL, and GORM writes `''` for a zero-value Go string on every unnamed create.
+    A NULL-only predicate would have made a project's *second console chat* a unique violation.
+    Recorded in the migration comment.
+  - Immutability is a GORM field permission (`<-:create`), not a guard in `UpdateSession` —
+    `UpdateSession` is a wholesale `Save` with no single choke point, so the permission means no
+    UPDATE this store can emit carries the column at all. Enforced at the ORM layer, not the
+    database: a caller holding `Store.DB()` could still rename by raw SQL. Nothing in-repo does.
+  - **Three sentinels, not one:** `ErrSessionNameTaken` (409), `ErrSessionNameInvalid` (400),
+    `ErrSessionNotFound` (404). T7 has to answer three different statuses and cannot from one.
+  - No pre-check `SELECT` before insert — uniqueness is the index's job, since two racing creates
+    would both pass a pre-check. `isSessionNameCollision` mirrors `isConfigSeqCollision` and
+    deliberately excludes duplicate-PK failures, so re-using a session id is never mis-reported as
+    a taken name.
+  - `GetSessionByName` answers `ErrSessionNotFound` identically for absent, malformed **and other
+    project**. The malformed case is load-bearing, not tidiness: an unvalidated `""` would make
+    `WHERE customer=? AND name=?` match every unnamed row and hand out an arbitrary console chat.
+  - Validation re-run by the orchestrator with the throwaway Postgres: `go test ./agentdb/` ✅, and
+    `-run TestLivePG -v` shows **30 PASS / 0 SKIP with the variable set, 30 SKIP without** — the
+    index is genuinely exercised. Full gate ✅.
 
-### T7: Session name on the create route + by-name lookup   [Status: pending | Model: sonnet]
+### T7: Session name on the create route + by-name lookup   [Status: done | Model: sonnet]
 - **Scope:** Accept optional `name` on `POST /agent/session` (`go/httpapi/session.go:44-110`),
   409 on `ErrSessionNameTaken`, 400 on malformed. Add `GET /agent/sessions/by-name/{name}` plus
   an internal resolver returning 404 for both "absent" and "other project".
@@ -763,8 +789,33 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/ -count=1`
 - **Depends on:** T6
+- [x] done
+- Notes:
+  - **Answer to the question the ticket asked (what the by-name route does with a session-scoped
+    identity): it works, but only for the name that resolves to its own session — every other name
+    is a 404 identical to "absent".** T12's embed page must resolve `hypothesis-a` → id using
+    nothing but the embed token before it can mount the chat, so refusing scoped identities outright
+    would have made the route useless to its main caller.
+  - **Named creates INSERT through a new `SessionNameStore` seam rather than upserting through
+    `Config.Store`.** Forced by T6's schema: `Session.Name` is `<-:create`, so no UPDATE carries the
+    column, and only an INSERT trips the unique index that is the sole authority on whether a name
+    is taken. Unnamed creates keep their exact old upsert path, untouched. `Config.SessionNames`
+    auto-fills from `AgentDB` exactly like Workers/Schedules/Memories, so `agentd` needed no wiring.
+  - Every name rejection happens **before `MarkCreating`**, which installs a Runner create guard and
+    a progress op and has no exported undo — so a refused name leaves no guard, no progress op, no
+    row and no container. A fast-path duplicate check makes the ordinary 409 cost nothing; the
+    insert's `ErrSessionNameTaken` remains the authority for the race.
+  - **501** when no name store is wired (the sqlite fallback has no `name` column, so a named create
+    there would hand back a name resolving to nothing) and **403** when the credential carries no
+    project — an unscoped credential has nothing to resolve against, which is an unanswerable
+    question rather than a hidden session. Consequence worth knowing: **named creates and by-name
+    lookup are unavailable in dev-open mode**, so T17's e2e must run with a real project credential.
+  - The by-name response deliberately **omits `composed_prompt`** — this is the one session route an
+    embed token is meant to reach, and a composed prompt is the project's system prompt plus its
+    memory briefings.
+  - Validation re-run: `go test ./httpapi/ -count=1` ✅; full gate ✅.
 
-### T8: Artifact download route   [Status: pending | Model: sonnet]
+### T8: Artifact download route   [Status: done | Model: sonnet]
 - **Priority note:** this fixes a route that is missing outright and that three console
   components already call. An earlier draft demoted it on the grounds that Wolf would render
   state from `GET /agent/memories` instead — that was wrong (memories come back as 500-byte
@@ -789,8 +840,36 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/ -count=1`
 - **Depends on:** T5, T7
+- [x] done
+- Notes:
+  - All three routes funnel through one `serveArtifactBytes` — the single place artifact bytes leave
+    the package. Status mapping order is lost → extraction_failed → IsDir → live → default.
+    `IsDir` is checked *before* the live case because retrying a directory will never produce a byte
+    stream, so 202 "come back later" would be a lie.
+  - **`Load` errors map to 404, not 500.** Both shipped backends report an unknown id as a wrapped
+    error with no sentinel to distinguish it from a backend fault, 404 is the required answer for a
+    foreign id anyway, and surfacing the store error would be an existence oracle.
+  - The 404 body is `ownsSession`'s string **byte for byte**. An earlier version said "artifact not
+    found" for a `Load` miss, and `TestDownloadArtifactHonoursTheSessionScope` caught that this let
+    an embed token distinguish "exists but belongs to a sibling session" from "no such id". The test
+    now asserts the two bodies are identical.
+  - `Content-Disposition: attachment` + `X-Content-Type-Options: nosniff` + `application/octet-stream`
+    when `MimeType` is empty. Security, not UX: an agent can write an artifact containing HTML, and
+    rendering it inline would be scripting on the console's own origin, within reach of the JWT in
+    `localStorage`. Every console call site fetches into a blob URL, so nothing is lost.
+  - No `Content-Length`: `FileSize` is metadata written by a different call than the bytes, and a
+    stale value would truncate the response.
+  - Tenancy on the by-name routes rides entirely on T7's resolver — the id handed to
+    `GetArtifactByPath` is only ever the one the name resolved to, never anything from the request,
+    and a test pins that. Leading-slash normalization asks for both spellings (two exact lookups at
+    most), covered by a four-case table.
+  - **Deviation:** the ticket says `Content-Disposition` from `FileName`, but the portable
+    `artifacts.Artifact` has no `FileName` field — only the `agentdb` row does, and `fromRow` drops
+    it. The route uses `path.Base(art.FilePath)`, which is the same result for every artifact whose
+    FileName was derived from its path.
+  - Validation re-run: `go test ./httpapi/ -count=1` ✅; full gate ✅.
 
-### T9: Session-mode schedules   [Status: pending | Model: opus]
+### T9: Session-mode schedules   [Status: done | Model: opus]
 - **Scope:** Add `schedules.target_session` (migration in T6's file or a follow-on), XOR-validated
   against the worker target. Branch `scheduler.fire` (`go/cmd/agentd/scheduler.go:203-301`): for a
   session schedule, `ClaimFiring` as today, resolve the name (missing → disable the schedule,
@@ -831,6 +910,42 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'Schedul' -count=1 && go test ./agentdb/ -count=1`
 - **Depends on:** T6
+- [x] done
+- Notes:
+  - Migration **`036`**, appended — T6's `035` was left untouched, since an already-applied
+    migration never re-runs. `schedules.target_session` holds the session **name**, XOR-validated
+    against `worker` in `validateSchedule`. `NewSessionSchedule(project, sessionName, cron, input)`
+    was added rather than a fifth argument to `NewSchedule`, leaving ~30 worker-mode call sites
+    untouched.
+  - **The name is resolved BEFORE `ClaimFiring`, which inverts the ticket's prose.** The worker
+    branch already resolves first for a stated reason (a schedule disabled for a missing target must
+    be able to fire that same minute once the target returns and it is re-enabled), and resolving
+    first also means a transient DB error retries next minute instead of spending the occurrence.
+    Only `ErrSessionNotFound` disables; any other read error is logged and retried, mirroring RD1.
+  - The Runner reaches the scheduler through a two-method `sessionMessenger` (SendMessage + Status)
+    wired in `main.go` — the struct was **not** widened to the whole `*Runner`, as instructed.
+  - Busy detection is `Runner.Status` → skip when `ActiveQueryID` is non-empty; never queued. A
+    `Status` error is treated as "cannot tell" → skip, rather than guessing toward a second
+    concurrent turn. `Status` on a destroyed container returns `RuntimeState=destroyed` with a nil
+    error, which is what makes the check safe for archived sessions — the restore cost is paid
+    entirely inside `SendMessage`.
+  - The send is spawned off the tick goroutine (`context.WithoutCancel`) or a scheduled turn would
+    stall every other schedule for as long as the model takes. `schedulerConfig` gained an
+    injectable `Spawn` so tests stay synchronous — the same seam `dispatch.go` uses.
+  - A failed `SendMessage` counts toward the existing five-consecutive-failure disable streak,
+    because a `SendMessage` error means the turn could not be *delivered*; what the model then does
+    comes back as events, not as an error.
+  - **`TargetSession` carries a gorm `default:''` tag** — the one exception to this struct's stated
+    no-defaults rule, because without it AutoMigrate builds a sqlite test schema *stricter* than
+    production. Safe here only because the zero value and the default are the same string.
+  - Beyond the file list: `schedule_create`'s MCP tool gained `target_session` (documenting resume
+    semantics in a tool that could not create a session schedule would have been incoherent), and
+    the HTTP PUT accepts it. `schedule_update`'s MCP tool deliberately does **not** — a mode switch
+    through a partial-field update is the ambiguous case.
+  - **Carry-forward for T14:** the ticket asks for the resume-semantics text in *both*
+    `schedule_create`'s description and `docs/19-embedding.md`. Only the first exists; the doc does
+    not yet.
+  - Validation re-run: `go test ./cmd/agentd/ -run 'Schedul'` ✅, `go test ./agentdb/` ✅ (live PG).
 
 ### T10: Embed-token endpoint   [Status: pending | Model: sonnet]
 - **Scope:** `POST /agent/embed-token`, API-key auth only (never JWT — a browser must not mint
@@ -1052,6 +1167,57 @@ type Schedule struct {
   changed by this plan — but it is the reason T3 refused to overload `sid` as the embed scope, and
   it is worth its own ticket some day (giving the session-token family its own secret, or having
   the API middleware refuse tokens carrying a `sid`).
+- **T6 — the "~90s with `AGENTKIT_TEST_POSTGRES_URL`, ~0.1s without" heuristic is WRONG on this
+  machine, and CLAUDE.md should not be trusted on it.** `go test ./agentdb/ -count=1` takes 116–313s
+  *with* the variable and ~269s *without*: the sqlite suites dominate either way, so wall time proves
+  nothing about whether the live cases ran. The reliable check, used from now on, is
+  `go test ./agentdb/ -run TestLivePG -count=1 -v` and counting `--- PASS` vs `--- SKIP`
+  (currently 30/0 with the variable, 0/30 without).
+- **T6 — the ticket's "partial index excluding NULL" is insufficient as literally written.** GORM
+  writes `''`, not NULL, for an unnamed session, so a `WHERE name IS NOT NULL` index would have been
+  armed against every unnamed row and rejected a project's second console chat. Corrected in the
+  implementation; see T6's Notes. Anyone re-reading the plan's File Structure section should read
+  the Notes instead.
+- **T6 — `Store.UpdateSession` is a wholesale GORM `Save`, so every field on `Session` is writable
+  by anyone who loads a row and saves it.** There is no per-field authority anywhere in the session
+  store. Pre-existing; T6 sidestepped it for one column with a field permission. Also:
+  GORM's `Save` fallback emits `INSERT … ON CONFLICT DO UPDATE`, not a plain INSERT — surprising for
+  anyone reasoning about session-row lifecycles.
+- **T6/T7 — session names exist only on Postgres.** The sqlite fallback store has its own hand-rolled
+  schema with no `name` column and no `GetSessionByName`. T7 answers 501 there rather than degrading
+  silently, but it means the whole embedding feature is Postgres-only — consistent with the rest of
+  the product layer, and worth saying plainly in T14.
+- **T8 — ⚠️ one console call site will STILL fail after this fix.**
+  `web/src/components/InlineArtifactPreview.tsx:52` (`getArtifactImageUrl`) puts
+  `/agent/artifacts/{id}/download` straight into an `<img src>` with no Authorization header, and
+  browsers do not attach bearer tokens to subresource loads — so it 401s in any JWT-authenticated
+  deployment even though the route now exists. The other six call sites use `fetch` with headers and
+  are fixed. Not in T8's scope; needs either a cookie, a signed URL (explicitly designed out), or a
+  blob-URL fetch in the component.
+- **T8 — an EIGHTH console call site to a non-existent route.** `ArtifactPreviewDialog.tsx:113` calls
+  `GET /agent/artifacts/{id}/preview-url`, which the plan's inventory of "seven call sites" misses.
+  It degrades gracefully (falls through to download), so it is cosmetic.
+- **T8 — `docs/06-artifacts.md:139-142` is now factually false.** It says the shipped `httpapi`
+  handlers do not map the nil-reader cases to 202/410 and that "nobody has made that decision in
+  this repo". `artifacts_download.go` is exactly that decision. T14 already owns this file.
+- **T8 — `extension/dbartifacts` has an unused `LoadForCustomer(ctx, customer, artifactID)`** that is
+  not on the `artifacts.ArtifactStore` interface and is called from nothing. It would have given the
+  download route a project-scoped load without a session round-trip. Not used, for consistency with
+  the existing artifact handlers.
+- **T9 — the web console cannot create or edit a session-mode schedule.** `web/src/schedules.ts:321`
+  hard-requires a non-empty worker client-side, so a session schedule renders with a blank worker
+  column and no way to set the target. Session schedules are API/MCP-only. Out of T9's file list;
+  needs a follow-up ticket or a line in T14.
+- **T9 — `schedule_update`'s MCP tool cannot change `target_session` while the HTTP PUT can.**
+  Deliberate (a mode switch through a partial-field update is the ambiguous case), but the two
+  management surfaces are now asymmetric, which is unusual for this codebase.
+- **T9 — the `Sessions: runner` wiring in `main.go` has no test.** The verifier's sharpest finding:
+  if that argument were dropped, every T9 test would still pass and session schedules would silently
+  never fire in production. T17's e2e is the only thing that can catch it — it must actually observe
+  a firing, not just a schedule row.
+- **gofmt is not checked by CI** (`.github/workflows/ci.yml` runs build/test/vet only). Two files
+  were left unformatted by T9 and fixed by the orchestrator; `go/httpapi/sessions_worker_filter_test.go`
+  and `go/triagelab/content.go` are pre-existing offenders on this branch and were left alone.
 - **T4 — ⚠️ HIGH: the embed scope confines session-by-ID routes only. An embed token can still
   reach every project-wide route.** The design's credential table says an embed token grants
   "Read/stream/message on **exactly one session**", but the mechanism it specifies —

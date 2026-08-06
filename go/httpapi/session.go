@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/binocarlos/badcode-agent-orange"
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
@@ -23,6 +24,10 @@ type createSessionBody struct {
 	Harness       string   `json:"harness"`
 	CustomImageID string   `json:"customImageId"`
 	Installation  string   `json:"installation"`
+	// Name is the OPTIONAL project-unique handle this session may be addressed
+	// by afterwards (T7). Set once, here, and never again: there is no rename
+	// route and no rename store method — see agentdb.Session.Name.
+	Name string `json:"name"`
 }
 
 type createSessionResp struct {
@@ -54,6 +59,34 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	sid := body.SessionID
 	if sid == "" {
 		sid = newID()
+	}
+	// Everything that can reject a name is decided HERE, before MarkCreating
+	// registers a create attempt with the Runner: a refused name must leave no
+	// progress op, no create guard and no row behind. The duplicate check below
+	// is only the fast path — the unique index at insert time is what actually
+	// decides, since two racing creates of one name would both pass a SELECT.
+	name := strings.TrimSpace(body.Name)
+	if name != "" {
+		if h.cfg.SessionNames == nil {
+			// The sqlite fallback's store has no name column and cannot enforce
+			// uniqueness. Refusing is the honest answer; silently creating an
+			// unnamed session would hand the caller a name that resolves to
+			// nothing.
+			http.Error(w, "session names are not configured on this host", http.StatusNotImplemented)
+			return
+		}
+		if id.Customer == "" {
+			http.Error(w, "no project in token", http.StatusForbidden)
+			return
+		}
+		if err := agentdb.ValidateSessionName(name); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if _, err := h.cfg.SessionNames.GetSessionByName(r.Context(), id.Customer, name); err == nil {
+			http.Error(w, "session name already taken", http.StatusConflict)
+			return
+		}
 	}
 	// Resolve installation → image reference when the host has wired an ImageResolver,
 	// but only when no explicit CustomImageID is present. When both arrive (the frontend
@@ -89,12 +122,39 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Persist the row before provisioning (Runner contract).
-	_, _ = h.cfg.Store.UpdateSession(r.Context(), &agentdb.Session{
+	row := &agentdb.Session{
 		ID: sid, Customer: id.Customer, Job: body.Job,
 		UserEmail: id.UserEmail, Persona: body.Persona, Status: "creating",
 		WorkflowID: "agent", Installation: body.Installation,
 		CustomImageID: body.CustomImageID,
-	})
+		Name:          name,
+	}
+	if name == "" {
+		// The unchanged path every existing caller takes: an upsert, which is
+		// what makes re-POSTing a session id idempotent.
+		_, _ = h.cfg.Store.UpdateSession(r.Context(), row)
+	} else if _, err := h.cfg.SessionNames.CreateSession(r.Context(), row); err != nil {
+		// A named session is an INSERT, not an upsert: only an INSERT writes
+		// Session.Name (`<-:create`) and only an INSERT can trip migration 035's
+		// unique index. That also means a named create can never re-label an
+		// existing row, which is how "no route renames a session" is enforced
+		// rather than merely intended.
+		//
+		// Reaching the taken branch here means we lost the race the fast-path
+		// check above usually wins; the create attempt registered by
+		// MarkCreating is left behind, which is a bounded leak for a rare event
+		// and strictly better than provisioning a container for a name we cannot
+		// keep.
+		switch {
+		case errors.Is(err, agentdb.ErrSessionNameTaken):
+			http.Error(w, "session name already taken", http.StatusConflict)
+		case errors.Is(err, agentdb.ErrSessionNameInvalid):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
 
 	createReq := agentkit.CreateSessionRequest{
 		SessionID:     sid,

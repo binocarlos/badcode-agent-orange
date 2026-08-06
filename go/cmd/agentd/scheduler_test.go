@@ -28,6 +28,9 @@ type fakeDispatchStore struct {
 	// deliveries keeps insertion order so FIFO assertions are meaningful.
 	deliveries []*agentdb.EventDelivery
 	firings    map[string]bool // schedule_id + "@" + occurrence
+	// sessions stands in for the named rows of `agent_sessions`, keyed by
+	// project + "/" + name. Only session-mode schedules read it.
+	sessions map[string]*agentdb.Session
 	// awaitingHuman stands in for the open rows of `attention_requests`, keyed by
 	// session id. See dispatch_attention_test.go.
 	awaitingHuman map[string]bool
@@ -42,6 +45,7 @@ type fakeDispatchStore struct {
 	// of these as "the row is absent".
 	getWorkerErr       error
 	getProjectEventErr error
+	getSessionErr      error
 }
 
 func newFakeDispatchStore() *fakeDispatchStore {
@@ -51,6 +55,7 @@ func newFakeDispatchStore() *fakeDispatchStore {
 		settings:  map[string]*agentdb.ProjectSettings{},
 		events:    map[string]*agentdb.ProjectEvent{},
 		firings:   map[string]bool{},
+		sessions:  map[string]*agentdb.Session{},
 		disabled:  map[string]string{},
 
 		awaitingHuman: map[string]bool{},
@@ -73,6 +78,25 @@ func (f *fakeDispatchStore) addSchedule(s *agentdb.Schedule) *agentdb.Schedule {
 func (f *fakeDispatchStore) addWorker(w *agentdb.Worker) *agentdb.Worker {
 	f.workers[w.Project+"/"+w.Name] = w
 	return w
+}
+
+func (f *fakeDispatchStore) addSession(project, name string) *agentdb.Session {
+	sess := &agentdb.Session{ID: f.nextID("sess"), Customer: project, Name: name}
+	f.sessions[project+"/"+name] = sess
+	return sess
+}
+
+func (f *fakeDispatchStore) GetSessionByName(_ context.Context, customer, name string) (*agentdb.Session, error) {
+	if f.getSessionErr != nil {
+		return nil, f.getSessionErr
+	}
+	if s, ok := f.sessions[customer+"/"+name]; ok {
+		return s, nil
+	}
+	// The sentinel the real store returns. A fake that invented its own error
+	// here would let the scheduler's "is it gone or is the database unhappy?"
+	// classification look correct while being wrong (RD1).
+	return nil, fmt.Errorf("%w: %q in project %q", agentdb.ErrSessionNotFound, name, customer)
 }
 
 func (f *fakeDispatchStore) ListEnabledSchedules(context.Context) ([]*agentdb.Schedule, error) {
@@ -624,5 +648,290 @@ func TestSchedulerGateIsIdempotentPerDelivery(t *testing.T) {
 	}
 	if len(starter.jobs) != 1 {
 		t.Fatalf("a duplicated dispatch started %d jobs", len(starter.jobs))
+	}
+}
+
+// ── Session-mode schedules (T9) ─────────────────────────────────────────────
+
+// recordingMessenger is the sessionMessenger seam under test: it records every
+// message a firing delivered and lets a case pin what Status said first.
+type recordingMessenger struct {
+	sends      []recordedSend
+	activeQ    string // non-empty ⇒ a turn is already in flight
+	statusErr  error
+	sendErr    error
+	statusHits int
+}
+
+type recordedSend struct {
+	sessionID string
+	content   string
+	customer  string
+}
+
+func (m *recordingMessenger) Status(_ context.Context, ref agentkit.SessionRef) (*agentkit.SessionStatus, error) {
+	m.statusHits++
+	if m.statusErr != nil {
+		return nil, m.statusErr
+	}
+	// An ARCHIVED session is the default fixture: no live instance, so the
+	// Runner reports it destroyed with no active query (go/runner.go:806-814).
+	// That is the state a daily schedule almost always finds its session in.
+	return &agentkit.SessionStatus{
+		SessionID: ref.SessionID, RuntimeState: "destroyed", ActiveQueryID: m.activeQ, HasSnapshot: true,
+	}, nil
+}
+
+func (m *recordingMessenger) SendMessage(_ context.Context, ref agentkit.SessionRef, msg agentkit.SendMessageRequest, _ agentkit.Writer) error {
+	if m.sendErr != nil {
+		return m.sendErr
+	}
+	m.sends = append(m.sends, recordedSend{sessionID: ref.SessionID, content: msg.Content, customer: msg.Customer})
+	return nil
+}
+
+// newTestSessionScheduler wires a scheduler with the session seam attached and
+// the send run INLINE, so a case can assert on what the turn did without
+// synchronising with a goroutine. Production spawns; see newScheduler.
+func newTestSessionScheduler(t *testing.T, store *fakeDispatchStore, msgr *recordingMessenger, now time.Time) *scheduler {
+	t.Helper()
+	return newScheduler(schedulerConfig{
+		Store:    store,
+		Sessions: msgr,
+		Dispatcher: newDispatcher(dispatcherConfig{
+			Store: store, Starter: &recordingStarter{}, Logf: func(string, ...any) {},
+		}),
+		Location: time.UTC,
+		Now:      func() time.Time { return now },
+		Spawn:    func(fn func()) { fn() },
+		Logf:     func(string, ...any) {},
+	})
+}
+
+// TestSchedulerSessionScheduleSendsToTheNamedSession is the headline of session
+// mode: the input reaches the EXISTING session as a message, and nothing about
+// the worker path — no event, no delivery, no new session — happens at all.
+func TestSchedulerSessionScheduleSendsToTheNamedSession(t *testing.T) {
+	store := newFakeDispatchStore()
+	sess := store.addSession("acme", "hypothesis-a")
+	store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "research and update the summary"))
+
+	msgr := &recordingMessenger{}
+	s := newTestSessionScheduler(t, store, msgr, time.Date(2026, 8, 6, 7, 0, 12, 0, time.UTC))
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(msgr.sends) != 1 {
+		t.Fatalf("expected one message delivered, got %d", len(msgr.sends))
+	}
+	got := msgr.sends[0]
+	if got.sessionID != sess.ID || got.content != "research and update the summary" || got.customer != "acme" {
+		t.Fatalf("the firing must send the schedule's input to the named session: %+v", got)
+	}
+	// The whole point of session mode: no fresh container. A worker firing would
+	// have written an event and a delivery here.
+	if len(store.events) != 0 || len(store.deliveries) != 0 {
+		t.Fatalf("a session schedule must not create an event or a delivery: events=%d deliveries=%d",
+			len(store.events), len(store.deliveries))
+	}
+	// The occurrence IS claimed — that is what makes it fire once.
+	if len(store.firings) != 1 {
+		t.Fatalf("the occurrence must be claimed: %v", store.firings)
+	}
+}
+
+// TestSchedulerSessionScheduleFiresEachOccurrenceOnce: the same idempotency the
+// worker path has, and by the same mechanism — a repeated tick inside the minute
+// is stopped in process, a restarted scheduler is stopped by the firing table.
+func TestSchedulerSessionScheduleFiresEachOccurrenceOnce(t *testing.T) {
+	store := newFakeDispatchStore()
+	store.addSession("acme", "hypothesis-a")
+	store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "wake up"))
+
+	msgr := &recordingMessenger{}
+	minute := time.Date(2026, 8, 6, 7, 0, 0, 0, time.UTC)
+	s := newTestSessionScheduler(t, store, msgr, minute)
+	for i := 0; i < 3; i++ {
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if len(msgr.sends) != 1 {
+		t.Fatalf("three ticks in one minute must send once, got %d", len(msgr.sends))
+	}
+
+	// A second process (or the same one restarted) on the same minute.
+	s2 := newTestSessionScheduler(t, store, msgr, minute.Add(20*time.Second))
+	if err := s2.Tick(context.Background()); err != nil {
+		t.Fatalf("second process tick: %v", err)
+	}
+	if len(msgr.sends) != 1 {
+		t.Fatalf("a claimed occurrence must not be re-sent by another process, got %d", len(msgr.sends))
+	}
+}
+
+// TestSchedulerSessionScheduleSkipsBusySession: SendMessage does not refuse a
+// busy session on its own, so the scheduler asks first. The firing is SKIPPED,
+// never queued — a daily research prompt that arrives while yesterday's is still
+// running is stale by the time it would be read, and queueing turns would let a
+// slow session accumulate a backlog it can never work off.
+func TestSchedulerSessionScheduleSkipsBusySession(t *testing.T) {
+	store := newFakeDispatchStore()
+	store.addSession("acme", "hypothesis-a")
+	sch := store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "wake up"))
+
+	msgr := &recordingMessenger{activeQ: "q-in-flight"}
+	s := newTestSessionScheduler(t, store, msgr, time.Date(2026, 8, 6, 7, 0, 0, 0, time.UTC))
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(msgr.sends) != 0 {
+		t.Fatalf("a busy session must not be messaged: %+v", msgr.sends)
+	}
+	if len(store.deliveries) != 0 {
+		t.Fatalf("a skipped firing must not queue anything: %+v", store.deliveries)
+	}
+	// Skipped, not failed: the session is working, which is the opposite of a
+	// schedule that cannot provision. The streak must not grow.
+	if store.schedules[sch.ID].ProvisionFailures != 0 {
+		t.Fatalf("a busy session is not a provision failure: %+v", store.schedules[sch.ID])
+	}
+	if !store.schedules[sch.ID].Enabled {
+		t.Fatalf("a busy session must not disable the schedule")
+	}
+	// The occurrence is spent, so the next tick in the same minute does not
+	// re-try it the moment the turn ends.
+	if len(store.firings) != 1 {
+		t.Fatalf("a skipped firing still claims its occurrence: %v", store.firings)
+	}
+}
+
+// TestSchedulerDisablesSessionScheduleWhenSessionIsGone mirrors the §8.6 rule
+// for a missing worker, including the part that is easy to lose: the occurrence
+// is NOT burned, so re-creating the session and re-enabling the schedule can
+// still fire that minute.
+func TestSchedulerDisablesSessionScheduleWhenSessionIsGone(t *testing.T) {
+	store := newFakeDispatchStore()
+	sch := store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "wake up"))
+
+	msgr := &recordingMessenger{}
+	s := newTestSessionScheduler(t, store, msgr, time.Date(2026, 8, 6, 7, 0, 0, 0, time.UTC))
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if store.schedules[sch.ID].Enabled {
+		t.Fatalf("a schedule whose session is gone must be disabled")
+	}
+	if !strings.Contains(store.disabled[sch.ID], "hypothesis-a") {
+		t.Fatalf("the disable must record which session: %q", store.disabled[sch.ID])
+	}
+	if len(msgr.sends) != 0 || len(store.firings) != 0 {
+		t.Fatalf("a missing session must neither send nor burn the occurrence: sends=%d firings=%v",
+			len(msgr.sends), store.firings)
+	}
+}
+
+// TestSchedulerSessionScheduleSurvivesAnUnhappyDatabase is RD1 applied to the
+// new lookup: only ErrSessionNotFound means "gone". An opaque read error is the
+// database failing to answer, and disabling on it would write a permanent, false
+// reason into the config log about a session that is sitting right there.
+func TestSchedulerSessionScheduleSurvivesAnUnhappyDatabase(t *testing.T) {
+	store := newFakeDispatchStore()
+	store.addSession("acme", "hypothesis-a")
+	sch := store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "0 7 * * *", "wake up"))
+	store.getSessionErr = fmt.Errorf("connection reset by peer")
+
+	msgr := &recordingMessenger{}
+	s := newTestSessionScheduler(t, store, msgr, time.Date(2026, 8, 6, 7, 0, 0, 0, time.UTC))
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if !store.schedules[sch.ID].Enabled {
+		t.Fatalf("a database blip must not disable the schedule")
+	}
+	if len(store.firings) != 0 {
+		t.Fatalf("an unread schedule must not burn its occurrence: %v", store.firings)
+	}
+}
+
+// TestSchedulerSessionScheduleCountsUndeliverableFirings: a session that cannot
+// be woken at all — snapshot gone, no host port left — is rule 5's case, and the
+// streak is what stops it retrying every minute forever. Five consecutive
+// failures retire the schedule with the reason in the config log.
+func TestSchedulerSessionScheduleCountsUndeliverableFirings(t *testing.T) {
+	store := newFakeDispatchStore()
+	store.addSession("acme", "hypothesis-a")
+	sch := store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "* * * * *", "wake up"))
+
+	msgr := &recordingMessenger{sendErr: fmt.Errorf("host port pool is exhausted")}
+	base := time.Date(2026, 8, 6, 7, 0, 0, 0, time.UTC)
+	for i := 0; i < agentdb.ScheduleMaxProvisionFailures; i++ {
+		s := newTestSessionScheduler(t, store, msgr, base.Add(time.Duration(i)*time.Minute))
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if store.schedules[sch.ID].Enabled {
+		t.Fatalf("a session schedule that never delivers must retire, like a worker one that never provisions")
+	}
+	if !strings.Contains(store.disabled[sch.ID], "port pool") {
+		t.Fatalf("the disable must carry the last reason: %q", store.disabled[sch.ID])
+	}
+}
+
+// TestSchedulerSessionScheduleClearsTheStreakOnDelivery is the other half: one
+// delivered message means the schedule works, so a run of bad luck does not
+// carry over into the next outage.
+func TestSchedulerSessionScheduleClearsTheStreakOnDelivery(t *testing.T) {
+	store := newFakeDispatchStore()
+	store.addSession("acme", "hypothesis-a")
+	sch := store.addSchedule(agentdb.NewSessionSchedule("acme", "hypothesis-a", "* * * * *", "wake up"))
+	sch.ProvisionFailures = 3
+
+	msgr := &recordingMessenger{}
+	s := newTestSessionScheduler(t, store, msgr, time.Date(2026, 8, 6, 7, 0, 0, 0, time.UTC))
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if store.schedules[sch.ID].ProvisionFailures != 0 {
+		t.Fatalf("a delivered message must reset the streak, got %d", store.schedules[sch.ID].ProvisionFailures)
+	}
+}
+
+// TestSchedulerWorkerSchedulesIgnoreTheSessionSeam: the two modes share a tick
+// and must not share anything else. A worker schedule fires through composition
+// with the session seam untouched, even when one is wired.
+func TestSchedulerWorkerSchedulesIgnoreTheSessionSeam(t *testing.T) {
+	store := newFakeDispatchStore()
+	store.addWorker(agentdb.NewWorker("acme", "tweet-author"))
+	store.addSchedule(agentdb.NewSchedule("acme", "tweet-author", "0 10 * * *", "tweet"))
+	// A session that shares the worker's name exists, to catch any accidental
+	// cross-wiring between the two lookups.
+	store.addSession("acme", "tweet-author")
+
+	starter := &recordingStarter{}
+	msgr := &recordingMessenger{}
+	s := newScheduler(schedulerConfig{
+		Store:    store,
+		Sessions: msgr,
+		Dispatcher: newDispatcher(dispatcherConfig{
+			Store: store, Starter: starter, DefaultImage: "agentkit-example:dev", Logf: func(string, ...any) {},
+		}),
+		Location: time.UTC,
+		Now:      func() time.Time { return time.Date(2026, 8, 6, 10, 0, 0, 0, time.UTC) },
+		Spawn:    func(fn func()) { fn() },
+		Logf:     func(string, ...any) {},
+	})
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if len(starter.jobs) != 1 {
+		t.Fatalf("a worker schedule must still start a job, got %d", len(starter.jobs))
+	}
+	if len(msgr.sends) != 0 || msgr.statusHits != 0 {
+		t.Fatalf("a worker schedule must not touch the session seam: sends=%d status=%d", len(msgr.sends), msgr.statusHits)
 	}
 }

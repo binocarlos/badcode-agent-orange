@@ -49,9 +49,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
+	agentkit "github.com/binocarlos/badcode-agent-orange"
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
@@ -69,6 +71,10 @@ type schedulerStore interface {
 	StampFiringEvent(ctx context.Context, firingID, eventID string) error
 	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
 	EnsureDelivery(ctx context.Context, d *agentdb.EventDelivery) (*agentdb.EventDelivery, bool, error)
+	// Session-mode schedules resolve their target by NAME (T9). The name is the
+	// only handle the schedule holds, which is the point: an embedding
+	// application never has to store a uuid.
+	GetSessionByName(ctx context.Context, customer, name string) (*agentdb.Session, error)
 }
 
 var _ schedulerStore = (*agentdb.Store)(nil)
@@ -87,6 +93,28 @@ type jobDispatcher interface {
 	DrainPending(ctx context.Context, project string) (int, error)
 }
 
+// sessionMessenger is the Runner seam a SESSION-mode schedule needs, and
+// deliberately nothing else. Two methods, both read-or-message: the scheduler
+// must not be able to create, snapshot, restore-by-hand or destroy a session,
+// and holding the whole *Runner here would put all of that one keystroke away
+// from a loop that runs unattended every ten seconds.
+//
+// It is also what makes the tests above possible without a container runtime.
+// agentkit.Runner satisfies it (asserted below).
+type sessionMessenger interface {
+	// SendMessage runs one turn. Its first act is ensureRunning
+	// (go/runner.go:857) → restoreToWorker, which materialises the snapshot AND
+	// rehydrates the conversation, so "wake an archived session" needs no code
+	// here at all.
+	SendMessage(ctx context.Context, ref agentkit.SessionRef, msg agentkit.SendMessageRequest, w agentkit.Writer) error
+	// Status is the busy check. SendMessage does NOT refuse a session with a
+	// turn already in flight, so asking is the only way to skip rather than
+	// stack up behind it.
+	Status(ctx context.Context, ref agentkit.SessionRef) (*agentkit.SessionStatus, error)
+}
+
+var _ sessionMessenger = (agentkit.Runner)(nil)
+
 // schedulerPollInterval is how often the loop wakes. It is deliberately shorter
 // than a minute: the tick evaluates whichever minute it is in and remembers it,
 // so waking often absorbs scheduling jitter WITHOUT replaying anything — a
@@ -98,9 +126,18 @@ const schedulerPollInterval = 10 * time.Second
 type scheduler struct {
 	store      schedulerStore
 	dispatcher jobDispatcher
-	loc        *time.Location
-	now        func() time.Time
-	logf       func(format string, v ...any)
+	// sessions is the session-mode seam (T9). nil on a deployment with no
+	// Runner wired, where session schedules simply cannot fire — they are
+	// refused loudly per tick rather than silently doing nothing.
+	sessions sessionMessenger
+	loc      *time.Location
+	now      func() time.Time
+	// spawn runs a turn off the tick goroutine. A turn takes as long as a model
+	// takes; running it inline would stall every other schedule in the stack
+	// behind it. Injectable so the tests can make it synchronous — the same
+	// trick dispatch.go's runnerSessionStarter uses.
+	spawn func(func())
+	logf  func(format string, v ...any)
 
 	// lastMinute is the wall-clock minute already evaluated. It is what makes a
 	// tick idempotent in-process; the firing table makes it idempotent across
@@ -111,10 +148,14 @@ type scheduler struct {
 type schedulerConfig struct {
 	Store      schedulerStore
 	Dispatcher jobDispatcher
+	// Sessions is the Runner, narrowed (see sessionMessenger). Optional: without
+	// it only worker schedules can fire.
+	Sessions sessionMessenger
 	// Location is the stack-local zone (§8.6). nil → time.Local, which honours
 	// the TZ environment variable and defaults to UTC in the shipped image.
 	Location *time.Location
 	Now      func() time.Time
+	Spawn    func(func())
 	Logf     func(format string, v ...any)
 }
 
@@ -127,11 +168,23 @@ func newScheduler(cfg schedulerConfig) *scheduler {
 	if now == nil {
 		now = time.Now
 	}
+	spawn := cfg.Spawn
+	if spawn == nil {
+		spawn = func(fn func()) { go fn() }
+	}
 	logf := cfg.Logf
 	if logf == nil {
 		logf = log.Printf
 	}
-	return &scheduler{store: cfg.Store, dispatcher: cfg.Dispatcher, loc: loc, now: now, logf: logf}
+	return &scheduler{
+		store:      cfg.Store,
+		dispatcher: cfg.Dispatcher,
+		sessions:   cfg.Sessions,
+		loc:        loc,
+		now:        now,
+		spawn:      spawn,
+		logf:       logf,
+	}
 }
 
 // Run drives the loop until ctx is cancelled.
@@ -199,8 +252,16 @@ func (s *scheduler) Tick(ctx context.Context) error {
 	return nil
 }
 
-// fire turns one due schedule into one job, idempotently.
+// fire turns one due schedule into one job, idempotently — or, in session mode,
+// into one message to an existing session.
 func (s *scheduler) fire(ctx context.Context, sch *agentdb.Schedule, minute time.Time) error {
+	// The two modes are mutually exclusive by store validation
+	// (agentdb.validateSchedule), so this is a total branch and not a
+	// precedence rule.
+	if sch.TargetSession != "" {
+		return s.fireSession(ctx, sch, minute)
+	}
+
 	// §8.6: a due schedule whose worker no longer exists is disabled and logged.
 	// Checked BEFORE claiming the occurrence so re-enabling the schedule after
 	// re-hiring the worker does not find its minute already spent.
@@ -297,6 +358,132 @@ func (s *scheduler) fire(ctx context.Context, sch *agentdb.Schedule, minute time
 		// somebody else's firing — neither is a failure, and neither is proof
 		// of health. Leave the streak alone.
 	}
+	return nil
+}
+
+// fireSession is the other mode (T9 of
+// design/2026-08-06-embeddable-agent-orange.md): the firing does not start a
+// job, it sends the schedule's Input to an EXISTING named session as its next
+// message. Same conversation, woken on a cron.
+//
+// What this deliberately does NOT do is the whole worker path: no
+// `schedule.fired` event, no delivery row, no composition, no capacity gate.
+// There is nothing for the gate to decide — the session already exists, holds
+// its own container, and can run exactly one turn at a time, which the busy
+// check below enforces directly.
+//
+// WHAT A RESUMED SESSION DOES AND DOES NOT PICK UP, because it is easy to get
+// backwards and the answer differs by session kind:
+//
+//   - A CHAT session (empty composed_prompt — everything created through
+//     POST /agent/session) re-resolves its system prompt from the live provider
+//     on EVERY turn (go/runner.go:1914-1941), so it does pick up edits to the
+//     project prompt and to its worker's prompt between firings.
+//   - A DISPATCHED JOB session persisted its ComposedPrompt at creation and
+//     runs that same text forever.
+//   - NEITHER refreshes its MCP tool set: the tools are fixed when the
+//     container is provisioned, and a restore rebuilds the same container.
+//   - NEITHER gains a briefing: briefings are built at composition time only,
+//     so a chat session never has one at all.
+//
+// That last pair is why current state reaches a long-lived session through the
+// memory tools at message time rather than through its prompt.
+func (s *scheduler) fireSession(ctx context.Context, sch *agentdb.Schedule, minute time.Time) error {
+	if s.sessions == nil {
+		// No Runner wired (nothing in the shipped agentd, but the seam is
+		// optional). Loud and per-tick rather than a silent no-op: a schedule
+		// that looks enabled and never fires is the worst of both.
+		return fmt.Errorf("schedule targets session %q but this deployment has no session runner wired",
+			sch.TargetSession)
+	}
+
+	// Resolved BEFORE the occurrence is claimed, exactly as the worker branch
+	// reads its worker first: a schedule disabled for a missing target must be
+	// able to fire that same minute once the target is back and the schedule is
+	// re-enabled.
+	//
+	// And, as there, only the not-found sentinel counts as "gone". An opaque
+	// read error is the database failing to answer, and disabling on it would
+	// write a permanent, false reason into the config log (RD1).
+	sess, err := s.store.GetSessionByName(ctx, sch.Project, sch.TargetSession)
+	switch {
+	case errors.Is(err, agentdb.ErrSessionNotFound):
+		s.logf("[scheduler] schedule %s/%s targets session %q which no longer exists: disabling",
+			sch.Project, sch.ID, sch.TargetSession)
+		s.disable(ctx, sch, "session "+sch.TargetSession+" no longer exists")
+		return nil
+	case err != nil:
+		return fmt.Errorf("read session %q: %w", sch.TargetSession, err)
+	}
+
+	firing, claimed, err := s.store.ClaimFiring(ctx, &agentdb.ScheduleFiring{
+		ScheduleID:   sch.ID,
+		Project:      sch.Project,
+		ScheduledFor: agentdb.OccurrenceKey(minute),
+	})
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	// No StampFiringEvent: session mode produces no event, so the firing row's
+	// event_id stays empty. It is still the idempotency record — the claim is
+	// what stops a second agentd sending the same instruction twice.
+
+	// The busy check. SendMessage does not refuse a session with a turn already
+	// in flight, so without this a slow daily research turn would have tomorrow's
+	// instruction posted on top of it. Skipped and NOT queued, deliberately: the
+	// occurrence is spent, and a stale "good morning" delivered at 11am is worse
+	// than one not delivered at all (§8.6's skip-missed posture, applied to the
+	// session rather than to the clock).
+	st, err := s.sessions.Status(ctx, agentkit.SessionRef{SessionID: sess.ID})
+	if err != nil {
+		// Cannot tell whether it is busy. Do not guess in the direction that
+		// posts a second turn; count it, so a session that can never be
+		// inspected retires the schedule rather than skipping forever in silence.
+		s.noteProvisionFailure(ctx, sch, fmt.Sprintf("could not read the status of session %q: %v",
+			sch.TargetSession, err))
+		return nil
+	}
+	if st.ActiveQueryID != "" {
+		s.logf("[scheduler] %s/%s fired %s → skipped: session %q is already running query %s "+
+			"(firing %s recorded; nothing is queued)",
+			sch.Project, sch.ID, agentdb.OccurrenceKey(minute), sch.TargetSession, st.ActiveQueryID, firing.ID)
+		// Not a provision failure: a busy session is one that is working.
+		return nil
+	}
+
+	s.logf("[scheduler] %s/%s fired %s → sending to session %q (%s)",
+		sch.Project, sch.ID, agentdb.OccurrenceKey(minute), sch.TargetSession, sess.ID)
+
+	// Detached, for the same reason dispatch.go detaches a job's first message:
+	// a turn takes as long as the model takes, and the tick that started it must
+	// not be able to cancel it or be blocked by it.
+	turnCtx := context.WithoutCancel(ctx)
+	s.spawn(func() {
+		// io.Discard, not a lease writer: leases belong to dispatched jobs
+		// (§8.4 step 4) and there is no delivery row here to reap.
+		err := s.sessions.SendMessage(turnCtx, agentkit.SessionRef{SessionID: sess.ID}, agentkit.SendMessageRequest{
+			Content:  sch.Input,
+			Customer: sch.Project,
+		}, io.Discard)
+		if err != nil {
+			// This is rule 5's case, not "a job ran and failed": SendMessage
+			// returns an error when the turn could not be DELIVERED — the
+			// snapshot would not restore, no host port was free, the sandbox
+			// never answered. What the model then does with the message comes
+			// back as events, not as an error here. So it counts, and a session
+			// that can never be woken retires its schedule instead of retrying
+			// every minute forever.
+			s.logf("[scheduler] schedule %s/%s: could not deliver to session %q: %v",
+				sch.Project, sch.ID, sch.TargetSession, err)
+			s.noteProvisionFailure(turnCtx, sch, fmt.Sprintf("could not deliver to session %q: %v",
+				sch.TargetSession, err))
+			return
+		}
+		s.clearProvisionFailures(turnCtx, sch)
+	})
 	return nil
 }
 
