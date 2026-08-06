@@ -375,7 +375,12 @@ the first wave), wave 2 = the dependents (incl. H1+H2, I2–I4, J2+J3), wave 3 =
 ### Deferred (explicitly not scheduled)
 - Memory curation worker + the `memory_delete` tool it would justify (§7.1).
 - Secret managers / per-project credentials / rotation (env-var references are the design, §4.4).
-- Schedule catch-up/replay of firings missed while agentd was down (§8.6 skips them by design).
+- Schedule catch-up/**replay** of firings missed while agentd was down (§8.6 skips them by design).
+  *Still deferred, and now deliberately so rather than by omission:* since RD11 (doc 22 / item S2)
+  the missed occurrences are **recorded and announced** — a `missed` firing row each and one
+  `schedule.missed` event per gap — but nothing is re-run. Replay would need a per-schedule policy
+  field, because "re-run last night's backup" and "re-send last night's good morning" are opposite
+  answers and the row does not say which it is.
 - Memory ranking beyond the §7.6 contract (importance/decay scoring — an experiment for later,
   inside the contract, never as caller-visible knobs).
 - Curated-vocabulary tooling beyond prompt convention (§7.1).

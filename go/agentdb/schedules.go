@@ -44,6 +44,21 @@ import (
 // other trigger.
 const EventTypeScheduleFired = "schedule.fired"
 
+// EventTypeScheduleMissed is the event a schedule produces for occurrences that
+// were never evaluated — the hour agentd was down, or the seconds between
+// claiming an occurrence and the process dying before it could become a job
+// (RD11).
+//
+// It is emitted INSTEAD OF running the work, never as well as: §8.6's
+// skip-missed rule is unchanged, and a restart must not fire sixty stale
+// mornings at once. Its whole purpose is that "nothing was due" and "nobody was
+// running" stop looking identical to the person whose schedule did not happen.
+//
+// Envelope {source: "schedule", depth: 0}, exactly like schedule.fired, so a
+// subscription can wake a worker on it (an alerting worker is the obvious one)
+// through the ordinary routing path.
+const EventTypeScheduleMissed = "schedule.missed"
+
 // Schedule store errors. Sentinels so the HTTP layer maps them to status codes
 // without string-matching.
 var (
@@ -113,8 +128,19 @@ type Schedule struct {
 	// LastProvisionError is why the most recent one failed, kept so an operator
 	// looking at a schedule with a streak does not have to go log-diving.
 	LastProvisionError string `json:"last_provision_error" gorm:"type:text"`
-	CreatedAt          int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt          int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	// LastEvaluated is the wall-clock minute ("2026-08-06T09:31", the same
+	// OccurrenceKey format the firing table uses) that a scheduler tick last
+	// EVALUATED this row — matched or not. It is the watermark of RD11: without
+	// it, an hour with no scheduler running is indistinguishable from an hour
+	// with nothing due, because both leave exactly nothing behind.
+	//
+	// Runtime state, not configuration (NoteScheduleEvaluated, exempt from the
+	// config log like the provision-failure counter). Empty means this schedule
+	// has never been evaluated by any tick — the state a freshly created row is
+	// in, and the reason a first sighting reports nothing missed.
+	LastEvaluated string `json:"last_evaluated" gorm:"type:varchar(20)"`
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (Schedule) TableName() string { return "schedules" }
@@ -179,13 +205,38 @@ type ScheduleFiring struct {
 	// exists, and claiming it is still what makes the firing happen once.
 	EventID string `json:"event_id" gorm:"type:varchar(36)"`
 	FiredAt int64  `json:"fired_at"`
+	// Missed marks a row that records an occurrence which did NOT happen: the
+	// minute passed with no scheduler evaluating this schedule (agentd was
+	// down), or the process died between claiming the occurrence and turning it
+	// into a job. It is written after the fact, by the catch-up sweep, and it
+	// never causes any work to run (RD11).
+	//
+	// Claiming the row is still what makes the record exactly-once: two agentds
+	// catching up on the same outage cannot both record the same missed minute.
+	Missed bool `json:"missed"`
 }
 
 func (ScheduleFiring) TableName() string { return "schedule_firings" }
 
+// OccurrenceLayout is the time layout OccurrenceKey renders and ParseOccurrence
+// reads. It is a wall-clock minute with no zone, which is the point (see
+// ScheduleFiring). Lexicographic order on this layout IS chronological order,
+// which is what lets a watermark be compared and ranged over as a plain string.
+const OccurrenceLayout = "2006-01-02T15:04"
+
 // OccurrenceKey renders a time as the wall-clock occurrence key. The location of
 // t is the schedule's evaluation zone (agentd's TZ).
-func OccurrenceKey(t time.Time) string { return t.Format("2006-01-02T15:04") }
+func OccurrenceKey(t time.Time) string { return t.Format(OccurrenceLayout) }
+
+// ParseOccurrence reads a key back as a wall-clock time in loc — the inverse of
+// OccurrenceKey, used by the catch-up sweep to walk from a stored watermark
+// forward. nil loc means time.Local, matching the scheduler's own default.
+func ParseOccurrence(key string, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.ParseInLocation(OccurrenceLayout, key, loc)
+}
 
 // ── Validation ──────────────────────────────────────────────────────────────
 
@@ -489,6 +540,122 @@ func (s *Store) ClearScheduleProvisionFailures(ctx context.Context, project, id 
 	return nil
 }
 
+// NoteScheduleEvaluated advances the per-schedule watermark to the wall-clock
+// minute a tick has just finished evaluating (RD11). Runtime state: no config
+// event, for the same reason the provision counter writes none — nobody decided
+// anything, and a config record every minute per schedule would bury the log.
+//
+// It NEVER MOVES THE WATERMARK BACKWARDS. The comparison is in the WHERE clause
+// (`last_evaluated < ?`), and the keys sort lexicographically in chronological
+// order, so a second agentd whose clock or loop is behind cannot rewind a peer's
+// progress and cause the same minutes to be reported missed twice. A row that
+// was already at or ahead of `occurrence` is left alone and reported as no
+// error: losing this race is the correct outcome, not a failure.
+func (s *Store) NoteScheduleEvaluated(ctx context.Context, project, id, occurrence string) error {
+	if project == "" || id == "" {
+		return fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	if occurrence == "" {
+		return fmt.Errorf("%w: occurrence is required", ErrScheduleInvalid)
+	}
+	// UpdateColumns, not Updates: gorm stamps `updated_at` on a map update, and
+	// a schedule that looked edited every sixty seconds would be a lie in every
+	// surface that renders "last changed" — the config log, which is the truth
+	// about edits, would say nothing had happened at all.
+	if err := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ? AND id = ? AND last_evaluated < ?", project, id, occurrence).
+		UpdateColumns(map[string]any{"last_evaluated": occurrence}).Error; err != nil {
+		return fmt.Errorf("failed to record schedule evaluation: %w", err)
+	}
+	return nil
+}
+
+// MarkFiringMissed flips an already-claimed occurrence to `missed`. It exists
+// for the one window the claim cannot cover: the occurrence is claimed first
+// (so nothing can double-fire it) and the process may then die, or the job
+// write may fail, before anything exists to show for it. The row then says a
+// firing happened when nothing did — which is RD11's narrow window.
+//
+// Deliberately NOT named with a configuration noun: schedule_firings is runtime
+// state and the conformance classifier reads "Schedule" as configuration (see
+// the note above ClaimFiring's section).
+func (s *Store) MarkFiringMissed(ctx context.Context, firingID string) error {
+	if firingID == "" {
+		return fmt.Errorf("firing id is required")
+	}
+	res := s.gdb.WithContext(ctx).Model(&ScheduleFiring{}).
+		Where("id = ?", firingID).UpdateColumns(map[string]any{"missed": true})
+	if res.Error != nil {
+		return fmt.Errorf("failed to mark firing missed: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("firing not found")
+	}
+	return nil
+}
+
+// RecordFiringJob writes the whole of what a worker-mode firing produces — the
+// `schedule.fired` event, its delivery, and the event id stamped back onto the
+// firing row — IN ONE TRANSACTION.
+//
+// It replaces three sequential writes, and the reason is RD11's second half: a
+// process killed between the event and the delivery left a `schedule.fired`
+// event sitting in the user's feed for a job that never ran and never would,
+// with the occurrence permanently consumed. The feed said it happened. Nothing
+// had. Either all three rows exist now, or none do — and "none" is a state the
+// catch-up sweep can see (a claimed firing with no event id) and report as
+// missed, which is the whole point of doing it this way rather than papering
+// over it with a retry.
+//
+// The stamp is inside the transaction too, so `event_id == ""` on a claimed
+// firing means exactly one thing: nothing came of this occurrence.
+func (s *Store) RecordFiringJob(ctx context.Context, firingID string, ev *ProjectEvent, d *EventDelivery) (*ProjectEvent, *EventDelivery, error) {
+	if firingID == "" {
+		return nil, nil, fmt.Errorf("firing id is required")
+	}
+	if ev == nil || d == nil {
+		return nil, nil, fmt.Errorf("event and delivery are required")
+	}
+	if err := validateProjectEvent(ev); err != nil {
+		return nil, nil, err
+	}
+	if ev.ID == "" {
+		ev.ID = uuid.New().String()
+	}
+	if ev.OccurredAt == 0 {
+		ev.OccurredAt = eventsNow()
+	}
+	// The delivery is FOR this event by construction — the caller cannot point
+	// it anywhere else, which is one fewer way for the two rows to disagree.
+	d.EventID = ev.ID
+	if err := validateDelivery(d); err != nil {
+		return nil, nil, err
+	}
+	if d.ID == "" {
+		d.ID = uuid.New().String()
+	}
+	if err := s.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(ev).Error; err != nil {
+			return fmt.Errorf("failed to create project event: %w", err)
+		}
+		if err := tx.Create(d).Error; err != nil {
+			return fmt.Errorf("failed to create delivery: %w", err)
+		}
+		res := tx.Model(&ScheduleFiring{}).Where("id = ?", firingID).
+			UpdateColumns(map[string]any{"event_id": ev.ID})
+		if res.Error != nil {
+			return fmt.Errorf("failed to stamp firing event: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("firing %s not found", firingID)
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	return ev, d, nil
+}
+
 // truncateReason keeps a stored error bounded; the full text is in the log.
 func truncateReason(reason string) string {
 	const max = 500
@@ -551,6 +718,11 @@ func (s *Store) findFiring(ctx context.Context, scheduleID, scheduledFor string)
 }
 
 // StampFiringEvent records which `schedule.fired` event an occurrence produced.
+//
+// The scheduler no longer calls this: RecordFiringJob does the stamp inside the
+// same transaction as the event and the delivery, so that a claimed firing with
+// no event id means one unambiguous thing (RD11). Kept as the narrow write for
+// any caller that has an event and a firing and nothing else to do.
 func (s *Store) StampFiringEvent(ctx context.Context, firingID, eventID string) error {
 	if firingID == "" || eventID == "" {
 		return fmt.Errorf("firing id and event id are required")

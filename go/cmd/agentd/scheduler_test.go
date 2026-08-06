@@ -27,7 +27,11 @@ type fakeDispatchStore struct {
 	events    map[string]*agentdb.ProjectEvent
 	// deliveries keeps insertion order so FIFO assertions are meaningful.
 	deliveries []*agentdb.EventDelivery
-	firings    map[string]bool // schedule_id + "@" + occurrence
+	// firings holds the real rows, keyed schedule_id + "@" + occurrence: RD11's
+	// catch-up reads `missed` and `event_id` off an occurrence somebody else
+	// already claimed, so a fake that only remembered "claimed: yes" could not
+	// tell "it fired" from "it was claimed and produced nothing".
+	firings map[string]*agentdb.ScheduleFiring
 	// sessions stands in for the named rows of `agent_sessions`, keyed by
 	// project + "/" + name. Only session-mode schedules read it.
 	sessions map[string]*agentdb.Session
@@ -51,6 +55,9 @@ type fakeDispatchStore struct {
 	// of these as "the row is absent".
 	getWorkerErr       error
 	getProjectEventErr error
+	// failFiringJob makes the transactional firing write fail — the RD11 window
+	// where the occurrence is spent and nothing exists to show for it.
+	failFiringJob error
 	// failDeliveryWriteFor makes the status write fail for the named statuses,
 	// the way a database that is up-but-unhappy fails. RD7's wedge begins
 	// exactly there: `settle` only LOGS that error.
@@ -64,7 +71,7 @@ func newFakeDispatchStore() *fakeDispatchStore {
 		workers:   map[string]*agentdb.Worker{},
 		settings:  map[string]*agentdb.ProjectSettings{},
 		events:    map[string]*agentdb.ProjectEvent{},
-		firings:   map[string]bool{},
+		firings:   map[string]*agentdb.ScheduleFiring{},
 		sessions:  map[string]*agentdb.Session{},
 		disabled:  map[string]string{},
 
@@ -166,17 +173,70 @@ func (f *fakeDispatchStore) ClearScheduleProvisionFailures(_ context.Context, pr
 
 func (f *fakeDispatchStore) ClaimFiring(_ context.Context, fi *agentdb.ScheduleFiring) (*agentdb.ScheduleFiring, bool, error) {
 	key := fi.ScheduleID + "@" + fi.ScheduledFor
-	if f.firings[key] {
-		return &agentdb.ScheduleFiring{ID: "existing", ScheduleID: fi.ScheduleID, ScheduledFor: fi.ScheduledFor}, false, nil
+	if existing, ok := f.firings[key]; ok {
+		return existing, false, nil
 	}
-	f.firings[key] = true
 	if fi.ID == "" {
 		fi.ID = f.nextID("firing")
 	}
+	f.firings[key] = fi
 	return fi, true, nil
 }
 
-func (f *fakeDispatchStore) StampFiringEvent(context.Context, string, string) error { return nil }
+func (f *fakeDispatchStore) StampFiringEvent(_ context.Context, firingID, eventID string) error {
+	for _, fi := range f.firings {
+		if fi.ID == firingID {
+			fi.EventID = eventID
+			return nil
+		}
+	}
+	return fmt.Errorf("firing not found")
+}
+
+func (f *fakeDispatchStore) MarkFiringMissed(_ context.Context, firingID string) error {
+	for _, fi := range f.firings {
+		if fi.ID == firingID {
+			fi.Missed = true
+			return nil
+		}
+	}
+	return fmt.Errorf("firing not found")
+}
+
+func (f *fakeDispatchStore) NoteScheduleEvaluated(_ context.Context, project, id, occurrence string) error {
+	s, ok := f.schedules[id]
+	if !ok || s.Project != project {
+		return fmt.Errorf("%w: %s", agentdb.ErrScheduleNotFound, id)
+	}
+	// The real store's WHERE clause: a watermark never moves backwards.
+	if occurrence > s.LastEvaluated {
+		s.LastEvaluated = occurrence
+	}
+	return nil
+}
+
+// RecordFiringJob mirrors the real store's ONE transaction: event, delivery and
+// the firing's event stamp, all of it or none of it. `failFiringJob` is how a
+// test stands in for the process dying in the middle — the fake writes nothing
+// when it is set, because a rolled-back transaction leaves nothing behind.
+func (f *fakeDispatchStore) RecordFiringJob(ctx context.Context, firingID string, ev *agentdb.ProjectEvent, d *agentdb.EventDelivery) (*agentdb.ProjectEvent, *agentdb.EventDelivery, error) {
+	if f.failFiringJob != nil {
+		return nil, nil, f.failFiringJob
+	}
+	event, err := f.CreateProjectEvent(ctx, ev)
+	if err != nil {
+		return nil, nil, err
+	}
+	d.EventID = event.ID
+	delivery, _, err := f.EnsureDelivery(ctx, d)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := f.StampFiringEvent(ctx, firingID, event.ID); err != nil {
+		return nil, nil, err
+	}
+	return event, delivery, nil
+}
 
 func (f *fakeDispatchStore) CreateProjectEvent(_ context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error) {
 	if ev.ID == "" {

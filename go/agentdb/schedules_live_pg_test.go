@@ -293,3 +293,62 @@ func TestSchedulesLivePGTargetSession(t *testing.T) {
 		t.Fatalf("the session schedule is not in the scheduler's poll")
 	}
 }
+
+// TestSchedulesLivePGWatermark is migration 041 against the real DDL (RD11).
+//
+// It has to be a live test rather than a sqlite one for the same reason the
+// provision-failure case above does: the sqlite schema comes from AutoMigrate
+// and would happily invent the columns whether or not the migration exists. The
+// DEFAULTs are the other half — a row written AROUND the store must read back as
+// "never evaluated" and "not missed", never as NULL.
+func TestSchedulesLivePGWatermark(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	project := liveScheduleProject(t, s)
+
+	id := uuid.New().String()
+	if err := s.DB().WithContext(ctx).Exec(
+		`INSERT INTO schedules (id, project, worker, cron, input, enabled, created_at, updated_at)
+		 VALUES (?, ?, 'tweeter', '0 * * * *', 'tweet', true, 0, 0)`, id, project).Error; err != nil {
+		t.Fatalf("raw insert (is migration 041's DEFAULT missing?): %v", err)
+	}
+	sch, err := s.GetSchedule(ctx, project, id)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if sch.LastEvaluated != "" {
+		t.Fatalf("a row written around the store must read as never evaluated, got %q", sch.LastEvaluated)
+	}
+
+	if err := s.NoteScheduleEvaluated(ctx, project, id, "2026-08-06T09:30"); err != nil {
+		t.Fatalf("note: %v", err)
+	}
+	// Backwards is refused by the WHERE clause, not by the caller.
+	if err := s.NoteScheduleEvaluated(ctx, project, id, "2026-08-06T09:00"); err != nil {
+		t.Fatalf("rewind: %v", err)
+	}
+	sch, _ = s.GetSchedule(ctx, project, id)
+	if sch.LastEvaluated != "2026-08-06T09:30" {
+		t.Fatalf("watermark = %q, want it held at 09:30", sch.LastEvaluated)
+	}
+	// The watermark is not an edit: `updated_at` must not move (UpdateColumns,
+	// not Updates — gorm would otherwise stamp it every single minute).
+	if sch.UpdatedAt != 0 {
+		t.Fatalf("the watermark write must not touch updated_at, got %d", sch.UpdatedAt)
+	}
+
+	// The `missed` mark, through the real UNIQUE index.
+	f, claimed, err := s.ClaimFiring(ctx, &ScheduleFiring{
+		ScheduleID: id, Project: project, ScheduledFor: "2026-08-06T09:00", Missed: true,
+	})
+	if err != nil || !claimed {
+		t.Fatalf("claim: %v claimed=%v", err, claimed)
+	}
+	rows, err := s.ListFirings(ctx, project, id, 10)
+	if err != nil {
+		t.Fatalf("list firings: %v", err)
+	}
+	if len(rows) != 1 || !rows[0].Missed || rows[0].ID != f.ID {
+		t.Fatalf("the missed mark must survive a round trip: %+v", rows)
+	}
+}
