@@ -24,6 +24,7 @@ function delivery(over: Partial<EventDelivery>): EventDelivery {
     event_id: 'e1',
     subscription_id: 's1',
     session_id: 'sess-1',
+    worker: '',
     status: 'running',
     failure_reason: '',
     started_at: NOW - 300,

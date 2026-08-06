@@ -102,6 +102,16 @@ export interface EventDelivery {
   event_id: string
   subscription_id: string
   session_id: string
+  /**
+   * Which worker this job ran, denormalised onto the row by the dispatcher
+   * (Go: `EventDelivery.Worker`, migration 024). The browser used to invent
+   * this field by joining through the subscription, which is why a job whose
+   * subscription had since been deleted reported no worker at all — and why a
+   * SCHEDULE firing, which has no subscription to join through, reported none
+   * either. Read the row; fall back to the join only for rows written before
+   * migration 024, which carry ''.
+   */
+  worker: string
   status: string
   /**
    * Why this job failed, as the dispatcher recorded it (RD20 — the column the
@@ -175,6 +185,7 @@ export function coerceDelivery(raw: unknown): EventDelivery {
     event_id: str(r.event_id),
     subscription_id: str(r.subscription_id),
     session_id: str(r.session_id),
+    worker: str(r.worker),
     status: str(r.status),
     failure_reason: str(r.failure_reason),
     started_at: num(r.started_at),
@@ -355,7 +366,10 @@ export function buildJobRows(
         delivery,
         event,
         subscription,
-        worker: subscription?.worker ?? '',
+        // The row first, the join second: the delivery has carried its worker
+        // since migration 024, and only the join can go missing (deleted
+        // subscription, or a schedule firing that never had one).
+        worker: delivery.worker || subscription?.worker || '',
         eventType: event?.type ?? '',
         status: delivery.status,
         durationSeconds: deliveryDurationSeconds(delivery, nowSeconds),

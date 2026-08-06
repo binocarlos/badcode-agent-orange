@@ -23,7 +23,7 @@ func liveScheduleProject(t *testing.T, s *Store) string {
 		_ = s.DB().WithContext(ctx).Exec("DELETE FROM schedule_firings WHERE project = ?", project).Error
 		_ = s.DB().WithContext(ctx).Exec("DELETE FROM schedules WHERE project = ?", project).Error
 		_ = s.DB().WithContext(ctx).Exec("DELETE FROM attention_requests WHERE project = ?", project).Error
-		_ = s.DB().WithContext(ctx).Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = s.PurgeConfigEvents(ctx, project)
 	})
 	return project
 }

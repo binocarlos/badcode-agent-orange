@@ -193,7 +193,7 @@ func TestListConfigEvents_ProjectIsolation_LivePG(t *testing.T) {
 	mine, theirs := "cfgread-mine-"+t.Name(), "cfgread-theirs-"+t.Name()
 	t.Cleanup(func() {
 		for _, p := range []string{mine, theirs} {
-			_ = store.DB().Exec("DELETE FROM config_events WHERE project = ?", p).Error
+			_ = store.PurgeConfigEvents(context.Background(), p)
 			_ = store.DB().Exec("DELETE FROM workers WHERE project = ?", p).Error
 		}
 	})
@@ -265,7 +265,7 @@ func TestListConfigEvents_FiltersAndPaging_LivePG(t *testing.T) {
 	}
 	project := "cfgread-page-" + t.Name()
 	t.Cleanup(func() {
-		_ = store.DB().Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = store.PurgeConfigEvents(context.Background(), project)
 		_ = store.DB().Exec("DELETE FROM workers WHERE project = ?", project).Error
 	})
 	h := newHandlers(t, Config{

@@ -435,7 +435,8 @@ function buildDeskAsks(input: BuildDeskInput): DeskAsk[] {
     const waitingSeconds =
       deliveryDurationSeconds(delivery, nowSeconds) ??
       Math.max(0, nowSeconds - (request.created_at || nowSeconds))
-    const worker = request.worker || workerBySubscription.get(delivery.subscription_id) || ''
+    const worker =
+      request.worker || delivery.worker || workerBySubscription.get(delivery.subscription_id) || ''
     const expiresInSeconds = request.expires_at > 0 ? request.expires_at - nowSeconds : null
 
     asks.push({
@@ -524,7 +525,10 @@ function buildDeskTrouble(input: BuildDeskInput): DeskTrouble[] {
   >()
   for (const delivery of deliveries) {
     if (delivery.status !== 'failed') continue
-    const worker = workerBySubscription.get(delivery.subscription_id) ?? ''
+    // The delivery row names its own worker (migration 024); the subscription
+    // join is the fallback for pre-024 rows, and it is the leg that goes blank
+    // when the subscription has since been deleted.
+    const worker = delivery.worker || workerBySubscription.get(delivery.subscription_id) || ''
     const at = delivery.created_at || delivery.started_at || 0
     const reason = (delivery.failure_reason ?? '').trim()
     const held = failures.get(worker)

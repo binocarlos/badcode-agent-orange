@@ -97,6 +97,7 @@ function job(over: {
       event_id: `e-${id}`,
       subscription_id: subscription,
       session_id: '',
+      worker: '',
       status,
       failure_reason: '',
       started_at: startedAt,

@@ -585,6 +585,42 @@ func (s *Store) MarkConfigEventEmitted(ctx context.Context, id string) error {
 	return nil
 }
 
+// ── The one sanctioned way to remove config-log rows ────────────────────────
+
+// PurgeConfigEvents deletes a project's config-log records. It is the ONLY
+// sanctioned deletion path and it exists because migration 039 makes
+// `config_events` append-only in the database: a plain
+// `DELETE FROM config_events` — from the app, from a test's cleanup, or from a
+// psql prompt — is refused by the trigger.
+//
+// Deleting audit history is not something the product does. Two things need it:
+// a live-Postgres test resetting a shared database between cases, and (one day)
+// a retention job Kai has not specified. Both are deliberate acts, so they say
+// so out loud by calling a method with "purge" in its name rather than by
+// finding out that the safety net was never there.
+//
+// The escape is scoped to this transaction (`SET LOCAL`), so it cannot leak to
+// the next statement on a pooled connection. On a non-Postgres dialect there is
+// no trigger and no `set_config`, so the DELETE runs alone — sqlite tests build
+// their schema with AutoMigrate and never see migration 039 at all.
+func (s *Store) PurgeConfigEvents(ctx context.Context, project string) error {
+	if strings.TrimSpace(project) == "" {
+		return fmt.Errorf("agentdb: PurgeConfigEvents requires a project (P5: the namespace is never inferred)")
+	}
+	postgres := s.gdb.Dialector != nil && s.gdb.Dialector.Name() == "postgres"
+	return s.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if postgres {
+			if err := tx.Exec("SELECT set_config('agentdb.allow_config_events_purge', 'on', true)").Error; err != nil {
+				return fmt.Errorf("agentdb: arm config-event purge: %w", err)
+			}
+		}
+		if err := tx.Exec("DELETE FROM config_events WHERE project = ?", project).Error; err != nil {
+			return fmt.Errorf("agentdb: purge config events for %s: %w", project, err)
+		}
+		return nil
+	})
+}
+
 // ListUnemittedConfigEvents returns committed records whose `config.changed`
 // event has not been appended yet, OLDEST FIRST — the repair queue for the
 // at-least-once guarantee of §15.4.
@@ -786,6 +822,13 @@ var ConfigMutationExempt = map[string]string{
 		"verb for it. THIRD write to a guarded table outside the seam (after DeleteCustomImage and " +
 		"MarkCustomImageReaped) — I1 predicted that a third would mean the guard wants an explicit " +
 		"\"GC/runtime write\" escape rather than a fourth exemption; recorded for the orchestrator, not built here",
+	"PurgeConfigEvents": "the sanctioned escape from migration 039's append-only trigger, and the ONLY method " +
+		"that removes config-log rows. It writes no config event for the obvious reason: the record of a purge " +
+		"would be a row in the table being purged, which proves nothing to anybody. It touches no projection " +
+		"table and mutates no configuration — it removes HISTORY, which is why it is named `Purge`, why it is " +
+		"documented as test cleanup plus a retention rule nobody has written yet, and why it arms the trigger " +
+		"escape for exactly one transaction. Anything that needs a durable record of a purge needs a log " +
+		"OUTSIDE this database",
 	"MarkConfigEventEmitted": "J3's `config.changed` watermark: it stamps emitted_at on a config-log record that " +
 		"has already been announced (§15.4's at-least-once), so a crash between commit and emit is repaired by a " +
 		"sweep. It mutates NO configuration — it writes the log's own runtime column, exactly as " +

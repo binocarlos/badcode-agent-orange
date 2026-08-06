@@ -101,7 +101,7 @@ func TestSnapshotTTL_LivePG_Migration027Columns(t *testing.T) {
 	project := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
 		_ = s.DB().Exec("DELETE FROM agent_custom_images WHERE customer = ?", project).Error
-		_ = s.DB().Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = s.PurgeConfigEvents(context.Background(), project)
 		_ = s.DB().Exec("DELETE FROM project_settings WHERE project = ?", project).Error
 	})
 

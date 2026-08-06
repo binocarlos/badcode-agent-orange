@@ -193,7 +193,7 @@ func TestHTTPRationaleReachesTheConfigLog_LivePG(t *testing.T) {
 	ctx := context.Background()
 	project := "httpapi-why-" + t.Name()
 	t.Cleanup(func() {
-		_ = store.DB().Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = store.PurgeConfigEvents(context.Background(), project)
 		_ = store.DB().Exec("DELETE FROM workers WHERE project = ?", project).Error
 		_ = store.DB().Exec("DELETE FROM subscriptions WHERE project = ?", project).Error
 		_ = store.DB().Exec("DELETE FROM project_settings WHERE project = ?", project).Error

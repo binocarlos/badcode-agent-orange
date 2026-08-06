@@ -806,6 +806,67 @@ var agentMigrations = []migration{
 		SQL: `
 			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_query_id TEXT NOT NULL DEFAULT '';
 			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_sandbox_query_id TEXT NOT NULL DEFAULT '';
+		// The config log becomes append-only IN THE DATABASE (RD13).
+		//
+		// Until now the guarantee was enforced only in tests:
+		// InstallConfigEventGuard is opt-in, every caller is a test, agentd
+		// states in main.go that it never arms it, `config_events` is not even
+		// in the guarded-table set, and `Store.DB()` is exported. So the record
+		// the doctrine work treats as the truth about what changed was
+		// protected by convention and code review — and a convention is not a
+		// promise you can make to a user about an audit log.
+		//
+		// # Why to_jsonb(row) minus the mutable key, not a column list
+		//
+		// Comparing named columns would silently stop covering any column added
+		// later: migration 040 adds a field, nobody remembers the trigger, and
+		// the new column is quietly mutable forever — the exact silent-success
+		// shape this work exists to kill. Diffing the whole row as jsonb with
+		// `emitted_at` removed inverts the default: everything is immutable
+		// unless the trigger is deliberately taught otherwise.
+		//
+		// `emitted_at` is the one legal mutation (migration 030): it is not part
+		// of the record, it is the watermark saying the record's
+		// `config.changed` event has been appended.
+		//
+		// # What this does NOT stop
+		//
+		// A superuser can ALTER TABLE ... DISABLE TRIGGER, and TRUNCATE does not
+		// fire row triggers. This is a guardrail against the application (and
+		// its tests, and a hand-typed UPDATE at a psql prompt), not a defence
+		// against someone who owns the database. The deliberate escape hatch is
+		// the `agentdb.allow_config_events_purge` setting, which
+		// Store.PurgeConfigEvents sets for the length of one transaction — one
+		// greppable place, rather than a trigger nobody can work with. A future
+		// migration that must rewrite this table has to set it too, which is the
+		// intended amount of friction.
+		Name: "040_config_events_append_only",
+		SQL: `
+			CREATE OR REPLACE FUNCTION agentdb_config_events_append_only()
+			RETURNS trigger AS $$
+			BEGIN
+				IF current_setting('agentdb.allow_config_events_purge', true) = 'on' THEN
+					IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+					RETURN NEW;
+				END IF;
+				IF TG_OP = 'DELETE' THEN
+					RAISE EXCEPTION
+						'config_events is append-only: DELETE of % is refused (agentdb migration 039)', OLD.id
+						USING ERRCODE = 'restrict_violation';
+				END IF;
+				IF (to_jsonb(NEW) - 'emitted_at') IS DISTINCT FROM (to_jsonb(OLD) - 'emitted_at') THEN
+					RAISE EXCEPTION
+						'config_events is append-only: only emitted_at may change on % (agentdb migration 039)', OLD.id
+						USING ERRCODE = 'restrict_violation';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_config_events_append_only ON config_events;
+			CREATE TRIGGER trg_config_events_append_only
+				BEFORE UPDATE OR DELETE ON config_events
+				FOR EACH ROW EXECUTE FUNCTION agentdb_config_events_append_only();
 		`,
 	},
 }

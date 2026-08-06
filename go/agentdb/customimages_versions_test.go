@@ -516,7 +516,8 @@ func TestCustomImages_LivePG_LabelSelectorAndConstraints(t *testing.T) {
 	globex := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
 		s.DB().Exec("DELETE FROM agent_custom_images WHERE customer IN (?, ?)", acme, globex)
-		s.DB().Exec("DELETE FROM config_events WHERE project IN (?, ?)", acme, globex)
+		_ = s.PurgeConfigEvents(context.Background(), acme)
+		_ = s.PurgeConfigEvents(context.Background(), globex)
 	})
 
 	burn(t, s, acme, "toolbox", LabelSet{"purpose": "video", "adds": "ffmpeg"})

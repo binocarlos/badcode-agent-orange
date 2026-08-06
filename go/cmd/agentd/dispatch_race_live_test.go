@@ -93,7 +93,7 @@ func livePendingDelivery(t *testing.T, s *agentdb.Store) (project string, delive
 		_ = db.Exec("DELETE FROM event_deliveries WHERE project = ?", project).Error
 		_ = db.Exec("DELETE FROM project_events WHERE project = ?", project).Error
 		_ = db.Exec("DELETE FROM workers WHERE project = ?", project).Error
-		_ = db.Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = s.PurgeConfigEvents(context.Background(), project)
 	})
 	return project, d
 }

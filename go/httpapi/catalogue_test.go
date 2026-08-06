@@ -313,7 +313,7 @@ func TestCatalogue_ProjectIsolation_LivePG(t *testing.T) {
 		for _, p := range []string{mine, theirs} {
 			_ = store.DB().Exec("DELETE FROM agent_custom_images WHERE customer = ?", p).Error
 			_ = store.DB().Exec("DELETE FROM agent_skills WHERE customer = ?", p).Error
-			_ = store.DB().Exec("DELETE FROM config_events WHERE project = ?", p).Error
+			_ = store.PurgeConfigEvents(context.Background(), p)
 		}
 	})
 	ctx := context.Background()
