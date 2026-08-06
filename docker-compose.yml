@@ -96,6 +96,13 @@ services:
       # (project_settings.snapshot_ttl_days). "off" disables either loop.
       AGENTKIT_SNAPSHOT_REAP_INTERVAL: ${AGENTKIT_SNAPSHOT_REAP_INTERVAL:-}
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
+      # OPTIONAL. The signing key for per-session container tokens. Unset (the
+      # normal case) agentd derives it from AGENTKIT_JWT_SECRET, so a session
+      # container's token is not a project credential and nothing needs
+      # configuring. Set it only to roll the session key independently — and
+      # never to the same value as AGENTKIT_JWT_SECRET (agentd warns at boot).
+      # Forwarded here so setting it in .env is not a silent no-op.
+      AGENTKIT_SESSION_JWT_SECRET: ${AGENTKIT_SESSION_JWT_SECRET:-}
       # Login modes (see .env.example). Neither set → legacy dev-open demo.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       AGENTKIT_TEST_LOGIN: ${AGENTKIT_TEST_LOGIN:-}

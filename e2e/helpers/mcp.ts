@@ -23,14 +23,27 @@ const exec = promisify(execFile)
 //
 // The token is minted here rather than scraped out of a container: it is an
 // HS256 JWT over the same claims the Runner issues (`customer`, `sid`), signed
-// with the stack's JWT secret. The secret is a known constant of the test
-// overlay (docker-compose.stack-e2e.yml), so this mints exactly the credential
-// a real job carries — including, when asked, a deliberately broken one.
+// with the stack's SESSION key — derived from its JWT secret, see
+// SESSION_SECRET below. The secret is a known constant of the test overlay
+// (docker-compose.stack-e2e.yml), so this mints exactly the credential a real
+// job carries — including, when asked, a deliberately broken one.
 
 const COMPOSE_PROJECT = process.env.STACK_COMPOSE_PROJECT || 'agent-orange-stack-e2e'
 const MCP_URL = process.env.STACK_MCP_URL || 'http://localhost:8099/mcp'
 /** Matches AGENTKIT_JWT_SECRET in docker-compose.stack-e2e.yml. */
 const JWT_SECRET = process.env.AGENTKIT_JWT_SECRET || 'stack-e2e-secret'
+
+// Session tokens are NOT signed with the API secret. They are a separate
+// credential class with its own key, derived from the API secret by HMAC-SHA256
+// under a fixed label, so that a container's token cannot authenticate as its
+// project on the ordinary API routes (doc 22, RD30). This must stay in step
+// with `resolveSessionSecret` in go/cmd/agentd/sessionsecret.go — same label,
+// same construction — and with the AGENTKIT_SESSION_JWT_SECRET override, which
+// wins there and here.
+const SESSION_SECRET_LABEL = 'agent-orange/session-token/v1'
+const SESSION_SECRET: Buffer | string =
+  process.env.AGENTKIT_SESSION_JWT_SECRET?.trim() ||
+  createHmac('sha256', JWT_SECRET).update(SESSION_SECRET_LABEL).digest()
 
 function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
@@ -58,7 +71,7 @@ export function mintSessionToken(opts: {
 
   const header = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
   const payload = b64url(JSON.stringify(claims))
-  const signature = b64url(createHmac('sha256', JWT_SECRET).update(`${header}.${payload}`).digest())
+  const signature = b64url(createHmac('sha256', SESSION_SECRET).update(`${header}.${payload}`).digest())
   return `${header}.${payload}.${signature}`
 }
 
