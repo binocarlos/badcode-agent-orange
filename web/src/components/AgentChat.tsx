@@ -628,6 +628,46 @@ export default function AgentChat(props: AgentChatProps) {
           </Box>
         )}
 
+        {/* Unconfirmed-end banner.
+         *
+         * The two banners above are gated on isStreaming and are correct for the
+         * live case: heartbeats stop while a stream is attached, so the detector
+         * escalates and the operator is told the agent has gone quiet.
+         *
+         * They cannot fire on the case they matter most for. When a stream ends
+         * without `query_complete` and the status probe cannot confirm the turn
+         * finished, useAgentSession sets isStreaming=false (it must — holding it
+         * true disables the composer forever) but deliberately leaves the stuck
+         * detector ARMED (doc 22 RD26 / item B1). That combination —
+         * !isStreaming with a non-'ok' stuckStatus — is reachable by no other
+         * path: every other stop calls stopStuckDetection(), which resets to
+         * 'ok'. So it is a precise signal for "we lost this turn and never
+         * learned how it ended", and it is what this banner renders.
+         *
+         * It deliberately does NOT repeat the "Connection lost" error alert
+         * above, which states what already happened. This states what may still
+         * be happening — the agent can still be running in its container,
+         * producing output that will never reach this transcript — and offers
+         * the two actions that resolve it. Both clear the banner, because both
+         * call stopStuckDetection(). The composer stays enabled throughout
+         * (item P2's defect must not come back in another costume). */}
+        {!readOnly && !isStreaming && (stuckStatus === 'possibly_stuck' || stuckStatus === 'likely_stuck') && (
+          <Box data-testid="unconfirmed-end-banner" sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, backgroundColor: (t) => alpha(t.palette.warning.main, 0.12), borderTop: '1px solid', borderColor: (t) => alpha(t.palette.warning.main, 0.4) }}>
+            <Typography sx={{ fontSize: 13, flex: 1, color: 'warning.main' }}>
+              This turn&apos;s end was never confirmed. The agent may still be running — anything it
+              produced since the connection dropped will not appear here.
+            </Typography>
+            {onNudge && (
+              <Button variant="contained" color="info" size="small" onClick={onNudge} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
+                Resume
+              </Button>
+            )}
+            <Button variant="outlined" color="info" size="small" onClick={onCancel} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
+              Stop
+            </Button>
+          </Box>
+        )}
+
         {/* Input */}
         {!readOnly && (
           <Box
