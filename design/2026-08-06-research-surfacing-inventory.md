@@ -1041,8 +1041,8 @@ only — `secrets/gcp-key.json` is a directory).
 | --- | --- | --- |
 | R1 | Chat-side dark-mode sweep | **DONE** (commits `63b17a6`+`6f2ecfa`; 1223 tests confirmed) |
 | R2 | e2e feature specs for the console | **ABSENT** (→7.5) |
-| R3 | Turn the live tail on (shell wiring) | **NOT DONE** (`refreshMs` zero hits in `examples/web`) (→CO-14) |
-| R4 | Document the two stack boot traps | **NOT DONE** — and the default path bills a real API key (→CO-32) |
+| R3 | Turn the live tail on (shell wiring) | **DONE 2026-08-06** by the parallel session (`054121e`+`3be884f`; `App.tsx:267,285` pass `refreshMs`) — landed *after* this inventory's sweep |
+| R4 | Document the two stack boot traps | **DONE 2026-08-06** by the parallel session (README-stack.md "two traps" §, CLAUDE.md pointer) — landed *after* this inventory's sweep |
 | R5a | Retire the hand-copied token tables | **NOT DONE** (two copies remain; `CONSOLE_TOKENS` exported, unused) |
 | R5b | Stale route comment | **NOT DONE** (`index.ts:257-259`; route is mounted) |
 | R5c | "non-UTF8 bytes" | **NOT DONE — diagnosis wrong** (→Corrections; it's the NUL idiom) |
