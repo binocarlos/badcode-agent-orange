@@ -359,6 +359,106 @@ and silently stopped being true. All four corrected 2026-07-29.
 | [`product/16`](product/16-work-plan-operator-console.md) | That build's plan and its discoveries | Complete |
 | [`product/21`](product/21-console-ux-review.md) | The populated-state critique and motion design, reviewed against a realistic fixture org | Complete; screenshots in `product/ux-review/` |
 
+### Starting a fresh thread from this file
+
+*Added 2026-07-29 by the self-improvement session, at Kai's ask: make this file a sufficient
+**entry point**, so a new thread can reach the whole corpus from here and mine it.*
+
+This file is a **map, not the corpus**. It is ~400 lines; what it points at is a few thousand,
+plus the code. §§1–7 hold the research reasoning in full and are self-contained. Everything else
+is a pointer, deliberately — inlining the specialist docs would duplicate them and start them
+drifting the same day.
+
+**The one calibration to carry into everything below: exactly one live real-model run has ever
+happened** (2026-07-28, recorded in `product/runs/`, and it aborted). Every other claim in this
+repository — every rig, every seed, every doctrine entry, every green suite — is **mock-proven**:
+deterministic, honest about transmission, and silent about whether any of it helps a real model do
+better work. Read every "built" and "green" below with that in mind.
+
+**Where to start, by purpose:**
+
+| If you want to… | Read, in order |
+| --- | --- |
+| Understand the system | [`CLAUDE.md`](../CLAUDE.md) → [`01-architecture`](01-architecture.md) → [`product/17`](product/17-product-spec.md) |
+| Know what was actually built and what bit us | the two Discovered Issues Logs: [`product/06`](product/06-work-plan.md) (236 entries, the product layer) and [`product/13`](product/13-work-plan-self-improvement.md) (93, the research layer) |
+| Know what is known about *composition* | §§1–7 here → [`product/12`](product/12-composition-playbook.md) → [`product/20`](product/20-operations-doctrine.md) |
+| Know what is not ready for people | [`product/22`](product/22-readiness.md) (49 RD findings) |
+| Find the code | the repo map in [`CLAUDE.md`](../CLAUDE.md); harnesses in [`e2e/experiments/`](../e2e/experiments/) |
+
+### The complete corpus
+
+Everything knowledge-bearing, linked from one place. The map above covers the research era; this
+covers the rest, which was previously unreachable from this file.
+
+**Product specification and component designs** — what the product *is*:
+
+| Doc | Holds |
+| --- | --- |
+| [`product/17`](product/17-product-spec.md) | **The authoritative spec**: goal, atoms, binding principles P1–P8, non-goals. Status: BUILT |
+| [`product/00`](product/00-overview.md) | The quick map of the component designs |
+| [`product/01`](product/01-session-config.md) – [`product/05`](product/05-management-tools.md) | Session config, workers (incl. §6.2 composition), memory, events + schedules, management tools |
+| [`product/06`](product/06-work-plan.md) | The executed 37-item build **plus 236 Discovered Issues** — the single richest record in the repo |
+| [`product/07`](product/07-reference-prompts.md) – [`product/09`](product/09-config-log.md) | Reference prompts, images + skills, the config log |
+
+**Engine reference** — how it runs:
+
+| Doc | Holds |
+| --- | --- |
+| [`01`](01-architecture.md), [`02`](02-execution-environment.md), [`03`](03-image-registry.md) | Architecture; the container seam; the image registry |
+| [`05`](05-event-streaming.md), [`06`](06-artifacts.md), [`07`](07-in-image-agent.md) | The canonical event vocabulary; artifacts; the in-image agent |
+| [`13`](13-fleet-placement.md), [`14`](14-host-adapters.md), [`15`](15-standalone-stack.md) | Fleet placement; host adapters + multi-tenancy; the standalone stack |
+| [`18`](18-workers-memory-events.md) | The product layer from an **operator's** seat — read before touching workers/memory/events |
+| [`../MIGRATION.md`](../MIGRATION.md) | The standalone/registry/GCP roadmap and live status, incl. dated verification testimony |
+
+**Research history** — how the current design was reached (dated records; deliberately *not*
+updated as the world moves, because they are testimony):
+
+| Doc | Holds |
+| --- | --- |
+| [`product/2026-07-22-landscape-learnings.md`](product/2026-07-22-landscape-learnings.md) | The landscape survey behind "no existing project covers this shape" |
+| [`product/2026-07-25-fold-*.md`](product/) | Two fold records: what the landscape work and the walkthrough changed in the spec |
+| [`product/runs/`](product/runs/) | Dated run records. Currently one: the aborted first calibration |
+
+**Operating knowledge that lives outside `docs/`** — small files, disproportionate value:
+
+| File | Holds |
+| --- | --- |
+| [`../CLAUDE.md`](../CLAUDE.md) | The operating guide: repo map, build/test gates, the standing rules. **The real front door** |
+| [`../e2e/mock-scripts/README.md`](../e2e/mock-scripts/README.md) | How to make the mock model call tools — and the accumulated trap list (body-match leaks, rule ordering, JSON-encoded keys). Every scripted test depends on it |
+| [`../e2e/experiments/*/README.md`](../e2e/experiments/) | One per harness: what its smoke proves and, explicitly, what it does not |
+| [`../installations/README.md`](../installations/README.md) | Image layering and the derived-image tree |
+| [`product/16`](product/16-work-plan-operator-console.md), [`product/23`](product/23-work-plan-console-remaining.md) | The console build and its close-out tickets |
+
+### Transferable lessons — the classes, not the instances
+
+The 329 Discovered Issues entries are individually specific; these are the **classes** they keep
+re-teaching. This layer exists because a fresh thread asking "what can we apply elsewhere?" should
+not have to read 2,000 lines to find the shape. Each names where its instances live.
+
+1. **Silent success — a status that was never true.** The dominant failure class here. A delivery
+   recorded `ok` whose session produced nothing (L3X); token readers summing zero against a shape
+   no row carries, so the budget brakes were inert for a month (TOK1); a web fixture that *invented*
+   the schema it asserted against. → doc 22 (the whole doc), doc 13 (TOK1, L3X).
+2. **Storage is not delivery.** A write can succeed, be config-logged, and never reach a model.
+   Only a behaviour switch proves arrival; prove the switch non-vacuous by breaking it. → OM-9;
+   doc 13 (SC1, DR1); every learning story.
+3. **Attribute by actor, never count project-wide.** Where a legitimate worker moves the same
+   counter a signal reads, a total reports the innocent as guilty. → OM-10; doc 13 (SC3).
+4. **Controls, or it isn't knowledge.** A placebo critic ties the real one on every activity metric
+   (`prompt_writes` 2±0 vs 2±0); only outcome predicates separate them. → C7; doc 13 (C1).
+5. **Determinism is environment-scoped until proven otherwise.** Two runs on one machine agreed;
+   a third from another checkout did not, because two workers raced for a sequence number. Same-
+   machine repetition cannot detect this. → doc 13 (SC3).
+6. **Status lines rot silently.** Eight documents across both threads claimed "nothing is built"
+   or carried unticked boxes long after their subjects shipped. It is the same defect class as (1),
+   aimed at ourselves. → §8's own correction history; doc 12/14/19/20 headers.
+7. **Ceiling effects hide in green results.** 11/11 correct with zero prompt rewrites is not a
+   working improvement loop; it is a task with no room to improve. An instrument that cannot show
+   failure cannot show learning. → `product/runs/2026-07-28-calibration-aborted/`.
+8. **Prompt-scripted tests have a grammar of their own.** Rule order carries what predicates
+   cannot, and the correct order *inverts* with how many workers consume one transcript. →
+   `e2e/mock-scripts/README.md`; doc 13 (H0, T4–T7, SC1, DR1).
+
 ### What is actually unfinished
 
 Stated plainly, because three docs' status lines used to imply otherwise:
