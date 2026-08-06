@@ -1,6 +1,8 @@
 # Topology library — research and plan
 
-*Written 2026-07-27. Status: **proposal. Nothing here is built.***
+*Written 2026-07-27. Status corrected 2026-07-29: **BUILT.** 14 seeds ship in `go/topology/`, with
+the registry, renderer, preview/apply and the UI onboarding flow; frozen workers are enforced at the
+MCP seam. The design below stands as written — only the "nothing is built" claim was stale.*
 *Companion to [`docs/AGENTS_RESEARCH.md`](../AGENTS_RESEARCH.md), which covers how to measure whether
 any of this works. Read that first — this document assumes its vocabulary (frozen scorer, held-out
 set, judge–truth divergence).*

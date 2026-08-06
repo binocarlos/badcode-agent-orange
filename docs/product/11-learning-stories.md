@@ -1,6 +1,8 @@
 # Learning stories — deterministic offline proof that the loop learns
 
-*Written 2026-07-27. Status: **plan. Nothing here is built.***
+*Written 2026-07-27. Status corrected 2026-07-29: **BUILT and green.** The stories run offline
+against the scripted mock in `e2e/features/learning-stories.stack.spec.ts`. The plan below stands as
+written — only the "nothing is built" claim was stale.*
 *Companions: [`docs/AGENTS_RESEARCH.md`](../AGENTS_RESEARCH.md) (measuring real improvement),
 [`10-topology-library.md`](./10-topology-library.md) (org-chart options).*
 

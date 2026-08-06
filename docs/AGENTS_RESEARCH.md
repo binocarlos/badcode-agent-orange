@@ -1,11 +1,19 @@
 # Agents research — measuring self-improvement
 
-*Written 2026-07-27. Status: **research and proposed design. Nothing here is built yet.***
+*Written 2026-07-27. **Status corrected 2026-07-29: the harness proposed below is BUILT.** The
+research in §§1–7 stands as written; what changed is that it stopped being a proposal. This file
+previously said "nothing here is built yet", which was true when written and had been false for
+days — see [§8](#8-the-research-map) for what exists now and where it lives.*
+
+**This is the single entry point for Agent Orange's agent research.** Two workstreams ran in
+parallel across separate sessions — the self-improvement/measurement line (this file and its
+downstream docs) and the operator-console line (docs 15/16/21). They did not duplicate each other
+and they have not contradicted each other; §8 is the map, including where they met.
 
 This document exists for two reasons. First, `.env.example` cites it for the subscription-OAuth
 question — that answer is in [§1](#1-model-credentials-and-subscription-oauth). Second, it records
-the literature review behind the self-improvement test harness we intend to build, so the design
-choices have their reasons attached rather than being folk wisdom six months from now.
+the literature review behind the self-improvement test harness, so the design choices have their
+reasons attached rather than being folk wisdom six months from now.
 
 The motivating question: **Agent Orange's §8.7 acceptance loop demonstrably runs — a worker
 rewrites another worker's prompt with a rationale, and the next job uses it. Nothing measures
@@ -272,6 +280,87 @@ never wait for the wall clock: they emit the event a subscription matches via `P
 and rounds happen on demand. Any future trigger type should preserve this property — the moment a
 trigger fires through a private path instead of the event spine, it stops being simulatable and
 its consumers stop being testable offline.
+
+---
+
+## 8. The research map
+
+*Added 2026-07-29, consolidating two parallel sessions into one index. Every claim here was checked
+against the repo, not against memory. This section is the **map**; the linked docs remain
+authoritative for their own subjects — consolidating their content into one file would destroy the
+structure that makes them usable.*
+
+### Did the two threads diverge?
+
+**No.** They worked different surfaces and met at three named points, each of which resolved
+cleanly:
+
+| | Self-improvement line | Operator-console line |
+| --- | --- | --- |
+| Question | Does the §8.7 loop actually *improve* anything, and how would we know? | What does a human see, and can they operate it? |
+| Docs | this file, 10, 11, 12, 13, 14, 19, 20, 22, `doctrine/`, `runs/` | 15, 16, 21, `ux-review/` |
+| Output | 14 topology seeds, 3 scenario rigs, doctrine-v1, 29 readiness findings | the console, built and UX-reviewed against a populated fixture org |
+
+**Where they met.** (1) The console line executed work-plan 13 items — SC3, the L3X live run, and
+the L3H/L3M items it produced — while the self-improvement line ran the readiness audits; that was
+coordinated, not accidental. (2) Both wrote to `20-operations-doctrine.md`: OM-9 from SC1, OM-10
+from SC3, added minutes apart. Both survive; only their table order was scrambled, now fixed.
+(3) Both touched `e2e/mock-scripts/README.md`, which cost two hand-resolved merge conflicts —
+the one real friction, and the reason the standing rule about shared index files exists.
+
+**No contradictions found.** The failure that did occur was different and worth naming: **four docs
+claimed "nothing here is built" long after their subjects were built** (this file, 10, 11, 15). That
+is the same defect class doc 22 exists to hunt — a confident statement that was true when written
+and silently stopped being true. All four corrected 2026-07-29.
+
+### The map
+
+**Research and principles**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| **this file** (§§1–7) | The literature: judge–truth divergence, the five-point grading protocol, what "frozen" means, calibrate-on-facts, the two-tier gate/instrument split, simulated time | Research **executed**; §§1–7 unchanged and still the reasoning |
+| [`product/12`](product/12-composition-playbook.md) | Composition principles **C1–C8** and the ordered plan that became work-plan 13 | Plan complete |
+| [`product/19`](product/19-scenario-library.md) | The scenario-admissibility contract, and 5 scenarios (SC-0 hypothesis lab, SC-1 triage, SC-3 gauntlet built; SC-2/4/5 catalogued) | Three built |
+| [`product/20`](product/20-operations-doctrine.md) | The operator's manual **OM-1–OM-10**, and the worker doctrine block **WD-1–WD-10** | doctrine-v1 written; **every entry still `candidate`** |
+| [`product/doctrine/doctrine-v1.md`](product/doctrine/doctrine-v1.md) | The canonical injected bytes | Immutable once referenced; **reaches no real user yet** (doc 22 RD21) |
+
+**Instruments (built)**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| [`product/10`](product/10-topology-library.md) | Org charts as data; the frozen-worker design | **14 seeds built**, registry + preview + apply + UI flow |
+| [`product/11`](product/11-learning-stories.md) | The deterministic gate: MR-1/2/3 and stories S1–S9 | **Built and green**, runs offline on the scripted mock |
+| [`product/14`](product/14-calibration-runbook.md) | The live-run protocol: arms, metrics, abort criteria | Written; **executed once**, see runs/ |
+
+**Records and open work**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| [`product/13`](product/13-work-plan-self-improvement.md) | The executed plan, waves 1–7, plus ~90 Discovered Issues | **Open: L3H, L3M.** The best record of what was actually built |
+| [`product/22`](product/22-readiness.md) | The silent-success failure class, the readiness bar, the durability table, findings **RD1–RD29** | **3 fixed** (RD1, RD2, RD4); the rest specified |
+| [`product/runs/`](product/runs/) | Dated run records — currently one, the aborted first calibration | Living; the README's run log links here |
+
+**Operator console (the other thread)**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| [`product/15`](product/15-operator-console-design.md) | What the browser shows; the backend seams it needed | **Built** (doc 16, all items) |
+| [`product/16`](product/16-work-plan-operator-console.md) | That build's plan and its discoveries | Complete |
+| [`product/21`](product/21-console-ux-review.md) | The populated-state critique and motion design, reviewed against a realistic fixture org | Complete; screenshots in `product/ux-review/` |
+
+### What is actually unfinished
+
+Stated plainly, because three docs' status lines used to imply otherwise:
+
+1. **L3H + L3M** — harden the calibration runner, and build a manifest hard enough that improvement
+   has room to show. Neither alone makes a second live run worth paying for.
+2. **The readiness blockers** — doc 22's RD5/RD6/RD17/RD18 in particular: no way to fire the first
+   job from the UI, mock mode indistinguishable from real, session delete destroying conversations,
+   and crash/reconnect losing the model's response.
+3. **Doctrine promotion** — every WD entry is `candidate`. The instrument to promote WD-1 exists
+   (SC-3); no entry has yet won a measured A/B.
+4. **The first production seeding** (spec §8.8) — deliberately Kai's, deliberately not done.
 
 ---
 

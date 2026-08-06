@@ -1,6 +1,9 @@
 # 15 — The operator's console: a front-end design proposal
 
-*Written 2026-07-28. Status: **proposal. Nothing here is built.***
+*Written 2026-07-28. Status corrected 2026-07-29: **BUILT**, via the work plan in
+[`16-work-plan-operator-console.md`](./16-work-plan-operator-console.md), and UX-reviewed in
+[`21-console-ux-review.md`](./21-console-ux-review.md). The proposal below stands as written — only
+the "nothing is built" claim was stale.*
 *File numbers in this folder are not § numbers (09-config-log.md holds §15). This document owns no
 spec section; it proposes what the browser shows and asks for the few backend seams it needs.*
 
