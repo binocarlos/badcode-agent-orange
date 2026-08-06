@@ -289,9 +289,9 @@ func (f *fakeManagementStore) CreateProjectEvent(_ context.Context, ev *agentdb.
 	return &copied, nil
 }
 
-func (f *fakeManagementStore) CreateMemory(_ context.Context, m *agentdb.Memory, _ []float32) (*agentdb.Memory, error) {
+func (f *fakeManagementStore) CreateMemory(_ context.Context, m *agentdb.Memory, emb []float32) (*agentdb.Memory, bool, error) {
 	if f.memoryErr != nil {
-		return nil, f.memoryErr
+		return nil, false, f.memoryErr
 	}
 	f.scope(m.Project)
 	stored := *m
@@ -299,7 +299,7 @@ func (f *fakeManagementStore) CreateMemory(_ context.Context, m *agentdb.Memory,
 	stored.CreatedAt = storedAt
 	f.memories = append(f.memories, &stored)
 	copied := stored
-	return &copied, nil
+	return &copied, emb != nil, nil
 }
 
 // fakeAttention records the one call the adapter is allowed to make.

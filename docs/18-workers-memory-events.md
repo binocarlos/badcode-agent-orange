@@ -282,6 +282,16 @@ one.
   that label; updating it is appending. `memory_current(name)` reads it in one word.
 - **Provenance is part of every result** — which worker wrote it, in which session, with a
   clickable permalink (`<AGENTKIT_PUBLIC_BASE_URL>/p/<project>/s/<session>`).
+- **pgvector is optional, but the two halves must agree.** Migration 022 adds
+  `memories.content_embedding` only where `CREATE EXTENSION vector` succeeds, and swallows the
+  failure otherwise — the normal outcome on managed Postgres where the app role lacks the
+  privilege. `agentd` now says which state it is in at boot
+  (`memory semantic leg=available|unavailable`, and a `WARNING` when an embedding provider is
+  configured against a database that cannot hold a vector). In that warned state `memory_create`
+  **refuses** rather than storing a row it could never embed: memories are append-only, so a
+  silently unembedded row would be invisible to the semantic leg forever. Either install pgvector
+  and re-run migration 022, or run keyword-only on purpose by leaving
+  `AGENTKIT_EMBEDDING_BACKEND` unset.
 - **`memories.created_at` is milliseconds**, like `config_events.created_at` and unlike the
   `agent_*` tables, which use seconds. Anything joining them must not assume one unit.
 
