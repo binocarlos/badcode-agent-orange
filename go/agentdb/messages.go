@@ -167,9 +167,20 @@ func (s *Store) UpsertQueryEvents(ctx context.Context, qe *QueryEvents) error {
 		qe.CreatedAt = time.Now().Unix()
 	}
 
+	// `ordinal` comes from the database, never from the caller: it is the
+	// transcript's total order (migration 038) and `created_at` above is only
+	// second-resolution, so ties there used to replay in arbitrary order.
+	//
+	// The conflict branch deliberately does NOT touch `ordinal`. A re-persist of
+	// the same (session, query) — the pipeline rewriting a turn it already
+	// stored — must keep the position the turn had when it first appeared;
+	// re-numbering it would move a finished turn to the end of the transcript.
+	// On Postgres nextval is still consumed on that path (it is evaluated before
+	// the conflict is detected), which leaves gaps in the sequence. Gaps are
+	// harmless: only the relative order within a session is ever read.
 	result := s.gdb.WithContext(ctx).Exec(`
-		INSERT INTO agent_query_events (id, session_id, query_id, events, search_text, created_at)
-		VALUES (?, ?, ?, ?, ?, ?)
+		INSERT INTO agent_query_events (id, session_id, query_id, events, search_text, created_at, ordinal)
+		VALUES (?, ?, ?, ?, ?, ?, `+s.nextQueryOrdinalSQL()+`)
 		ON CONFLICT (session_id, query_id) DO UPDATE SET
 			events = EXCLUDED.events,
 			search_text = EXCLUDED.search_text
@@ -181,11 +192,41 @@ func (s *Store) UpsertQueryEvents(ctx context.Context, qe *QueryEvents) error {
 	return nil
 }
 
+// nextQueryOrdinalSQL is the expression that stamps a new transcript row's
+// ordinal.
+//
+// On Postgres — the production store, and the only one where two writers can
+// race — it is a SEQUENCE. A `MAX(ordinal)+1` subquery would be a read-then-
+// write: two concurrent inserts read the same maximum and tie, which is RD16
+// again in a narrower window. nextval is atomic. That the counter is global
+// rather than per-session does not matter: a subsequence of a monotonic
+// sequence is monotonic, and nothing reads the value except as an ORDER BY key
+// within one session.
+//
+// sqlite has no sequences and no concurrent writers (the dev/test store is a
+// single-process file), so it gets the MAX+1 subquery. It is exactly as ordered
+// as the Postgres path for one writer, which is the only case that store has.
+func (s *Store) nextQueryOrdinalSQL() string {
+	if s.gdb.Dialector != nil && s.gdb.Dialector.Name() == "postgres" {
+		return "nextval('agent_query_events_ordinal_seq')"
+	}
+	return "(SELECT COALESCE(MAX(ordinal), 0) + 1 FROM agent_query_events)"
+}
+
+// ListQueryEvents returns a session's stored turns in transcript order.
+//
+// The order is `ordinal` (migration 038): a sequence value stamped at insert,
+// total and tie-free, so two turns written inside the same second replay in
+// write order. `created_at, id` remain as tie-breaks for rows whose ordinal is
+// 0 — rows written before migration 038 that the backfill did not reach, and
+// rows some other writer inserted without the column. Those sort first, which is
+// correct: every backfilled and every new row carries a positive ordinal, so a
+// zero can only be older than or contemporaneous with the rest.
 func (s *Store) ListQueryEvents(ctx context.Context, sessionID string) ([]*QueryEvents, error) {
 	var qevents []*QueryEvents
 	if err := s.gdb.WithContext(ctx).
 		Where("session_id = ?", sessionID).
-		Order("created_at ASC").
+		Order("ordinal ASC, created_at ASC, id ASC").
 		Find(&qevents).Error; err != nil {
 		return nil, fmt.Errorf("failed to list agent query events: %w", err)
 	}

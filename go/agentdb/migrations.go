@@ -732,6 +732,61 @@ var agentMigrations = []migration{
 			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		// A total order for the transcript (RD16). `created_at` is
+		// `time.Now().Unix()` — SECONDS — and the id is a random uuid, so two
+		// queries written inside one second replayed in whatever order Postgres
+		// happened to return: a transcript could render out of order, and a
+		// replay could disagree with what the user watched live. This is the
+		// hazard migration 028 fixed for skills with `revision`; the transcript
+		// never got the same treatment.
+		//
+		// The ordinal comes from a SEQUENCE rather than
+		// `MAX(ordinal)+1 WHERE session_id = ...` because the latter is a
+		// read-then-write: two concurrent inserts read the same maximum and tie,
+		// which is the defect again in a narrower window. nextval is atomic, and
+		// a global (not per-session) counter is still a correct per-session
+		// order — a subsequence of a monotonic sequence is monotonic. Gaps and
+		// values shared across sessions are meaningless here; only "later insert
+		// ⇒ larger ordinal, within a session" is claimed.
+		//
+		// # Backfill
+		//
+		// Existing rows keep their second-resolution `created_at` and are
+		// numbered from it, globally, ordered by (created_at, id). Two legacy
+		// rows written inside one second therefore get *some* order — the same
+		// arbitrary tie-break the reader used to make afresh on every query,
+		// except now it is decided once and frozen in a column. That is strictly
+		// better than today: legacy same-second ties become STABLE (a replay
+		// always agrees with the previous replay) even though they may not be
+		// the true write order, which is information the database never had and
+		// cannot recover. Rows written after this migration are exact.
+		//
+		// Mixed pre/post rows sort correctly by construction: setval leaves the
+		// sequence above every backfilled value, so any new row in a session
+		// outranks all of that session's legacy rows — which is right, it was
+		// written later.
+		//
+		// NOT NULL DEFAULT 0 in the DDL, never a gorm `default:` tag: the insert
+		// supplies the value explicitly and a gorm default would fight it.
+		Name: "038_agent_query_events_ordinal",
+		SQL: `
+			ALTER TABLE agent_query_events ADD COLUMN IF NOT EXISTS ordinal BIGINT NOT NULL DEFAULT 0;
+			CREATE SEQUENCE IF NOT EXISTS agent_query_events_ordinal_seq AS BIGINT START WITH 1;
+			WITH ranked AS (
+				SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
+				FROM agent_query_events
+			)
+			UPDATE agent_query_events AS q
+				SET ordinal = ranked.rn
+				FROM ranked
+				WHERE q.id = ranked.id AND q.ordinal = 0;
+			SELECT setval('agent_query_events_ordinal_seq',
+				GREATEST((SELECT COALESCE(MAX(ordinal), 0) FROM agent_query_events), 1));
+			CREATE INDEX IF NOT EXISTS idx_agent_query_events_session_ordinal
+				ON agent_query_events(session_id, ordinal);
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration

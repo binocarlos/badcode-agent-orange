@@ -183,6 +183,12 @@ type QueryEvents struct {
 	Events     JSONArray `json:"events" gorm:"type:jsonb;default:'[]'"`
 	SearchText string    `json:"search_text" gorm:"type:text;default:''"`
 	CreatedAt  int64     `json:"created_at" gorm:"autoCreateTime"`
+	// Ordinal is the transcript's total order (migration 038). It is assigned
+	// by a Postgres sequence on insert — never by the caller, never by gorm —
+	// so two queries written inside the same second cannot tie. 0 means "a row
+	// that predates migration 038 and was not backfilled", which the reader
+	// tolerates; see ListQueryEvents.
+	Ordinal int64 `json:"ordinal" gorm:"type:bigint;not null"`
 }
 
 func (QueryEvents) TableName() string { return "agent_query_events" }
