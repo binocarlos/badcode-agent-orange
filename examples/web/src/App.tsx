@@ -236,7 +236,23 @@ function ProjectWorkspace({
 
   // URL ⇄ active session, both directions: a pasted /p/<project>/s/<session>
   // resumes that session, and whatever session is open is already permalinked.
-  const { openSession } = useSessionPermalink({ projectId: project });
+  const { openSession, routeSessionId } = useSessionPermalink({ projectId: project });
+
+  // Whenever the routed session CHANGES, show it. Same reasoning as
+  // `showSession` below, applied to the two paths that do not go through it: a
+  // pasted permalink (URL → state) and "New session" in the sidebar (state →
+  // URL). Both used to resume a session behind the Desk — the landing view
+  // since K1 — so the user clicked a link, the session really did resume, and
+  // the screen showed the Desk's "no workers yet" panel. Nothing said so.
+  //
+  // Render-phase and keyed on the id, not an effect: an effect would paint the
+  // wrong view first. Switching only on a *change* leaves the human free to
+  // walk to Workers or Settings with a session open.
+  const shownSession = useRef<string | null>(null);
+  if (routeSessionId !== null && shownSession.current !== routeSessionId) {
+    shownSession.current = routeSessionId;
+    setView("chat");
+  }
 
   // A job row in the workers view is a link to the session that ran it — open
   // it *and* show it, since resuming a session behind a hidden tab would look
