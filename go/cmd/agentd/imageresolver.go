@@ -118,9 +118,10 @@ func (c *catalogueImageResolver) Resolve(ctx context.Context, project, ref strin
 
 	// 3. §5's `last_resumed_at`. Best-effort AND after the materialise, so the
 	//    stamp means "a session really did launch from this version", not "a
-	//    launch was attempted". It does not extend the expiry (see
-	//    MarkCustomImageResumed) — its whole job is to let an operator see that
-	//    an image due for reaping is still in daily use.
+	//    launch was attempted". It does not rewrite `expires_at` (see
+	//    MarkCustomImageResumed), but it is what makes the snapshot reaper DEFER
+	//    reaping this version while it is still in daily use (RD9) — so a failed
+	//    stamp costs a deferral, never a launch.
 	if err := c.store.MarkCustomImageResumed(ctx, project, ci.Name, ci.Version, 0); err != nil {
 		c.logf("[images] %s: could not stamp last_resumed_at on %s:%d: %v", project, ci.Name, ci.Version, err)
 	}

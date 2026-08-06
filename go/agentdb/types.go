@@ -359,9 +359,12 @@ type CustomImage struct {
 	// which carry no promise and are therefore kept.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// LastResumedAt is the last time a session launched from this version.
-	// Informational: §5 sets the expiry at snapshot time, so resuming does NOT
-	// extend it — this is what tells an operator whether a soon-to-expire image
-	// is still in use.
+	// §5 sets ExpiresAt at snapshot time and resuming does not rewrite it, but
+	// the reaper reads this field: a version resumed within the project's
+	// current snapshot_ttl_days window has its reap DEFERRED rather than
+	// executed (RD9, agentkit.SnapshotReaper), so an image in daily use is not
+	// deleted out from under the worker pinned to it. The deferral lapses by
+	// itself once the launches stop.
 	LastResumedAt int64 `json:"last_resumed_at,omitempty"`
 }
 

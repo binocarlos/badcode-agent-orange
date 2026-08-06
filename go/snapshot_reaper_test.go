@@ -202,6 +202,155 @@ func TestSnapshotReaper_ReapsOnlyWhatItsStampSaysIsExpired(t *testing.T) {
 	}
 }
 
+// ── RD9: a version in daily use is not reaped out from under its worker ─────
+
+// Every row here is expired by its stamp, so the ONLY thing under test is
+// `last_resumed_at`. The two arms matter equally: a resumed image must survive a
+// pass that would otherwise have deleted it, and an untouched one must still
+// die — a reaper that spares everything is a reaper that has been switched off.
+func TestSnapshotReaper_RecentUseDefersTheReapAndNeglectStillKills(t *testing.T) {
+	now := int64(1_000 * day)
+
+	tests := []struct {
+		name          string
+		lastResumedAt int64
+		wantReaped    bool
+	}{
+		{
+			name:          "never resumed: nothing is using it, so it dies exactly as before",
+			lastResumedAt: 0, wantReaped: true,
+		},
+		{
+			name:          "resumed today: a worker is launching from this every day",
+			lastResumedAt: now, wantReaped: false,
+		},
+		{
+			name:          "resumed 2 days ago, well inside the 30-day window",
+			lastResumedAt: now - 2*day, wantReaped: false,
+		},
+		{
+			name:          "resumed 29 days ago: still inside the window",
+			lastResumedAt: now - 29*day, wantReaped: false,
+		},
+		{
+			name: "resumed 31 days ago: the deferral lapsed, so the bytes go — " +
+				"this is what keeps storage a function of policy, not of traffic",
+			lastResumedAt: now - 31*day, wantReaped: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newReapWorld()
+			w.settings["acme"] = 30
+			ci := w.add("acme", "toolbox", 1, now-40*day, now-10*day, "blob-1")
+			ci.LastResumedAt = tc.lastResumedAt
+
+			var logs []string
+			r := newReaper(w, now)
+			r.Logf = func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
+
+			rep, err := r.ReapProject(context.Background(), "acme")
+			if err != nil {
+				t.Fatalf("ReapProject: %v", err)
+			}
+			if err := rep.Err(); err != nil {
+				t.Fatalf("per-image errors: %v", err)
+			}
+			if rep.Scanned != 1 {
+				t.Fatalf("the driver query must still see it: %+v", rep)
+			}
+			if got := rep.Reaped == 1; got != tc.wantReaped {
+				t.Fatalf("reaped = %v, want %v (report %+v, calls %v)", got, tc.wantReaped, rep, w.calls)
+			}
+			if tc.wantReaped {
+				if rep.Deferred != 0 {
+					t.Fatalf("a reaped image must not also be counted as deferred: %+v", rep)
+				}
+				if !strings.Contains(strings.Join(w.calls, " "), "remove blob-1") {
+					t.Fatalf("the bytes must actually be deleted, calls %v", w.calls)
+				}
+				return
+			}
+			// Spared: no bytes deleted, no tombstone, counted as deferred rather
+			// than as Kept (Kept means "not due yet", which is a different fact),
+			// and the operator is told.
+			if rep.Deferred != 1 || rep.Kept != 0 {
+				t.Fatalf("an in-use expired image must be counted as deferred, not kept: %+v", rep)
+			}
+			for _, c := range w.calls {
+				if strings.HasPrefix(c, "remove") || strings.HasPrefix(c, "tombstone") {
+					t.Fatalf("an in-use image must keep its bytes and its record, got call %q", c)
+				}
+			}
+			if len(logs) != 1 || !strings.Contains(logs[0], "acme/toolbox:1") {
+				t.Fatalf("the deferral must be announced and name the image, got %v", logs)
+			}
+		})
+	}
+}
+
+// The deferral is measured against the project's CURRENT TTL, read fresh each
+// pass — the same lever as the driver query's cutoff. Shortening the TTL is
+// therefore how an operator gets the bytes of a still-used image back.
+func TestSnapshotReaper_ShorteningTheTTLShortensTheDeferral(t *testing.T) {
+	now := int64(1_000 * day)
+	resumed := now - 10*day
+
+	for _, tc := range []struct {
+		ttlDays    int
+		wantReaped bool
+	}{
+		{ttlDays: 30, wantReaped: false}, // resumed 10 days ago, window 30 → spared
+		{ttlDays: 5, wantReaped: true},   // same row, window 5 → the deferral is over
+	} {
+		t.Run(fmt.Sprintf("ttl=%dd", tc.ttlDays), func(t *testing.T) {
+			w := newReapWorld()
+			w.settings["acme"] = tc.ttlDays
+			ci := w.add("acme", "toolbox", 1, now-400*day, now-300*day, "blob-1")
+			ci.LastResumedAt = resumed
+
+			r := newReaper(w, now)
+			r.Logf = func(string, ...any) {}
+			rep, err := r.ReapProject(context.Background(), "acme")
+			if err != nil {
+				t.Fatalf("ReapProject: %v", err)
+			}
+			if got := rep.Reaped == 1; got != tc.wantReaped {
+				t.Fatalf("ttl %d: reaped = %v, want %v (%+v)", tc.ttlDays, got, tc.wantReaped, rep)
+			}
+		})
+	}
+}
+
+// A mixed project in one pass: the reaper must be selective, not global. This is
+// the anti-vacuity assertion — one image spared and one deleted, together.
+func TestSnapshotReaper_SparesTheUsedImageAndReapsTheAbandonedOneInOnePass(t *testing.T) {
+	now := int64(1_000 * day)
+	w := newReapWorld()
+	w.settings["acme"] = 30
+	daily := w.add("acme", "toolbox", 7, now-40*day, now-10*day, "blob-daily")
+	daily.LastResumedAt = now - 1*day
+	w.add("acme", "oldproto", 2, now-400*day, now-300*day, "blob-abandoned")
+
+	r := newReaper(w, now)
+	r.Logf = func(string, ...any) {}
+	rep, err := r.ReapProject(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("ReapProject: %v", err)
+	}
+	if rep.Scanned != 2 || rep.Reaped != 1 || rep.Deferred != 1 {
+		t.Fatalf("want 2 scanned / 1 reaped / 1 deferred, got %+v (calls %v)", rep, w.calls)
+	}
+	joined := strings.Join(w.calls, " ")
+	if !strings.Contains(joined, "remove blob-abandoned") || !strings.Contains(joined, "tombstone acme/oldproto:2") {
+		t.Fatalf("the abandoned image must still be reaped, calls %v", w.calls)
+	}
+	if strings.Contains(joined, "blob-daily") || strings.Contains(joined, "toolbox") {
+		t.Fatalf("the in-use image must be untouched, calls %v", w.calls)
+	}
+}
+
 // §5: snapshot_ttl_days 0 means never — and nothing is even listed, so a
 // "keep everything" project costs one settings read per pass.
 func TestSnapshotReaper_TTLZeroNeverReapsAndNeverLists(t *testing.T) {

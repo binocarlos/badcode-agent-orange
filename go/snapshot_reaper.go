@@ -23,6 +23,29 @@ import (
 // default, 0 = never. This reaper deletes the bytes of snapshots whose expiry
 // has passed and leaves the catalogue record behind as a tombstone.
 //
+// # Use defers the reap (RD9)
+//
+// `last_resumed_at` is stamped on every launch (cmd/agentd/imageresolver.go).
+// Until 2026-08-06 it was purely informational, so an image a worker launched
+// from every single day was reaped the instant its burn-time promise ran out,
+// and the next job failed with ErrCustomImageReaped — the pinned-image case has
+// no fallback. That is the storage bill being collected from the user's running
+// system instead of from their unused bytes.
+//
+// So the reap is now DEFERRED while a version is in use: an image resumed
+// within the project's current `snapshot_ttl_days` window is kept for this pass
+// and counted in ReapReport.Deferred, loudly. Effectively the expiry is
+// max(expires_at, last_resumed_at + ttl), computed here rather than written
+// back, which matters three ways: the stamped `expires_at` keeps meaning "the
+// promise made at burn time" and stays honest testimony; the launch path (which
+// is best-effort and must never fail a launch) gains no second write; and the
+// deferral evaporates by itself — stop using an image and it dies on the first
+// pass after the window, so storage is still bounded by policy, not by traffic.
+//
+// The reaper does NOT become vacuous: an untouched expired version is reaped
+// exactly as before, and a version whose last resume is older than the window
+// is reaped too.
+//
 // # Tombstones, not exemption (§13.7)
 //
 // §13 makes images append-only at the tool surface: no agent may delete a
@@ -75,6 +98,18 @@ type SnapshotReaper struct {
 	Registry imageregistry.ImageRegistry
 	// Now is the clock seam, for tests. nil = time.Now.
 	Now func() time.Time
+	// Logf is where a deferred reap is announced. nil = log.Printf. A deferral
+	// is the one outcome of a pass that an operator may want to act on (burn a
+	// fresh version, or shorten the TTL), so it is never silent.
+	Logf func(format string, args ...any)
+}
+
+func (sr *SnapshotReaper) logf(format string, args ...any) {
+	if sr.Logf != nil {
+		sr.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // ReapReport is the receipt of one pass.
@@ -88,6 +123,12 @@ type ReapReport struct {
 	// Kept is the number that came back from the driver query but whose stamped
 	// expiry had not passed — the TTL was longer when they were burned.
 	Kept int
+	// Deferred is the number whose stamped expiry HAS passed but which a session
+	// launched from inside the project's current TTL window (RD9). Their bytes
+	// stay for this pass. Distinct from Kept on purpose: Kept is "not due yet",
+	// Deferred is "due, and spared because it is still in daily use" — the
+	// second is the number an operator watching a storage bill wants to see.
+	Deferred int
 	// Errors are per-image failures. One bad image never stops the pass: the
 	// next one may be reapable, and a failed image is retried next pass.
 	Errors []error
@@ -98,6 +139,7 @@ func (r ReapReport) add(o ReapReport) ReapReport {
 	r.Scanned += o.Scanned
 	r.Reaped += o.Reaped
 	r.Kept += o.Kept
+	r.Deferred += o.Deferred
 	r.Errors = append(r.Errors, o.Errors...)
 	return r
 }
@@ -164,7 +206,8 @@ func (sr *SnapshotReaper) ReapProject(ctx context.Context, project string) (Reap
 	rep.Projects = 1
 
 	now := sr.now()
-	cutoff := now - int64(ps.SnapshotTTLDays)*agentdb.SecondsPerDay
+	window := int64(ps.SnapshotTTLDays) * agentdb.SecondsPerDay
+	cutoff := now - window
 	stale, err := sr.Catalog.ListCustomImageVersions(ctx, agentdb.ImageCatalogQuery{
 		Project:       project,
 		CreatedBefore: cutoff,
@@ -178,6 +221,17 @@ func (sr *SnapshotReaper) ReapProject(ctx context.Context, project string) (Reap
 	for _, ci := range stale {
 		if !snapshotExpired(ci, now) {
 			rep.Kept++
+			continue
+		}
+		if snapshotInUse(ci, now, window) {
+			// RD9: due, but a session launched from it inside the window. Say so
+			// — silence here is how an image in daily use disappears.
+			rep.Deferred++
+			sr.logf("agentkit: snapshot reaper: %s/%s:%d expired at %d but was resumed %d day(s) ago — "+
+				"deferring the reap until it has been unused for %d day(s) (project_settings.snapshot_ttl_days); "+
+				"burn a fresh version or shorten the TTL if you want the bytes back sooner",
+				project, ci.Name, ci.Version, ci.ExpiresAt,
+				(now-ci.LastResumedAt)/agentdb.SecondsPerDay, ps.SnapshotTTLDays)
 			continue
 		}
 		if err := sr.reapOne(ctx, project, ci, now); err != nil {
@@ -194,6 +248,20 @@ func (sr *SnapshotReaper) ReapProject(ctx context.Context, project string) (Reap
 // the TTL metadata entirely and so was never promised an expiry.
 func snapshotExpired(ci *agentdb.CustomImage, now int64) bool {
 	return ci.ExpiresAt > 0 && ci.ExpiresAt <= now
+}
+
+// snapshotInUse answers "did a session launch from this version recently enough
+// that reaping it would break a running system?" (RD9).
+//
+// `window` is the project's CURRENT snapshot_ttl_days in seconds — read fresh
+// each pass, like the driver-query cutoff, so shortening the TTL shortens the
+// grace too and an operator who wants the bytes back has a lever. A zero window
+// cannot occur here (ReapProject returns early on TTL 0) but is handled anyway:
+// no window, no deferral. `last_resumed_at == 0` means never resumed — nothing
+// is in use, so nothing is deferred, which is exactly the row the reaper exists
+// for.
+func snapshotInUse(ci *agentdb.CustomImage, now, window int64) bool {
+	return window > 0 && ci.LastResumedAt > 0 && ci.LastResumedAt+window > now
 }
 
 // reapOne deletes the bytes and THEN tombstones the record. Never the reverse.
@@ -254,9 +322,9 @@ func (r *runnerImpl) snapshotReapLoop() {
 			if err := rep.Err(); err != nil {
 				log.Printf("agentkit: snapshot reaper: %d/%d reaped, errors: %v", rep.Reaped, rep.Scanned, err)
 			}
-			if rep.Reaped > 0 {
-				log.Printf("agentkit: snapshot reaper: reaped %d expired image(s) across %d project(s)",
-					rep.Reaped, rep.Projects)
+			if rep.Reaped > 0 || rep.Deferred > 0 {
+				log.Printf("agentkit: snapshot reaper: reaped %d expired image(s) across %d project(s); "+
+					"%d deferred as still in use", rep.Reaped, rep.Projects, rep.Deferred)
 			}
 		}
 	}
