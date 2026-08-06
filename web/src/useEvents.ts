@@ -13,7 +13,7 @@
 // would turn that into an unbounded GET loop.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { errorStatus, useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { configApiStatus, useConfigApi, type ConfigApiOptions } from './configApi.js'
 import { summariseJobProgress, type JobProgress } from './jobprogress.js'
 import {
   buildJobRows,
@@ -261,7 +261,7 @@ export function useSessionTokens(
       setMissing(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to load token usage')
-      setMissing(errorStatus(err) === 404)
+      setMissing(configApiStatus(err) === 404)
     } finally {
       inFlight.current = false
       setLoading(false)

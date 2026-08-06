@@ -806,6 +806,9 @@ var agentMigrations = []migration{
 		SQL: `
 			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_query_id TEXT NOT NULL DEFAULT '';
 			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_sandbox_query_id TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
 		// The config log becomes append-only IN THE DATABASE (RD13).
 		//
 		// Until now the guarantee was enforced only in tests:

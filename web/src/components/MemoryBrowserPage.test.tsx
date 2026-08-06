@@ -182,4 +182,16 @@ describe('failures are told apart', () => {
     expect(screen.queryByText(/Nothing has been remembered in this project yet/)).toBeNull()
     expect(screen.queryByText(/No memory matches/)).toBeNull()
   })
+
+  // B6: the status decides, not the prose. A 500 whose body happens to carry
+  // the words the old classifier keyed on is still a failure — otherwise a
+  // broken memory store is reported as "this host does not have one", and the
+  // operator stops looking.
+  it('a 500 saying "not found" is still a failure, not an absent feature', async () => {
+    status = 500
+    body = 'memory search: relation "memories" not found'
+    renderBrowser()
+    expect(await screen.findByText(/relation "memories" not found/)).toBeInTheDocument()
+    expect(screen.queryByText(/Memory is not available on this host/)).toBeNull()
+  })
 })
