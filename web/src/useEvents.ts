@@ -1,9 +1,11 @@
 // useEventsOverview and friends — the data hooks behind the events view.
 //
 // Read-only, all of them: this surface replaces the deleted watchapi cockpit
-// and its whole job is to show what the router already did. Nothing here POSTs,
-// and the subscription test in EventReplayPanel is a pure function over data
-// these hooks already have — a dry run must never touch the firing path.
+// and its whole job is to show what the router already did. Nothing in THIS
+// file POSTs, and the subscription test in EventReplayPanel is a pure function
+// over data these hooks already have — a dry run must never touch the firing
+// path. The panel's separate, confirmed "Emit this event" button (F1/RD17) is
+// the one write on the surface, and it calls `reload` here afterwards.
 //
 // Init is a render-phase ref-guard, not a useEffect, matching
 // useProjectSettings/useWorkers: a host that inlines `getAuthToken` in its

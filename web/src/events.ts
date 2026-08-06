@@ -15,7 +15,11 @@
 //      test (L27): given an event, which subscriptions would match, and why not
 //      when they would not.
 //
-// On (3): this is deliberately config-time only and it never posts anything.
+// On (3): the matcher itself is pure and config-time — it posts nothing. The
+// ONE place this package writes an event is EventReplayPanel's "Emit this
+// event" button (readiness F1 / RD17), which POSTs {type, text} to
+// EVENT_ENDPOINTS.events behind an explicit confirm. Deliberate and singular:
+// if a second writer of this route ever appears, one of them is wrong.
 // The matcher is a second implementation of a rule the engine owns, which is a
 // real risk of drift, so it is kept to the two austere predicates §8.3 defines
 // (exact-or-trailing-`*` type, equality on envelope fields) and nothing else —
@@ -30,7 +34,8 @@ import { formatCompactTime } from './timefmt.js'
 
 /** Endpoint paths for the event routes. Overridable per host, like DEFAULT_ENDPOINTS. */
 export const EVENT_ENDPOINTS = {
-  /** GET (list) + POST (ingest) — this UI only ever GETs. */
+  /** GET (list) + POST (ingest). The only POST in this package is the replay
+   *  panel's confirmed "Emit this event" (F1/RD17); everything else GETs. */
   events: '/agent/events',
   /** GET — the delivery/job-history spine. */
   deliveries: '/agent/deliveries',

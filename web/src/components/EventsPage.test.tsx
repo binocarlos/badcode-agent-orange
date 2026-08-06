@@ -13,7 +13,9 @@ import ChangelogView from './ChangelogView.js'
 import { coerceConfigEvent, type ConfigEvent } from '../configLog.js'
 
 let originalFetch: typeof globalThis.fetch
-let requests: { url: string; method: string }[] = []
+let requests: { url: string; method: string; body?: string }[] = []
+/** What POST /agent/events answers. Swapped per test for the failure cases. */
+let ingest: (body: string) => Response
 let events: Record<string, unknown>[]
 let deliveries: Record<string, unknown>[]
 let subscriptions: Record<string, unknown>[]
@@ -119,9 +121,28 @@ beforeEach(() => {
 
   window.history.replaceState(null, '', '/')
   originalFetch = globalThis.fetch
+  // The engine's own answer to POST /agent/events: 201 with the created row,
+  // envelope stamped by core (httpapi/events.go IngestEvent).
+  ingest = (body: string) => {
+    const sent = JSON.parse(body) as { type: string; text: string }
+    return new Response(
+      JSON.stringify({
+        id: 'e-new',
+        project: 'acme',
+        type: sent.type,
+        text: sent.text,
+        envelope: envelope(),
+        occurred_at: 1_700_000_200,
+        created_at: 1_700_000_200,
+        delivered: false,
+      }),
+      { status: 201, headers: { 'Content-Type': 'application/json' } },
+    )
+  }
   globalThis.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     const u = String(url)
-    requests.push({ url: u, method: init?.method ?? 'GET' })
+    const method = init?.method ?? 'GET'
+    requests.push({ url: u, method, body: init?.body as string | undefined })
     const json = (v: unknown) =>
       new Response(JSON.stringify(v), {
         status: 200,
@@ -130,7 +151,10 @@ beforeEach(() => {
     if (u.includes('/query-events')) return json(queryEvents)
     if (u.includes('/agent/deliveries')) return json({ deliveries })
     if (u.includes('/agent/subscriptions')) return json({ subscriptions })
-    if (u.includes('/agent/events')) return json({ events })
+    if (u.includes('/agent/events')) {
+      if (method === 'POST') return ingest(String(init?.body ?? '{}'))
+      return json({ events })
+    }
     return json({})
   }) as typeof globalThis.fetch
 })
@@ -311,6 +335,82 @@ describe('event replay / subscription test', () => {
     const editor = (await screen.findByLabelText('Event JSON')) as HTMLTextAreaElement
     expect(editor.value).toContain('"type": "worker.finished"')
     expect(editor.value).toContain('"worker": "email-answerer"')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// F1 / RD17 — "Emit this event": the one button that makes something happen.
+// Before this existed, no POST to /agent/events lived anywhere in web/src, so
+// after applying an event-driven topology an operator could not trigger a
+// single job from the console.
+// ---------------------------------------------------------------------------
+
+describe('emitting an event (F1 / RD17)', () => {
+  const openReplay = async () => {
+    renderPage()
+    await screen.findByText('email.received')
+    await userEvent.click(screen.getByRole('tab', { name: /replay/i }))
+    return screen.findByRole('button', { name: /emit this event/i })
+  }
+
+  const posts = () => requests.filter((r) => r.method === 'POST')
+
+  it('posts nothing until the confirmation is accepted', async () => {
+    const button = await openReplay()
+    await userEvent.click(button)
+    // The dialog is up and says plainly what accepting does.
+    expect(await screen.findByRole('dialog')).toHaveTextContent(/emit a real event\?/i)
+    expect(screen.getByRole('dialog')).toHaveTextContent(/wake its worker and start a job/i)
+    expect(posts()).toHaveLength(0)
+
+    await userEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(posts()).toHaveLength(0)
+  })
+
+  it('posts the composed draft to /agent/events once accepted, and shows the new id', async () => {
+    const button = await openReplay()
+    await userEvent.click(button)
+    await userEvent.click(await screen.findByRole('button', { name: /^emit it$/i }))
+
+    await waitFor(() => expect(posts()).toHaveLength(1))
+    const post = posts()[0]!
+    expect(post.url).toBe('/agent/events')
+    // Only {type, text}: core owns the envelope and ignores one in the body.
+    expect(JSON.parse(post.body!)).toEqual({
+      type: 'email.received',
+      text: 'From: someone@example.com\nSubject: a question\n\n…',
+    })
+    expect(await screen.findByText(/e-new/)).toBeInTheDocument()
+    // And the lists are re-read, so the event appears where the user looks next.
+    await waitFor(() =>
+      expect(requests.filter((r) => r.method === 'GET' && r.url.includes('/agent/events?')).length)
+        .toBeGreaterThan(1),
+    )
+  })
+
+  it('renders the server’s own error text when ingestion is refused', async () => {
+    ingest = () => new Response('type is required', { status: 400 })
+    const button = await openReplay()
+    await userEvent.click(button)
+    await userEvent.click(await screen.findByRole('button', { name: /^emit it$/i }))
+
+    expect(await screen.findByText('type is required')).toBeInTheDocument()
+    // The dialog stays open on failure — nothing was written, and the operator
+    // keeps the draft and the retry.
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+  })
+
+  it('offers no button at all when a host disables emitting', async () => {
+    render(
+      <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+        <EventsPage projectId="acme" nowSeconds={1_700_000_410} enableEmit={false} />
+      </AgentChatProvider>,
+    )
+    await screen.findByText('email.received')
+    await userEvent.click(screen.getByRole('tab', { name: /replay/i }))
+    await screen.findByLabelText('Event JSON')
+    expect(screen.queryByRole('button', { name: /emit this event/i })).toBeNull()
   })
 })
 

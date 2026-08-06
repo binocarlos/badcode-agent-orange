@@ -2,9 +2,10 @@
 // cockpit (work-plan F1): recent events, the deliveries they produced, the jobs
 // those became, a config-time subscription test, and the changelog (§15.10).
 //
-// Read-only by construction. Nothing on this screen writes anything: the event
-// routes it calls are the two GETs E1 added plus the subscriptions list, and the
-// replay panel is a pure function. Editing subscriptions and schedules is F2.
+// Read-only but for one button. Every fetch this page makes on its own is a GET
+// (the two E1 added plus the subscriptions list); the single write is the replay
+// tab's confirmed "Emit this event" (F1/RD17), which a host can switch off with
+// `enableEmit={false}`. Editing subscriptions and schedules is F2.
 //
 // Router-free, F3's way: the selected event is one query parameter written
 // through the History API, so a host that already has a router passes
@@ -49,6 +50,12 @@ export interface EventsPageProps extends UseEventsOverviewOptions {
    * true. It has no backend at all: a report is a dropped file.
    */
   enableBench?: boolean
+  /**
+   * Offer the replay tab's "Emit this event" button (F1/RD17). Default true —
+   * it is the only way to trigger the first job from the console. False keeps
+   * the tab dry-run-only.
+   */
+  enableEmit?: boolean
   /** How many job rows fetch their token totals unprompted. Default 10. */
   tokenAutoLoad?: number
   /**
@@ -76,6 +83,7 @@ export default function EventsPage({
   onOpenSession,
   enableChangelog = true,
   enableBench = true,
+  enableEmit = true,
   tokenAutoLoad,
   fetchConfigEvents,
   refreshMs = 0,
@@ -258,7 +266,13 @@ export default function EventsPage({
 
         {tab === 'replay' && (
           <Box sx={{ height: '100%', overflowY: 'auto' }}>
-            <EventReplayPanel subscriptions={subscriptions} selectedEvent={current} />
+            <EventReplayPanel
+              subscriptions={subscriptions}
+              selectedEvent={current}
+              enableEmit={enableEmit}
+              onEmitted={() => void overview.reload()}
+              {...apiOptions}
+            />
           </Box>
         )}
 
