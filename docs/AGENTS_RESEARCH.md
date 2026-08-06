@@ -301,12 +301,21 @@ cleanly:
 | Docs | this file, 10, 11, 12, 13, 14, 19, 20, 22, `doctrine/`, `runs/` | 15, 16, 21, `ux-review/` |
 | Output | 14 topology seeds, 3 scenario rigs, doctrine-v1, 29 readiness findings | the console, built and UX-reviewed against a populated fixture org |
 
-**Where they met.** (1) The console line executed work-plan 13 items — SC3, the L3X live run, and
-the L3H/L3M items it produced — while the self-improvement line ran the readiness audits; that was
-coordinated, not accidental. (2) Both wrote to `20-operations-doctrine.md`: OM-9 from SC1, OM-10
-from SC3, added minutes apart. Both survive; only their table order was scrambled, now fixed.
-(3) Both touched `e2e/mock-scripts/README.md`, which cost two hand-resolved merge conflicts —
-the one real friction, and the reason the standing rule about shared index files exists.
+**Where they met.** *(Corrected 2026-07-29 by the self-improvement session against `git log`; the
+first draft had the two lines swapped.)*
+
+1. **The self-improvement line executed work-plan 13's Wave 7** — DR1, SC1, SC3 — and ran the L3X
+   live calibration, which produced the L3H/L3M items. The console line ran the readiness audits
+   (doc 22) in parallel. Coordinated, not accidental.
+2. **`20-operations-doctrine.md` gained OM-9 (from SC1) and OM-10 (from SC3)** — both from the
+   self-improvement line, hours apart, and every commit touching that file is from that line. The
+   console line's contribution was catching that the two rows had been left in the wrong order and
+   fixing it: a real find, but a review of one thread's doc rather than a second author on it.
+3. **`e2e/mock-scripts/README.md` cost two hand-resolved conflicts — inside one thread, not
+   between them.** Both were between *parallel executors of the self-improvement line* (DR1 and
+   SC1 each appending a row, then SC1 moving its own to avoid the collision it had verified). The
+   rule that came out of it is the valuable part and is unchanged: a shared index file needs its
+   insertion point stated in the executor's brief.
 
 **No contradictions found.** The failure that did occur was different and worth naming: **four docs
 claimed "nothing here is built" long after their subjects were built** (this file, 10, 11, 15). That
@@ -331,7 +340,8 @@ and silently stopped being true. All four corrected 2026-07-29.
 | --- | --- | --- |
 | [`product/10`](product/10-topology-library.md) | Org charts as data; the frozen-worker design | **14 seeds built**, registry + preview + apply + UI flow |
 | [`product/11`](product/11-learning-stories.md) | The deterministic gate: MR-1/2/3 and stories S1–S9 | **Built and green**, runs offline on the scripted mock |
-| [`product/14`](product/14-calibration-runbook.md) | The live-run protocol: arms, metrics, abort criteria | Written; **executed once**, see runs/ |
+| [`product/14`](product/14-calibration-runbook.md) | The live-run protocol: arms, metrics, abort criteria | Written; **executed once**, see runs/ and §5a |
+| [`e2e/experiments/`](../e2e/experiments/) | The harnesses themselves — the map's one pointer at the code: `calibration/` (SC-0 plus DR1's doctrine axis), `triage/` (SC-1), `gauntlet/` (SC-3), `tierb/` (the §7 graded protocol), and C1's comparison rig | Built; every smoke report byte-reproducible and committed. SC-3's delivery claim is proven by collapse: disable the doctrine injection and the protected arm reproduces the unprotected one in every column |
 
 **Records and open work**
 
@@ -353,8 +363,14 @@ and silently stopped being true. All four corrected 2026-07-29.
 
 Stated plainly, because three docs' status lines used to imply otherwise:
 
-1. **L3H + L3M** — harden the calibration runner, and build a manifest hard enough that improvement
-   has room to show. Neither alone makes a second live run worth paying for.
+1. **L3H + L3M** — **neither started** (status owned by the self-improvement line, 2026-07-29).
+   *L3H* hardens the calibration runner: an empty assistant reply must become a recorded abort
+   rather than a 180-second hang, and no throw may bypass report-writing — in the L3X run an
+   unhandled poll timeout destroyed eight already-completed hypotheses. *L3M* needs a manifest hard
+   enough that improvement has room to show, and **its shape is genuinely open**: L3X's ceiling
+   result (11/11 first-try correct, zero rewrites, the critic declining on the record) is an
+   argument for pointing the loop at real underspecified work rather than engineering harder
+   synthetic puzzles. Neither alone makes a second live run worth paying for.
 2. **The readiness blockers** — doc 22's RD5/RD6/RD17/RD18 in particular: no way to fire the first
    job from the UI, mock mode indistinguishable from real, session delete destroying conversations,
    and crash/reconnect losing the model's response.

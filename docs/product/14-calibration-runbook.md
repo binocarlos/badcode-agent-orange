@@ -1,7 +1,10 @@
 # Calibration runbook — the first real-model run of the hypothesis lab
 
 *Written 2026-07-27 (L3 of [`13-work-plan-self-improvement.md`](./13-work-plan-self-improvement.md)).
-Status: **runbook written; EXECUTION GATED on Kai's explicit go.** Protocol:
+Status (2026-07-29): **executed once, partially — see §5a and
+[`runs/2026-07-28-calibration-aborted/`](./runs/2026-07-28-calibration-aborted/README.md).** The
+protocol below stands; a second run is gated on work-plan items L3H and L3M, not on approval.
+Protocol:
 [`AGENTS_RESEARCH.md`](../AGENTS_RESEARCH.md) §6–§7. Everything below runs against machinery that
 is already merged and mock-proven (hypolab generator, hypothesis-lab@v1 seed, frozen workers).*
 

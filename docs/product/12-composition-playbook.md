@@ -1,6 +1,11 @@
 # Composition playbook — what we know, and the plan to act on it
 
-*Written 2026-07-27. Status: **distillation + action plan.***
+*Written 2026-07-27. Status (2026-07-29): **the §3 plan is complete — all nine phases built**, and
+work-plan 13 carried them plus a Wave 7 this file predates (scenarios + doctrine). Two caveats the
+ticks alone would hide: **P3's calibration has been run once and hit a task ceiling** (see
+[`14`](./14-calibration-runbook.md) §5a), and **P7's Tier B harness has never been run against a
+real model** — both are built, neither has yet produced a measurement of improvement. The
+principles in §2 are unchanged and remain the reasoning.*
 *This is the entry point for the self-improvement workstream. It distils
 [`docs/AGENTS_RESEARCH.md`](../AGENTS_RESEARCH.md) (measurement),
 [`10-topology-library.md`](./10-topology-library.md) (org charts) and
@@ -74,21 +79,21 @@ wild. Count refused mutations against frozen workers and surface them. → *Acti
 Ordered by dependency and by cost-of-being-wrong; each phase produces something usable on its own.
 Owner of the tick-boxes: this file.
 
-- [ ] **P.5 — Learning stories 1–6, 8** (doc 11). Offline, zero new schema, zero tokens. Gates
+- [x] **P.5 — Learning stories 1–6, 8** (doc 11). Offline, zero new schema, zero tokens. Gates
       merges from day one. *The only phase with no prerequisites.*
-- [ ] **P0 — Frozen workers** (doc 10 §3): `Worker.Frozen` (no gorm default tag), MCP-boundary
+- [x] **P0 — Frozen workers** (doc 10 §3): `Worker.Frozen` (no gorm default tag), MCP-boundary
       refusal in `mcp_management.go`, JWT-path freeze/unfreeze, config-logged, UI lock badge,
       refused-attempt counter. Then story 7.
-- [ ] **P1 — Topology as data** (doc 10 §2): questions → rendered bundle → preview diff → applied
+- [x] **P1 — Topology as data** (doc 10 §2): questions → rendered bundle → preview diff → applied
       as ordinary config mutations, named and versioned like skills.
-- [ ] **P2 — Seed four topologies**: Solo, Actor–Critic, Supervisor, Frozen-scorer harness.
-- [ ] **P3 — Hypothesis lab + calibration** (AGENTS_RESEARCH §6): synthetic datasets with held-out
+- [x] **P2 — Seed four topologies**: Solo, Actor–Critic, Supervisor, Frozen-scorer harness.
+- [x] **P3 — Hypothesis lab + calibration** (AGENTS_RESEARCH §6): synthetic datasets with held-out
       truth, trap taxonomy (planted nulls, confounds, underpowered samples). First real-model
       measurement; proves the instrument can see improvement we know is real.
-- [ ] **P4 — Remaining seed topologies** (doc 10 §4): controls 2–3, work topologies 6–11.
-- [ ] **P5 — Comparison rig**: one task × N topologies × multiple seeds, ranked with variance.
-- [ ] **P6 — Onboarding flow**: empty project → pick topology → answer questions → preview → apply.
-- [ ] **P7 — Tier B graded harness** (AGENTS_RESEARCH §7): same stories, real model, second-model
+- [x] **P4 — Remaining seed topologies** (doc 10 §4): controls 2–3, work topologies 6–11.
+- [x] **P5 — Comparison rig**: one task × N topologies × multiple seeds, ranked with variance.
+- [x] **P6 — Onboarding flow**: empty project → pick topology → answer questions → preview → apply.
+- [x] **P7 — Tier B graded harness** (AGENTS_RESEARCH §7): same stories, real model, second-model
       grader, anchor items, nightly/on-demand curve — never a CI gate.
 
 Cross-cutting cautions, all learned the hard way in this repo: assert on happens-after signals,

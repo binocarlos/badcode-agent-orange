@@ -4,8 +4,9 @@
 that we can add to the system... operations manuals that might help tremendously as a default
 starting place." Status: **doctrine-v1 drafted; every entry CANDIDATE.** Companion:
 [`19-scenario-library.md`](./19-scenario-library.md) — the instruments that promote candidates.
-Wave 7 of [`13-work-plan-self-improvement.md`](./13-work-plan-self-improvement.md) builds the
-A/B lever (DR1).*
+Wave 7 of [`13-work-plan-self-improvement.md`](./13-work-plan-self-improvement.md) is complete, so
+the A/B lever (DR1) and WD-1's instrument (SC3) both exist and are mock-proven — **what is missing
+is a measured run, not machinery.** No entry has been promoted; every one is still `candidate`.*
 
 ## 1. What this is — and the discipline it lives under
 

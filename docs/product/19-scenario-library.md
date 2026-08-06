@@ -2,8 +2,9 @@
 
 *Written 2026-07-28, from Kai's ask: find the "obvious rearrangements — org tree, subscriptions,
 workers, tools, prompt rewrites — that, emboldened as law, would serve as a default starting place
-for people without experience of autonomously reorganizing an AI organization." Status: **design +
-catalogue; SC-1 scheduled, SC-3 scheduled after DR1** (work plan 13, Wave 7). Companion:
+for people without experience of autonomously reorganizing an AI organization." Status (2026-07-29): **SC-0, SC-1 and SC-3 are BUILT** — generators, seeds and rigs under
+`e2e/experiments/`, all mock-validated; SC-2, SC-4 and SC-5 remain catalogued and deliberately
+unscheduled (§4). SC-0 is the only one yet run against a real model. Companion:
 [`20-operations-doctrine.md`](./20-operations-doctrine.md) — the artifact scenarios exist to
 promote. The hypothesis lab ([`14-calibration-runbook.md`](./14-calibration-runbook.md)) is
 scenario SC-0 and the template for everything here.*
