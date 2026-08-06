@@ -373,7 +373,7 @@ to a mock model the UI never labels. Together those two mean the likeliest first
 user who has built an org chart, seen no output, and cannot tell whether nothing fired or the model
 was never real.
 
-- [ ] **RD17 — There is no way to trigger the first job from the UI.** *The blocker.* Verified
+- [x] **RD17 — There is no way to trigger the first job from the UI.** *The blocker.* Verified
   directly: **no `POST` to `/agent/events` exists anywhere in `web/src` or `examples/web/src`** —
   every POST is session create/message/cancel/restore, voice, attachments, topology preview/apply,
   or auth. 11 of the 14 built-in topologies are event-driven only; the three with a schedule fire
@@ -389,7 +389,7 @@ was never real.
   exercises the chat path, not the delivery pipeline just configured.
   **Fix:** build that one button — "Emit this event" on the replay panel, posting the draft it
   already composes, behind a confirm that says it writes a real event.
-- [ ] **RD18 — Mock mode is invisible, and it is the default.** Both credential lines ship blank
+- [x] **RD18 — Mock mode is invisible, and it is the default.** Both credential lines ship blank
   in `.env.example:9-10`, so a user following the README exactly gets the mock model. agentd logs
   it to stdout (`go/cmd/agentd/modelproxy.go:49`); the browser is told nothing — verified that
   `/auth/config` returns only `{modes, google_client_id}` (`googleauth.go:317-334`) and
@@ -401,7 +401,7 @@ was never real.
   was ever called.
   **Fix:** add credential mode (`mock`|`api-key`|`subscription`) to `/auth/config` and render a
   persistent badge. One field, one component.
-- [ ] **RD19 — An event matching no subscription vanishes silently.** `go/cmd/agentd/router.go:235-247`
+- [x] **RD19 — An event matching no subscription vanishes silently.** `go/cmd/agentd/router.go:235-247`
   loops subscriptions, skips non-matches, and marks the event delivered — zero matches is
   byte-identical to a healthy no-op: no log, no row, no annotation. Write-time validation does not
   help: `go/agentdb/events.go:477-498` checks the event type's *shape* but never that the worker
@@ -412,7 +412,7 @@ was never real.
   didn't wake up" has no observable signal at all.
   **Fix:** one log line at `router.go:247` on zero matches (project, type, subscriptions
   considered) and at `compose.go:224`; validate worker existence and filter keys at write time.
-- [ ] **RD20 — Failure reasons never reach the user.** Two audits found this independently, from
+- [x] **RD20 — Failure reasons never reach the user.** Two audits found this independently, from
   opposite directions (see also RD15). `dispatch.go:437-438` logs the reason and
   `UpdateDeliveryStatus` writes status only; the code admits it at `:195-197` and the UI carries
   the limitation honestly (`web/src/desk.ts:277-279`). So the newcomer's answer to "why did my
@@ -432,7 +432,7 @@ was never real.
   **Fix:** an opt-in checkbox on topology apply ("seed the project prompt with operations doctrine
   v1"), or say in `docs/18` that operators should paste it and where it lives. Either way, stop it
   being invisible.
-- [ ] **RD22 — Postgres credentials are undocumented and the volume initialises once.**
+- [x] **RD22 — Postgres credentials are undocumented and the volume initialises once.**
   `docker-compose.yml:69` builds `DATABASE_URL` from `POSTGRES_USER`/`PASSWORD`/`DB`, defaulting to
   the literal `agentorange`; `.env.example` has **zero** `POSTGRES` hits. The trap: `pg-data`
   initialises on first `up`, so setting a password afterwards re-renders `DATABASE_URL` but not the
@@ -440,7 +440,7 @@ was never real.
   volume.
   **Fix:** document the three in `.env.example`, noting a change needs `docker compose down -v`;
   wrap the connect error with what to check.
-- [ ] **RD23 — Documentation that asserts missing capabilities that exist.** Cheap, and it misleads
+- [x] **RD23 — Documentation that asserts missing capabilities that exist.** Cheap, and it misleads
   every newcomer *and* every agent. `docs/18` carries four stale claims, all in the direction of
   "this doesn't exist" when it does: `snapshot_ttl_days` called inert though `main.go:269,288,296`
   wires the reaper; "no `GET /agent/images` route" though `httpapi.go:305` registers it and the
@@ -484,7 +484,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
 
 ### From the browser sweep (2026-07-29)
 
-- [ ] **RD25 — Five UI source files are invisible to `grep`, and three of them are invisible to
+- [x] **RD25 — Five UI source files are invisible to `grep`, and three of them are invisible to
   `git diff`.** *Filed first because it undermines the reliability of every other search anyone has
   run over `web/src`, including our own audits.* A NUL used as a composite-key separator was
   written as a **literal byte** rather than an escape, in `components/WorkerEditor.tsx` (offset
@@ -506,7 +506,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   become text again. Add a CI guard failing the build if any tracked source file contains a raw NUL.
   *Caution while fixing: this is precisely the kind of edit whose diff is invisible — verify by
   byte count, not by eye.*
-- [ ] **RD26 — A dropped SSE stream reports the turn as finished, so a truncated answer reads as a
+- [x] **RD26 — A dropped SSE stream reports the turn as finished, so a truncated answer reads as a
   complete one.** `checkSessionStatus` returns `null` on *any* failure — network error, timeout,
   non-2xx — with an empty catch (`web/src/useAgentSession.ts:460-471`), so "the probe failed" and
   "there is no active query" are the same value. A `null` status falls through to a branch that
@@ -517,7 +517,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   in its container producing output nobody will see.
   **Fix:** make `checkSessionStatus` distinguish unreachable from idle, and set the connection-lost
   error on any stream ending without `query_complete` that cannot be positively confirmed complete.
-- [ ] **RD27 — When the attention route fails, the Desk says "Nothing is waiting on you" and the
+- [x] **RD27 — When the attention route fails, the Desk says "Nothing is waiting on you" and the
   badge reads 0, with no error shown.** `useAttentionRequests.ts:81-85` sets an empty list on
   failure but leaves `available` true (only 404/501 count as "unwired"), and `attention.error` is
   **absent from the error chain** in `useDesk.ts:250` and `useAsksCount.ts:77`. Because `available`
@@ -527,7 +527,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   the tab; the approvals sit until they time out.
   **Fix:** add `attention.error` to both chains, and drive the fallback off "did this load succeed"
   rather than off `available`.
-- [ ] **RD28 — A failed load renders the first-run onboarding screen over an established project.**
+- [x] **RD28 — A failed load renders the first-run onboarding screen over an established project.**
   `useWorkers.ts:56-58` leaves the initial `[]` on failure, and `DeskPage.tsx:113` computes
   `firstRun = !loading && workerCount === 0`, replacing the entire Desk (`:137`). Same at
   `WorkersPage.tsx:123` and `WorkerList.tsx:59` (which has no error path at all). An operator with

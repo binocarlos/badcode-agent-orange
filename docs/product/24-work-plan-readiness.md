@@ -108,7 +108,7 @@ weeks (doc 23 DIL proved them pre-existing by bisecting the built image). While 
 one can read a red product-ui run as a signal about anything else — which is precisely the
 "silent success" shape this plan exists to kill, one level up.*
 
-- [ ] **P1 — "project settings: edit, save, and survive a reload": the defect is the TEST.**
+- [x] **P1 — "project settings: edit, save, and survive a reload": the defect is the TEST.**
   *Diagnosed by the orchestrator against the source; doc 23's DIL hypothesis (the settings fetch
   re-seeding the dirty baseline) is **wrong** and should not be pursued.* The Save button is
   `disabled={!s.canSave || !s.dirty}` (`web/src/components/ProjectSettingsPage.tsx:167`), and
@@ -127,7 +127,7 @@ one can read a red product-ui run as a signal about anything else — which is p
   holds with a rationale attached (the rationale rides the body, not the action).
   *Validation:* E2E on `product-ui.stack.spec.ts` — the settings test green, twice in a row.
 
-- [ ] **P2 — "a turn interrupted by a reload is still persisted": diagnose before fixing.**
+- [x] **P2 — "a turn interrupted by a reload is still persisted": diagnose before fixing.**
   `e2e/features/product-ui.stack.spec.ts:151-174` clicks `new-session`
   (`examples/web/src/Sidebar.tsx:66-75`) then waits for `page.locator('textarea').first()` to be
   enabled, and it never is within 120s. **Decide TEST or PRODUCT with evidence before changing a
@@ -159,7 +159,7 @@ one can read a red product-ui run as a signal about anything else — which is p
 *Doc 22's first-run audit: "the journey is polished right up to the point that matters, and then
 stops." These four items are that point. All four are parallel — disjoint files — except F4.*
 
-- [ ] **F1 — RD17: build the one button that makes something happen.** *The blocker.* There is no
+- [x] **F1 — RD17: build the one button that makes something happen.** *The blocker.* There is no
   way to trigger a job from the UI: no `POST` to `/agent/events` anywhere in `web/src` or
   `examples/web/src`. 11 of 14 built-in topologies are event-driven only; the other three fire
   hourly at :00 at best. The topology interview *asks* which event type wakes the worker and then
@@ -183,7 +183,7 @@ stops." These four items are that point. All four are parallel — disjoint file
   `product-ui`) with *apply a topology → emit its event from the UI → a delivery appears and goes
   `ok`*, which is the first-run path end to end and readiness bar #4.
 
-- [ ] **F2 — RD19: an event that matches nothing must say so.** Three silent no-ops, one item:
+- [x] **F2 — RD19: an event that matches nothing must say so.** Three silent no-ops, one item:
   (a) `go/cmd/agentd/router.go:235-247` loops subscriptions, `continue`s on non-matches and marks
       the event delivered — **zero matches is byte-identical to a healthy fan-out**: no log, no
       row, no annotation. "My worker didn't wake up" has no observable signal at all.
@@ -206,7 +206,7 @@ stops." These four items are that point. All four are parallel — disjoint file
   briefing selector that matches nothing logs, and the job still runs.
   *Validation:* GO + GOPG, with the revert-and-fail evidence per rule 5.
 
-- [ ] **F3 — RD22 + RD23 + RD21(docs half): the documentation stops lying.** One commit, no code.
+- [x] **F3 — RD22 + RD23 + RD21(docs half): the documentation stops lying.** One commit, no code.
   (a) **RD22 — Postgres credentials are undocumented and the volume initialises once.**
       `docker-compose.yml:69` builds `DATABASE_URL` from `POSTGRES_USER`/`POSTGRES_PASSWORD`/
       `POSTGRES_DB` (defaulting to the literal `agentorange`) and `.env.example` has **zero**
@@ -234,7 +234,7 @@ stops." These four items are that point. All four are parallel — disjoint file
   *Validation:* every command, path, route and relative link you touch resolves; GO (for the
   error-wrapping line only); no `.env` edit of any kind.
 
-- [ ] **F4 — RD18 + RD20: tell the user which model answered, and why the job failed.** ⚠
+- [x] **F4 — RD18 + RD20: tell the user which model answered, and why the job failed.** ⚠
   **CONFLICT-WATCH** *(touches `go/cmd/agentd/googleauth.go`, held by the embeddable session — the
   orchestrator confirms it is committed and merged before this starts; if not, split and land the
   RD20 half alone).*
@@ -269,7 +269,7 @@ stops." These four items are that point. All four are parallel — disjoint file
 *Doc 22's browser sweep. Every one of these is the UI **asserting a comforting falsehood** after a
 failed fetch — the silent-success class, in the surface a user actually looks at.*
 
-- [ ] **B1 — RD26: a dropped SSE stream reports the turn as finished.** `checkSessionStatus` returns
+- [x] **B1 — RD26: a dropped SSE stream reports the turn as finished.** `checkSessionStatus` returns
   `null` on *any* failure — network error, timeout, non-2xx — from an empty catch
   (`web/src/useAgentSession.ts:460-471`), so "the probe failed" and "there is no active query" are
   the same value. A `null` status falls through to a branch that only `console.log`s (`:534-547`),
@@ -286,7 +286,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   settle quietly. Non-vacuity: all three must fail against today's code.
   *Validation:* WEB.
 
-- [ ] **B2 — RD27 + RD28: a failed load must not render a reassuring empty state.** Two instances
+- [x] **B2 — RD27 + RD28: a failed load must not render a reassuring empty state.** Two instances
   of one bug; the correct pattern is already in-repo at
   `web/src/components/TopologyOnboarding.tsx:186` (gates its empty state on `error === null`).
   (a) **RD27** — `web/src/useAttentionRequests.ts:78-88` sets an empty list on failure but leaves
@@ -328,7 +328,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   *Validation:* GO + WEB; non-vacuity by adding a field to a Go struct locally and watching **both**
   tests fail, then removing it.
 
-- [ ] **B4 — RD25: finish the NUL sweep and guard it in CI.** R5 (doc 23) normalised `useEvents.ts`
+- [x] **B4 — RD25: finish the NUL sweep and guard it in CI.** R5 (doc 23) normalised `useEvents.ts`
   and `desk.ts`; **three files still carry literal NULs** — verified by byte count on
   2026-08-06, since grep cannot be trusted for this: `components/WorkerEditor.tsx` (2),
   `orgchart.ts` (3), `useStagedFeed.ts` (1). Those files are invisible to `grep` (GNU grep calls
@@ -649,4 +649,124 @@ Nothing below is in any wave; no executor touches them.*
 - **(planning) The shared test Postgres `ao-test-pg` is not running and no stopped container of that
   name exists** (`docker ps -a`, 2026-08-06) — only an unrelated `platinum-development-postgres` on
   54329. Every GOPG validation in this plan therefore has nothing to talk to until it is started.
-  Flagged to Kai rather than acted on, per the do-not-touch rule.
+  Flagged to Kai rather than acted on, per the do-not-touch rule. **Superseded within the hour:**
+  Kai started it mid-batch, four executors independently reported the contradiction, and every Go
+  item in batch 1 ran GOPG green. *An executor told "X is unavailable" who checks anyway and says
+  so is doing the job right — all four did.* Note the side effect: **migration 037 is now applied to
+  that shared database**, so a later item expecting a virgin schema must not assume one.
+
+### Batch 1 — Waves 0, 1 and 2 (2026-08-06, eight items, all merged and re-validated)
+
+*Merged into `readiness` conflict-free in the order P → B4 → B1 → B2 → F1 → F2 → F3 → F4, then
+re-validated on the merged tip: GO + GOPG green, WEB 1251 tests (from 1223), SHELL green, and the
+stack suite green — 11 specs including F1's new emit case, 12 more across config/schedule/session-MCP,
+and all 13 topology specs under `--mock-script`.*
+
+- **(P1/P2) THE FILE HAD FOUR RED TESTS, NOT TWO — and the smoke test was red too.**
+  `test.describe.configure({mode:'serial'})` aborts the rest of the block on the first failure, so
+  the worker test and the permalink test have been reported `did not run` for weeks and were read as
+  passing. Doc 23's DIL, doc 24's Wave 0 premise and my own briefing all said "exactly two". Worse:
+  `e2e/stack.spec.ts` — the top-level journey `README-stack.md` and CI treat as *the* smoke test —
+  was **also red**, for the same cause, and nobody had noticed. **A serial describe's pass count is
+  not a coverage number**; anywhere one is used as evidence of health, the same misreading is
+  waiting. All five product-UI tests and the smoke test are green now.
+- **(P2) The diagnosis was hypothesis (a) with a real product defect inside it.** The composer is
+  not disabled — it is **not mounted**. Clicking "New session" creates a session and changes nothing
+  on screen, and a pasted permalink resumes the session *behind* the Desk (the landing view since
+  K1). `App.tsx`'s own comment on `showSession` states the rule it was breaking: "resuming a session
+  behind a hidden tab would look like nothing happened". Fixed in 5 lines, keyed on the routed
+  session id so it fires on a change and never drags a human out of Workers/Settings. Recording this
+  as a test defect would have left the smoke test red — which is exactly how it stayed red for weeks.
+- **(P1) The K2 rationale omission is systemic, not one test.** `ProjectSettingsPage` and
+  `WorkerEditor` both gate Save on a non-empty "Why?", and `WorkerEditor` **re-seeds the rationale to
+  empty whenever the editor changes identity** (`seededFor` ref, `WorkerEditor.tsx:99-112`), so a
+  three-save test needs three separate reasons. A test that fills it once at the top still hangs.
+- **(all) The stale-worktree trap fired on EVERY executor that reported its base — six of eight.**
+  Not the expected pre-product-layer commit either: `dc49595 wip` over `946b237 wip` over
+  `feb5d25 Merge comprehensive-tests`, a **divergent** lineage of which `58d5fff` is not an ancestor.
+  Verified afterwards that those commits remain reachable from ~8 old session branches, so nothing
+  was destroyed by the resets. Rule 2 is not a formality; it is the single highest-yield line in
+  this plan's briefs.
+- **(B4) The plan's own suggested CI guard command was a false negative.** Doc 24 offered
+  `git ls-files -z | xargs -0 grep -lP '\x00'`; against a file that genuinely contains a NUL it
+  prints nothing and exits 1, because grep classifies the file as binary *before* applying the
+  pattern. `grep -alP` works. **The item designed to stop confident negatives shipped one in its own
+  validation command** — third instance of this exact shape in the plan's history (bash collapsing
+  `$'\x00'`, grep's binary suppression, now this).
+- **(B4) The trap fired on the executor's tooling three times mid-item**, including materialising a
+  real NUL into the new checker script and into a commit message while *writing the check that
+  forbids them*. Caught only by byte-counting, never by reading. Also: this commit's own diff is
+  still partly invisible — git compares *both* blobs, so two of the three files still render as
+  `Binary files differ` for exactly one commit.
+- **(F1) Doc 22's RD17 evidence contained a false detail.** "The replay panel prints the curl command
+  for the user to run by hand (`:91`)" is wrong — line 91 was the TextField's helperText, and
+  `grep -ran curl web/src examples/web/src` returns **nothing at all**. The gap was more complete
+  than the item claimed: there was no escape hatch of any kind. *The finding survived; the
+  supporting detail did not.*
+- **(F1) The emit sends only `{type, text}`** — core stamps the envelope and `ingestEventBody`
+  discards any envelope in the body, so sending the drafted envelope would have implied it was
+  honoured. The dialog says so, and shows the live dry-run verdict ("N of M subscriptions match") as
+  the blast radius before you accept.
+- **(F2) The worker-existence refusal is a new precondition on EVERY store-level
+  Create/UpdateSubscription** — it broke 9 existing fixture sites across 4 test files. All were
+  fixture-only fixes, but any sibling item that creates a subscription in a test now inherits it.
+  `ApplyTopology` was the real risk and is safe: it creates workers before subscriptions inside one
+  transaction (verified by running the 13 topology specs, all green).
+- **(F2) The same silent thinning exists twelve lines below the site the item names** — a memory
+  that exists with *blank content* contributes no briefing section, just as silently as one that is
+  missing. Covered; neither RD19 nor item F2 knew about it.
+- **(F3) Two of doc 22's "stale" claims were TRUE and were kept.** The worker-editor image field
+  really is unvalidated free text (`httpapi/workers.go:115` assigns `body.Image` with no check), and
+  no HTTP path really can produce a `worker_prompt_write` event. **An audit's list of false claims is
+  itself a claim.** Meanwhile RD23 *understated* one: the rationale-carrying route count is nine
+  writes plus three deletes, not six. And `docs/18` never mentioned doctrine **at all** — RD21 is
+  not "the docs undersell it", it is that the operator's guide never names it.
+- **(F3) `.env.example` contradicted itself** rather than merely being stale: "nothing reaps them on
+  a timer" at `:73-74`, then the 30-minute reclaim loop described at `:90-103`, in one file.
+- **(B1) Doc 22/24's line citations for RD26 are all off by ~26 lines** against `58d5fff` — the
+  findings were accurate, the offsets had drifted. Second citation drift found in two batches
+  (RD9's wrong path was the first). **Cite-and-verify; never edit at a cited line without reading it.**
+- **(B1, OPEN — the user-visible half is missing) The stuck-detection fix changes nothing an operator
+  sees.** Both stuck banners in `AgentChat.tsx` (`:603`, `:615`) are gated on `isStreaming`, and
+  every path producing an unconfirmed end sets `isStreaming = false`. So "keep the detector armed"
+  changes the hook's exported `stuckStatus` and no rendered pixel. B1's connection-lost error *is*
+  user-visible, so the item's core claim holds — but **someone should own the banner gating**; filed
+  as **B5** below.
+- **(B2) Two more instances of RD28's exact shape that the browser sweep missed** — `OrgChartPage`
+  ("This project has no workers yet") and `MemoryBrowserPage` ("Nothing has been remembered in this
+  project yet"), both rendering confident emptiness over a failed fetch. Fixed in the same item.
+  *A sweep that finds four instances of a pattern has probably not found all of them.*
+- **(B2) `looksUnwired` matches on the server's MESSAGE BODY, not the status code** — so a genuine
+  500 whose text happens to contain "not found" or "not configured" is misclassified as an unmounted
+  route, and the UI reports a *degradation* where there is a *failure*. It bit the executor inside
+  its own test. Not fixed (out of item scope); filed as **B6** below.
+- **(F4) The browser invents a second field it does not read.** `EventDelivery.worker` exists on the
+  Go row (since migration 024) but not in the TS interface — the UI derives it by joining through
+  the subscription, which is why a delivery whose subscription was deleted reports "the subscription
+  that started them is gone". Same shape as the `failure_reason` gap F4 just closed. Candidate for I1.
+- **(F4) Two tests pin prose.** `desk.test.ts:533` and `DeskPage.test.tsx:201` regex-match the
+  "No reason is recorded on a delivery row" copy, which F4's own change falsified; the leading phrase
+  was kept deliberately. Prose assertions are load-bearing in this package.
+- **(orchestrator) F4 sprawled to 26 files across four other items' territory** (`router.go`,
+  `events.go`, `events.ts`, `useAgentSession.ts`, `docs/18`) and still merged conflict-free with F1,
+  F2, F3 and B1 — git auto-merged every overlap. **Conflict-free is not correctness**: the merged tip
+  was re-validated end to end precisely because nothing conflicted. Future waves should keep the
+  sprawl-prone item last, as this one did by luck rather than design.
+- **(orchestrator) The topology specs skip silently without `STACK_MOCK_SCRIPT`** — 13 tests reported
+  as `skipped` in a run that otherwise looks complete. Re-run under
+  `--mock-script e2e/mock-scripts/topologies.json`: all 13 pass. **A skip is not a pass, and a
+  suite's summary line will not tell you which you got** — the same misreading as the serial-describe
+  finding above, in a different disguise.
+
+## Follow-up items filed by batch 1 (not yet scheduled)
+
+- [ ] **B5 — The stuck banners cannot fire.** `AgentChat.tsx:603,615` gate both stuck-detection
+  banners on `isStreaming`, but every unconfirmed-end path sets `isStreaming = false` (correctly —
+  holding it true would disable the composer forever, which is P2's defect in another costume). So
+  B1's armed detector reaches no pixel. Decide what an operator should see when a turn's end cannot
+  be confirmed, and render it off `stuckStatus` rather than off `isStreaming`.
+- [ ] **B6 — `looksUnwired` classifies by message text, not status code.** A 500 whose body contains
+  "not found"/"not configured" is reported to the user as "this deployment does not serve it". Route
+  the distinction off the HTTP status (404/501 = unwired) and keep the text match only as a
+  fallback. Small; the helper is now shared by three call sites (`configApi.ts`), so one fix covers
+  all of them.
