@@ -247,6 +247,12 @@ and the version high-water mark survive, and resolving a reaped version fails wi
 `ErrCustomImageReaped` rather than pointing at nothing. Bytes are deleted *before* the
 tombstone is written, never the reverse — the other order orphans the blob for ever.
 
+One exception, and it is the one that keeps a running deployment running: a version a session
+**launched from** inside the project's current `snapshot_ttl_days` window is *deferred*, not
+reaped, and the log says which image and how long ago it was used. An image in daily use is
+therefore never deleted out from under the worker pinned to it; stop launching from it and it is
+reaped on the first pass after the window.
+
 It needs `DATABASE_URL`: the catalogue it sweeps is Postgres-only, so on the SQLite fallback
 the loop is not started and the boot log says so. `off` disables it. Session *resume* snapshots
 (`agent_sessions.snapshot_handle`, written by the archive loop above) carry no TTL and are not

@@ -640,11 +640,16 @@ func (s *Store) MarkCustomImageReaped(ctx context.Context, project, name string,
 // MarkCustomImageResumed stamps `last_resumed_at` on a catalogue version — the
 // last member of §5's snapshot metadata tuple.
 //
-// It does NOT extend the expiry: §5 sets the expiry at snapshot time, and a
-// resume that quietly bought another 30 days would make the operator's storage
-// bill a function of traffic rather than of policy. What the stamp buys is the
-// ability to see that a version due for reaping is still in daily use — a fact
-// for a human or a curation worker to act on, by burning a fresh version.
+// It does not REWRITE the expiry: §5 stamps `expires_at` at snapshot time and
+// that row keeps saying what it was promised. Since 2026-08-06 (RD9) the reaper
+// nonetheless HONOURS this stamp — it defers reaping a version resumed within
+// the project's current snapshot_ttl_days window, so an image in daily use is
+// no longer deleted out from under a worker pinned to it
+// (agentkit.SnapshotReaper, `snapshotInUse`). The bill stays a function of
+// policy rather than of traffic because the deferral lapses on its own: stop
+// launching from a version and it is reaped on the first pass after the window.
+// So the stamp is both the operator's "this one is still in daily use" signal
+// and the reaper's input; it is not a second copy of the expiry.
 //
 // Like MarkCustomImageReaped this is a runtime write outside the config-event
 // seam (launching a session is not a configuration decision and §15.3's closed

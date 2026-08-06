@@ -171,8 +171,12 @@ func TestSnapshotTTL_MarkResumedStampsWithoutExtendingTheExpiry(t *testing.T) {
 	if got.LastResumedAt != at {
 		t.Fatalf("last_resumed_at = %d, want %d", got.LastResumedAt, at)
 	}
+	// The stamp does not REWRITE expires_at: §5 sets it at snapshot time and the
+	// row keeps its promise. The reaper nonetheless honours recent use by
+	// DEFERRING the reap (RD9, agentkit.snapshotInUse) — that decision lives in
+	// the reaper, not in this column, which is why this assertion still holds.
 	if got.ExpiresAt != ci.ExpiresAt {
-		t.Fatalf("resuming must NOT extend the expiry (§5 sets it at snapshot time): %d -> %d",
+		t.Fatalf("resuming must NOT rewrite the expiry (§5 sets it at snapshot time): %d -> %d",
 			ci.ExpiresAt, got.ExpiresAt)
 	}
 	// It is a stamp, not an append: a second resume overwrites the first.

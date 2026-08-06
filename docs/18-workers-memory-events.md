@@ -379,8 +379,13 @@ onto an image is `worker_update(name, {image: …})` (or the UI's image field), 
 config-evented mutation like any other — so "when did this worker start running on the toolbox
 image, and who decided that?" is a query. The pointer is resolved **at launch, every launch**, so
 a floating `toolbox` follows curation and a pinned `toolbox:1` does not. A launch also stamps
-`last_resumed_at` on the version it used, which is how an operator sees that an image due for
-reaping is still in daily use (it does **not** extend the expiry — §5 sets that at burn time).
+`last_resumed_at` on the version it used. That stamp does not rewrite `expires_at` — §5 sets that
+at burn time and the row keeps saying what it was promised — but the reaper **honours** it: a
+version resumed within the project's current `snapshot_ttl_days` window has its reap **deferred**,
+with a log line naming the image, rather than deleted out from under the worker pinned to it. Stop
+launching from a version and the deferral lapses on the first pass after the window, so storage
+stays bounded by the TTL you set. Shortening `snapshot_ttl_days` shortens the deferral too, which
+is the lever if you want the bytes back while the image is still in use.
 
 The launch chain, in full, is `explicit image > worker pointer > custom image id >
 project_settings.base_image > global default`. A worker job arrives with the pointer already
