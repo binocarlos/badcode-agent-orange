@@ -89,8 +89,17 @@ export default function DeskPage({
   // A reduced-motion operator lands on a paused surface: the setting is about
   // motion, but the operator asking for it is asking not to be chased.
   const [paused, setPaused] = useState(reduced)
-  const { desk, loading, error, asksHaveMessages, workerCount, lastSeenMs, markSeen, nowMs } =
-    useDesk({
+  const {
+    desk,
+    loading,
+    error,
+    asksHaveMessages,
+    asksRouteAvailable,
+    workerCount,
+    lastSeenMs,
+    markSeen,
+    nowMs,
+  } = useDesk({
       ...deskOptions,
       projectId,
       paused: deskOptions.paused ?? paused,
@@ -110,9 +119,20 @@ export default function DeskPage({
   const changesFeed = useStagedFeed(desk.changes, (c) => c.id, { paused })
   const asksFeed = useStagedFeed(desk.asks, (a) => a.id, { paused })
 
-  const firstRun = !loading && workerCount === 0
+  // `error === null` is load-bearing, not defensive: a failed worker list stays
+  // the initial `[]`, and without this gate an established project's Desk is
+  // replaced wholesale by "start from a topology" (RD28). The banner above says
+  // what went wrong; the panel would say something confident and false.
+  const firstRun = !loading && error === null && workerCount === 0
+  // Same gate, same reason: "the fleet ran and nobody needed you" is a claim
+  // about the fleet, and three empty lists from three failed fetches are not
+  // evidence for it.
   const nothingAtAll =
-    !loading && desk.asks.length === 0 && desk.changes.length === 0 && desk.trouble.length === 0
+    !loading &&
+    error === null &&
+    desk.asks.length === 0 &&
+    desk.changes.length === 0 &&
+    desk.trouble.length === 0
 
   return (
     <Box sx={{ p: 3, maxWidth: 900 }}>
@@ -146,8 +166,19 @@ export default function DeskPage({
           >
             {!asksHaveMessages && desk.asks.length > 0 && (
               <Alert severity="info" sx={{ mb: 2 }}>
-                This deployment does not serve <code>GET /agent/attention-requests</code>, so these
-                asks show without the sentence the worker wrote. Open the thread to read it.
+                {asksRouteAvailable ? (
+                  <>
+                    <code>GET /agent/attention-requests</code> did not answer, so these asks are
+                    rebuilt from the parked jobs and show without the sentence the worker wrote.
+                    Open the thread to read it.
+                  </>
+                ) : (
+                  <>
+                    This deployment does not serve <code>GET /agent/attention-requests</code>, so
+                    these asks show without the sentence the worker wrote. Open the thread to read
+                    it.
+                  </>
+                )}
               </Alert>
             )}
             <NewItemsPill

@@ -15,7 +15,7 @@
 // a generic failure, because that is the true and actionable statement today.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { looksUnwired, useConfigApi, type ConfigApiOptions } from './configApi.js'
 import {
   buildChangelog,
   changelogQueryParams,
@@ -57,18 +57,6 @@ export interface ConfigLogApi {
    */
   available: boolean
   reload: () => Promise<void>
-}
-
-/** Statuses that mean "this route is not mounted", not "this request failed". */
-function looksUnwired(message: string): boolean {
-  const m = message.toLowerCase()
-  return (
-    m.includes('404') ||
-    m.includes('501') ||
-    m.includes('not found') ||
-    m.includes('not configured') ||
-    m.includes('not implemented')
-  )
 }
 
 export default function useConfigLog(options: UseConfigLogOptions = {}): ConfigLogApi {

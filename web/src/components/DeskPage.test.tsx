@@ -25,6 +25,8 @@ let schedules: Record<string, unknown>[]
 let configEvents: Record<string, unknown>[]
 let attentionRequests: Record<string, unknown>[]
 let attentionStatus: number
+let workersStatus: number
+let deliveriesStatus: number
 
 const envelope = (over: Record<string, unknown> = {}) => ({
   depth: 0,
@@ -131,6 +133,8 @@ beforeEach(() => {
     },
   ]
   attentionStatus = 200
+  workersStatus = 200
+  deliveriesStatus = 200
 
   originalFetch = globalThis.fetch
   globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
@@ -142,17 +146,33 @@ beforeEach(() => {
       })
     if (u.includes('/agent/attention-requests')) {
       if (attentionStatus !== 200) {
-        return new Response('attention requests are not configured on this host', {
-          status: attentionStatus,
-        })
+        // The BODY decides "unwired vs failed" (`looksUnwired` matches on the
+        // server's own words), so an unmounted route and a broken one must not
+        // share a message here.
+        return new Response(
+          attentionStatus === 501
+            ? 'attention requests are not configured on this host'
+            : 'attention requests: database is down',
+          { status: attentionStatus },
+        )
       }
       return json({ attention_requests: attentionRequests })
     }
     if (u.includes('/agent/config-events')) return json({ config_events: configEvents })
-    if (u.includes('/agent/deliveries')) return json({ deliveries })
+    if (u.includes('/agent/deliveries')) {
+      if (deliveriesStatus !== 200) {
+        return new Response('deliveries: database is down', { status: deliveriesStatus })
+      }
+      return json({ deliveries })
+    }
     if (u.includes('/agent/subscriptions')) return json({ subscriptions })
     if (u.includes('/agent/schedules')) return json({ schedules })
-    if (u.includes('/agent/workers')) return json({ workers })
+    if (u.includes('/agent/workers')) {
+      if (workersStatus !== 200) {
+        return new Response('workers: connection refused', { status: workersStatus })
+      }
+      return json({ workers })
+    }
     if (u.includes('/agent/events')) return json({ events })
     return json({})
   }) as typeof globalThis.fetch
@@ -266,6 +286,52 @@ describe('degraded and empty', () => {
     ).toBeInTheDocument()
     expect(within(asks).getByText(/does not serve/)).toBeInTheDocument()
     expect(screen.queryByText(/Ridley invoice query/)).toBeNull()
+  })
+
+  // RD27: the route is mounted (500, not 404/501), so `available` stays true.
+  // Before the fix the empty list from the failed fetch was believed, and an
+  // operator with a parked approval read "Nothing is waiting on you".
+  it('never says nothing is waiting when the attention route failed', async () => {
+    attentionStatus = 500
+    renderDesk()
+    const asks = await screen.findByRole('region', { name: 'Asks' })
+    expect(
+      await within(asks).findByText('email-answerer · awaiting_human · 2h 40m'),
+    ).toBeInTheDocument()
+    expect(within(asks).queryByText('Nothing is waiting on you.')).toBeNull()
+    // The failure is stated, and stated as a failure rather than as "this
+    // deployment does not serve it" — which would be false here.
+    expect(within(asks).getByText(/did not answer/)).toBeInTheDocument()
+    expect(within(asks).queryByText(/does not serve/)).toBeNull()
+    expect(await screen.findByText(/database is down/)).toBeInTheDocument()
+  })
+
+  // RD28: a failed worker list leaves the initial [], and the first-run panel
+  // replaces the whole Desk — inviting an established project to start over.
+  it('does not offer the first-run state when the worker list failed to load', async () => {
+    workersStatus = 500
+    renderDesk()
+    expect(await screen.findByText(/workers: connection refused/)).toBeInTheDocument()
+    expect(screen.queryByText('This project has no workers yet')).toBeNull()
+    // The Desk itself is still there, with what did load.
+    expect(await screen.findByRole('region', { name: 'Asks' })).toBeInTheDocument()
+  })
+
+  // The same class one line down: three empty stacks after three failed loads
+  // are not evidence that the fleet ran and nobody needed you.
+  it('does not claim a quiet Desk when the loads failed', async () => {
+    // The workers DO load here (so the first-run panel is not what hides the
+    // sentence — this test would otherwise pass against the unfixed code for
+    // the wrong reason); it is the delivery list that fails.
+    deliveriesStatus = 500
+    deliveries = []
+    events = []
+    schedules = []
+    configEvents = []
+    attentionRequests = []
+    renderDesk()
+    expect(await screen.findByText(/deliveries: database is down/)).toBeInTheDocument()
+    expect(screen.queryByText(/the fleet ran and nobody needed you/)).toBeNull()
   })
 
   it('shows the first-run state — the two doors in — when the project has no workers', async () => {

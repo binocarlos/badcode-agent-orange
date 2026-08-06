@@ -41,6 +41,33 @@ export function withRationale(path: string, rationale: string): string {
   return `${path}${path.includes('?') ? '&' : '?'}rationale=${encodeURIComponent(trimmed)}`
 }
 
+/**
+ * Does this failure mean "the route is not mounted here" rather than "the
+ * request failed"? Read from the server's own words, because `configApi`
+ * surfaces the body text rather than a status code.
+ *
+ * One definition, because three hooks had byte-identical private copies
+ * (`useAttentionRequests`, `useConfigLog`, `useMemories`) and a fourth reader
+ * would have written a fourth. A caller that treats another status specially —
+ * `useMemories` reads a 400 as the selector parser talking — layers that on top
+ * rather than forking this.
+ *
+ * NOTE the shape of the mistake this cannot prevent: a genuine 500 whose body
+ * happens to contain "not configured" reads as unwired. That is why "did the
+ * load succeed" (RD27) is a separate question from "is the route mounted", and
+ * why an empty-state gate must ask the former.
+ */
+export function looksUnwired(message: string): boolean {
+  const m = message.toLowerCase()
+  return (
+    m.includes('404') ||
+    m.includes('501') ||
+    m.includes('not found') ||
+    m.includes('not configured') ||
+    m.includes('not implemented')
+  )
+}
+
 export function useConfigApi(options: ConfigApiOptions = {}): ConfigApi {
   const ctx = useAgentChatContextOptional()
   const apiBaseUrl = options.apiBaseUrl ?? ctx?.config.apiBaseUrl ?? ''

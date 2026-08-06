@@ -28,6 +28,7 @@ let subscriptions: Record<string, unknown>[]
 let schedules: Record<string, unknown>[]
 let deliveries: Record<string, unknown>[]
 let events: Record<string, unknown>[]
+let workersStatus: number
 
 const envelope = (over: Record<string, unknown> = {}) => ({
   depth: 0,
@@ -40,6 +41,7 @@ const envelope = (over: Record<string, unknown> = {}) => ({
 })
 
 beforeEach(() => {
+  workersStatus = 200
   workers = [
     { name: 'email-answerer', project: 'acme', description: 'answers inbound', enabled: true, max_instances: 1 },
     { name: 'email-reviewer', project: 'acme', description: 'reviews answers', enabled: true, max_instances: 2 },
@@ -122,7 +124,12 @@ beforeEach(() => {
     if (u.includes('/agent/deliveries')) return json({ deliveries })
     if (u.includes('/agent/subscriptions')) return json({ subscriptions })
     if (u.includes('/agent/schedules')) return json({ schedules })
-    if (u.includes('/agent/workers')) return json({ workers })
+    if (u.includes('/agent/workers')) {
+      if (workersStatus !== 200) {
+        return new Response('workers: connection refused', { status: workersStatus })
+      }
+      return json({ workers })
+    }
     if (u.includes('/agent/events')) return json({ events })
     return json({})
   }) as typeof globalThis.fetch
@@ -286,6 +293,16 @@ describe('the schematic', () => {
     await waitFor(() => expect(screen.getByText(/no workers yet/i)).toBeTruthy())
     expect(screen.getByText(/Nothing will run until something wakes them/i)).toBeTruthy()
     expect(screen.queryByTestId('org-chart-canvas')).toBeNull()
+  })
+
+  // RD28's shape, one screen over: a failed list leaves the initial [], and
+  // "this project has no workers yet" over a project that has three is the same
+  // comforting falsehood.
+  it('does not claim the project is empty when the worker list failed', async () => {
+    workersStatus = 500
+    renderChart()
+    expect(await screen.findByText(/workers: connection refused/)).toBeInTheDocument()
+    expect(screen.queryByText(/no workers yet/i)).toBeNull()
   })
 })
 
