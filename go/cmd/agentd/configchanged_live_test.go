@@ -31,7 +31,7 @@ func liveConfigProject(t *testing.T, s *agentdb.Store) string {
 	t.Helper()
 	project := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
-		_ = s.DB().Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = s.PurgeConfigEvents(context.Background(), project)
 		_ = s.DB().Exec("DELETE FROM project_events WHERE project = ?", project).Error
 	})
 	return project

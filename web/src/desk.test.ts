@@ -536,6 +536,25 @@ describe('trouble', () => {
     expect(item.sessionId).toBe('sess-c')
   })
 
+  // RD15/I1: the delivery row names its own worker (migration 024). Grouping
+  // by the subscription join alone put every schedule firing — which has no
+  // subscription — and every job whose subscription had been deleted into one
+  // nameless "worker " pile, so an operator was told the wrong thing was
+  // broken.
+  it('groups failures by the worker on the delivery row, not only by the join', () => {
+    const desk = buildDesk(
+      input({
+        deliveries: [
+          delivery({ id: 'f1', status: 'failed', worker: 'nightly-summariser', subscription_id: 'gone' }),
+          delivery({ id: 'f2', status: 'failed', worker: 'nightly-summariser', subscription_id: 'gone' }),
+        ],
+        subscriptions: [],
+      }),
+    )
+    expect(desk.trouble).toHaveLength(1)
+    expect(desk.trouble[0]!.headline).toBe('2 deliveries failed \u00b7 worker nightly-summariser')
+  })
+
   // RD20: the engine records WHY a delivery failed (migration 037). The Desk
   // shows the engine's own words; the "no reason" sentence is the fallback for
   // a row that has none, not the standing answer it used to be.

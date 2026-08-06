@@ -415,6 +415,45 @@ func (s *ConfigSnapshot) WasDeleted(ref EntityRef) (*ConfigEvent, bool) {
 // This is history and audit only — no runtime path folds (§15.4). Composition
 // reads the projection tables, and a session's `composed_prompt` already pins
 // what a given transcript actually ran with (§6.2).
+//
+// # EXPERIMENTAL — do not wire this to a read path (RD13)
+//
+// FoldTo has no production callers, only tests, and that is deliberate as of
+// 2026-08-06: a fold is NOT today a faithful reconstruction of the projection
+// tables, so a UI or a tool that presented one as "the configuration at time T"
+// would be presenting a plausible answer that quietly disagrees with the rows.
+// Three known divergences, each verified against the code rather than inherited
+// from the audit:
+//
+//  1. THE PROJECT PROMPT FOLDS AS A SECOND ENTITY FROM THE ROW IT LIVES IN.
+//     `project_prompt_write` keys as EntityProjectPrompt and
+//     `project_settings_put` as EntityProjectSettings (entityKindForAction,
+//     above), but the prompt is `ProjectSettings.SystemPrompt` — one column of
+//     one row. After a mixed sequence the two entities disagree: the older of
+//     the pair still carries the prompt as it stood when *it* was written, and
+//     nothing in the fold reconciles them. A reader has to know which to trust.
+//
+//  2. SKILLS FOLD BY NAME; THE TABLE HOLDS A ROW PER REVISION. EntityRefFor
+//     keys EntitySkill on `name` alone, so a fold shows one skill per name —
+//     the newest — while `agent_skills` holds every revision (CreateSkill
+//     allocates `Revision`, skills.go:293-321). Images got this right
+//     (`name:version` is the key); skills did not.
+//
+//  3. SEVEN WIRED PATHS MUTATE A GUARDED PROJECTION TABLE AND APPEND NOTHING.
+//     See ConfigMutationExempt in config_events.go: SetSkillVisibility and
+//     DeleteSkill (agent_skills), DeleteCustomImage, MarkCustomImageResumed and
+//     MarkCustomImageReaped (agent_custom_images), NoteScheduleProvisionFailure
+//     and ClearScheduleProvisionFailures (schedules). Each exemption is argued
+//     and most are runtime telemetry rather than decisions — but a fold cannot
+//     see any of them, so a folded row can differ from the live row without
+//     anything being wrong. (Doc 22 said five; the list is seven today, and it
+//     has only ever grown.)
+//
+// Closing these is a design question — mostly "what is the identity of an
+// entity in §15.6" — not a bug fix, so the decision taken in work-plan item I1
+// was to LABEL the gap rather than paper over it. The log itself is trustworthy
+// (migration 039 makes it append-only in the database); it is this projection
+// of it that is not yet.
 func (s *Store) FoldTo(ctx context.Context, project string, at int64) (*ConfigSnapshot, error) {
 	if strings.TrimSpace(project) == "" {
 		return nil, fmt.Errorf("agentdb: FoldTo requires a project (P5: the namespace is never inferred)")

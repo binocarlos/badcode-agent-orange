@@ -45,7 +45,8 @@ func TestImageToolsLiveRoundTrip(t *testing.T) {
 	intruder := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
 		store.DB().Exec("DELETE FROM agent_custom_images WHERE customer IN (?, ?)", project, intruder)
-		store.DB().Exec("DELETE FROM config_events WHERE project IN (?, ?)", project, intruder)
+		_ = store.PurgeConfigEvents(context.Background(), project)
+		_ = store.PurgeConfigEvents(context.Background(), intruder)
 	})
 
 	sess := liveSession(t, store, project, "curator")
@@ -153,7 +154,8 @@ func TestSkillsLiveRoundTrip(t *testing.T) {
 	intruder := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
 		store.DB().Exec("DELETE FROM agent_skills WHERE customer IN (?, ?)", project, intruder)
-		store.DB().Exec("DELETE FROM config_events WHERE project IN (?, ?)", project, intruder)
+		_ = store.PurgeConfigEvents(context.Background(), project)
+		_ = store.PurgeConfigEvents(context.Background(), intruder)
 	})
 
 	sess := liveSession(t, store, project, "curator")

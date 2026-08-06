@@ -435,7 +435,7 @@ func TestSkillsLivePostgresRoundTrip(t *testing.T) {
 	project := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
 		s.DB().Exec("DELETE FROM agent_skills WHERE customer = ?", project)
-		s.DB().Exec("DELETE FROM config_events WHERE project = ?", project)
+		_ = s.PurgeConfigEvents(context.Background(), project)
 	})
 
 	teach(t, s, project, "render-video", "# v1", "apt-get install -y ffmpeg", LabelSet{"kind": "media"})

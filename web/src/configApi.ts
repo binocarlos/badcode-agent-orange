@@ -68,6 +68,29 @@ export function looksUnwired(message: string): boolean {
   )
 }
 
+/**
+ * The error `ConfigApi.request` throws. The MESSAGE is unchanged — it is still
+ * the server's own body text, which is what every existing caller reads and
+ * renders — but the HTTP status now rides along, so a caller that needs to
+ * distinguish "this thing is gone" (404) from "the request failed" can ask the
+ * status instead of pattern-matching prose. `looksUnwired` above documents the
+ * mistake that costs (B6); nothing here changes it, this is the material a
+ * later fix would use.
+ */
+export class ApiError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
+/** The HTTP status behind a caught error, or null if it did not come from one. */
+export function errorStatus(err: unknown): number | null {
+  return err instanceof ApiError ? err.status : null
+}
+
 export function useConfigApi(options: ConfigApiOptions = {}): ConfigApi {
   const ctx = useAgentChatContextOptional()
   const apiBaseUrl = options.apiBaseUrl ?? ctx?.config.apiBaseUrl ?? ''
@@ -85,7 +108,7 @@ export function useConfigApi(options: ConfigApiOptions = {}): ConfigApi {
       const resp = await fetch(apiBaseUrl + path, { ...init, headers })
       if (!resp.ok) {
         const body = (await resp.text().catch(() => '')).trim()
-        throw new Error(body || `HTTP ${resp.status}`)
+        throw new ApiError(body || `HTTP ${resp.status}`, resp.status)
       }
       // 204 No Content (DELETE) has no body to parse.
       if (resp.status === 204) return undefined as T

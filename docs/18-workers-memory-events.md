@@ -463,6 +463,14 @@ What that gives you:
   ordinary `worker_prompt_write` whose rationale names the config-event id. Nothing is truncated;
   the regression and the revert both stay in the record. There is no destructive restore, by
   design.
+- **Append-only is enforced by the database, not by convention** (migration 039, RD13). A
+  `BEFORE UPDATE OR DELETE` trigger on `config_events` refuses every write except a change to
+  `emitted_at` (the `config.changed` watermark) — including a raw `UPDATE`/`DELETE` typed at a psql
+  prompt, which is what the previous, test-only guard could never see. The one sanctioned way to
+  remove rows is `Store.PurgeConfigEvents`, which arms an escape for the length of its own
+  transaction; it exists for test cleanup and for a retention rule that has not been written yet.
+  A superuser can still disable a trigger, and `TRUNCATE` does not fire one: this is a guardrail
+  against the application, not a defence against whoever owns the database.
 
 Caveats worth knowing before you read payloads: `config_events.created_at` is **milliseconds**
 (most `agent_*` tables use seconds), and payload timestamps are not authoritative — a create
@@ -539,6 +547,13 @@ Stated plainly because each one will otherwise be discovered the hard way.
   accepted while its session row still exists and matches the project; an expired token for an
   unknown session is 401.
 - **Semantic memory search is off in the shipped stack.** See §11.
+- **A job outlives the session it ran in** (RD15). `event_deliveries.session_id` has no foreign
+  key, so deleting a session leaves its job history behind pointing at nothing. The history is
+  right to survive — it is the record that the job ran — but the transcript is gone for good, and
+  the Jobs table now says **"transcript deleted"** in place of the link for any row whose session
+  read came back 404. Only the rows that fetched (the first `tokenAutoLoad` of them, which is what
+  the token column already costs) can know; further down the table the link stays and finds out on
+  click. Nothing recovers the transcript — session delete is a hard delete with a cascade.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
   tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
   said, never what it did.
