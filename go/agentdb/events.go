@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -497,6 +499,88 @@ func validateSubscription(sub *Subscription) error {
 	if sub.MaxFiringsPerHour < 0 {
 		return fmt.Errorf("max_firings_per_hour must not be negative (0 = unlimited)")
 	}
+	if err := validateEnvelopeFilter(sub.Filter); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateEnvelopeFilter refuses a filter key the envelope schema cannot carry.
+//
+// RD19: `envelopeFilterMatches` returns false for any key the envelope lacks,
+// so a mistyped key does not fail — it silently matches nothing, for ever. The
+// legal set is the envelope's own wire keys, so the answer is knowable at write
+// time, which is where the user is looking. Diagnostics follow the cron
+// validator: name the offending field, give the legal set, show a worked
+// example.
+func validateEnvelopeFilter(filter JSONMap) error {
+	if len(filter) == 0 {
+		return nil
+	}
+	legal := EnvelopeFilterKeys()
+	allowed := make(map[string]bool, len(legal))
+	for _, k := range legal {
+		allowed[k] = true
+	}
+	// Sorted so the message a user sees does not depend on map iteration order.
+	keys := make([]string, 0, len(filter))
+	for k := range filter {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !allowed[k] {
+			return fmt.Errorf("filter key %q is not an event envelope field: a filter may only name %s "+
+				"(example: {\"source\": \"worker\", \"worker\": \"researcher\"}). "+
+				"A key the envelope does not carry would never match, so no job would ever run",
+				k, strings.Join(legal, ", "))
+		}
+	}
+	return nil
+}
+
+// EnvelopeFilterKeys is the set of jsonb keys a subscription filter may name,
+// sorted. It is derived from EventEnvelope's own struct tags — the same tags
+// the router filters against (`envelopeFields`) — so the legal set cannot drift
+// from what is actually stored.
+func EnvelopeFilterKeys() []string {
+	t := reflect.TypeOf(EventEnvelope{})
+	keys := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// requireWorkerForSubscription refuses a subscription pointing at a worker that
+// does not exist (RD19). A subscription naming `reasearcher` is accepted today
+// and then never produces a job — the router happily creates a delivery for a
+// worker the dispatcher cannot compose. Rejecting here puts the error in front
+// of whoever typed it.
+func (s *Store) requireWorkerForSubscription(ctx context.Context, project, worker string) error {
+	if _, err := s.GetWorker(ctx, project, worker); err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			existing, listErr := s.ListWorkers(ctx, project)
+			have := "the project has no workers yet"
+			if listErr == nil && len(existing) > 0 {
+				names := make([]string, 0, len(existing))
+				for _, w := range existing {
+					names = append(names, w.Name)
+				}
+				have = "workers in this project: " + strings.Join(names, ", ")
+			}
+			return fmt.Errorf("worker %q does not exist in project %s — a subscription naming a worker that "+
+				"does not exist would deliver to nobody (%s). Create the worker first, or fix the name",
+				worker, project, have)
+		}
+		return err
+	}
 	return nil
 }
 
@@ -509,6 +593,9 @@ func validateSubscription(sub *Subscription) error {
 // who/why; a human/API edit passes the zero value.
 func (s *Store) CreateSubscription(ctx context.Context, sub *Subscription, cw ConfigWrite) (*Subscription, error) {
 	if err := validateSubscription(sub); err != nil {
+		return nil, err
+	}
+	if err := s.requireWorkerForSubscription(ctx, sub.Project, strings.TrimSpace(sub.Worker)); err != nil {
 		return nil, err
 	}
 	if sub.ID == "" {
@@ -584,6 +671,9 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *Subscription, cw Co
 		return nil, fmt.Errorf("subscription id is required")
 	}
 	if err := validateSubscription(sub); err != nil {
+		return nil, err
+	}
+	if err := s.requireWorkerForSubscription(ctx, sub.Project, strings.TrimSpace(sub.Worker)); err != nil {
 		return nil, err
 	}
 	existing, err := s.GetSubscription(ctx, sub.Project, sub.ID)

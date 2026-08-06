@@ -20,7 +20,10 @@ func newEventStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&ProjectEvent{}, &Subscription{}, &EventDelivery{}, &ConfigEvent{}); err != nil {
+	// &Worker{} joined the set when RD19 made a subscription's worker a
+	// write-time precondition: without the table every CreateSubscription in
+	// this file would fail on the existence check rather than on what it tests.
+	if err := db.AutoMigrate(&ProjectEvent{}, &Subscription{}, &EventDelivery{}, &ConfigEvent{}, &Worker{}); err != nil {
 		t.Fatalf("automigrate event tables: %v", err)
 	}
 	return &Store{gdb: db}
@@ -42,9 +45,23 @@ func seedEvent(t *testing.T, s *Store, project, typ, text string) *ProjectEvent 
 	return ev
 }
 
+// seedWorkerRow inserts a worker row directly — no config event, so a test that
+// counts config events is not perturbed by satisfying RD19's write-time
+// "the worker must exist" precondition. Idempotent.
+func seedWorkerRow(t *testing.T, s *Store, project, name string) {
+	t.Helper()
+	if _, err := s.GetWorker(context.Background(), project, name); err == nil {
+		return
+	}
+	if err := s.gdb.Create(NewWorker(project, name)).Error; err != nil {
+		t.Fatalf("seed worker %s/%s: %v", project, name, err)
+	}
+}
+
 // seedSubscription creates an enabled subscription, failing the test on error.
 func seedSubscription(t *testing.T, s *Store, project, eventType, worker string) *Subscription {
 	t.Helper()
+	seedWorkerRow(t, s, project, worker)
 	sub, err := s.CreateSubscription(context.Background(), &Subscription{
 		Project: project, EventType: eventType, Worker: worker, Enabled: true,
 	}, ConfigWrite{})
@@ -271,6 +288,7 @@ func TestSubscriptionsValidation(t *testing.T) {
 	}
 
 	// The two legal patterns are exact and trailing-`*`.
+	seedWorkerRow(t, s, "acme", "w")
 	for _, ok := range []string{"email.received", "email.*", "worker.finished"} {
 		if _, err := s.CreateSubscription(ctx, &Subscription{
 			Project: "acme", EventType: ok, Worker: "w", Enabled: true,
@@ -286,6 +304,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	s := newEventStore(t)
 	ctx := context.Background()
 
+	seedWorkerRow(t, s, "acme", "email-reviewer")
 	sub, err := s.CreateSubscription(ctx, &Subscription{
 		Project:   "acme",
 		EventType: "worker.finished",

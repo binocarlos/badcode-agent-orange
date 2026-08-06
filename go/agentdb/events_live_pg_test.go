@@ -24,8 +24,23 @@ func liveProject(t *testing.T, s *Store) string {
 		_ = s.DB().WithContext(ctx).Exec("DELETE FROM event_deliveries WHERE project = ?", project).Error
 		_ = s.DB().WithContext(ctx).Exec("DELETE FROM subscriptions WHERE project = ?", project).Error
 		_ = s.DB().WithContext(ctx).Exec("DELETE FROM project_events WHERE project = ?", project).Error
+		_ = s.DB().WithContext(ctx).Exec("DELETE FROM workers WHERE project = ?", project).Error
 	})
 	return project
+}
+
+// liveWorker inserts a worker row with raw SQL — RD19 made "the named worker
+// exists" a write-time precondition of CreateSubscription, and raw SQL keeps
+// this fixture out of the config log where these tests do not expect it.
+func liveWorker(t *testing.T, s *Store, project, name string) {
+	t.Helper()
+	if err := s.DB().Exec(
+		`INSERT INTO workers (project, name, description, system_prompt, mcp_config, image, briefing,
+		                      max_instances, enabled, created_at, updated_at)
+		 VALUES (?, ?, '', '', '{}', '', NULL, 1, TRUE, 0, 0)`,
+		project, name).Error; err != nil {
+		t.Fatalf("seed worker %s/%s: %v", project, name, err)
+	}
 }
 
 func TestLivePG_EventsSchema023(t *testing.T) {
@@ -203,6 +218,7 @@ func TestLivePG_SubscriptionsRateLimitColumn(t *testing.T) {
 	s := openLivePG(t)
 	project := liveProject(t, s)
 	ctx := context.Background()
+	liveWorker(t, s, project, "answerer")
 
 	sub, err := s.CreateSubscription(ctx, &Subscription{
 		Project: project, EventType: "email.*", Worker: "answerer", Enabled: false,
