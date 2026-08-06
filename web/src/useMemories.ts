@@ -90,7 +90,8 @@ export default function useMemories(options: UseMemoriesOptions = {}): MemoriesA
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed to load memories'
         setMemories([])
-        if (looksUnwired(message)) {
+        // The error, not the message — the status decides "unmounted" (B6).
+        if (looksUnwired(err)) {
           setAvailable(false)
           setError(message)
         } else if (looksLikeSelectorError(message)) {

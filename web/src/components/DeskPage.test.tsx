@@ -27,6 +27,7 @@ let attentionRequests: Record<string, unknown>[]
 let attentionStatus: number
 let workersStatus: number
 let deliveriesStatus: number
+let configEventsStatus: number
 
 const envelope = (over: Record<string, unknown> = {}) => ({
   depth: 0,
@@ -135,6 +136,7 @@ beforeEach(() => {
   attentionStatus = 200
   workersStatus = 200
   deliveriesStatus = 200
+  configEventsStatus = 200
 
   originalFetch = globalThis.fetch
   globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
@@ -146,19 +148,27 @@ beforeEach(() => {
       })
     if (u.includes('/agent/attention-requests')) {
       if (attentionStatus !== 200) {
-        // The BODY decides "unwired vs failed" (`looksUnwired` matches on the
-        // server's own words), so an unmounted route and a broken one must not
-        // share a message here.
+        // The STATUS decides "unwired vs failed" since B6 — 404/501 mean the
+        // host does not serve the route and everything else is a failure. The
+        // bodies below deliberately share the words the old text match keyed
+        // on, so a regression to prose-matching fails these tests.
         return new Response(
           attentionStatus === 501
             ? 'attention requests are not configured on this host'
-            : 'attention requests: database is down',
+            : 'attention requests: relation "attention_requests" not found, database is down',
           { status: attentionStatus },
         )
       }
       return json({ attention_requests: attentionRequests })
     }
-    if (u.includes('/agent/config-events')) return json({ config_events: configEvents })
+    if (u.includes('/agent/config-events')) {
+      if (configEventsStatus !== 200) {
+        return new Response('config log: the changelog table was not found', {
+          status: configEventsStatus,
+        })
+      }
+      return json({ config_events: configEvents })
+    }
     if (u.includes('/agent/deliveries')) {
       if (deliveriesStatus !== 200) {
         return new Response('deliveries: database is down', { status: deliveriesStatus })
@@ -304,6 +314,18 @@ describe('degraded and empty', () => {
     expect(within(asks).getByText(/did not answer/)).toBeInTheDocument()
     expect(within(asks).queryByText(/does not serve/)).toBeNull()
     expect(await screen.findByText(/database is down/)).toBeInTheDocument()
+  })
+
+  // B6: the 500 body above says "not found", which is exactly what the old
+  // text-matching classifier keyed on. If the classifier ever goes back to
+  // reading prose, the assertions above flip and this deployment's outage is
+  // reported to the operator as a deployment limitation.
+  it('a failed config log is an error, not "this deployment does not serve it"', async () => {
+    configEventsStatus = 500
+    renderDesk()
+    // useDesk drops `log.error` from its chain whenever the log reads as
+    // unmounted, so a misclassified 500 shows the operator nothing at all.
+    expect(await screen.findByText(/the changelog table was not found/)).toBeInTheDocument()
   })
 
   // RD28: a failed worker list leaves the initial [], and the first-run panel

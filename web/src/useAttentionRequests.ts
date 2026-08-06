@@ -86,7 +86,10 @@ export default function useAttentionRequests(
     } catch (err) {
       const message = err instanceof Error ? err.message : 'failed to load attention requests'
       setRequests([])
-      setAvailable(!looksUnwired(message))
+      // Classify off the error itself, not off `message`: the HTTP status is
+      // what says "this host does not serve the route", and a 500 whose prose
+      // mentions "not found" is a failure (B6).
+      setAvailable(!looksUnwired(err))
       setOk(false)
       setError(message)
     } finally {
