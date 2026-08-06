@@ -88,6 +88,16 @@ func (s *MemStore) GetSession(ctx context.Context, id string) (*agentdb.Session,
 	return &cp, nil
 }
 
+// SessionExists satisfies agentkit.SessionExistenceChecker: a definite yes/no
+// about the row, never an error, so tests can drive the archive loop's
+// orphan-container branch.
+func (s *MemStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.sessions[id]
+	return ok, nil
+}
+
 func (s *MemStore) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agentdb.Session, error) {
 	s.mu.Lock()
 	cp := *sess

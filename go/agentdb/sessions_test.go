@@ -526,3 +526,39 @@ func TestListSessionUsers(t *testing.T) {
 		t.Fatalf("expected empty non-nil slice, got %#v", empty)
 	}
 }
+
+// TestSessionExistsIsDefiniteOrAnError pins the contract the archive loop leans
+// on (doc 22, RD8): SessionExists answers the row question WITHOUT the
+// "not found is an error" conflation GetSession has, and without pattern
+// matching an error string. A false here authorises destroying a container, so
+// it must never be produced by anything other than a successful query that
+// found nothing.
+func TestSessionExistsIsDefiniteOrAnError(t *testing.T) {
+	ctx := context.Background()
+	s := newSessionTestStore(t)
+	mustCreateSession(t, s, &Session{
+		ID: "s-present", Customer: "acme", Job: "j1",
+		WorkflowID: "chat", UserEmail: "u@acme.com",
+	})
+
+	if ok, err := s.SessionExists(ctx, "s-present"); err != nil || !ok {
+		t.Fatalf("SessionExists(present) = %v, %v; want true, nil", ok, err)
+	}
+	// GetSession makes absence an error; SessionExists makes it an answer.
+	if _, err := s.GetSession(ctx, "s-gone"); err == nil {
+		t.Fatal("GetSession on a missing row returned no error — the premise of this method has changed")
+	}
+	ok, err := s.SessionExists(ctx, "s-gone")
+	if err != nil {
+		t.Fatalf("SessionExists(missing) returned an error (%v) — an error means 'assume present' and would leak the port for ever", err)
+	}
+	if ok {
+		t.Fatal("SessionExists(missing) = true")
+	}
+
+	// An empty id is a caller bug, not an absent session: it must not answer
+	// "false" and license a teardown.
+	if ok, err := s.SessionExists(ctx, ""); err == nil || ok {
+		t.Fatalf(`SessionExists("") = %v, %v; want false, error`, ok, err)
+	}
+}

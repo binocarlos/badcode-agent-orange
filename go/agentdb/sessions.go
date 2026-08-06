@@ -169,6 +169,25 @@ func (s *Store) GetSession(ctx context.Context, id string) (*Session, error) {
 	return &session, nil
 }
 
+// SessionExists reports whether a session row is present, WITHOUT the
+// "not found is an error" conflation GetSession has. It answers the archive
+// loop's question — "is this container's session gone, or did the snapshot just
+// fail?" — and it answers it by counting rows rather than by pattern-matching an
+// error string, so a database that is merely unreachable returns an error and
+// never a confident "absent". Callers must treat any error as "assume present".
+//
+// It satisfies agentkit.SessionExistenceChecker.
+func (s *Store) SessionExists(ctx context.Context, id string) (bool, error) {
+	if id == "" {
+		return false, fmt.Errorf("cannot check agent session without ID")
+	}
+	var n int64
+	if err := s.gdb.WithContext(ctx).Model(&Session{}).Where("id = ?", id).Count(&n).Error; err != nil {
+		return false, fmt.Errorf("failed to check agent session %q: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 func (s *Store) UpdateSession(ctx context.Context, session *Session) (*Session, error) {
 	if session.ID == "" {
 		return nil, fmt.Errorf("cannot update agent session without ID")

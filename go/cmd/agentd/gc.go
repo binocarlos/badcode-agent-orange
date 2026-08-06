@@ -19,7 +19,17 @@ package main
 // session idle longer than this and drops its container. The SESSION ROW
 // SURVIVES: the next message restores it from the snapshot handle and the
 // conversation continues. Nothing a user can see is lost — what is reclaimed is
-// a container, its memory, and the host port. 30 minutes is the operator's
+// a container, its memory, and the host port.
+//
+// That last sentence was NOT true until 2026-08-06 (doc 22, RD12): the archive
+// path shared teardownInstance with Destroy, so every idle archive stamped the
+// session's still-`live` artifacts `lost` — a permanent, never-regressed lie
+// about files that the snapshot brought straight back on the next message. The
+// teardown now takes a flag and the archive path skips it. The claim above is
+// checked by TestArchiveDoesNotMarkArtifactsLost in go/runner_archive_test.go,
+// which is the only reason to believe it.
+//
+// 30 minutes is the operator's
 // chosen point on the one real trade-off: shorter reclaims sooner but pays a
 // restore (an image materialise) more often; longer keeps chat instant for
 // longer at the cost of holding capacity for a conversation nobody is having.
