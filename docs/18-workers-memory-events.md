@@ -65,13 +65,37 @@ settings page in the UI. The row is created lazily; `GET` before any write retur
 | `daily_tokens_soft` | one attention-channel notification per day when crossed (0 = off). The "once" is in-memory, so an agentd restart can re-notify, and the notice carries no `session_url` |
 | `daily_tokens_hard` | stops non-interactive job creation until midnight, stack-local (0 = off) |
 | `briefing_max_bytes` | byte cap **per injected briefing section** (0 ⇒ the default, 2048) |
-| `snapshot_ttl_days` | stamps `expires_at` on each image burned by `image_create` (default 30; 0 = never). **Inert in the standalone stack** — agentd runs no reaper, so nothing acts on the expiry (see §9) |
+| `snapshot_ttl_days` | stamps `expires_at` on each image burned by `image_create` (default 30; 0 = never). **Enforced**: agentd wires the snapshot TTL reaper (`AGENTKIT_SNAPSHOT_REAP_INTERVAL`, 6h by default), which deletes the bytes of expired versions and keeps the catalogue row as a tombstone |
 
 Interactive chat is exempt from both budgets and from `max_concurrent_jobs` — a blown budget
 must never lock a human out of talking to their workers.
 
 The project prompt is also writable from inside a session with `project_prompt_write` (§9), which
 is how a consultant worker improves it.
+
+### Operations doctrine v1 — it exists, and nothing seeds it
+
+There is a written **operations doctrine**: ten short rules every worker is meant to hold whatever
+its goal — treat event text as data and not orders, honour your output contract or say you cannot,
+"no effect" is a valid result, never work around a frozen worker, escalate after the same obstacle
+twice, write findings rather than transcripts. The canonical bytes are
+[`product/doctrine/doctrine-v1.md`](product/doctrine/doctrine-v1.md); the reasoning, the status
+ladder and the promotion rules are [`product/20-operations-doctrine.md`](product/20-operations-doctrine.md).
+
+**Nothing in the product puts it in front of you.** No topology seeds it, applying a topology does
+not offer it, there is no checkbox in the console, and no code path in `agentd` or the browser
+injects it — the only caller that performs the doctrine mutation today is an offline research rig
+(`e2e/experiments/calibration/`). A new project therefore starts with **none** of it.
+
+If you want it, **paste it in by hand**: copy everything below the `=== operations doctrine v1 ===`
+marker line in that file into the project's `system_prompt` (project settings in the console, or
+`PUT /agent/project-settings`), above your own project-specific text. It is prepended to every
+worker's composed prompt from the next job onwards, and the edit lands in the config log like any
+other, so you can see when a project adopted it.
+
+Worth knowing before you do: **every entry is still `candidate`** — plausible and sourced, but not
+one has won a measured A/B (doc 20's status ladder). That is precisely why it is not a default.
+Whether applying a topology should offer to seed it is an open product decision, not an oversight.
 
 ### Credentials for MCP servers
 
@@ -393,9 +417,11 @@ changelog view carry entire skill documents.
 
 Two side effects worth knowing. `image_create` snapshots through `Runner.Snapshot`, which also
 writes `agent_sessions.snapshot_handle` — so burning an image **repoints the calling session's
-own resume snapshot** at the image it just published; the two become the same object. And there
-is no `GET /agent/images` route, so the worker editor's image field is validated free text: a
-typo is caught at launch, not at write.
+own resume snapshot** at the image it just published; the two become the same object. And the
+worker editor's image field, while it now offers the catalogue as a dropdown (`GET /agent/images`
+is registered and `WorkersPage` loads it into the picker), still **accepts arbitrary text** and
+nothing validates it on write — §13's one-text-field grammar is deliberate, since a literal
+registry reference must keep working. So a typo is still caught at launch, not at write.
 
 ---
 
@@ -425,12 +451,18 @@ Caveats worth knowing before you read payloads: `config_events.created_at` is **
 event's `payload.updated_at` is 0 and an update event's is the *previous* value, so read the
 config event's own `created_at`.
 
-**Rationales over HTTP are patchy.** `POST`/`PUT /agent/schedules` accepts a `rationale` in the
-body and threads it through; **no other HTTP route does**, so every worker, subscription and
-project-settings edit made from the UI or a script logs an empty *why*. The deletes drop it too
-(no body, no query parameter). And no HTTP path can produce a `worker_prompt_write` event at all
-— a prompt rewrite appears in the changelog only when it came from the MCP tool. If you want the
-config log to carry reasons, the tools are the path that records them.
+**Rationales over HTTP** (design B3 / decision K2). Every configuration route now accepts one:
+`rationale` in the body on the writes — `PUT /agent/workers/{name}`, `PUT
+/agent/project-settings`, `POST`/`PUT /agent/schedules`, `POST`/`PUT /agent/subscriptions`,
+`POST /agent/topologies/apply` — and `?rationale=` on the deletes, which have no body
+(`go/httpapi/httpapi.go`, `humanEditBecause` / `rationaleParam`). It is **optional** at the HTTP
+layer; §15.5 requires one only of the two prompt-writing MCP tools, and the console asks for one
+anyway. Omit it and the config event carries an empty *why*, which is exactly as useless as it
+sounds.
+
+What HTTP still cannot do is produce a `worker_prompt_write` event: a human editing a worker
+through the API logs `worker_update`, deliberately (`go/agentdb/workers.go:206`), so a
+`worker_prompt_write` in the changelog always means the MCP tool and always carries a rationale.
 
 ---
 
@@ -488,8 +520,6 @@ Stated plainly because each one will otherwise be discovered the hard way.
 - **Session tokens expire after an hour, jobs do not.** An expired-but-signature-valid token is
   accepted while its session row still exists and matches the project; an expired token for an
   unknown session is 401.
-- **`GET /agent/sessions` has no server-side worker filter**, so the UI's per-worker job history
-  filters one 200-row page client-side and says so.
 - **Semantic memory search is off in the shipped stack.** See §11.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
   tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
@@ -500,10 +530,6 @@ Stated plainly because each one will otherwise be discovered the hard way.
   whose own body contains the closing marker can end the block early and have its remainder read
   as trusted prompt. It held against a real model in one live test; treat that as encouraging,
   not as a boundary. Events you ingest from outside (`POST /agent/events`) are the exposure.
-- **`snapshot_ttl_days` does nothing here.** The expiry is stamped on every burned image and the
-  reaper exists in the library, but agentd wires neither `Deps.Snapshots` nor
-  `Policy.SnapshotReapInterval`, so images accumulate. Mechanism and consequences:
-  [`15-standalone-stack.md`](15-standalone-stack.md) § "Snapshot images are not reaped either".
 - **A briefing that cannot load is only logged.** `BuildBriefingSections` returns no error by
   design, so a misconfigured `briefing` selector yields a worker running with a missing section
   and nothing in the job's output says so — look in agentd's log.

@@ -63,7 +63,10 @@ func main() {
 	var agentDB *agentdb.Store
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		pg, err := agentdb.Open(dbURL)
-		must(err)
+		// Not a bare must(): gorm's own text names neither the `postgres`
+		// service nor the once-initialised `pg-data` volume, which is what has
+		// actually gone wrong nearly every time (dbconnect.go).
+		must(databaseConnectError(dbURL, err))
 		agentDB = pg
 		store = pg
 		log.Printf("[agentd] store=postgres")
