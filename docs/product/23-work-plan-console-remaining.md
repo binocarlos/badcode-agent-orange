@@ -108,7 +108,7 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
 
 ## R4 — Document the stack's two boot traps *(docs only; `.env` itself is off-limits)*
 
-- [ ] Found on the live pass (doc 21 DIL): (a) `.env` as committed sets
+- [x] Found on the live pass (doc 21 DIL): (a) `.env` as committed sets
   `AGENTKIT_BLOB_BACKEND=gcs` with `GOOGLE_APPLICATION_CREDENTIALS=/gcp/key.json` — a
   *directory* — so agentd exits at boot; (b) `.env` holds a real `ANTHROPIC_API_KEY`, so a
   plain `docker compose up` runs a REAL billable agent, and mock mode needs BOTH credentials
@@ -221,6 +221,21 @@ AGENTKIT_REGISTRY_BACKEND=blobarchive GOOGLE_APPLICATION_CREDENTIALS= docker com
   simply landed at the top of the feed. Not investigated further (new rows without a reload is
   what the item asked to see, and it is unambiguous). If the pill is meant to stage arrivals even
   at rest, that is a separate question for whoever owns `useStagedFeed`.
+- **(R4) The mechanism behind trap (a), which doc 21 recorded but did not explain**:
+  `GOOGLE_APPLICATION_CREDENTIALS` is *both* the variable agentd reads *and* the host side of the
+  key bind-mount (`docker-compose.yml:150`, `${GOOGLE_APPLICATION_CREDENTIALS:-/dev/null}:/gcp/key.json`).
+  Setting it to `/gcp/key.json` mounts that path onto itself; with no such file on the host,
+  Docker creates the missing source as a **directory**, and agentd exits reading it. That is why
+  the fix is to blank the variable, not to point it somewhere else.
+- **(R4) `.env`'s registry backend is `ociregistry`, not `gcs`** — only the *blob* backend is
+  `gcs`. The override set is unchanged (`AGENTKIT_REGISTRY_BACKEND=blobarchive` is still needed),
+  but the item's wording implies both were `gcs`.
+- **(R4) Both halves were verified, not just the happy path.** The documented command from a
+  clean `docker compose down`: four services running, HTTP 200 on 8081, the
+  `ANTHROPIC_API_KEY unset → MOCK model proxy` line present, no gcsblob error. And the documented
+  *failure* reproduces exactly — a plain `docker compose up` with the committed `.env` leaves
+  agentd `Exited (1)` on `gcsblob: … read /gcp/key.json: is a directory`. A warning nobody has
+  re-run is worth much less than one that has been.
 - **(R2) A fast green test here is not necessarily a hollow one.** The topology+job test passes
   in ~8s, which looks too quick for a container job; it is real — `docker compose logs agentd`
   shows `[router] … cx-scribe.task → cx-scribe (<session>) = started`. Worth knowing before
