@@ -22,6 +22,47 @@ Model credentials (precedence: API key > subscription token > mock):
   directly. See the caveat in `.env.example`.
 - **Neither** → a deterministic mock model replies, so the UI still works offline.
 
+## If you have a real `.env`: two traps that bite before you see anything
+
+The three commands above assume `.env` came from `.env.example`. A **working**
+`.env` — one carrying this project's real GCP and Anthropic settings — does not
+boot the stack locally, and would bill you if it did. Both were found on a live
+run (doc 21); neither is a product defect, and neither is fixed by editing
+`.env`, which is a real credential file.
+
+**(a) It exits at boot on GCS credentials.** `.env` sets
+`AGENTKIT_BLOB_BACKEND=gcs` with `GOOGLE_APPLICATION_CREDENTIALS=/gcp/key.json`.
+That variable is *also* the host side of the key bind-mount, so compose mounts
+`/gcp/key.json` onto `/gcp/key.json`; with no such file on the host Docker
+creates it as a **directory**, and agentd dies with:
+
+    gcsblob: new client: dialing: read /gcp/key.json: is a directory
+
+**(b) A plain `docker compose up` runs a REAL, billable agent**, because `.env`
+holds a real `ANTHROPIC_API_KEY`. Mock mode needs **both** credentials blanked —
+the subscription token as well as the API key.
+
+### The known-good local/mock invocation
+
+Every override is load-bearing:
+
+    WEB_PORT=8081 \
+    ANTHROPIC_API_KEY= CLAUDE_CODE_OAUTH_TOKEN= \
+    AGENTKIT_BLOB_BACKEND=fs AGENTKIT_REGISTRY_BACKEND=blobarchive \
+    GOOGLE_APPLICATION_CREDENTIALS= \
+    docker compose up -d --build
+
+Then open **http://localhost:8081**. `WEB_PORT=8081` is there so this stack can
+run alongside the e2e stack, which takes 8080 (`./e2e/run-stack-e2e.sh`); drop it
+if nothing else holds that port. Check before you start — the compose stack is a
+serial resource.
+
+**Read the boot log before you seed anything.** agentd says which model it chose,
+and this is the line that means you are not being billed:
+
+    docker compose logs agentd | grep 'model proxy'
+    [agentd] ANTHROPIC_API_KEY unset → MOCK model proxy (set it for a real agent)
+
 ## The product layer needs Postgres
 
 The compose stack sets `DATABASE_URL`, so this is only a trap if you run `agentd`

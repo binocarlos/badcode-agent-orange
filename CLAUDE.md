@@ -98,6 +98,10 @@ docker compose up --build     # then open http://localhost:8080
 ```
 
 - With `ANTHROPIC_API_KEY` → a real agent. Without → a deterministic mock model (works offline).
+- **Those two lines assume a `.env` copied from `.env.example`.** A real `.env` (this project's
+  actual GCP + Anthropic settings) exits at boot on the GCS key and would run a *billable* agent
+  if it didn't — see **"If you have a real `.env`: two traps"** in `README-stack.md` for the
+  known-good local/mock invocation and the boot-log line that proves mock mode.
 - Services: `web` (UI), `agentd` (API+orchestrator+router+scheduler), `dind` (Docker-in-Docker,
   one container per session), `init-sandbox` (builds the sandbox image into DinD), `postgres`
   (pgvector image — sessions *and* the whole product layer).
