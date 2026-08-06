@@ -38,11 +38,14 @@ type sessionResp struct {
 
 // Status reports combined runtime + durable state for a session.
 func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 	status, err := h.cfg.Runner.Status(r.Context(), ref)
 	if err != nil {
@@ -68,11 +71,14 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 
 // Cancel cancels the in-flight query without tearing the instance down.
 func (h *Handlers) Cancel(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 	if err := h.cfg.Runner.Stop(r.Context(), ref); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -88,6 +94,13 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := r.PathValue("id")
+	// GetSession does its own row-loading tenancy check below rather than going
+	// through ownsSession (it would double-load the row), so the session-scope
+	// leg has to be applied explicitly here.
+	if !scopeAllows(id, sid) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 
 	// When AgentDB is set, return the full session row (includes title, metadata, etc.)
 	if h.cfg.AgentDB != nil {
@@ -192,7 +205,17 @@ func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 // ownsSession loads the session row and enforces the caller's customer scope,
 // mirroring the GetSession tenancy check. Writes 404 and returns false on a
 // missing or cross-tenant session (404 not 403, so existence isn't leaked).
+//
+// It is the single authorization gate for every session-by-ID route; see the
+// tenancy contract in httpapi.go.
 func (h *Handlers) ownsSession(w http.ResponseWriter, r *http.Request, id Identity, sid string) bool {
+	// A session-scoped credential (an embed token) is confined to one id before
+	// we even look the row up — no store round-trip, and no way to probe which
+	// sibling sessions exist by timing the response.
+	if !scopeAllows(id, sid) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return false
+	}
 	var customer string
 	if h.cfg.AgentDB != nil {
 		sess, err := h.cfg.AgentDB.GetSession(r.Context(), sid)
@@ -214,6 +237,13 @@ func (h *Handlers) ownsSession(w http.ResponseWriter, r *http.Request, id Identi
 		return false
 	}
 	return true
+}
+
+// scopeAllows reports whether a credential may act on this session id. An empty
+// SessionScope is unrestricted (within Customer); a non-empty one must match
+// exactly.
+func scopeAllows(id Identity, sid string) bool {
+	return id.SessionScope == "" || id.SessionScope == sid
 }
 
 // snapshotResp is the JSON shape returned by the Snapshot handler.

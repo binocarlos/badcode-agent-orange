@@ -34,11 +34,17 @@ func (fw flushWriter) Write(p []byte) (int, error) {
 
 // Stream attaches a new SSE client to the session's ongoing event stream.
 func (h *Handlers) Stream(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	// Before any SSE header is written: once we commit to 200 + text/event-stream
+	// the only way left to refuse is an error frame, which a client would render
+	// as a broken session rather than a missing one.
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -63,11 +69,14 @@ func (h *Handlers) Stream(w http.ResponseWriter, r *http.Request) {
 
 // Reconnect reattaches a disconnected SSE client to an in-flight query stream.
 func (h *Handlers) Reconnect(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -99,6 +108,9 @@ func (h *Handlers) SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	var body sendMessageBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)

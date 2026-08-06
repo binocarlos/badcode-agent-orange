@@ -18,6 +18,12 @@ import (
 type Identity struct {
 	UserEmail string
 	Customer  string // the tenant the principal may act as
+	// SessionScope, when non-empty, narrows this credential to a single
+	// session id. It is what an embed token carries: a browser inside a
+	// third-party page may stream and message exactly the session it was
+	// minted for, and nothing else in the project. Empty means unrestricted
+	// within Customer — the shape every console JWT and API key has.
+	SessionScope string
 }
 
 // IdentityFunc resolves the principal from a request. The host reads its own
@@ -96,19 +102,29 @@ type Config struct {
 
 // Tenancy contract
 //
-// Handlers that act on an existing session by ID — Status, Cancel, GetSession,
-// DeleteSession, Restore, Messages, QueryEvents, Stream, Reconnect, and the
-// artifact routes — do NOT verify that the authenticated principal owns that
-// session. The host owns the durable session catalog and MUST authorize the
-// session ID for the principal (e.g. in its auth middleware or route layer)
-// before the request reaches these handlers. This is why ListSessions and
-// SearchMessages return an empty array here: the library has no catalog to
-// enumerate or authorize against, so the host overrides those routes.
+// Every handler that acts on an existing session by ID — Status, Cancel,
+// GetSession, DeleteSession, Restore, Snapshot, Archive, Messages, QueryEvents,
+// Stream, Reconnect, SendMessage and the artifact routes — now verifies that the
+// authenticated principal owns that session, via ownsSession. It loads the row
+// from AgentDB (or Store) and answers 404 — never 403, which would confirm the
+// session exists — when Identity.Customer does not match.
 //
-// Identity is instead *stamped* onto writes — CreateSession and SendMessage —
-// where the principal's Customer/UserEmail win for tenancy. GetSession adds a
-// cheap defense-in-depth tenant check because it already loads the row, but that
-// is a backstop, not the primary authorization boundary.
+// This used to be delegated entirely to the host, and the shipped host (agentd)
+// did not do it: seven of those routes called identify() for authentication and
+// then discarded the identity. The check moved in here because it is a
+// precondition for issuing a second kind of credential (project API keys and
+// session-scoped embed tokens), and because a host cannot enforce it without
+// duplicating this package's route table. Hosts that already authorize session
+// IDs upstream keep working: the check is idempotent and skipped whenever either
+// side's customer is empty, which is also what keeps dev-open mode alive.
+//
+// Identity.SessionScope is enforced in the same place: a credential carrying it
+// may touch only that one session id, whatever its Customer says.
+//
+// ListSessions and SearchMessages still return an empty array without an
+// AgentDB: the library has no catalog to enumerate, so the host overrides those.
+// Identity is also *stamped* onto writes — CreateSession and SendMessage — where
+// the principal's Customer/UserEmail win for tenancy.
 
 // Handlers is the mountable handler set.
 type Handlers struct {
