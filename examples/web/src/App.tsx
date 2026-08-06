@@ -33,6 +33,17 @@ const API = import.meta.env.VITE_API ?? ""; // "" → same origin (nginx proxy)
 // rather than as a list.
 type View = "desk" | "chart" | "chat" | "workers" | "memory" | "events" | "automation" | "settings";
 
+// How often the two live surfaces re-fetch. The library defaults `refreshMs` to
+// 0 — no timer — because a component library that starts polling the moment it
+// mounts is deciding something that belongs to the host. Turning it on is
+// therefore a shell decision, and this is the shell.
+//
+// The staged-arrival machinery behind it (the "N new" pill, and the "Pause live
+// updates" toggle WCAG 2.2.2 requires wherever content moves on its own) only
+// renders while something is actually polling, so before this constant existed
+// both were unreachable.
+const LIVE_REFRESH_MS = 15_000;
+
 // App state machine: loading → dev (legacy /dev/token, straight to chat)
 //                            → login → project picker → chat (per-project JWT)
 export default function App() {
@@ -253,6 +264,7 @@ function ProjectWorkspace({
         {view === "desk" && (
           <DeskPage
             projectId={project}
+            refreshMs={LIVE_REFRESH_MS}
             onOpenSession={showSession}
             onAsksCount={setDeskAsks}
             onStartFromTopology={() => setView("workers")}
@@ -269,7 +281,9 @@ function ProjectWorkspace({
         {/* No fetchConfigEvents: GET /agent/config-events is mounted, so the
             changelog tab reads the route directly. */}
         {view === "memory" && <MemoryBrowserPage onOpenSession={showSession} />}
-        {view === "events" && <EventsPage projectId={project} onOpenSession={showSession} />}
+        {view === "events" && (
+          <EventsPage projectId={project} refreshMs={LIVE_REFRESH_MS} onOpenSession={showSession} />
+        )}
         {view === "automation" && <AutomationPage projectId={project} workerOptions={workerOptions} />}
         {view === "settings" && <ProjectSettingsPage />}
       </Box>
