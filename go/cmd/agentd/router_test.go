@@ -1445,3 +1445,65 @@ func TestRouterFailsDeliveryForARetiredWorker(t *testing.T) {
 		t.Fatalf("expected the delivery to be failed, got %d failed rows", got)
 	}
 }
+
+// TestRouterLogsWhenNothingMatched pins RD19's router half: an event that wakes
+// nobody is still delivered (fanning out to nothing is legal) but it must not be
+// byte-identical to a healthy fan-out. Without the log line, "my worker didn't
+// wake up" has no observable signal anywhere in the system.
+func TestRouterLogsWhenNothingMatched(t *testing.T) {
+	store := newFakeRouterStore()
+	seedWorker(store, "acme", "answerer", 4)
+	store.addSubscription(&agentdb.Subscription{
+		Project: "acme", EventType: "email.received", Worker: "answerer", Enabled: true,
+	})
+	// A typo in the event type: nothing subscribes to `email.recieved`.
+	orphan := postEvent(t, store, "acme", "email.recieved", "hello?", agentdb.EventEnvelope{})
+
+	var lines []string
+	starter := &fakeJobStarter{store: store}
+	gate := newDispatcher(dispatcherConfig{
+		Store: store, Starter: starter, DefaultImage: "agentkit-example:dev", Logf: quietf,
+	})
+	rt := newRouter(routerConfig{
+		Store: store, Dispatcher: gate, Now: store.now,
+		Logf: func(format string, v ...any) { lines = append(lines, fmt.Sprintf(format, v...)) },
+	})
+	if err := rt.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(starter.jobs) != 0 || len(store.deliveries) != 0 {
+		t.Fatalf("a zero-match event must start nothing: %d jobs, %d deliveries",
+			len(starter.jobs), len(store.deliveries))
+	}
+	if !store.events[orphan.ID].Delivered {
+		t.Fatalf("a zero-match event must still be marked delivered — it is legal, not an error")
+	}
+	var found string
+	for _, l := range lines {
+		if strings.Contains(l, "matched NO subscription") {
+			found = l
+		}
+	}
+	if found == "" {
+		t.Fatalf("a zero-match fan-out must log: got %q", lines)
+	}
+	for _, want := range []string{orphan.ID, "acme", "email.recieved", "1 enabled subscription"} {
+		if !strings.Contains(found, want) {
+			t.Fatalf("the zero-match line must name %q — an operator has to know what arrived and how "+
+				"many subscriptions were asked. got %q", want, found)
+		}
+	}
+
+	// The mirror image: a matching event logs nothing of the sort.
+	lines = nil
+	postEvent(t, store, "acme", "email.received", "real one", agentdb.EventEnvelope{})
+	if err := rt.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "matched NO subscription") {
+			t.Fatalf("a healthy fan-out must not claim it matched nothing: %q", l)
+		}
+	}
+}

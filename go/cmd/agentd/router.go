@@ -233,13 +233,26 @@ func (r *router) routeEvent(ctx context.Context, ev *agentdb.ProjectEvent) error
 	if err != nil {
 		return fmt.Errorf("list subscriptions: %w", err)
 	}
+	matched := 0
 	for _, sub := range subs {
 		if !subscriptionMatches(sub, ev) {
 			continue
 		}
+		matched++
 		if err := r.deliver(ctx, sub, ev); err != nil {
 			return fmt.Errorf("subscription %s: %w", sub.ID, err)
 		}
+	}
+
+	// RD19 — a fan-out to nobody is LEGAL, but it must not be byte-identical to
+	// a healthy one. Without this line "my worker didn't wake up" has no
+	// observable signal anywhere: the event is simply marked delivered and the
+	// three-second poll moves on. Not an error, not a failed event — one line
+	// naming what arrived and how many subscriptions were asked.
+	if matched == 0 {
+		r.logf("[router] event %s (%s %s) matched NO subscription — %d enabled subscription(s) considered; "+
+			"no job will run. If a worker was meant to wake, check the event type against the project's subscriptions.",
+			ev.ID, ev.Project, ev.Type, len(subs))
 	}
 
 	// Only once EVERY match has a row: the delivered watermark is the promise

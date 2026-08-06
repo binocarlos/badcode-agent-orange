@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+// seedWorkerViaSQL inserts a worker row with raw SQL — bypassing both the
+// config-event seam and the write guard, exactly as seedProbeWorker does.
+//
+// RD19 made "the named worker exists" a write-time precondition of
+// CreateSubscription/UpdateSubscription. These tests count config events, so
+// the precondition may not be seeded through a logged mutation.
+func seedWorkerViaSQL(t *testing.T, s *Store, project, name string) {
+	t.Helper()
+	if err := s.gdb.Exec(
+		`INSERT INTO workers (project, name, description, system_prompt, mcp_config, image, briefing,
+		                      max_instances, enabled, created_at, updated_at)
+		 VALUES (?, ?, '', '', '{}', '', NULL, 1, 1, 0, 0)`,
+		project, name).Error; err != nil {
+		t.Fatalf("seed worker %s/%s: %v", project, name, err)
+	}
+}
+
 // The behaviour the adopted mutations owe §15.3: the most specific action a
 // write represents, a delete that carries the row as it last stood, and a
 // failed write that leaves neither the projection row nor the log record.
@@ -247,6 +264,7 @@ func TestConfigEvents_DeletesCarryTheFinalState(t *testing.T) {
 
 	t.Run("subscription", func(t *testing.T) {
 		s := newConfigLogTestStore(t)
+		seedWorkerViaSQL(t, s, "acme", "email-answerer")
 		sub, err := s.CreateSubscription(ctx, &Subscription{
 			Project: "acme", EventType: "email.received", Worker: "email-answerer",
 			Filter: JSONMap{"interactive": false}, Enabled: true,
@@ -297,6 +315,7 @@ func TestConfigEvents_SubscriptionLifecycleActions(t *testing.T) {
 	s := newConfigLogTestStore(t)
 	ctx := context.Background()
 
+	seedWorkerViaSQL(t, s, "acme", "email-reviewer")
 	sub, err := s.CreateSubscription(ctx, &Subscription{
 		Project: "acme", EventType: "worker.finished", Worker: "email-reviewer", Enabled: true,
 	}, ConfigWrite{Worker: "manager", Session: "s-1"})
@@ -379,6 +398,8 @@ func TestConfigEvents_FailedMutationWritesNeitherRow(t *testing.T) {
 	// The projection write fails: a create against an id that already exists.
 	t.Run("projection write fails", func(t *testing.T) {
 		s := newConfigLogTestStore(t)
+		seedWorkerViaSQL(t, s, "acme", "answerer")
+		seedWorkerViaSQL(t, s, "acme", "reviewer")
 		if _, err := s.CreateSubscription(ctx, &Subscription{
 			ID: "sub-fixed", Project: "acme", EventType: "email.received", Worker: "answerer", Enabled: true,
 		}, ConfigWrite{}); err != nil {

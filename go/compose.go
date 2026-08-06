@@ -183,7 +183,9 @@ func BriefingTruncationMarker(maxBytes int) string {
 // The newest match of each becomes its own headed section, independently capped
 // at `project_settings.briefing_max_bytes` (default 2048). A selector with no
 // match contributes no section — an empty heading over nothing would just be
-// noise in the prompt.
+// noise in the prompt — but it does log (RD19): "nothing written yet" and "the
+// selector is a typo" are otherwise the same silence, and the job then runs
+// with a quietly thinner prompt than its author believes.
 //
 // It returns no error by design: see the file-block comment above. Failures are
 // logged with the selector that caused them so an operator can find a bad
@@ -222,17 +224,24 @@ func BuildBriefingSections(ctx context.Context, src BriefingMemorySource, projec
 	for i, selector := range selectors {
 		mem, err := src.NewestMemory(ctx, project, selector)
 		if err != nil {
-			// ErrMemoryNotFound is the ordinary "nothing written yet" answer and
-			// is not worth a log line; anything else is a real fault an operator
-			// wants to see, but still only costs this one section.
 			if !errors.Is(err, agentdb.ErrMemoryNotFound) {
 				log.Printf("[compose] briefing selector %q for worker %q in project %q: %v — section skipped",
 					selector, worker.Name, project, err)
+				continue
 			}
+			// RD19 — "nothing written yet" and "the selector is a typo" produce
+			// exactly the same silence, and the job then runs with a quietly
+			// thinner prompt. Not an error (an empty briefing is legal and is
+			// the normal state of a fresh worker), but it must be visible.
+			log.Printf("[compose] briefing selector %q for worker %q in project %q matched no memory — "+
+				"section omitted and the job runs with a thinner prompt (nothing written under that selector yet, "+
+				"or the selector is a typo)", selector, worker.Name, project)
 			continue
 		}
 		content := strings.TrimSpace(mem.Content)
 		if content == "" {
+			log.Printf("[compose] briefing selector %q for worker %q in project %q matched a memory with empty "+
+				"content — section omitted and the job runs with a thinner prompt", selector, worker.Name, project)
 			continue
 		}
 		sections = append(sections, BriefingSection{

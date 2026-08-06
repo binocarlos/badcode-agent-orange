@@ -421,12 +421,21 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		return err
 	},
 	"CreateSubscription": func(ctx context.Context, s *Store) error {
+		// RD19 made the named worker a write-time precondition. Seeded through
+		// raw SQL like every other precondition here, so the probe still writes
+		// exactly one config event.
+		if err := seedProbeWorker(ctx, s); err != nil {
+			return err
+		}
 		_, err := s.CreateSubscription(ctx, &Subscription{
 			Project: probeProject, EventType: "email.received", Worker: "probe", Enabled: true,
 		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
 		return err
 	},
 	"UpdateSubscription": func(ctx context.Context, s *Store) error {
+		if err := seedProbeWorker(ctx, s); err != nil {
+			return err
+		}
 		if err := seedProbeSubscription(ctx, s); err != nil {
 			return err
 		}
