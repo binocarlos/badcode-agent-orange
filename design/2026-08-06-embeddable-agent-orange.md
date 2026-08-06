@@ -58,9 +58,12 @@ Everything this needs already exists and must **not** be rebuilt:
   pattern is an archivist worker writing `kind=rolling-summary,worker=<subject>`, which is
   the *default* briefing selector (`go/compose.go:157-159`). No archivist is wired in this
   repo; wiring one is a prompt, not a migration.
-- **Memories are already on HTTP**, read-only: `GET /agent/memories`
-  (`go/httpapi/httpapi.go:245,301`). **Wolf renders hypothesis state from that**, which is
-  why the artifact work below is real but no longer load-bearing for the summary.
+- **Memories are on HTTP but only as 500-byte snippets.** `GET /agent/memories`
+  (`go/httpapi/httpapi.go:245,301`) calls `SearchMemories`, whose result type has a `Snippet`
+  field and **no `Content` field** (`go/agentdb/memories.go:87-95`, truncation at `:35,259-262`),
+  and there is no `GET /agent/memories/{id}`. Full memory content is reachable only from inside
+  a container, via the `memory_get` / `memory_current` MCP tools. **T18 adds the full-content
+  read route** — without it Wolf cannot render a hypothesis summary of any real length.
 
 Wolf must not vendor Orange's code. It integrates over three seams:
 
@@ -221,34 +224,49 @@ chat UI, by a schedule, or by another agent, it must launch with the project's t
 project's system prompt, and the project's base image. A session without tools should not
 be creatable.
 
-The engine already models this — `ProjectSettings` carries `BaseImage`, `SystemPrompt` and
-`MCPConfig` (`go/agentdb/project_settings.go:39-52`), and `ComposeJob` merges
-**core ∪ project ∪ worker** (worker beats project, core non-overridable —
-`go/compose.go:417-430`) with image precedence **worker → project base image → engine
-default** (`compose.go:365-389`). The gap is not the design; it is that **`ComposeJob` runs
-only on the dispatch path** (`go/cmd/agentd/dispatch.go:300-312`). A session created through
-`POST /agent/session` bypasses composition entirely:
+**The engine already does most of this, via a different mechanism than dispatch.** An earlier
+draft of this plan claimed HTTP-created sessions got no project tools, no project prompt and no
+project image. That was wrong, and the correction matters because it shrinks the work by an
+order of magnitude. `agentd` wires a `SessionContextProvider`
+(`go/cmd/agentd/main.go:223,280`, impl `go/cmd/agentd/sessioncontext.go:89-185`) that reads
+`project_settings` and `workers`, and the Runner consumes it on **every** create:
+
+| Concern | HTTP-created chat session today | Where |
+| --- | --- | --- |
+| Project ∪ worker MCP tools | ✅ merged in | `go/runner.go:366,484-495` |
+| Project system prompt | ✅ resolved **per turn** from live config | `go/runner.go:1938-1958`, `sessioncontext.go:135,189-197` |
+| Project base image | ✅ resolved through the catalogue | `go/runner.go:2526-2534,2547-2575` |
+| **Core MCP server** (memory, worker, image, config tools) | ❌ **missing** | `coreMCPServers` (`go/cmd/agentd/mcpserver.go:543-552`) has exactly one call site: `main.go:354` → `dispatch.go:305` |
 
 ```
-schedule / event ─▶ dispatch ─▶ ComposeJob ─▶ CreateSession   ✅ core+project+worker tools,
-                                                                 project prompt, project image
+schedule / event ─▶ dispatch ─▶ ComposeJob ─▶ CreateSession   ✅ core tools too
 
-user in chat UI  ─────────────────────────▶ CreateSession   ❌ no core tools, no project
-                                                                 tools, no project prompt,
-                                                                 no project base image
+user in chat UI  ─▶ SessionContextProvider ─▶ CreateSession   ✅ project prompt/tools/image
+                                                              ❌ core tools only
 ```
 
-So the "two kinds of session" distinction is an accident of the creation path, not an
-intended design. **T15 closes it**: the HTTP create path composes too.
+So the gap is **one thing**: the core MCP server never reaches a session that wasn't dispatched.
+That is why the long-lived `hypothesis-a` session cannot call `memory_current` — and it is the
+whole of T15. Routing the create path through `ComposeJob` was considered and **rejected**:
+`ComposeJob` requires a named worker and refuses to compose vanilla sessions by design
+(`go/compose.go:270-271,345-350`), its core preamble hard-codes *"You are the worker %q"* plus
+autonomous-agent instructions that are actively wrong for interactive chat
+(`compose.go:524-553`), persisting a worker name would make every console chat emit
+`worker.finished` onto the event spine carrying its transcript verbatim
+(`runner.go:1635-1637,1827`), and its `composeImage` returns the project base image **unresolved**
+(`compose.go:386-388`), re-breaking the I4 catalogue fix documented at `sessioncontext.go:139-142`.
 
-Consequence for long-lived sessions, and why a frozen prompt is acceptable: a resumed
-session runs its *original* composed prompt forever (`ComposedPrompt` is fixed per session,
-`go/agentdb/types.go:112-121`), and briefings are built only at composition, so prompt and
-briefing updates never reach it. That is fine **once it has tools** — the session reads
-current state at message time via `memory_current` instead of depending on what was baked
-into its prompt. Freezing the prompt is tolerable; freezing away the tools was the bug.
-Rotation therefore remains available for picking up prompt changes, but is not required for
-state to flow.
+**Correcting the "frozen session" claim.** An earlier draft said a resumed session runs its
+original prompt forever. That is true only for **dispatched job sessions**, which persist a
+`ComposedPrompt`. A chat session leaves that column empty, and `turnSystemPrompt` therefore
+re-resolves the prompt from the provider **on every turn**, deliberately — *"a chat session's
+prompt legitimately follows the live project/worker configuration"* (`go/runner.go:1914-1941`,
+pinned by `TestPlainSessionStillUsesTheProvider`, `go/runner_systemprompt_test.go:254`). So a
+long-lived hypothesis session **does** pick up project and worker prompt edits. What genuinely
+does not update is its **MCP tool set** (fixed when the container is provisioned) and its
+**briefing** (built only at composition, so chat sessions never get one). Reading current state
+at message time via `memory_current` remains the right pattern — not because the prompt is
+frozen, but because briefings don't apply to chat sessions at all.
 
 ### Session names and session-mode schedules
 
@@ -345,7 +363,8 @@ entries. Do not create a directory.
 | `go/httpapi/httpapi.go` | Register the new routes; extend `Config` if a name-lookup seam is needed |
 | `go/agentdb/schedules.go:63-87` | `TargetSession` field; XOR validation against the worker target |
 | `go/cmd/agentd/scheduler.go:62-81,203-301` | `scheduler` struct gains a Runner seam (it currently holds only `schedulerStore` + `jobDispatcher`); `fire` branches on target type |
-| `go/httpapi/session.go` (T15) | Create path runs `ComposeJob`, so every session gets project tools/prompt/image |
+| `go/httpapi/session.go` (T15) | Merge the core MCP server into HTTP-created sessions |
+| `go/httpapi/memories.go` (T18) | Full-content memory read routes (by id, and newest-by-name) |
 | `go/cmd/agentd/scheduler_test.go` | Session-branch cases: archived, busy, missing |
 | `examples/web/vite.config.ts` | Multi-page build (`index.html` + `embed.html`) |
 | `deploy/web.nginx.conf:9` | Serve `/embed/*` from `embed.html` instead of the SPA fallback |
@@ -431,6 +450,10 @@ behaves exactly as before.
 **New core MCP tool (T16):** `session_list(worker?, limit?)` → session metadata newest-first
 (id, name, timestamps, status, permalink). No message content.
 
+**New memory read routes (T18):** `GET /agent/memories/{id}` and
+`GET /agent/memories/current?name=<n>` → full memory content, project-scoped, read-only.
+The existing `GET /agent/memories` stays snippet-only.
+
 `POST /agent/session` gains an optional `name` field: kebab-case (`^[a-z0-9]+(-[a-z0-9]+)*$`,
 ≤64 chars, matching `validProjectID` at `googleauth.go:35`), **409** if taken in that project,
 **400** if malformed. No route ever renames a session.
@@ -484,8 +507,14 @@ type Schedule struct {
   `kind=rolling-summary,worker=<subject>` memories is a prompt-and-subscription act in a live
   project, not engine work. The plumbing (`worker.finished` carrying the verbatim transcript,
   the default briefing selector) already exists.
-- **Recomposing a resumed session's prompt or briefing.** Deliberately not done — see T9's
-  note. Updated state reaches long-lived sessions through the memory tools at message time.
+- **Composing chat sessions through `ComposeJob`, or giving them a `Worker` / persisted
+  `ComposedPrompt`.** Explicitly rejected in the Architecture section: `ComposeJob` refuses
+  vanilla sessions by design, its preamble is written for autonomous workers, and a worker-named
+  chat session would emit its transcript onto the event spine. The existing
+  `SessionContextProvider` already delivers project prompt/tools/image to chat sessions, and its
+  per-turn prompt resolution is better than a frozen one.
+- **Injecting briefings into chat sessions.** Briefings are a composition-time concept; chat
+  sessions read memory through tools instead.
 - **Any transcript-reading MCP tool.** T16 exposes session *metadata* only.
 
 ## Tickets
@@ -605,9 +634,10 @@ type Schedule struct {
 
 ### T8: Artifact download route   [Status: pending | Model: sonnet]
 - **Priority note:** this fixes a route that is missing outright and that three console
-  components already call, so it is worth building on its own merits — but Wolf renders
-  hypothesis state from `GET /agent/memories`, so artifacts are **not** on the critical path
-  for the summary. Do not block the Wolf loop on this ticket.
+  components already call. An earlier draft demoted it on the grounds that Wolf would render
+  state from `GET /agent/memories` instead — that was wrong (memories come back as 500-byte
+  snippets; see T18), so this ticket stays on the critical path alongside T18. Which of the
+  two Wolf actually uses for the summary is a product choice; both need to work.
 - **Scope:** Implement `GET /agent/artifacts/{id}/download` over `ArtifactStore.Load`, honouring
   the documented nil-reader cases (`docs/06-artifacts.md`, "Download"): `lost` → 410,
   `extraction_failed` → 409, `IsDir` → 409 with a pointer to the list route, still-`live` with no
@@ -649,14 +679,15 @@ type Schedule struct {
 - **Files:** `go/agentdb/schedules.go`, `go/agentdb/migrations.go`, `go/cmd/agentd/scheduler.go`,
   `go/cmd/agentd/main.go` (wire the seam), `go/cmd/agentd/scheduler_test.go`,
   `go/httpapi/schedules.go` (accept the field).
-- **Note — document what resuming does NOT do.** A resumed session runs its **original**
-  composed prompt and original MCP config; `ComposedPrompt` is frozen per session
-  (`go/agentdb/types.go:112-121`) and briefings are built only at composition time. So a
-  session schedule keeps a workspace working, but never picks up a prompt rewrite or a new
-  briefing. Say this plainly in `schedule_create`'s tool description and in
-  `docs/19-embedding.md`, or operators will reasonably assume otherwise. The intended way for
-  updated state to reach a long-lived session is the memory tools at message time (T15), not
-  recomposition.
+- **Note — document what resuming does and does not refresh.** A **chat** session (empty
+  `composed_prompt`) re-resolves its system prompt from the live provider on every turn
+  (`go/runner.go:1914-1941`), so it *does* pick up project and worker prompt edits. A
+  **dispatched job** session has a frozen `ComposedPrompt` (`go/agentdb/types.go:112-121`).
+  Neither refreshes its **MCP tool set** (fixed when the container is provisioned) or gains a
+  **briefing** (built only at composition, so chat sessions never have one). Say this plainly
+  in `schedule_create`'s tool description and in `docs/19-embedding.md` — the distinction is
+  easy to get backwards. The way updated state reaches a long-lived session is the memory
+  tools at message time (T15).
 - **Note on the worker column:** `Schedule.Worker` is `not null` (`go/agentdb/schedules.go:70`) and
   `NewSchedule(project, worker, cron, input)` assumes worker mode. Session schedules store
   `worker = ''` (legal under NOT NULL), so `validateSchedule` and `NewSchedule` must be explicitly
@@ -733,8 +764,8 @@ type Schedule struct {
 - **Depends on:** T12
 
 ### T14: Documentation + hazard log   [Status: pending | Model: sonnet]
-> **Ordering:** despite its number, this ticket runs **after T15 and T16** — it documents them.
-> Take it second-to-last, before the e2e.
+> **Ordering:** despite its number, this ticket runs **after T15, T16 and T18** — it documents
+> them. Take it second-to-last, before the e2e.
 - **Scope:** Write `docs/19-embedding.md`: the three credentials, the project map object form,
   creating a named session, attaching a session schedule, minting an embed token, the iframe
   snippet, and the artifact proxy pattern — enough for Wolf's author to integrate without reading
@@ -750,30 +781,36 @@ type Schedule struct {
   named with `path:line`.
 - **TDD:** no (docs)
 - **Validation:** Manual read-through against the implemented routes.
-- **Depends on:** T8, T10, T11, T12, T15, T16
+- **Depends on:** T8, T10, T11, T12, T15, T16, T18
 
-### T15: Compose every session, not just dispatched jobs   [Status: pending | Model: opus]
-- **Scope:** Make `POST /agent/session` run the same composition as dispatch, so a
-  user-started or app-started session launches with core tools, project `mcp_config`,
-  project `system_prompt` and project `base_image`. Route the create path through
-  `ComposeJob` (`go/compose.go:310-340`) with the session's worker when one is named and a
-  degenerate empty worker when none is — the merge is already `core ∪ project ∪ worker`
-  (`compose.go:417-430`) and image precedence already falls back correctly
-  (`compose.go:365-389`), so no composition logic changes. Persist `ComposedPrompt` as
-  dispatch does. `CoreMCP` and the `ImageResolver` must be available to `httpapi` — thread
-  them through `httpapi.Config` from `main.go:354` rather than importing `cmd/agentd`.
-- **Files:** `go/httpapi/session.go`, `go/httpapi/httpapi.go` (config seam),
+### T15: Give HTTP-created sessions the core MCP server   [Status: pending | Model: sonnet]
+- **Scope:** Deliberately narrow. Project prompt, project/worker MCP config and the project
+  base image **already reach** sessions created through `POST /agent/session`, via the
+  `SessionContextProvider` (see the Architecture table). The single gap is the core tool
+  server: `coreMCPServers(selfURL)` (`go/cmd/agentd/mcpserver.go:543-552`) has one call site,
+  `main.go:354` → `dispatch.go:305`. Add a `CoreMCP agentdb.MCPServers` field to
+  `httpapi.Config`, merge it into the create request's MCP servers the way dispatch does
+  (core last and non-overridable — mirror `go/compose.go:436-441`), and wire it in `main.go`
+  from the same `coreMCPServers(selfURL)` value the dispatcher gets.
+- **Do NOT** route the create path through `ComposeJob`, set `Session.Worker`, or persist
+  `ComposedPrompt` on chat sessions. Each was considered and rejected for a specific reason —
+  see the Architecture section. In particular, persisting a worker name would make every
+  console chat emit `worker.finished` with its transcript onto the event spine.
+- **Files:** `go/httpapi/httpapi.go` (new Config field), `go/httpapi/session.go` (merge),
   `go/cmd/agentd/main.go` (wire), plus tests.
-- **Acceptance criteria:** A session created over HTTP in a project with `mcp_config` and a
-  `base_image` set launches with the core tools **and** the project tools merged, on the
-  project image; a project with no settings behaves exactly as today; an explicitly named
-  worker still wins over project config; dispatched jobs are unchanged.
+- **Acceptance criteria:** A session created over HTTP in a Postgres-backed project launches
+  with the core tools merged over project and worker tools, with core winning on name
+  collision; project prompt, project tools and project base-image resolution are **unchanged**
+  (assert this — it is the regression risk); the sqlite fallback, where the core MCP server is
+  not mounted at all (`main.go:452,466-467`), is an explicit no-op rather than a 500;
+  dispatched jobs are byte-for-byte unaffected.
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/ ./cmd/agentd/ -count=1 && go test ./... -count=1`
 - **Depends on:** —
-- **Note:** This is the load-bearing ticket for the Wolf model — the long-lived
-  `hypothesis-a` session can only read memory if it is composed. Verify against a real
-  stack that `memory_current` is callable from a chat session before ticking.
+- **Note:** Load-bearing for the Wolf model — the long-lived `hypothesis-a` session can only
+  read memory if it has the core tools. Before ticking, verify against a running stack that
+  `memory_current` is actually callable from a chat session; the unit tests can only prove the
+  config was merged, not that the tool answers.
 
 ### T16: `session_list` core MCP tool   [Status: pending | Model: sonnet]
 - **Scope:** One new tool letting an agent enumerate its own worker's recent sessions —
@@ -793,11 +830,45 @@ type Schedule struct {
 - **Acceptance criteria:** Returns the caller's worker's sessions newest-first; another
   project's sessions are never returned; `limit` clamped; no message content in the payload;
   a caller whose session row has no worker gets an empty list rather than an error.
+- **Caveat to state in the tool description:** `sess.Worker` is populated only by
+  `persistComposition` (`go/runner.go:536-549`), i.e. only for dispatched jobs — a console
+  session carries its worker in `Persona`, not the `worker` column (`go/httpapi/session.go:93`,
+  `go/runner.go:466`). So this tool lists **job** sessions and will legitimately return an empty
+  list when called from a chat session. Decide and record whether to fall back to `Persona`;
+  if not, say so in the tool description so the model doesn't read empty as "I have no history".
+- **Performance note:** `ListSessions` runs three unconditional `COUNT(*)` subqueries over
+  `agent_artifacts` and `agent_messages` (`go/agentdb/sessions.go:196-203`). Fine at
+  `limit ≤ 50`; do not raise the cap without revisiting the query.
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'SessionList|MCP' -count=1`
 - **Depends on:** —
 
-### T17: End-to-end verification   [Status: pending | Model: opus]
+### T18: Full-content memory read over HTTP   [Status: pending | Model: sonnet]
+- **Scope:** `GET /agent/memories` returns `MemorySearchResult`, which has a `Snippet` and
+  **no `Content`** (`go/agentdb/memories.go:87-95`), truncated at 500 bytes (`:35,259-262`) —
+  and there is no by-id route. Full content is currently reachable only from inside a container
+  via `memory_get`/`memory_current`. Add read routes so an embedding app can render memory
+  state: `GET /agent/memories/{id}` (full content) and `GET /agent/memories/current?name=<n>`
+  (the newest memory labelled `name=<n>`, mirroring `memory_current`'s semantics at
+  `go/cmd/agentd/mcp_memory.go:373`). Both project-scoped from the identity, both read-only —
+  memories stay append-only from the UI's perspective (`go/httpapi/httpapi.go:76-78`). Reuse
+  the store methods the MCP tools already use; do not add a second query path.
+- **Files:** `go/httpapi/memories.go`, `go/httpapi/httpapi.go` (routes + Config seam if
+  `GetMemory`/`NewestMemory` aren't already on the interface), `go/cmd/agentd/main.go` if
+  wiring changes, plus tests.
+- **Acceptance criteria:** Full content returned untruncated for a memory larger than 500
+  bytes; a cross-project id is 404 with no existence leak (mirror `mcp_memory.go:357-365`);
+  `current` with an unknown name returns a 404 or an explicit not-found body rather than an
+  error; no write or delete route is added.
+- **TDD:** yes
+- **Validation:** `cd go && go test ./httpapi/ -count=1`
+- **Depends on:** —
+- **Note:** This is what makes "Wolf renders the hypothesis from memory" true. Without it the
+  product must fall back to artifacts (T8) for anything longer than a snippet.
+
+### T17: End-to-end verification — ALWAYS LAST   [Status: pending | Model: opus]
+> T18 was added after this ticket was numbered and appears above it in the file. This one is
+> still the final ticket; work it only when every other box is ticked.
 - **Scope:** Stack e2e proving the whole feature against the compose stack: create a session named
   `hypothesis-a` with an API key; attach a daily session-mode schedule; force two firings; assert
   the second run sees the file the first run wrote (proving restore, not a fresh container);
@@ -805,8 +876,9 @@ type Schedule struct {
   `/embed/session/hypothesis-a#token=…`, asserting the chat renders and no login screen appears.
   **Also prove the composition fix (T15) end to end:** with project `mcp_config` set, a session
   created over HTTP can call a core memory tool — write a memory from a scheduled reviewer run
-  and read it back from the long-lived session, which is the Wolf loop in miniature.
-  Then run the full gates.
+  and read it back from the long-lived session, which is the Wolf loop in miniature. Read the
+  same memory's **full content** over HTTP with the API key (T18), asserting it is not
+  truncated at 500 bytes. Then run the full gates.
 - **Files:** `e2e/features/embedding.stack.spec.ts` (create).
 - **Acceptance criteria:** The spec passes against the stack; the artifact fetched by name has the
   second run's content; the embed page renders without login.
@@ -822,7 +894,7 @@ type Schedule struct {
   Remember the stack serves a **built** image of `examples/web` — rebuild `web` or UI changes are
   invisible to the browser test. Delete sessions afterwards (`./e2e/run-stack-e2e.sh clean`), since
   each holds a container and a host port.
-- **Depends on:** T1–T16
+- **Depends on:** T1–T16, T18
 
 ## Discovered Issues Log
 
