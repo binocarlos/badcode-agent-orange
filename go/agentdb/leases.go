@@ -30,6 +30,7 @@ package agentdb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -60,20 +61,37 @@ func (s *Store) RenewSessionLease(ctx context.Context, sessionID string, until i
 	return nil
 }
 
-// ReleaseSessionLease drops a session's lease. Called whenever a turn settles —
-// including a cancelled one, which is what keeps a resumable interrupted turn
-// out of the reaper's hands.
+// ErrSessionLeaseNotHeld is returned by ReleaseSessionLease when there was no
+// lease to drop — the session holds none, or the row is gone. The state the
+// caller wanted is already true, so it is not a failure; it is the answer to a
+// different question: "was it MINE to release?"
+var ErrSessionLeaseNotHeld = errors.New("session holds no lease")
+
+// ReleaseSessionLease drops a session's lease, if this caller is the one that
+// still finds it held. Called whenever a turn settles — including a cancelled
+// one, which is what keeps a resumable interrupted turn out of the reaper's
+// hands.
 //
-// A session that has already vanished is not an error: releasing a lease on
-// nothing leaves exactly the state we wanted.
+// The release is CONDITIONAL on the lease still being held, and reports
+// ErrSessionLeaseNotHeld when it was not. That is load-bearing, not tidiness:
+// the reaper (`router.go`, `leaseReaper.reapOne`) uses a successful release as
+// its claim on a dead session and only then emits `worker.failed{reason:lost}`,
+// justifying that as at-most-once. An unconditional UPDATE that also swallowed
+// a missing row made that justification false — two reapers, or a reaper and a
+// settling turn, could both "succeed" and both emit, waking every subscriber
+// twice about one dead job. With the condition, exactly one caller can win.
 func (s *Store) ReleaseSessionLease(ctx context.Context, sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("session id is required")
 	}
-	if err := s.gdb.WithContext(ctx).Model(&Session{}).
-		Where("id = ?", sessionID).
-		UpdateColumn("lease_expires_at", SessionLeaseUnset).Error; err != nil {
-		return fmt.Errorf("failed to release session lease: %w", err)
+	res := s.gdb.WithContext(ctx).Model(&Session{}).
+		Where("id = ? AND lease_expires_at > ?", sessionID, SessionLeaseUnset).
+		UpdateColumn("lease_expires_at", SessionLeaseUnset)
+	if res.Error != nil {
+		return fmt.Errorf("failed to release session lease: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrSessionLeaseNotHeld
 	}
 	return nil
 }

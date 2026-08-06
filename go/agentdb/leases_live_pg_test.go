@@ -2,6 +2,8 @@ package agentdb
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 
 	"github.com/google/uuid"
@@ -89,9 +91,76 @@ func TestLivePG_SessionLeaseLifecycle(t *testing.T) {
 	if err := s.RenewSessionLease(ctx, "no-such-session", 1234); err == nil {
 		t.Fatalf("renewing an unknown session must fail")
 	}
-	// Releasing one is fine — the state we wanted is already true.
-	if err := s.ReleaseSessionLease(ctx, "no-such-session"); err != nil {
-		t.Fatalf("releasing an unknown session must not error: %v", err)
+	// Releasing one REPORTS that there was nothing to release. The state we
+	// wanted is already true, so this is not a failure — but it is not silence
+	// either, and the difference is load-bearing: the reaper treats a
+	// successful release as its exclusive claim on a dead session before it
+	// emits `worker.failed{lost}`. When the release swallowed a missing row and
+	// ignored RowsAffected, two reapers could both "claim" it and both emit.
+	if err := s.ReleaseSessionLease(ctx, "no-such-session"); !errors.Is(err, ErrSessionLeaseNotHeld) {
+		t.Fatalf("releasing an unknown session must report ErrSessionLeaseNotHeld, got %v", err)
+	}
+	// And the same for a session that exists but holds nothing: it was just
+	// released above.
+	if err := s.ReleaseSessionLease(ctx, sess.ID); !errors.Is(err, ErrSessionLeaseNotHeld) {
+		t.Fatalf("a second release of the same lease must not also report success, got %v", err)
+	}
+}
+
+// TestLivePG_ReleaseSessionLeaseHasExactlyOneWinner is the reaper's
+// at-most-once justification, tested rather than asserted in a comment: when
+// several sweeps race over one lapsed lease, exactly one may win the right to
+// emit `worker.failed{reason:lost}`. A duplicated "your worker died" wakes
+// every subscriber twice about a job that died once.
+func TestLivePG_ReleaseSessionLeaseHasExactlyOneWinner(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	sess := newLiveSession(t, s, "cust-"+uuid.New().String(), "u@x.com")
+	if err := s.RenewSessionLease(ctx, sess.ID, 1_000); err != nil {
+		t.Fatalf("take the lease: %v", err)
+	}
+
+	// Cap the pool. Every live test in this package opens a store and never
+	// closes it, so the shared test Postgres is close to `max_connections`
+	// already; a dozen simultaneous connections tips it into "sorry, too many
+	// clients" and the race never happens. Four connections still race — the
+	// contention that matters is on the ROW, not on the pool.
+	if sqlDB, err := s.DB().DB(); err == nil {
+		sqlDB.SetMaxOpenConns(4)
+	}
+
+	const racers = 12
+	start := make(chan struct{})
+	var mu sync.Mutex
+	won, lost, other := 0, 0, []error{}
+	var wg sync.WaitGroup
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			err := s.ReleaseSessionLease(ctx, sess.ID)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, ErrSessionLeaseNotHeld):
+				lost++
+			default:
+				other = append(other, err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if len(other) > 0 {
+		t.Fatalf("unexpected errors: %v", other)
+	}
+	if won != 1 || lost != racers-1 {
+		t.Fatalf("exactly one caller may claim a lapsed lease — got %d winners and %d losers, "+
+			"which means that many reapers would each emit worker.failed{lost}", won, lost)
 	}
 }
 
