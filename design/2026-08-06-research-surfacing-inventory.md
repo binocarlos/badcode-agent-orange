@@ -1043,9 +1043,9 @@ only — `secrets/gcp-key.json` is a directory).
 | R2 | e2e feature specs for the console | **ABSENT** (→7.5) |
 | R3 | Turn the live tail on (shell wiring) | **DONE 2026-08-06** by the parallel session (`054121e`+`3be884f`; `App.tsx:267,285` pass `refreshMs`) — landed *after* this inventory's sweep |
 | R4 | Document the two stack boot traps | **DONE 2026-08-06** by the parallel session (README-stack.md "two traps" §, CLAUDE.md pointer) — landed *after* this inventory's sweep |
-| R5a | Retire the hand-copied token tables | **NOT DONE** (two copies remain; `CONSOLE_TOKENS` exported, unused) |
-| R5b | Stale route comment | **NOT DONE** (`index.ts:257-259`; route is mounted) |
-| R5c | "non-UTF8 bytes" | **NOT DONE — diagnosis wrong** (→Corrections; it's the NUL idiom) |
+| R5a | Retire the hand-copied token tables | **DONE 2026-08-06** by the parallel session — landed *after* this inventory's sweep |
+| R5b | Stale route comment | **DONE 2026-08-06** by the parallel session — landed *after* this inventory's sweep |
+| R5c | "non-UTF8 bytes" | **DONE 2026-08-06 — and the parallel session resolved the wrong diagnosis correctly**: rather than deleting the bytes (which would have broken live cache-key semantics, →Corrections), it swapped the raw NUL separator for `U+001F`, same guarantee, greppable. Two of the five files converted; `WorkerEditor.tsx`, `useStagedFeed.ts`, `orgchart.ts` still hold raw NULs, so §3.7's search-reliability caveat still stands for those |
 | R6a | `rate_limited` countdown | backend genuinely absent (no `retry_after`) (→CO-18) |
 | R6b | Memory selector as chips | **CONTRADICTED — chips shipped** (→Corrections) |
 
