@@ -717,6 +717,21 @@ var agentMigrations = []migration{
 			ALTER TABLE workers ADD COLUMN IF NOT EXISTS frozen BOOLEAN NOT NULL DEFAULT FALSE;
 		`,
 	},
+	{
+		// Why a job failed (RD18/RD20, and the same column RD15 asks for — there
+		// is exactly one). dispatch.go has always known the reason ("host port
+		// pool is exhausted", "worker not found") and only ever logged it, so
+		// the honest answer to "why did my worker fail?" was `docker compose
+		// logs agentd`. The delivery row now carries it out to the UI.
+		//
+		// NOT NULL DEFAULT '' in the DDL rather than a gorm `default:` tag, per
+		// the store convention: '' is meaningful (no reason recorded) and a
+		// gorm default would make it unwritable.
+		Name: "037_event_deliveries_failure_reason",
+		SQL: `
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT '';
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration

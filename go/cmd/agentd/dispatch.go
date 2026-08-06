@@ -336,8 +336,12 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 		},
 		OnSessionEnded: func(ctx context.Context, sessionID string, runErr error) {
 			status := agentdb.DeliveryOK
+			// Why it ended badly, for the row as well as the log (RD20). The
+			// other failure path is d.fail (the job never started at all).
+			reason := ""
 			if runErr != nil {
 				status = agentdb.DeliveryFailed
+				reason = fmt.Sprintf("session ended: %v", runErr)
 				d.logf("[dispatch] delivery %s (%s/%s) session %s ended badly: %v",
 					deliveryID, project, worker.Name, sessionID, runErr)
 			} else if awaits, err := d.store.SessionAwaitsHuman(ctx, project, sessionID); err != nil {
@@ -359,8 +363,9 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 					deliveryID, project, worker.Name, sessionID)
 			}
 			if _, err := d.store.UpdateDeliveryStatus(ctx, project, deliveryID, agentdb.DeliveryStatusUpdate{
-				Status:    status,
-				SessionID: sessionID,
+				Status:        status,
+				SessionID:     sessionID,
+				FailureReason: reason,
 			}); err != nil {
 				// A delivery stuck at `running` holds a max_instances slot for
 				// ever, so this is loud: the lease reaper is the backstop.
@@ -443,15 +448,18 @@ func (d *dispatcher) projectAtCapacity(ctx context.Context, project string) (boo
 	return active >= int64(settings.MaxConcurrentJobs), nil
 }
 
-// fail marks a delivery failed and logs why. §8.4's delivery tuple records no
-// reason column (an E1 finding), so the log is where the reason lives until one
-// is added.
+// fail marks a delivery failed, records why on the row, and logs the same text.
+// The reason column arrived with migration 037 (RD20): before it, the log was
+// the only copy, which made `docker compose logs agentd` the honest answer to
+// "why did my worker fail?" — for a user who may not have a terminal open on
+// the host at all.
 // It echoes the reason back so DispatchWithReason can hand it to a caller that
 // has to record it (the scheduler) without a second formatting of the same text.
 func (d *dispatcher) fail(ctx context.Context, delivery *agentdb.EventDelivery, reason string) string {
 	d.logf("[dispatch] delivery %s (%s/%s) failed: %s", delivery.ID, delivery.Project, delivery.Worker, reason)
 	if _, err := d.store.UpdateDeliveryStatus(ctx, delivery.Project, delivery.ID, agentdb.DeliveryStatusUpdate{
-		Status: agentdb.DeliveryFailed,
+		Status:        agentdb.DeliveryFailed,
+		FailureReason: reason,
 	}); err != nil {
 		d.logf("[dispatch] delivery %s: could not mark failed: %v", delivery.ID, err)
 	}

@@ -575,6 +575,9 @@ func (p *leaseReaper) failDelivery(ctx context.Context, sess *agentdb.Session) {
 	for _, d := range deliveries {
 		if _, err := p.store.UpdateDeliveryStatus(ctx, d.Project, d.ID, agentdb.DeliveryStatusUpdate{
 			Status: agentdb.DeliveryFailed,
+			// The same sentence the `worker.failed` event carries, so the job
+			// row and the event agree about why (RD20).
+			FailureReason: leaseLostText,
 		}); err != nil {
 			p.logf("[router] lease reap %s: could not fail delivery %s: %v", sess.ID, d.ID, err)
 		}

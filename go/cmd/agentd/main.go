@@ -397,7 +397,7 @@ func main() {
 
 	root := http.NewServeMux()
 	root.HandleFunc("/health", healthHandler)
-	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != ""))
+	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != "", credentialMode(apiKey, oauthToken)))
 
 	// The project map is loaded once, here, whether or not a login mode is on:
 	// its "projects" half carries per-project ops config (API key env var names,

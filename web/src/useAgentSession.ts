@@ -862,8 +862,17 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
       const workflowId = s.workflowId || (s as unknown as Record<string, string>).workflow_id || 'agent'
       const metadata = (s as unknown as Record<string, unknown>).metadata as Record<string, unknown> | undefined
       const sessionModel = (metadata?.model as string) || defaultModel
+      // Why the session failed to start. The server has served this field since
+      // the provisioning path started writing it, and NOTHING in the browser
+      // read it (doc 22, RD20): a session that never came up rendered as a bare
+      // `status: "error"` — the reader could see that something broke and not
+      // what, and the explanatory message only appeared if they sent a SECOND
+      // message. It is a plain string on the wire; anything else is ignored.
+      const rawCreateError = (s as unknown as Record<string, unknown>).create_error
+      const createError = typeof rawCreateError === 'string' ? rawCreateError.trim() : ''
       const resumed: AgentSession = {
         id: s.id,
+        error: createError || undefined,
         status: (s.status as AgentSession['status']) || 'active',
         workflowId,
         persona: s.persona,
@@ -913,6 +922,18 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
       setSession(resumed)
       sessionIdRef.current = resumed.id
       setMessages(restored.messages)
+
+      // A failed session says so on screen, in the same banner every other
+      // error uses. When the engine recorded no reason we say THAT rather than
+      // rendering nothing — "broken, cause unrecorded" is information; an empty
+      // transcript is not.
+      if (resumed.status === 'error') {
+        setError(
+          createError !== ''
+            ? `This session failed to start: ${createError}`
+            : 'This session failed to start. No reason was recorded on the session.',
+        )
+      }
 
       startContainerStatePoll(sessionId)
       loadArtifacts(sessionId)

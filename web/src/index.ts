@@ -726,6 +726,16 @@ export type { EventJobHistoryProps } from './components/EventJobHistory.js'
 // One chip for a delivery status — awaiting_human is rose, never amber (X11).
 export { default as DeliveryStatusChip, attentionColor } from './components/DeliveryStatusChip.js'
 export type { DeliveryStatusChipProps } from './components/DeliveryStatusChip.js'
+// Which model actually answered (RD18) — loud in mock mode, which is the default.
+export {
+  default as CredentialModeBadge,
+  CREDENTIAL_MODES,
+  isCredentialMode,
+} from './components/CredentialModeBadge.js'
+export type {
+  CredentialModeBadgeProps,
+  CredentialMode,
+} from './components/CredentialModeBadge.js'
 export { default as EventReplayPanel } from './components/EventReplayPanel.js'
 export type { EventReplayPanelProps } from './components/EventReplayPanel.js'
 export { default as ChangelogView, ACTION_FILTERS, DiffBlock } from './components/ChangelogView.js'
