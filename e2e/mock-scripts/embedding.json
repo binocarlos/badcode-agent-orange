@@ -1,0 +1,88 @@
+{
+  "rules": [
+    {
+      "match": "[T17-HYP]",
+      "absent": "[T17-RUN1-DONE]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "First pass on the hypothesis: I will write it to the workspace and record it in memory."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__ui__write_file",
+              "input": {
+                "file_path": "/workspace/hypothesis.md",
+                "content": "# Hypothesis\n\n[T17-ROUND-1] Written by the first scheduled firing of the session schedule.\nThis file is the evidence that the second firing lands in the SAME workspace: it is\nwritten once here, the session is then snapshotted and its container destroyed, and\nthe next firing has to restore the snapshot before it can read this line back.\n"
+              }
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "labels": { "name": "t17-hypothesis" },
+                "content": "[T17-MEMORY] Current state of the embedding hypothesis, written by a scheduled run of the long-lived session.\n\nThis body is deliberately much longer than five hundred bytes, because the point of writing it at all is to prove that the HTTP read route hands back the whole memory rather than the five-hundred-byte snippet the search route returns. A snippet is enough for a browser that is listing memories and about to link to one; it is not enough for an embedding application that wants to render the current state of a thing on its own page, which is the whole reason the by-name and current routes exist at all. So: the paragraph you are reading is padding with a purpose, and the assertion downstream is that every byte of it survives the round trip from the container, through the core MCP server, into Postgres and back out over HTTP to a caller holding nothing but a project API key. [T17-MEMORY-TAIL]"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "[T17-RUN1-DONE] Wrote /workspace/hypothesis.md and recorded the hypothesis under the name t17-hypothesis."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[T17-HYP]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Second pass: reading back what the previous run left behind."
+            },
+            {
+              "type": "tool_use",
+              "name": "Bash",
+              "input": {
+                "command": "cat /workspace/hypothesis.md",
+                "description": "read the file the first firing wrote"
+              }
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_current",
+              "input": { "name": "t17-hypothesis" }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "tool_use",
+              "name": "mcp__ui__write_file",
+              "input": {
+                "file_path": "/workspace/hypothesis.md",
+                "content": "# Hypothesis\n\n[T17-ROUND-2] Rewritten by the second scheduled firing, after the session was\nrestored from its snapshot. The artifact fetched by session NAME must carry this\nline, not the first round's — artifacts dedup on (session, path), so the second\nwrite upserts the row the first one created.\n"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "[T17-RUN2-DONE] Read the first run's file and the stored memory, then refreshed the hypothesis file."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -7,7 +7,8 @@
 > the orchestrator and pass. Do not expand scope; log surprises in the
 > Discovered Issues Log instead.
 
-Status: approved (design signed off 2026-08-06; not yet started)
+Status: COMPLETE — all 18 tickets (T1–T18) implemented and ticked (2026-08-07). One HIGH item is
+shipped-and-documented rather than fixed: see the T4 entry in the Discovered Issues Log.
 Relates: `docs/product/17-product-spec.md` §8.5 (headless posters / project tokens),
 `docs/06-artifacts.md`, `docs/14-host-adapters.md` (tenancy contract),
 `docs/05-event-streaming.md`
@@ -1337,7 +1338,7 @@ type Schedule struct {
 - **Note:** This is what makes "Wolf renders the hypothesis from memory" true. Without it the
   product must fall back to artifacts (T8) for anything longer than a snippet.
 
-### T17: End-to-end verification — ALWAYS LAST   [Status: pending | Model: opus]
+### T17: End-to-end verification — ALWAYS LAST   [Status: done | Model: opus]
 > T18 was added after this ticket was numbered and appears above it in the file. This one is
 > still the final ticket; work it only when every other box is ticked.
 - **Scope:** Stack e2e proving the whole feature against the compose stack: create a session named
@@ -1366,6 +1367,40 @@ type Schedule struct {
   invisible to the browser test. Delete sessions afterwards (`./e2e/run-stack-e2e.sh clean`), since
   each holds a container and a host port.
 - **Depends on:** T1–T16, T18
+- [x] done
+- Notes:
+  - `e2e/features/embedding.stack.spec.ts` + `e2e/mock-scripts/embedding.json`. Two tests, ~1.5 min.
+    Run: `./e2e/run-stack-e2e.sh test --mock-script e2e/mock-scripts/embedding.json -- features/embedding.stack.spec.ts`.
+    **Re-run independently by the orchestrator: 2 passed, exit 0**, ports 2/100 before and after
+    (the two are the orchestrator's own manual sessions), 0 schedules left enabled.
+  - **The restore assertion is the real one, and it goes further than the ticket asked.** Rather than
+    trusting two firings a minute apart, the spec disables the schedule, POSTs `/archive`, and waits
+    until `docker ps --filter name=sandbox-<id>` *inside DinD* reports the container **gone**, then
+    re-enables the same row. The second firing's `cat /workspace/hypothesis.md` must return
+    `[T17-ROUND-1]` — bytes written before the snapshot, read after the restore. agentd corroborates
+    with `rehydrate <id>: loaded 2 conversation messages`.
+  - The artifact fetched by name asserts `toContain(ROUND_2)` **and** `not.toContain(ROUND_1)`, which
+    proves the `(session_id, file_path)` upsert rather than accumulation. No artifact uuid appears in
+    either by-name request.
+  - The untruncated-memory claim is a **comparison, not an assumption**: the same memory is fetched
+    through `GET /agent/memories` (snippet, ≤500 chars, no `content` field) and through
+    `…/current?name=` (full, >500 bytes, both head and tail markers present), and the full body is
+    asserted strictly longer.
+  - Embed-page assertions hold T12's two security criteria that nothing else in CI covers:
+    `login-screen` count 0, the composer visible, the second firing's reply text on screen (so it
+    resumed *this* session), `page.url()` free of `#`/`token=`, and the token absent from both
+    `localStorage` and `sessionStorage`.
+  - Scope proven against a **real sibling session in the same project**: 200 on its own status and
+    by-name, 404 on the sibling's — 404 not 403, so it is no existence oracle.
+  - **Deviation from the Files list, and it was necessary:** `docker-compose.stack-e2e.yml` gains the
+    project map's object form and `APPLES_API_KEY`. `docker-compose.yml` forwards only
+    `AGENTKIT_PROJECT_MAP`/`_FILE`, so the key could not come from `.env` (the T14 discovery). Also
+    one table row each in `e2e/README.md` and `e2e/mock-scripts/README.md`, matching house
+    convention.
+  - No product code was changed to make the spec pass (`git status --short` shows only `e2e/`).
+  - Full gate re-run at the end: Go build/vet/test **0 failures** with 30 live-PG cases; `web`
+    typecheck + **1223 tests**; `sandbox` **162 tests** (and `sandbox/yarn.lock` restored, as
+    CLAUDE.md warns `npm ci` dirties it); `examples/web` `yarn build` emitting both entries.
 
 ## Discovered Issues Log
 
