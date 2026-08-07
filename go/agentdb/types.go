@@ -101,10 +101,110 @@ type Session struct {
 	WorkerID          string  `json:"worker_id,omitempty" gorm:"type:varchar(100);default:''"`
 	Installation      string  `json:"installation,omitempty" gorm:"type:text;default:''"`
 	CustomImageID     string  `json:"custom_image_id,omitempty" gorm:"type:text;default:''"`
-	ArtifactCount     int     `json:"artifact_count" gorm:"->;<-:false"`
-	MessageCount      int     `json:"message_count" gorm:"->;<-:false"`
-	ToolCallCount     int     `json:"tool_call_count" gorm:"->;<-:false"`
-	ContainerState    string  `json:"container_state" gorm:"-"`
+	// MCPServers is the session's MCP server config (§4.5). Safe to persist and
+	// display whole: values are ${VAR} references, never secrets (§4.4).
+	MCPServers MCPServers `json:"mcp_servers,omitempty" gorm:"type:jsonb;default:'{}'"`
+	// Worker is the product-level worker (persona) whose job this session is —
+	// spec 02-workers §6.5. Empty for plain vanilla sessions. NOT the same thing
+	// as WorkerID above, which is the fleet-placement binding (which host runs
+	// the container).
+	Worker string `json:"worker,omitempty" gorm:"type:text;default:''"`
+	// ComposedPrompt is the full system prompt ComposeJob produced for this
+	// session, written once at composition time so every transcript is tied to
+	// the exact prompt that produced it (§6.2). Not a version store.
+	//
+	// It is also LIVE, not merely provenance: when set it is the system prompt
+	// every turn of this session runs with (runner.turnSystemPrompt), re-read
+	// off this row on each turn so a restore or an agentd restart cannot change
+	// a running job's prompt mid-life. Empty ⇒ the host's SessionContextProvider
+	// resolves the prompt per turn, which is the plain interactive-chat path.
+	ComposedPrompt string `json:"composed_prompt,omitempty" gorm:"type:text;default:''"`
+	// LeaseExpiresAt is the unix-seconds deadline of the router's session lease;
+	// the reaper fails jobs whose lease lapsed (04-events-and-schedules §8.4).
+	// 0 = no lease held.
+	LeaseExpiresAt int64 `json:"lease_expires_at,omitempty" gorm:"default:0"`
+	// AttentionRequested is the §9 stamp: true while this session has an open
+	// `request_human_attention` call. §8.2 copies it onto the `worker.finished`
+	// envelope so reviewers can skip deliberately half-done work. Written by
+	// agentdb/attention.go; NO gorm `default:` tag, because a declared default
+	// makes GORM omit the false value and the flag could never be cleared.
+	AttentionRequested bool `json:"attention_requested,omitempty"`
+	// Name is the OPTIONAL stable handle a host addresses this session by
+	// instead of its uuid — `hypothesis-a` rather than 9f8c2a10-… — so an
+	// embedding application can keep the name in its own row and resolve it
+	// later (migration 035; design/2026-08-06-embeddable-agent-orange.md).
+	//
+	// Unique per project, kebab-case, ≤64 chars, and IMMUTABLE: the permission
+	// tag is `<-:create`, so no UPDATE this store emits carries the column at
+	// all. A name handed to a third party is a promise — an iframe URL, a
+	// schedule target, a row in someone else's database — and a rename would
+	// silently re-point every one of them at nothing.
+	//
+	// Empty means unnamed, which is what every console chat is. Migration 035's
+	// unique index is PARTIAL for exactly that reason, and excludes BOTH
+	// spellings of "no name": rows written before 035 hold NULL, rows written
+	// since hold ''.
+	Name string `json:"name,omitempty" gorm:"type:text;<-:create"`
+	// DeletedAt is the soft-delete tombstone (migration 041, doc 22 RD5): unix
+	// SECONDS at which someone deleted this session, 0 while it is live.
+	//
+	// It exists because a hard DELETE of this row cascades to
+	// agent_query_events, agent_messages and agent_artifacts — the whole
+	// conversation. Store.DeleteSession stamps this instead, and every LISTING
+	// (ListSessions, GetSessionByName, SearchMessages, ListSessionUsers,
+	// SessionExists, GetSession) filters on `deleted_at = 0`, so a deleted
+	// session is gone from every surface while the transcript stays on disk.
+	//
+	// Deliberately NOT filtered: CountSessionsBySnapshotState /
+	// GetSessionArchiveStats (the archive bytes are still on the storage bill —
+	// hiding them would understate it; see the work plan's G1) and
+	// CountProjectTokensSince (spent tokens stay spent — filtering would let a
+	// project reset its own budget by deleting sessions).
+	//
+	// NO gorm `default:` tag: 0 is meaningful, and a declared default makes GORM
+	// omit the zero value on write. The DEFAULT lives in migration 041's SQL.
+	//
+	// The field is `int64`, not `gorm.DeletedAt`, on purpose: GORM's automatic
+	// soft-delete machinery keys off the field's TYPE (gorm/soft_delete.go —
+	// gorm.DeletedAt implements QueryClauses/UpdateClauses/DeleteClauses), not
+	// off the name, so this is an ordinary column and every filter above is
+	// written out where it can be read.
+	DeletedAt int64 `json:"deleted_at,omitempty"`
+	// CreateError is WHY this session failed to start, recorded by the Runner
+	// when a create fails and cleared when one succeeds.
+	//
+	// It exists because the reason used to be thrown away: agentd provisions in
+	// a background goroutine, and the only thing that survived a failure was
+	// `status = "error"`. The caller's next message then took the
+	// no-instance-and-no-snapshot path and was told the session was lost and
+	// should be re-created — which is false, and is advice that fails
+	// identically for ever when the cause is a mis-typed `base_image`.
+	//
+	// Scope: causes that are PERMANENT FACTS ABOUT THIS SESSION'S
+	// CONFIGURATION. Host-wide transients — chiefly execenv.ErrNoCapacity — are
+	// deliberately NOT recorded here (runner.recordCreateOutcome), because a
+	// stored copy of them goes stale the moment a port frees up; those are
+	// asked of the environment live instead (runner.workerCapacity).
+	//
+	// NO gorm `default:` tag, for the same reason attention_requested has none
+	// and migration 031's columns have none: a declared default makes GORM omit
+	// the zero value on write, so the field could never be cleared. The DEFAULT
+	// lives in migration 032's SQL.
+	CreateError string `json:"create_error,omitempty"`
+	// ActiveQueryID / ActiveSandboxQueryID are the in-flight turn's two ids —
+	// the runner's persistence key and the in-image agent's stream key. Written
+	// by agentdb/activequery.go, read after an agentd restart to answer "is a
+	// turn still running, and how do I attach to it?" (D5, doc 22 RD6/RD24).
+	//
+	// NO gorm `default:` tags, for the same reason CreateError has none: a
+	// declared default makes GORM omit the zero value on write, so the columns
+	// could never be cleared. The DEFAULTs live in migration 039's SQL.
+	ActiveQueryID        string `json:"active_query_id,omitempty"`
+	ActiveSandboxQueryID string `json:"active_sandbox_query_id,omitempty"`
+	ArtifactCount        int    `json:"artifact_count" gorm:"->;<-:false"`
+	MessageCount         int    `json:"message_count" gorm:"->;<-:false"`
+	ToolCallCount        int    `json:"tool_call_count" gorm:"->;<-:false"`
+	ContainerState       string `json:"container_state" gorm:"-"`
 }
 
 func (Session) TableName() string { return "agent_sessions" }
@@ -134,6 +234,12 @@ type QueryEvents struct {
 	Events     JSONArray `json:"events" gorm:"type:jsonb;default:'[]'"`
 	SearchText string    `json:"search_text" gorm:"type:text;default:''"`
 	CreatedAt  int64     `json:"created_at" gorm:"autoCreateTime"`
+	// Ordinal is the transcript's total order (migration 038). It is assigned
+	// by a Postgres sequence on insert — never by the caller, never by gorm —
+	// so two queries written inside the same second cannot tie. 0 means "a row
+	// that predates migration 038 and was not backfilled", which the reader
+	// tolerates; see ListQueryEvents.
+	Ordinal int64 `json:"ordinal" gorm:"type:bigint;not null"`
 }
 
 func (QueryEvents) TableName() string { return "agent_query_events" }
@@ -159,27 +265,81 @@ type Artifact struct {
 	Status         string `json:"status" gorm:"type:varchar(50);default:'live';index:idx_agent_artifacts_status"`
 	PublishToFiles bool   `json:"publish_to_files" gorm:"default:false"`
 	IsDir          bool   `json:"is_dir" gorm:"default:false"`
+
+	// Meta carries the free-form fields of the portable artifacts.Artifact type
+	// that have no column of their own — today only "dirDigest" on directory
+	// artifacts. Migration 033. No gorm `default:` tag: the DEFAULT is in the
+	// migration SQL, and JSONMap.Value already renders nil as "{}".
+	Meta JSONMap `json:"meta" gorm:"type:jsonb"`
 }
 
 func (Artifact) TableName() string { return "agent_artifacts" }
 
 // Skill is a durable, cross-session catalog entry promoted from a hoisted skill
 // bundle. Independent of the session it came from (no FK cascade).
+//
+// Since migration 025 the same table also carries the §14 catalogue: project
+// scoped, labeled, append-only skill records written by CreateSkill and read by
+// ListProjectSkills / GetProjectSkill (skills.go). §14 rows are exactly those
+// with a non-empty Markdown — see the discriminator note at the top of
+// skills.go — and their project namespace is the `customer` column, exactly as
+// for the §13 image catalogue.
 type Skill struct {
-	ID              string  `json:"id" gorm:"primaryKey;type:varchar(36)"`
-	CreatedAt       int64   `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt       int64   `json:"updated_at" gorm:"autoUpdateTime"`
-	Name            string  `json:"name" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:3"`
-	Description     string  `json:"description" gorm:"type:text"`
-	Visibility      string  `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_skills_lookup,priority:1"`
-	Customer        string  `json:"customer" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:2"`
-	OwnerEmail      string  `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_skills_owner"`
-	RequiresBuild   bool    `json:"requires_build" gorm:"default:false"`
-	ContentHash     string  `json:"content_hash" gorm:"type:varchar(64)"`
-	BlobPrefix      string  `json:"blob_prefix" gorm:"type:varchar(1024)"`
-	Manifest        JSONMap `json:"manifest" gorm:"type:jsonb;default:'{}'"`
-	SourceSessionID string  `json:"source_session_id" gorm:"type:varchar(36)"`
-	PromotedBy      string  `json:"promoted_by" gorm:"type:varchar(255);default:''"`
+	ID            string  `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	CreatedAt     int64   `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64   `json:"updated_at" gorm:"autoUpdateTime"`
+	Name          string  `json:"name" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:3"`
+	Description   string  `json:"description" gorm:"type:text"`
+	Visibility    string  `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_skills_lookup,priority:1"`
+	Customer      string  `json:"customer" gorm:"type:varchar(255);index:idx_agent_skills_lookup,priority:2"`
+	OwnerEmail    string  `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_skills_owner"`
+	RequiresBuild bool    `json:"requires_build" gorm:"default:false"`
+	ContentHash   string  `json:"content_hash" gorm:"type:varchar(64)"`
+	BlobPrefix    string  `json:"blob_prefix" gorm:"type:varchar(1024)"`
+	Manifest      JSONMap `json:"manifest" gorm:"type:jsonb;default:'{}'"`
+	PromotedBy    string  `json:"promoted_by" gorm:"type:varchar(255);default:''"`
+
+	// ── §14 catalogue columns (migration 025) ───────────────────────────────
+	//
+	// As on CustomImage, none of these carries a gorm `default:` tag: GORM omits
+	// a zero-valued field from the INSERT when a default is declared, which
+	// would silently turn "no labels / no install script" into whatever the DDL
+	// says. The migration still carries DEFAULTs, for rows written outside GORM.
+
+	// Revision is the append ordinal of this teaching: a monotonic, gap-free
+	// integer allocated per (project, name) starting at 1 (migration 028).
+	//
+	// §14.1 gives a skill NO version — its identity is its name and resolution
+	// is newest-wins — and this column does not change that: there is no
+	// `name:revision` reference form and nothing resolves by it. It exists
+	// because "newest" needed a deterministic meaning. created_at on this table
+	// is SECONDS and the id is a random uuid, so two revisions recorded in the
+	// same second would otherwise order by coin toss, and `skill_get` could
+	// return the superseded document. Revision order is allocation order.
+	//
+	// Zero marks a pre-§14 row written by the legacy latest-wins UpsertSkill
+	// path, consistent with CustomImage.Version.
+	Revision int `json:"revision"`
+	// Labels say what a skill is for and who should install it (§14.1) — the
+	// same grammar and the same limits as memory labels (labels.go: one
+	// validator, one selector parser for the whole system).
+	Labels LabelSet `json:"labels" gorm:"type:jsonb"`
+	// Markdown is the Claude-Code-style skill document: what the capability is,
+	// when to reach for it, how to use it (§14.1). It is also the §14
+	// DISCRIMINATOR — a row with empty markdown is a pre-§14 host-built
+	// catalogue row and is never listed, resolved or installed.
+	Markdown string `json:"markdown" gorm:"type:text"`
+	// InstallSh is the optional shell script that installs the skill's software
+	// dependencies. Empty means "knowledge only, nothing to install".
+	InstallSh string `json:"install_sh" gorm:"type:text"`
+	// CreatedByWorker names the worker that recorded this revision (§14.1).
+	CreatedByWorker string `json:"created_by_worker,omitempty" gorm:"type:text"`
+	// CreatedBySession names the session it was recorded from — permalinkable
+	// like a memory hit (§7.3). Like CustomImage.CreatedBySession it maps onto
+	// the pre-existing `source_session_id` column (migration 013), which already
+	// meant exactly "session this skill came from": a second column with the
+	// same meaning is drift waiting to happen.
+	CreatedBySession string `json:"created_by_session,omitempty" gorm:"column:source_session_id;type:varchar(36)"`
 }
 
 func (Skill) TableName() string { return "agent_skills" }
@@ -188,34 +348,95 @@ func (Skill) TableName() string { return "agent_skills" }
 // ordered set of library skills (see agent-library/go/runner_composition.go).
 // Like Skill, it is a first-class catalog entity (not session-scoped) and uses
 // the same strict customer-scoping visibility rules — except it is never public.
+//
+// Since migration 025 the same table also carries the §13 catalogue: named,
+// versioned, labeled, append-only image records written by CreateCustomImage
+// and read by ResolveCustomImage / ListCustomImages (customimages.go). §13 rows
+// are exactly those with Version >= 1, and their project namespace is the
+// `customer` column — see the namespace note at the top of customimages.go.
 type CustomImage struct {
-	ID             string `json:"id" gorm:"primaryKey;type:varchar(36)"`
-	CreatedAt      int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt      int64  `json:"updated_at" gorm:"autoUpdateTime"`
-	Name           string `json:"name" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:3"`
-	Description    string `json:"description" gorm:"type:text"`
-	Visibility     string `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_custom_images_lookup,priority:1"`
-	Customer       string `json:"customer" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:2"`
-	OwnerEmail     string `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_custom_images_owner"`
-	ContentHash    string `json:"content_hash" gorm:"type:varchar(64)"`
-	RegistryHandle string `json:"registry_handle" gorm:"type:text"`   // JSON-encoded imageregistry.Handle
-	SkillSet       string `json:"skill_set" gorm:"type:text"`          // JSON-encoded ordered [{skillId,name,content_hash}]
-	RequiresBuild  bool   `json:"requires_build" gorm:"default:false"` // true iff any included skill had install.sh
-	BaseImageID    string `json:"base_image_id" gorm:"type:varchar(36);index:idx_agent_custom_images_base"` // lineage: custom image this was built on ("" = built on platform base)
-	BaseInstallation string `json:"base_installation,omitempty" gorm:"type:text;default:''"` // installation name when built directly on a platform installation
-	SourceSessionID  string `json:"source_session_id,omitempty" gorm:"type:varchar(36);default:''"` // session this image was burned from
-	Focus            string `json:"focus,omitempty" gorm:"type:text;default:''"` // CLAUDE.md focus applied in this layer
+	ID               string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	CreatedAt        int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt        int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	Name             string `json:"name" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:3"`
+	Description      string `json:"description" gorm:"type:text"`
+	Visibility       string `json:"visibility" gorm:"type:varchar(20);default:'organizational';index:idx_agent_custom_images_lookup,priority:1"`
+	Customer         string `json:"customer" gorm:"type:varchar(255);index:idx_agent_custom_images_lookup,priority:2"`
+	OwnerEmail       string `json:"owner_email" gorm:"type:varchar(255);index:idx_agent_custom_images_owner"`
+	ContentHash      string `json:"content_hash" gorm:"type:varchar(64)"`
+	RegistryHandle   string `json:"registry_handle" gorm:"type:text"`                                         // JSON-encoded imageregistry.Handle
+	SkillSet         string `json:"skill_set" gorm:"type:text"`                                               // JSON-encoded ordered [{skillId,name,content_hash}]
+	RequiresBuild    bool   `json:"requires_build" gorm:"default:false"`                                      // true iff any included skill had install.sh
+	BaseImageID      string `json:"base_image_id" gorm:"type:varchar(36);index:idx_agent_custom_images_base"` // lineage: custom image this was built on ("" = built on platform base)
+	BaseInstallation string `json:"base_installation,omitempty" gorm:"type:text;default:''"`                  // installation name when built directly on a platform installation
+	Focus            string `json:"focus,omitempty" gorm:"type:text;default:''"`                              // CLAUDE.md focus applied in this layer
+
+	// ── §13 catalogue columns (migration 025) ──────────────────────────────
+	//
+	// None of these carries a gorm `default:` tag on purpose: GORM omits a
+	// zero-valued field from the INSERT when a default is declared, which would
+	// silently turn "version 0 / no labels / not reaped" into whatever the DDL
+	// says. The migration still carries DEFAULTs, for rows written outside GORM.
+
+	// Version is the second half of the §13.2 identity `name:version` — a
+	// monotonic, gap-free integer allocated per (project, name) starting at 1.
+	// Zero marks a pre-§13 row written by the legacy latest-wins
+	// UpsertCustomImage path: such rows are not in the catalogue, are never
+	// listed by ListCustomImages, and never resolve (§13.3).
+	Version int `json:"version"`
+	// Labels are the commit message of a version (§13.2) — the same grammar and
+	// the same limits as memory labels (labels.go: one validator, one selector
+	// parser, one jsonb translator for the whole system).
+	Labels LabelSet `json:"labels" gorm:"type:jsonb"`
+	// CreatedByWorker names the worker that burned this version (§13.2).
+	CreatedByWorker string `json:"created_by_worker,omitempty" gorm:"type:text"`
+	// CreatedBySession names the session it was burned from — permalinkable like
+	// a memory hit (§7.3). It deliberately maps onto the pre-existing
+	// `source_session_id` column (migration 018), which already meant exactly
+	// "session this image was burned from": a second column with the same
+	// meaning is drift waiting to happen.
+	CreatedBySession string `json:"created_by_session,omitempty" gorm:"column:source_session_id;type:varchar(36)"`
+	// ReapedAt tombstones a version whose bytes the snapshot_ttl_days reaper
+	// (§5, B4) has deleted: unix seconds, 0 = live. The record outlives the
+	// bytes so the catalogue stays honest — resolving a reaped version fails
+	// loudly with ErrCustomImageReaped rather than pointing at nothing (§13.7).
+	ReapedAt int64 `json:"reaped_at,omitempty"`
+
+	// ── §5 snapshot TTL metadata (migration 027, B4) ────────────────────────
+	//
+	// §5 requires every snapshot to carry {source session, created_at, expiry,
+	// last_resumed_at}. Source session is CreatedBySession and created_at is
+	// CreatedAt, so these two complete the tuple. Both are unix SECONDS, like
+	// CreatedAt and ReapedAt on this table.
+
+	// ExpiresAt is the instant the reaper may delete this version's bytes. It is
+	// stamped at burn time from the project's snapshot_ttl_days and is a promise
+	// the reaper honours even if the setting changes afterwards. 0 = never —
+	// both "the project set snapshot_ttl_days: 0" and rows burned before B4,
+	// which carry no promise and are therefore kept.
+	ExpiresAt int64 `json:"expires_at,omitempty"`
+	// LastResumedAt is the last time a session launched from this version.
+	// §5 sets ExpiresAt at snapshot time and resuming does not rewrite it, but
+	// the reaper reads this field: a version resumed within the project's
+	// current snapshot_ttl_days window has its reap DEFERRED rather than
+	// executed (RD9, agentkit.SnapshotReaper), so an image in daily use is not
+	// deleted out from under the worker pinned to it. The deferral lapses by
+	// itself once the launches stop.
+	LastResumedAt int64 `json:"last_resumed_at,omitempty"`
 }
 
 func (CustomImage) TableName() string { return "agent_custom_images" }
 
 // SessionQuery holds filter parameters for listing sessions.
 type SessionQuery struct {
-	ID                      string
-	UserEmail               string
-	Customer                string
-	Job                     string
-	Status                  string
+	ID        string
+	UserEmail string
+	Customer  string
+	Job       string
+	Status    string
+	// Worker filters to the product-level worker whose jobs these sessions are
+	// (Session.Worker, not WorkerID — the fleet binding). Empty ⇒ no filter.
+	Worker                  string
 	HasMessages             bool
 	ExcludeWorkflowIDPrefix string
 	ExcludeUserEmails       []string

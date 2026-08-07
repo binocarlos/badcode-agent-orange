@@ -36,7 +36,7 @@ test('useAgentSessions lists sessions', async () => {
 
   function List() {
     const { sessions, refresh } = useAgentSessions()
-    return <button onClick={refresh}>{sessions.length} sessions</button>
+    return <button onClick={() => refresh()}>{sessions.length} sessions</button>
   }
   render(
     <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>

@@ -1,10 +1,60 @@
 package main
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 )
+
+// TestCredentialMode pins the three answers the browser is told, in the same
+// precedence the two acting call sites apply: an API key wins outright, an
+// OAuth token alone is subscription mode, neither is the mock. RD18: the mock
+// is the DEFAULT (both credential lines ship blank in .env.example), so a wrong
+// answer here is the difference between "the product works" and "no model was
+// ever called".
+func TestCredentialMode(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		oauth string
+		want  string
+	}{
+		{"neither is mock", "", "", credentialModeMock},
+		{"api key alone", "sk-ant-api03-x", "", credentialModeAPIKey},
+		{"oauth token alone", "", "sk-ant-oat01-x", credentialModeSubscription},
+		{"api key wins over oauth", "sk-ant-api03-x", "sk-ant-oat01-x", credentialModeAPIKey},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := credentialMode(tt.key, tt.oauth); got != tt.want {
+				t.Fatalf("credentialMode(%q, %q) = %q, want %q", tt.key, tt.oauth, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAuthConfigReportsCredentialMode is the wire-level half: whatever
+// credentialMode decided has to reach the browser, in every login mode.
+func TestAuthConfigReportsCredentialMode(t *testing.T) {
+	for _, mode := range []string{credentialModeMock, credentialModeAPIKey, credentialModeSubscription} {
+		t.Run(mode, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			authConfigHandler("", false, mode)(rec, httptest.NewRequest(http.MethodGet, "/auth/config", nil))
+			var resp struct {
+				CredentialMode string `json:"credential_mode"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if resp.CredentialMode != mode {
+				t.Fatalf("credential_mode = %q, want %q", resp.CredentialMode, mode)
+			}
+		})
+	}
+}
 
 func TestNewModelProxyHandler_MockWhenNoKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")

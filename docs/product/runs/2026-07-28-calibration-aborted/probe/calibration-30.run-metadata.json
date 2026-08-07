@@ -1,0 +1,12 @@
+{
+  "startedAt": "2026-07-28T16:53:26.389Z",
+  "finishedAt": "2026-07-28T17:03:04.840Z",
+  "baseURL": "http://localhost:8080",
+  "projects": [
+    {
+      "arm": "A-critic-live",
+      "project": "e2e-cal-a-critic-live-ms4wa970-ufhtk"
+    }
+  ],
+  "occupancy": "0/100 session ports in use, 0 enabled schedule(s) (0 from e2e projects)"
+}

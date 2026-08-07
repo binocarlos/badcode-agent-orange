@@ -1,0 +1,12 @@
+{
+  "seed": 20260728,
+  "note": "The mock smoke's ticket stream: two of each kind, arranged so a trap comes FIRST. The critic's rewrite lands at the end of ticket 1, so the early window (t01-t03, clamped from 10 by metrics.windowFor) straddles it and the accuracy delta registers; a stream that opened with a ticket even a keyword router gets right would produce a flat curve and prove nothing about delivery. Kind order is fixed rather than shuffled because the mock script keys a rule per ticket id — the order IS the script. Nothing here is a result; see README 'What the mock smoke proves'.",
+  "scenarios": [
+    { "id": "t01", "kind": "misdirect", "queue": "outage", "decoy": "billing", "seed": 3002, "note": "billing=6 outage=0 — a keyword router routes it to billing; the stated HTTP failure says outage" },
+    { "id": "t02", "kind": "plain", "queue": "billing", "seed": 3001, "note": "the floor: both reference routers reach billing" },
+    { "id": "t03", "kind": "ambiguous", "decoy": "access", "seed": 3003, "note": "sounds like access work, states no rule fact; escalate" },
+    { "id": "t04", "kind": "misdirect", "queue": "access", "decoy": "outage", "seed": 3005, "note": "outage vocabulary over a sign-in refusal" },
+    { "id": "t05", "kind": "plain", "queue": "outage", "seed": 3004, "note": "the floor again, after the rewrite" },
+    { "id": "t06", "kind": "ambiguous", "decoy": "billing", "seed": 3006, "note": "sounds like billing work, states no rule fact; escalate" }
+  ]
+}

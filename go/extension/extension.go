@@ -9,6 +9,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/binocarlos/badcode-agent-orange/artifacts"
 )
 
@@ -20,11 +21,63 @@ type ContextScope struct {
 	UserEmail string
 }
 
-// SessionContext carries the resolved per-session context (system prompt and
-// base image) that the Runner uses when provisioning or resuming a session.
+// SessionContext carries the resolved per-session context (system prompt, base
+// image and MCP configuration) that the Runner uses when provisioning or
+// resuming a session.
 type SessionContext struct {
 	SystemPrompt string
-	BaseImage    string
+	// BaseImage is the host's resolved image chain (docs/product §5:
+	// worker image > project base_image > the host's own global default). The
+	// Runner ranks it above Policy.BaseImage and below an explicit request
+	// image — see runner.go:resolveLaunchImage.
+	//
+	// It may hold an UNRESOLVED §13 pointer when the winning layer was a
+	// worker's `image` column; WorkerImage below says so, and is what the
+	// Runner actually resolves. A host with no image catalogue simply never
+	// sets WorkerImage, and BaseImage is used verbatim as it always was.
+	BaseImage string
+
+	// ProjectBaseImage is `project_settings.base_image` — the project layer of
+	// the chain above — carried separately so the Runner can tell WHICH layer
+	// won and resolve it accordingly.
+	//
+	// It is a §13 pointer OR a literal registry reference, and the Runner finds
+	// out which by asking the catalogue: a name it knows resolves per §13.3
+	// (bare name → latest, `name:version` → pinned), anything it does not know
+	// is used verbatim, exactly as this setting always behaved. That ordering
+	// is the whole point — the same string an operator is told to write in
+	// `worker.image` must mean the same thing here (§13.5), while
+	// `agentkit-sandbox:dev` and every other plain docker reference keeps
+	// working untouched.
+	//
+	// It is only consulted when it is the string that WON the chain (i.e. it
+	// equals BaseImage), so a host that computes BaseImage some other way gets
+	// verbatim behaviour and never a surprise resolution. Empty on every host
+	// with no project settings, which is the pre-product-layer path unchanged.
+	ProjectBaseImage string
+
+	// WorkerImage is the worker's §13 image pointer — a bare `name` (floating:
+	// the latest version in the project) or `name:version` (pinned) — carried
+	// UNRESOLVED, because §13.3 resolution belongs to the image catalogue and
+	// not to this seam. Empty when the worker sets no pointer, which is the
+	// only case a host without images ever produces.
+	//
+	// When it is set the Runner resolves it through Deps.Images and launches
+	// from the result. A resolution failure (unknown name, reaped version,
+	// nothing to materialise) FAILS THE LAUNCH: a worker that was pointed at an
+	// environment and quietly got a different one is exactly the drift §13
+	// exists to prevent (docs/product/08-images-and-skills.md §13.3, §13.5).
+	WorkerImage string
+
+	// MCPServers is the project ∪ worker MCP configuration the host resolved for
+	// this session (docs/product/01-session-config.md §4.1, §5). Without this
+	// field the union a host computes has no route into the container — the
+	// Runner would only ever ship what the create request itself carried.
+	//
+	// These are *defaults*: the Runner merges them UNDER the request-supplied
+	// servers, so a CreateSessionRequest entry wins a name collision (§5:
+	// "the defaults which the request may extend").
+	MCPServers agentdb.MCPServers
 }
 
 // SessionContextProvider assembles the per-session context for a turn. Platinum

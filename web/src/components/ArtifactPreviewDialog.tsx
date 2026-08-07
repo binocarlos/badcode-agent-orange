@@ -6,7 +6,7 @@
 //   - Import paths updated: types/artifactFilters/prismLanguage → local.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useState, useEffect, useCallback, type ReactNode } from 'react'
 import {
   Dialog,
   DialogTitle,
@@ -21,6 +21,7 @@ import {
   TableRow,
   TableCell,
   Chip,
+  useTheme,
 } from '@mui/material'
 import {
   Close as CloseIcon,
@@ -79,6 +80,7 @@ export default function ArtifactPreviewDialog({
   authHeader,
   renderPlatinumData,
 }: ArtifactPreviewDialogProps) {
+  const muiTheme = useTheme()
   const [content, setContent] = useState<ContentState>({ status: 'idle' })
 
   const fetchContent = useCallback(async (art: ArtifactInfo) => {
@@ -189,7 +191,7 @@ export default function ArtifactPreviewDialog({
           <Chip
             label={getLanguageFromFilename(artifact.fileName)}
             size="small"
-            sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: '#e2e8f0', color: '#475569' }}
+            sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: 'divider', color: 'text.secondary' }}
           />
         )}
         <IconButton
@@ -198,7 +200,7 @@ export default function ArtifactPreviewDialog({
           disabled={artifact.status === 'lost'}
           title="Download"
           aria-label="download artifact"
-          sx={{ color: '#2563eb' }}
+          sx={{ color: 'primary.main' }}
         >
           <DownloadIcon sx={{ fontSize: 20 }} />
         </IconButton>
@@ -216,12 +218,12 @@ export default function ArtifactPreviewDialog({
 
         {content.status === 'error' && (
           <Box sx={{ p: 3, textAlign: 'center' }}>
-            <Typography sx={{ color: '#ef4444', fontSize: 14 }}>{content.message}</Typography>
+            <Typography sx={{ color: 'error.main', fontSize: 14 }}>{content.message}</Typography>
           </Box>
         )}
 
         {content.status === 'loaded' && content.blobUrl && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', p: 2, backgroundColor: '#f9fafb' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', p: 2, backgroundColor: 'action.hover' }}>
             <Box
               component="img"
               src={content.blobUrl}
@@ -253,7 +255,7 @@ export default function ArtifactPreviewDialog({
             {/* Code artifacts: syntax highlighting */}
             {artifact.artifactType === 'code' && (
               <Highlight
-                theme={themes.vsLight}
+                theme={muiTheme.palette.mode === 'dark' ? themes.vsDark : themes.vsLight}
                 code={content.text}
                 language={getPrismLanguage(artifact.fileName)}
               >
@@ -309,7 +311,7 @@ export default function ArtifactPreviewDialog({
                     </TableBody>
                   </Table>
                   {csv.totalRows > 100 && (
-                    <Typography sx={{ fontSize: 12, color: '#6b7280', textAlign: 'center', py: 1 }}>
+                    <Typography sx={{ fontSize: 12, color: 'text.secondary', textAlign: 'center', py: 1 }}>
                       Showing 100 of {csv.totalRows} rows
                     </Typography>
                   )}

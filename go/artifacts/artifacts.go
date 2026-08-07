@@ -55,7 +55,7 @@ type ArtifactStore interface {
 type Artifact struct {
 	ID           string            `json:"id"`
 	SessionID    string            `json:"sessionId"`
-	FilePath     string            `json:"filePath"` // dedup key with SessionID
+	FilePath     string            `json:"filePath"`     // dedup key with SessionID
 	ArtifactType string            `json:"artifactType"` // "file" | "code" | "image" | "data" | "webapp" (extensible)
 	Status       Status            `json:"status"`
 	BlobPath     string            `json:"blobPath"`
@@ -63,8 +63,8 @@ type Artifact struct {
 	Description  string            `json:"description"`
 	MimeType     string            `json:"mimeType"`
 	FileSize     int64             `json:"fileSize"`
-	Source       string            `json:"source"` // "tool" | "auto" | "upload" — write-once
-	IsDir        bool              `json:"isDir"`  // when true, BlobPath is a PREFIX and bytes are one-blob-per-file
+	Source       string            `json:"source"`         // "tool" | "auto" | "upload" — write-once
+	IsDir        bool              `json:"isDir"`          // when true, BlobPath is a PREFIX and bytes are one-blob-per-file
 	Meta         map[string]string `json:"meta,omitempty"` // host-specific fields live here to keep the type portable
 }
 

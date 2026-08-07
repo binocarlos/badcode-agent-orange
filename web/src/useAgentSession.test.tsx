@@ -171,3 +171,160 @@ describe('endpoint overrides reach fetch', () => {
     })
   })
 })
+
+// RD20: `create_error` is populated on provisioning failure and served on the
+// session route, and web/src had ZERO consumers of it — a session that never
+// came up rendered as a bare `status: "error"` with an empty transcript.
+describe('a session that failed to start explains itself', () => {
+  let originalFetch: typeof globalThis.fetch
+
+  const stubSession = (session: Record<string, unknown>) => {
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const urlStr = String(url)
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      if (urlStr.includes('/query-events')) return json({ events: [] })
+      if (urlStr.includes('/messages')) return json({ messages: [], total: 0 })
+      if (urlStr.includes('/artifacts')) return json({ artifacts: [] })
+      if (urlStr.includes('/status')) return json({ sandboxState: 'stopped', activeQuery: null })
+      if (urlStr.includes('/agent/session/')) return json(session)
+      return json({})
+    }) as typeof globalThis.fetch
+  }
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('surfaces create_error instead of a bare "error" status', async () => {
+    stubSession({
+      id: 'sess-err',
+      status: 'error',
+      workflow_id: 'agent',
+      create_error: 'host port pool is exhausted',
+    })
+
+    const { result } = renderHook(() => useAgentSession({ apiBaseUrl: '' }))
+    await act(async () => {
+      await result.current.resumeSession('sess-err')
+    })
+
+    await waitFor(() => {
+      expect(result.current.error).toMatch(/host port pool is exhausted/)
+    })
+    expect(result.current.session?.error).toBe('host port pool is exhausted')
+
+    await act(async () => {
+      result.current.clearSession()
+    })
+  })
+
+  it('says so when the failure has no recorded reason', async () => {
+    stubSession({ id: 'sess-err2', status: 'error', workflow_id: 'agent', create_error: '' })
+
+    const { result } = renderHook(() => useAgentSession({ apiBaseUrl: '' }))
+    await act(async () => {
+      await result.current.resumeSession('sess-err2')
+    })
+
+    await waitFor(() => {
+      expect(result.current.error).toMatch(/failed to start/)
+    })
+    expect(result.current.error).toMatch(/No reason was recorded/)
+
+    await act(async () => {
+      result.current.clearSession()
+    })
+  })
+
+  it('leaves a healthy session with no error banner', async () => {
+    stubSession({ id: 'sess-ok', status: 'completed', workflow_id: 'agent', create_error: '' })
+
+    const { result } = renderHook(() => useAgentSession({ apiBaseUrl: '' }))
+    await act(async () => {
+      await result.current.resumeSession('sess-ok')
+    })
+
+    expect(result.current.error).toBeNull()
+
+    await act(async () => {
+      result.current.clearSession()
+    })
+  })
+})
+
+// D5: the browser HAD the id and dropped it. `checkSessionStatus` read
+// `activeQuery.queryId`, logged it, and then called the reconnect endpoint with
+// no query string — while the server reads `queryId` from exactly there
+// (go/httpapi/stream.go). The result was a reconnect that attached to nothing,
+// rendered nothing, and (since D2) persisted nothing: the fix underneath it
+// could never fire.
+describe('a reconnect names the turn it is reattaching to', () => {
+  let originalFetch: typeof globalThis.fetch
+  const fetchedUrls: string[] = []
+
+  beforeEach(() => {
+    fetchedUrls.length = 0
+    originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const urlStr = String(url)
+      fetchedUrls.push(urlStr)
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      if (urlStr.includes('/query-events')) return json({ events: [] })
+      if (urlStr.includes('/messages')) return json({ messages: [], total: 0 })
+      if (urlStr.includes('/artifacts')) return json({ artifacts: [] })
+      // A turn IS in flight, and the server names it.
+      if (urlStr.includes('/status')) {
+        return json({ sandboxState: 'running', activeQuery: { queryId: 'q-sess-live-3' } })
+      }
+      // The reconnect itself: answer with a non-SSE body so the hook gives up
+      // immediately. What is under test is the URL, not the stream.
+      if (urlStr.includes('/reconnect')) return json({})
+      if (urlStr.includes('/agent/session/')) {
+        return json({ id: 'sess-live', status: 'active', workflow_id: 'agent' })
+      }
+      return json({})
+    }) as typeof globalThis.fetch
+  })
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+    vi.restoreAllMocks()
+  })
+
+  it('sends the active queryId on the reconnect URL', async () => {
+    const { result } = renderHook(() => useAgentSession({ apiBaseUrl: '' }))
+    await act(async () => {
+      await result.current.resumeSession('sess-live')
+    })
+
+    const reconnects = fetchedUrls.filter((u) => u.includes('/reconnect'))
+    expect(reconnects.length).toBeGreaterThan(0)
+    for (const u of reconnects) {
+      expect(u).toContain('queryId=q-sess-live-3')
+    }
+
+    await act(async () => {
+      result.current.clearSession()
+    })
+  })
+
+  it('DEFAULT_ENDPOINTS.reconnect carries the id, and omits the query string without one', () => {
+    expect(DEFAULT_ENDPOINTS.reconnect('abc', 'q-abc-1')).toBe(
+      '/agent/session/abc/reconnect?queryId=q-abc-1',
+    )
+    expect(DEFAULT_ENDPOINTS.reconnect('abc')).toBe('/agent/session/abc/reconnect')
+  })
+})

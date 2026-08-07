@@ -1,10 +1,14 @@
-# CI for the agentkit library. Runs the library's own gates — the same ones the
-# AG-1…AG-9 sub-issues gate on — so the folder is verifiable standalone and this
-# workflow moves with it unchanged when the library is lifted to its own repo.
+# CI for Agent Orange. Runs the gates for all three packages — the Go engine
+# (go/), the in-image agent (sandbox/) and the chat UI (web/) — which together
+# are the whole repo's definition of green. See CLAUDE.md, "Build & test the
+# engine".
 #
-# Paths are relative to the agentkit root (this file's repo root after lift-out;
-# `agent-library/` while staged inside Platinum). The `defaults.run.working-directory`
-# keeps the steps identical in both layouts.
+# Provenance note: this file was inherited from the in-house "agentkit" library
+# when it was staged inside another repo, and the job/workflow names still say
+# agentkit. They are kept because they are the check names branch protection
+# refers to; the module path is github.com/binocarlos/badcode-agent-orange and
+# the Platinum-import guard below exists only to keep the old coupling from
+# coming back.
 name: agentkit-ci
 
 on:
@@ -13,6 +17,18 @@ on:
   pull_request:
 
 jobs:
+  # Repo-wide source hygiene. Cheap, and it guards a class of defect that
+  # defeats review itself: a raw NUL byte in a source file makes grep report
+  # "no matches" and git report "Binary files differ / 0 insertions, 0
+  # deletions". Five web/src files carried one for months (doc 22 RD25) and
+  # every search over that directory was silently wrong for as long.
+  hygiene:
+    name: Hygiene (no raw NUL bytes)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-no-nul-bytes.sh
+
   go:
     name: Go (build · test · vet)
     runs-on: ubuntu-latest
@@ -32,6 +48,19 @@ jobs:
       - run: go build ./...
       - run: go test ./... -count=1
       - run: go vet ./...
+
+      # Build-tagged packages are invisible to every step above: `go test ./...`
+      # skips them, so systemtest/ rotted for months against a removed Suspend/
+      # Resume API while CI stayed green. This step type-checks everything the
+      # `integration` tag switches on, so it must keep compiling against the
+      # live API.
+      #
+      # THIS IS A COMPILE GATE, NOT A RUN. The suite builds the sandbox image
+      # and starts real containers, so a green CI does NOT mean the integration
+      # tests passed — only that they still type-check. Run them by hand:
+      #   cd go && go test -tags integration ./systemtest/ -v -timeout 900s
+      - name: Integration-tagged packages still compile
+        run: go vet -tags integration ./...
 
   sandbox:
     name: Sandbox (typecheck · test)
@@ -59,6 +88,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: yarn install --frozen-lockfile
-      - run: yarn typecheck
-      - run: yarn test
+      # npm, not yarn: web/ tracks package-lock.json only. Its yarn.lock was
+      # deleted deliberately — npm>=7 rewrites a lone yarn.lock destructively,
+      # and every documented command for this package is npm. `yarn install
+      # --frozen-lockfile` here would fail outright with no lockfile to freeze.
+      # sandbox/ still tracks both and keeps using yarn above.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test

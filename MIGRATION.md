@@ -6,6 +6,12 @@ module `github.com/binocarlos/badcode-agent-orange`). This document tracks turni
 standalone Agent Orange that can **build installation images and push them to a variety of image
 registries — Google Cloud Artifact Registry first.**
 
+**Scope note.** This document tracks the *migration* only — standalone-ification, registries, GCP.
+The **product layer** built on top of the runtime (workers, memory, events, schedules, images,
+skills, config log) is a separate line of work: spec in `docs/product/`, operating guide in
+`docs/18-workers-memory-events.md`. It is now built, and it does not block anything here; the two
+lines meet only at deployment, where Phase 4's GCP backends are what a hosted project would run on.
+
 **Provenance / IP note.** agentkit is bayesprice-owned. This repo is for **private** use right now,
 which is fine. A future *public* release (the original "Agent Orange as art-object" idea) would
 require resolving licensing/ownership first — parked until then.
@@ -14,17 +20,22 @@ require resolving licensing/ownership first — parked until then.
 
 ## Phase 0 — Foundation imported ✅ (done)
 
-- Copied agentkit (`agent-library/`) into this repo root. **`cd go && go build ./...` passes** (Go 1.24).
-- Installation definitions copied to `installations/` (`platinum-base`, `core-v1`, `core-v2`).
+- Copied agentkit (`agent-library/`) into this repo root. **`cd go && go build ./...` passes** (Go 1.24
+  at the time; the module floor is **1.25** since Phase 4 added the GCP SDK).
+- Installation definitions copied to `installations/`, since genericized to the engine-owned
+  examples `installations/core` + `installations/example`.
 - Platinum host-side image pipeline copied to `migration-reference/` (to port, not to keep):
   `goapi-installations/` (resolution logic), `build-installations-manifest.py`,
   `build-sandbox-agentkit.sh`, `stack`, `agent_v2.go` (ImageResolver), `agent_save_session_image.go`,
   `agentdeps.go`, and the ACR auth design doc.
 - Fresh local git repo (no remote).
 
-**What is NOT yet working:** the TS in-image agent (`sandbox/`) and React UI (`web/`) have not had
-`npm install`/build run; the installation image-build path is Platinum-host code (not yet ported);
-registry auth is basic-only (no GCP).
+**What was NOT yet working at the time:** the TS in-image agent (`sandbox/`) and React UI (`web/`)
+had not had `npm install`/build run; the installation image-build path is Platinum-host code (not
+yet ported); registry auth was basic-only (no GCP).
+
+*(Since corrected: `sandbox/` and `web/` both install, typecheck and test clean in this fork —
+see Phase 1.2. Registry auth gained the GCP path in Phase 4b.)*
 
 ---
 
@@ -54,15 +65,21 @@ Key code (in this repo):
 
 Goal: this repo builds and runs end-to-end with no Platinum coupling.
 
-1. **Re-module.** Rename Go module `github.com/binocarlos/badcode-agent-orange` → the Agent Orange path
-   (decide: e.g. `github.com/badcode/agent-orange` or keep `agentkit`). Update `go/go.mod` + all
-   import prefixes. Re-run `go build ./... && go vet ./...`.
-2. **Build the in-image agent + UI.** `npm install` + build in `sandbox/` (TS in-image agent) and
-   `web/` (React UI); run their test suites. Confirm `sandbox/Dockerfile` builds `agent-orange-sandbox`.
+1. ✅ **Re-module.** The Go module path is settled as `github.com/binocarlos/badcode-agent-orange`
+   (see Decisions below); `go/go.mod` and all import prefixes use it and `go build ./... && go vet ./...`
+   pass. No old `bayes-price/agentkit` path remains.
+2. ✅ **Build the in-image agent + UI.** Both packages install, typecheck and pass their suites
+   untouched — `cd sandbox && npm ci && npm test` (157 tests) and `cd web && npm ci && npm test`
+   (543 tests), verified 2026-07-25. No code fixes were needed in either. `sandbox/Dockerfile`
+   builds in the compose stack (`init-sandbox`) on every `docker compose up --build`.
+   Two lockfile footguns found: `sandbox/` tracks a stale `yarn.lock` that npm rewrites on
+   install (same in `examples/web/`; `web/`'s was replaced with `package-lock.json`), and
+   `web/`'s `npm run build` is `tsc --noEmit`, so it emits no `dist/` despite `package.json`
+   pointing there.
 3. **Stand up the example host.** Run `go/examples/standalone/main.go` against real DinD with the
    mock model proxy (per `examples/README.md`) — proves provision → message → stream → snapshot.
-4. **Liftability gate.** Port the CI check that forbids host-app imports (it already exists in
-   `.github/`); make it the Agent Orange invariant.
+4. ✅ **Liftability gate.** `.github/workflows/ci.yml` fails the build on any Platinum import from
+   the `go/` module ("No Platinum imports (liftability invariant)").
 5. **De-Platinum naming.** Genericize `platinum-*` identifiers in docs/config that are cosmetic
    (leave functional installation work to Phase 2).
 
@@ -117,7 +134,20 @@ Two independent pieces. Note the runtime already has everything they plug into: 
 (`go/extension/filesblob`) ships; there is **no cloud backend in the module** (Azure lived in the
 Platinum host and was not copied). go.mod has no cloud deps yet.
 
-### 4a. Artifacts + snapshots → Google Cloud Storage ✅ (impl done; wiring pending)
+> **What the ✅s below rest on, and what they do not.** The two end-to-end claims (4a.3, 4b.3) were
+> recorded on 2026-06-25 by the agent that ran them, in commits `38aecd8` and `9836a30`, naming the
+> bucket, the image ref and the `gcloud` command used to confirm each. No log, transcript or test
+> artifact survives in the repo, so **nothing here can be re-checked without GCP credentials** —
+> re-running `deploy/gcp/setup.sh` and the stack is the only way to reconfirm. Two things support
+> the record: the same hour produced `1b911f2`, a fix hardening `setup.sh` against a new-service-account
+> IAM propagation race (a failure you only meet by running it live, alongside a `-tags gcs`
+> integration test against the real bucket), and `38aecd8` recorded a gap it had *not* closed
+> (Materialize short-circuited to the local image) which `9836a30` then closed four minutes later by
+> deleting the local image and forcing the pull. Nothing under `extension/gcsblob`,
+> `imageregistry/auth`, `imageregistry/ociregistry`, `cmd/agentd/backends.go` or `deploy/gcp` has
+> changed since, so the record still describes today's code.
+
+### 4a. Artifacts + snapshots → Google Cloud Storage ✅ (done)
 
 **One GCS-backed `BlobStore` serves BOTH** the `ArtifactStore` (artifact bytes) and `blobarchive`
 (snapshot tarballs) — they both write through `extension.BlobStore`. Implemented once.
@@ -140,7 +170,7 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
    (`blobs=gcs`) uploaded an artifact → object present in `gs://webkit-servers-agent-orange` and read
    back byte-identical.
 
-### 4b. Images → Artifact Registry ✅ (auth seam done; end-to-end pending)
+### 4b. Images → Artifact Registry ✅ (done)
 
 1. ✅ **Auth provider seam.** New `go/imageregistry/auth` package: `auth.Provider` returns
    `Credentials{Username, Password}` per push/pull (no longer captured once), with `auth.Static` for
@@ -179,15 +209,22 @@ Platinum host and was not copied). go.mod has no cloud deps yet.
 - ✅ **GCP auth method** = Application Default Credentials (ADC / workload identity). gcsblob configures
   no credentials; the host's runtime environment supplies them.
 - ✅ **Go floor bumped to 1.25** (GCP SDK requires it via `google.golang.org/api`); CI updated.
-- ⬜ **GCP deployment specifics (still needed to wire/verify):** project id, region, **Artifact
-  Registry repo name**, **GCS bucket name**.
+- ✅ **GCP deployment specifics:** project `webkit-servers`, region `europe-west1`, Artifact
+  Registry repo `agent-orange`, GCS bucket `webkit-servers-agent-orange`, runtime service account
+  `agent-orange-runtime`. These are the defaults in `deploy/gcp/setup.sh` (idempotent; re-runnable;
+  `--emit-key` for a local/CI key, otherwise workload identity).
 
 ## Status
 
 - [x] Phase 0 — foundation imported, Go core builds
-- [ ] Phase 1 — standalone-ify
+- [ ] Phase 1 — standalone-ify (1, 2 and 4 done: module path, `sandbox`+`web` green, liftability
+      CI. Outstanding: 3 the `examples/standalone` host run against real DinD, 5 de-Platinum naming.
+      The compose stack — `agentd` + DinD + web + Postgres — has since been proven end-to-end by
+      the browser e2e under `e2e/features/`, which covers the same ground as 3 through a different
+      host)
 - [ ] Phase 2 — genericize installations
 - [ ] Phase 3 — registry-agnostic build + push
 - [x] Phase 4 — GCP (GCS blobs + Artifact Registry): engine seams + agentd wiring + provisioning,
-      verified end-to-end against the live project (artifact→bucket, snapshot→AR)
+      recorded end-to-end against the live project on 2026-06-25 (artifact→bucket, snapshot push
+      *and* pull→AR). Testimony, not a re-runnable check — see the note above §4a
 - [ ] Phase 5 — automation & hardening

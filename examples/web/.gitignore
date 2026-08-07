@@ -1,0 +1,5 @@
+node_modules/
+# Build output. Nothing consumes the committed copy — deploy/web.Dockerfile
+# runs its own `yarn build` inside the image — and every local build dirtied
+# the tree, so it is generated, not tracked.
+dist/

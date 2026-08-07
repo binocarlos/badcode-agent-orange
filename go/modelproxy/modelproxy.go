@@ -151,7 +151,7 @@ func buildProxyRequest(endpoint, apiKey, inboundPath string, body []byte, header
 // claude-agent-sdk parser for a single successful text turn. Used by MockHandler.
 const mockSSEStream = "" +
 	"event: message_start\n" +
-	`data: {"type":"message_start","message":{"id":"msg_mock001","type":"message","role":"assistant","content":[],"model":"claude-opus-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n" +
+	`data: {"type":"message_start","message":{"id":"msg_mock001","type":"message","role":"assistant","content":[],"model":"claude-opus-4-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":22,"cache_read_input_tokens":148}}}` + "\n\n" +
 	"event: content_block_start\n" +
 	`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
 	"event: ping\n" +
@@ -179,7 +179,18 @@ const mockSSEStream = "" +
 // streaming SSE response for any POST — no upstream, no key. agentd mounts this
 // at /agent-proxy when no ANTHROPIC_API_KEY is configured so the UI still works
 // end-to-end with zero config. It also answers GET /health.
-func MockHandler() http.Handler {
+func MockHandler() http.Handler { return ScriptedMockHandler(nil) }
+
+// ScriptedMockHandler is MockHandler with an optional script table (see
+// script.go). A nil or empty table makes it behave exactly like MockHandler:
+// every POST gets the canned single-text-turn stream, and no request can
+// produce a tool_use. With a table, the first matching rule's turn for this
+// request is served instead; a request matching no rule still gets the canned
+// stream, so configuring a script never changes unrelated traffic.
+func ScriptedMockHandler(table *ScriptTable) http.Handler {
+	if table != nil && len(table.Rules) == 0 {
+		table = nil
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/health") {
 			w.Header().Set("Content-Type", "application/json")
@@ -191,7 +202,20 @@ func MockHandler() http.Handler {
 			_, _ = w.Write([]byte(`{"ok":true}`))
 			return
 		}
-		_, _ = io.Copy(io.Discard, r.Body)
+
+		stream := mockSSEStream
+		if table == nil {
+			// Unscripted: drain and discard, exactly as before.
+			_, _ = io.Copy(io.Discard, r.Body)
+		} else {
+			body, _ := io.ReadAll(r.Body)
+			if turns := table.Select(body); turns != nil {
+				if idx := CountAssistantMessages(body); idx < len(turns) {
+					stream = TurnSSE(turns[idx], idx)
+				}
+			}
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
@@ -201,15 +225,21 @@ func MockHandler() http.Handler {
 		// pipeline (claude CLI → agent SDK → sandbox SSE → web reducer) batches
 		// aggressively, so the gap must be big enough that intermediate paints
 		// actually happen — the stack e2e asserts the reply renders incrementally.
-		for _, chunk := range splitSSE(mockSSEStream) {
+		for _, chunk := range splitSSE(stream) {
 			_, _ = fmt.Fprint(w, chunk)
 			if canFlush {
 				flusher.Flush()
 			}
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(mockChunkPause)
 		}
 	})
 }
+
+// defaultMockChunkPause is the production inter-chunk delay; mockChunkPause is
+// a var only so in-process tests can drop it to zero.
+const defaultMockChunkPause = 150 * time.Millisecond
+
+var mockChunkPause = defaultMockChunkPause
 
 // splitSSE splits a monolithic SSE stream into per-event chunks (each ending \n\n).
 func splitSSE(stream string) []string {

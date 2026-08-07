@@ -100,7 +100,7 @@ export default function ArtifactGrid({ artifacts, sessionId: _sessionId, onSelec
 
       {/* Grid */}
       {filtered.length === 0 ? (
-        <Box sx={{ textAlign: 'center', py: 6, color: '#9ca3af' }}>
+        <Box sx={{ textAlign: 'center', py: 6, color: 'text.disabled' }}>
           <Typography sx={{ fontSize: 14 }}>No artifacts found</Typography>
         </Box>
       ) : (
@@ -120,12 +120,12 @@ export default function ArtifactGrid({ artifacts, sessionId: _sessionId, onSelec
                 key={id}
                 onClick={() => onSelect(artifact.id || artifact.filePath)}
                 sx={{
-                  border: '1px solid #e5e7eb',
+                  border: '1px solid', borderColor: 'divider',
                   borderRadius: '8px',
                   p: 1.5,
                   cursor: 'pointer',
-                  backgroundColor: 'white',
-                  '&:hover': { borderColor: '#3b82f6', backgroundColor: '#f8fafc' },
+                  backgroundColor: 'background.paper',
+                  '&:hover': { borderColor: 'primary.main', backgroundColor: 'action.hover' },
                   position: 'relative',
                 }}
               >
@@ -142,7 +142,7 @@ export default function ArtifactGrid({ artifacts, sessionId: _sessionId, onSelec
                   />
                 )}
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
-                  <Icon sx={{ fontSize: 20, color: '#6b7280' }} />
+                  <Icon sx={{ fontSize: 20, color: 'text.secondary' }} />
                   <Typography sx={{ fontSize: 13, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {artifact.label}
                   </Typography>
@@ -154,7 +154,7 @@ export default function ArtifactGrid({ artifacts, sessionId: _sessionId, onSelec
                     sx={{ height: 18, fontSize: 10, fontWeight: 500 }}
                   />
                   {artifact.fileSize && (
-                    <Typography sx={{ fontSize: 11, color: '#9ca3af' }}>
+                    <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
                       {(artifact.fileSize / 1024).toFixed(1)} KB
                     </Typography>
                   )}

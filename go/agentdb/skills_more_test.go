@@ -27,7 +27,7 @@ func TestSetSkillVisibility_DowngradeRecordsActor(t *testing.T) {
 	s := newSkillTestStore(t)
 	ctx := context.Background()
 
-	sk, err := s.UpsertSkill(ctx, &Skill{Name: "tool", Visibility: "public", Customer: "acme", OwnerEmail: "o@acme.com"})
+	sk, err := s.UpsertSkill(ctx, &Skill{Name: "tool", Visibility: "public", Customer: "acme", OwnerEmail: "o@acme.com"}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestListSkills_PrivateAndPublicScopes(t *testing.T) {
 
 	mustUpsert := func(sk *Skill) {
 		t.Helper()
-		if _, err := s.UpsertSkill(ctx, sk); err != nil {
+		if _, err := s.UpsertSkill(ctx, sk, ConfigWrite{}); err != nil {
 			t.Fatalf("upsert %s: %v", sk.Name, err)
 		}
 	}

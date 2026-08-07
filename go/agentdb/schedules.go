@@ -1,0 +1,982 @@
+package agentdb
+
+// schedules.go — cron as a core primitive (spec §8.6,
+// docs/product/04-events-and-schedules.md).
+//
+// Two tables and one parser live here:
+//
+//	schedules        — {project, id, worker, cron, input, enabled, updated_at}.
+//	                   Configuration: every mutation goes through the config-log
+//	                   seam (§15.3/§15.4), so retuning a workforce is recorded.
+//	schedule_firings — one row per (schedule, occurrence). The UNIQUE index on
+//	                   (schedule_id, scheduled_for) is the idempotency guard of
+//	                   §8.6: a crash/retry cannot double-fire an occurrence.
+//	                   Runtime state, NOT configuration — like event_deliveries
+//	                   it stays out of the config log (§15.3 rule 3), which is
+//	                   also why its methods are deliberately named without the
+//	                   word "Schedule": the conformance classifier in
+//	                   config_events_test.go reads that noun as configuration.
+//
+// The `input` column is the design's centre of gravity: a schedule does not
+// only say *when* a worker runs, it says *what it is told* each time. Two rows
+// pointing at one worker ("10:00 → write the morning tweet", "17:00 → write the
+// evening tweet") are two different instructions, not two copies of a job.
+//
+// The cron parser lives here rather than in the scheduler so that WRITE-TIME
+// validation (§9: "parseable cron") and FIRING-TIME matching can never disagree
+// about what an expression means.
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// EventTypeScheduleFired is the event a due schedule produces (§8.6). Its text
+// is the schedule's `input` and its envelope is {source: "schedule", depth: 0},
+// so a firing flows through the identical composition path (§6.2) as every
+// other trigger.
+const EventTypeScheduleFired = "schedule.fired"
+
+// EventTypeScheduleMissed is the event a schedule produces for occurrences that
+// were never evaluated — the hour agentd was down, or the seconds between
+// claiming an occurrence and the process dying before it could become a job
+// (RD11).
+//
+// It is emitted INSTEAD OF running the work, never as well as: §8.6's
+// skip-missed rule is unchanged, and a restart must not fire sixty stale
+// mornings at once. Its whole purpose is that "nothing was due" and "nobody was
+// running" stop looking identical to the person whose schedule did not happen.
+//
+// Envelope {source: "schedule", depth: 0}, exactly like schedule.fired, so a
+// subscription can wake a worker on it (an alerting worker is the obvious one)
+// through the ordinary routing path.
+const EventTypeScheduleMissed = "schedule.missed"
+
+// Schedule store errors. Sentinels so the HTTP layer maps them to status codes
+// without string-matching.
+var (
+	// ErrScheduleNotFound is returned when no schedule matches (project, id).
+	ErrScheduleNotFound = errors.New("schedule not found")
+	// ErrScheduleInvalid wraps every validation failure on a schedule row.
+	ErrScheduleInvalid = errors.New("invalid schedule")
+)
+
+// Schedule is one cron entry (§8.6). Identity is the uuid; `project` is the
+// hard tenancy namespace and matches the `customer` claim on the caller's token.
+//
+// Deliberately no gorm `default:` tags — with the single, argued exception on
+// TargetSession below: GORM substitutes a declared default for a zero value on
+// write, which would make `enabled: false` silently persist as true. The column
+// DEFAULTs live in migrations 024 and 036 for rows written outside this store;
+// NewSchedule/validateSchedule own the in-Go defaulting.
+type Schedule struct {
+	ID      string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	Project string `json:"project" gorm:"type:varchar(255);not null;index:idx_schedules_project"`
+	// Worker is the worker a firing starts a job for. A due schedule whose
+	// worker no longer exists is disabled and logged (§8.6) — never retried
+	// forever — which is the scheduler's job, not this store's.
+	//
+	// Empty exactly when TargetSession is set: the two are the schedule's two
+	// modes and validateSchedule enforces the XOR.
+	Worker string `json:"worker" gorm:"type:varchar(255);not null"`
+	// TargetSession is the NAME (Session.Name, never a uuid) of a long-lived
+	// session a firing sends Input to as its next message, instead of starting
+	// a fresh job in a fresh container (migration 036; T9 of
+	// design/2026-08-06-embeddable-agent-orange.md).
+	//
+	// A name and not an id because the schedule outlives nothing else about the
+	// session: an embedding application that stored `hypothesis-a` in its own
+	// row can attach a schedule without ever having seen a uuid. Names are
+	// immutable and project-unique, so the reference cannot go stale silently —
+	// it can only go absent, which the scheduler answers by disabling the row
+	// the same way it does for a missing worker.
+	//
+	// This mode is what makes "the same conversation, woken daily" expressible.
+	// The worker mode is still the right one for anything that should start
+	// clean each time; see docs/product/04-events-and-schedules.md.
+	//
+	// The `default:''` tag is the ONE place this struct declares a default, and
+	// it is safe for the reason the note above says the others are not: the
+	// hazard is that GORM omits a zero value when a default is declared, so a
+	// deliberate zero silently persists as the default. Here the zero value and
+	// the default are the same string, so there is nothing to lose. It is
+	// present because the tag is what AutoMigrate builds the sqlite test schema
+	// from, and without it that schema is STRICTER than the production one
+	// (migration 036 carries `DEFAULT ''`) — a row inserted around the store
+	// would fail on sqlite and succeed on Postgres, which is the worst possible
+	// direction for a test schema to differ in.
+	TargetSession string `json:"target_session,omitempty" gorm:"type:varchar(255);not null;default:''"`
+	// Cron is a standard 5-field expression, evaluated in the stack-local time
+	// zone (TZ on agentd, default UTC). Validated on write: an unparseable
+	// expression is refused, never stored to fail silently at 03:00.
+	Cron string `json:"cron" gorm:"type:varchar(255);not null"`
+	// Input is the instruction this trigger delivers — it becomes the event text.
+	Input   string `json:"input" gorm:"type:text"`
+	Enabled bool   `json:"enabled"`
+	// ProvisionFailures counts CONSECUTIVE firings that could not be turned into
+	// a running job. It is reset by the first firing that starts one — and only
+	// by that: what the job then DOES is none of this counter's business (see
+	// ScheduleMaxProvisionFailures). Runtime state, not configuration.
+	ProvisionFailures int `json:"provision_failures"`
+	// LastProvisionError is why the most recent one failed, kept so an operator
+	// looking at a schedule with a streak does not have to go log-diving.
+	LastProvisionError string `json:"last_provision_error" gorm:"type:text"`
+	// LastEvaluated is the wall-clock minute ("2026-08-06T09:31", the same
+	// OccurrenceKey format the firing table uses) that a scheduler tick last
+	// EVALUATED this row — matched or not. It is the watermark of RD11: without
+	// it, an hour with no scheduler running is indistinguishable from an hour
+	// with nothing due, because both leave exactly nothing behind.
+	//
+	// Runtime state, not configuration (NoteScheduleEvaluated, exempt from the
+	// config log like the provision-failure counter). Empty means this schedule
+	// has never been evaluated by any tick — the state a freshly created row is
+	// in, and the reason a first sighting reports nothing missed.
+	LastEvaluated string `json:"last_evaluated" gorm:"type:varchar(20)"`
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
+}
+
+func (Schedule) TableName() string { return "schedules" }
+
+// NewSchedule returns a worker-mode Schedule with the spec's default applied
+// (enabled). Use it rather than a bare &Schedule{}: `Enabled` is a plain bool,
+// so a zero-valued struct would persist a schedule that never fires.
+//
+// It does not refuse an empty worker, because the caller may be about to set
+// TargetSession instead (the HTTP layer builds both modes through this one
+// constructor and lets validateSchedule adjudicate). What it must never do is
+// leave BOTH unset — that is validateSchedule's rule, in one place, so the two
+// write paths cannot disagree about what a targetless schedule means.
+func NewSchedule(project, worker, cron, input string) *Schedule {
+	return &Schedule{
+		Project: project,
+		Worker:  worker,
+		Cron:    cron,
+		Input:   input,
+		Enabled: true,
+	}
+}
+
+// NewSessionSchedule is the session-mode twin: each firing sends `input` to the
+// named session as its next message rather than starting a job. Separate
+// constructor rather than a fifth argument to NewSchedule, so the ~30 existing
+// worker-mode call sites stay untouched and the two modes are legible at the
+// call site instead of being told apart by which argument is blank.
+func NewSessionSchedule(project, sessionName, cron, input string) *Schedule {
+	return &Schedule{
+		Project:       project,
+		TargetSession: sessionName,
+		Cron:          cron,
+		Input:         input,
+		Enabled:       true,
+	}
+}
+
+// ScheduleFiring records one occurrence of one schedule. The (ScheduleID,
+// ScheduledFor) pair is UNIQUE — claiming it is what makes firing idempotent.
+//
+// ScheduledFor is the LOCAL WALL-CLOCK minute ("2026-11-01T01:30"), not a unix
+// timestamp, and that is a DST decision on the record: when the clocks go back,
+// 01:30 happens twice in one evening, and a tweet-writer must write one morning
+// tweet, not two. Keying the occurrence on wall-clock time collapses the
+// repeated hour to a single firing. The spring-forward gap needs no special
+// case: 02:30 never occurs as a wall clock, so it simply never fires.
+type ScheduleFiring struct {
+	ID           string `json:"id" gorm:"primaryKey;type:varchar(36)"`
+	ScheduleID   string `json:"schedule_id" gorm:"type:varchar(36);not null;uniqueIndex:idx_schedule_firings_occurrence,priority:1"`
+	ScheduledFor string `json:"scheduled_for" gorm:"type:varchar(20);not null;uniqueIndex:idx_schedule_firings_occurrence,priority:2"`
+	Project      string `json:"project" gorm:"type:varchar(255);not null;index:idx_schedule_firings_project"`
+	// EventID is the `schedule.fired` event this occurrence produced, stamped
+	// after the event lands. On a WORKER schedule, empty means the process died
+	// between claiming the occurrence and creating the event: the occurrence is
+	// consumed and that firing is skipped, which is exactly §8.6's skip-missed
+	// posture — a stale morning is never replayed.
+	//
+	// On a SESSION schedule it is always empty, because that mode produces no
+	// event at all: the firing is a message into an existing conversation, not
+	// a trigger on the event spine (see Schedule.TargetSession). The row still
+	// exists, and claiming it is still what makes the firing happen once.
+	EventID string `json:"event_id" gorm:"type:varchar(36)"`
+	FiredAt int64  `json:"fired_at"`
+	// Missed marks a row that records an occurrence which did NOT happen: the
+	// minute passed with no scheduler evaluating this schedule (agentd was
+	// down), or the process died between claiming the occurrence and turning it
+	// into a job. It is written after the fact, by the catch-up sweep, and it
+	// never causes any work to run (RD11).
+	//
+	// Claiming the row is still what makes the record exactly-once: two agentds
+	// catching up on the same outage cannot both record the same missed minute.
+	Missed bool `json:"missed"`
+}
+
+func (ScheduleFiring) TableName() string { return "schedule_firings" }
+
+// OccurrenceLayout is the time layout OccurrenceKey renders and ParseOccurrence
+// reads. It is a wall-clock minute with no zone, which is the point (see
+// ScheduleFiring). Lexicographic order on this layout IS chronological order,
+// which is what lets a watermark be compared and ranged over as a plain string.
+const OccurrenceLayout = "2006-01-02T15:04"
+
+// OccurrenceKey renders a time as the wall-clock occurrence key. The location of
+// t is the schedule's evaluation zone (agentd's TZ).
+func OccurrenceKey(t time.Time) string { return t.Format(OccurrenceLayout) }
+
+// ParseOccurrence reads a key back as a wall-clock time in loc — the inverse of
+// OccurrenceKey, used by the catch-up sweep to walk from a stored watermark
+// forward. nil loc means time.Local, matching the scheduler's own default.
+func ParseOccurrence(key string, loc *time.Location) (time.Time, error) {
+	if loc == nil {
+		loc = time.Local
+	}
+	return time.ParseInLocation(OccurrenceLayout, key, loc)
+}
+
+// ── Validation ──────────────────────────────────────────────────────────────
+
+// validateSchedule enforces the §8.6 shape and the §9 "parseable cron" rule. It
+// mutates s only to trim, so the row written and the row echoed back agree.
+func validateSchedule(s *Schedule) error {
+	if s == nil {
+		return fmt.Errorf("%w: schedule is required", ErrScheduleInvalid)
+	}
+	if strings.TrimSpace(s.Project) == "" {
+		return fmt.Errorf("%w: project is required", ErrScheduleInvalid)
+	}
+	// Exactly one target. A schedule with neither has nothing to wake and would
+	// sit enabled forever doing nothing; one with both is a genuine ambiguity
+	// (start a job AND message a session?) that no reader of the row could
+	// resolve, so it is refused at the boundary rather than resolved by
+	// precedence somewhere in the scheduler.
+	s.Worker = strings.TrimSpace(s.Worker)
+	s.TargetSession = strings.TrimSpace(s.TargetSession)
+	switch {
+	case s.Worker == "" && s.TargetSession == "":
+		return fmt.Errorf("%w: a schedule must target either a worker or a session (target_session)", ErrScheduleInvalid)
+	case s.Worker != "" && s.TargetSession != "":
+		return fmt.Errorf("%w: a schedule targets a worker or a session, never both (worker %q, target_session %q)",
+			ErrScheduleInvalid, s.Worker, s.TargetSession)
+	}
+	if s.TargetSession != "" {
+		// The same rule CreateSession applies, checked here so a schedule
+		// pointing at a name no session could ever hold is refused on write
+		// rather than disabling itself at 03:00.
+		if err := ValidateSessionName(s.TargetSession); err != nil {
+			return fmt.Errorf("%w: target_session: %w", ErrScheduleInvalid, err)
+		}
+	}
+	s.Cron = strings.TrimSpace(s.Cron)
+	if s.Cron == "" {
+		return fmt.Errorf("%w: cron is required", ErrScheduleInvalid)
+	}
+	if _, err := ParseCron(s.Cron); err != nil {
+		return fmt.Errorf("%w: %w", ErrScheduleInvalid, err)
+	}
+	return nil
+}
+
+// ── CRUD (configuration — every write appends a config event) ───────────────
+
+// CreateSchedule stores a new schedule and returns it read back (§9).
+//
+// Schedules are configuration: the write appends a `schedule_create` record in
+// the same transaction (§15.3/§15.4). cw is the who/why — a human/API edit
+// passes the zero value, a worker acting through `schedule_create` supplies
+// itself.
+func (s *Store) CreateSchedule(ctx context.Context, sch *Schedule, cw ConfigWrite) (*Schedule, error) {
+	if err := validateSchedule(sch); err != nil {
+		return nil, err
+	}
+	if sch.ID == "" {
+		sch.ID = uuid.New().String()
+	}
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: sch.Project,
+		Action:  ActionScheduleCreate,
+		Payload: sch,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Create(sch).Error
+	}); err != nil {
+		return nil, fmt.Errorf("failed to create schedule: %w", err)
+	}
+	return sch, nil
+}
+
+// GetSchedule reads one schedule within a project. Another project's row looks
+// like a missing row — the only project-isolation answer a caller ever gets.
+func (s *Store) GetSchedule(ctx context.Context, project, id string) (*Schedule, error) {
+	if project == "" || id == "" {
+		return nil, fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	var sch Schedule
+	err := s.gdb.WithContext(ctx).Where("project = ? AND id = ?", project, id).First(&sch).Error
+	if err != nil {
+		if isNotFound(err) {
+			return nil, fmt.Errorf("%w: %s/%s", ErrScheduleNotFound, project, id)
+		}
+		return nil, fmt.Errorf("failed to get schedule: %w", err)
+	}
+	return &sch, nil
+}
+
+// ListSchedules returns a project's schedules, newest-first.
+func (s *Store) ListSchedules(ctx context.Context, project string) ([]*Schedule, error) {
+	if project == "" {
+		return nil, fmt.Errorf("%w: project is required", ErrScheduleInvalid)
+	}
+	out := []*Schedule{}
+	if err := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ?", project).
+		Order("created_at DESC, id DESC").Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list schedules: %w", err)
+	}
+	return out, nil
+}
+
+// ListEnabledSchedules returns every live schedule across every project — the
+// scheduler's minute poll (§8.6). Like ListUndeliveredProjectEvents it is
+// deliberately unscoped: the scheduler is core, not a tenant.
+func (s *Store) ListEnabledSchedules(ctx context.Context) ([]*Schedule, error) {
+	out := []*Schedule{}
+	if err := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("enabled = ?", true).
+		Order("project ASC, created_at ASC, id ASC").Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list enabled schedules: %w", err)
+	}
+	return out, nil
+}
+
+// UpdateSchedule overwrites the mutable fields of an existing row. The project
+// on sch is the authorization boundary: a row owned by another project is never
+// found, so it is never written.
+func (s *Store) UpdateSchedule(ctx context.Context, sch *Schedule, cw ConfigWrite) (*Schedule, error) {
+	if sch == nil || sch.ID == "" {
+		return nil, fmt.Errorf("%w: schedule id is required", ErrScheduleInvalid)
+	}
+	if err := validateSchedule(sch); err != nil {
+		return nil, err
+	}
+	existing, err := s.GetSchedule(ctx, sch.Project, sch.ID)
+	if err != nil {
+		return nil, err
+	}
+	existing.Worker = sch.Worker
+	// Copied too, so a session schedule survives an ordinary edit of its cron.
+	// Switching a row between the two modes is possible but takes both fields in
+	// one write (the XOR is checked above), which is what stops a half-applied
+	// update leaving a schedule with two targets or none.
+	existing.TargetSession = sch.TargetSession
+	existing.Cron = sch.Cron
+	existing.Input = sch.Input
+	existing.Enabled = sch.Enabled
+	// One action whether or not the write flips `enabled`: §15.3 gives schedules
+	// no enable/disable verbs — a paused schedule is an ordinary field change.
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: existing.Project,
+		Action:  ActionScheduleUpdate,
+		Payload: existing,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Save(existing).Error
+	}); err != nil {
+		return nil, fmt.Errorf("failed to update schedule: %w", err)
+	}
+	return existing, nil
+}
+
+// DisableSchedule switches a schedule off, recording why in the config log's
+// rationale. It is the §8.6 answer to "a due schedule whose worker no longer
+// exists": disabled and logged, never silently retried forever.
+//
+// It is a narrow write rather than a read-modify-write through UpdateSchedule so
+// the scheduler cannot clobber a concurrent edit of the cron or the input while
+// switching the row off. Disabling an already-disabled schedule is a no-op and
+// appends nothing: the log records decisions, not repeated observations.
+func (s *Store) DisableSchedule(ctx context.Context, project, id string, cw ConfigWrite) (*Schedule, error) {
+	existing, err := s.GetSchedule(ctx, project, id)
+	if err != nil {
+		return nil, err
+	}
+	if !existing.Enabled {
+		return existing, nil
+	}
+	existing.Enabled = false
+	// The streak is spent with the disable. A human who re-enables the schedule
+	// after fixing the host must get a fresh budget, not a row that retires again
+	// on its very next firing.
+	existing.ProvisionFailures = 0
+	existing.LastProvisionError = ""
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: existing.Project,
+		Action:  ActionScheduleUpdate,
+		Payload: existing,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		return tx.Save(existing).Error
+	}); err != nil {
+		return nil, fmt.Errorf("failed to disable schedule: %w", err)
+	}
+	return existing, nil
+}
+
+// DeleteSchedule removes a project's schedule. Deleting another project's row is
+// a not-found, never a silent success.
+//
+// The delete appends too (§15.3 rule 2), carrying the schedule as it last stood,
+// which is what makes "put back the schedule we deleted on Tuesday" a lookup.
+func (s *Store) DeleteSchedule(ctx context.Context, project, id string, cw ConfigWrite) error {
+	existing, err := s.GetSchedule(ctx, project, id)
+	if err != nil {
+		return err
+	}
+	vanished := false
+	if _, err := s.WithConfigEvent(ctx, ConfigChange{
+		Project: project,
+		Action:  ActionScheduleDelete,
+		Payload: existing,
+		Write:   cw,
+	}, func(tx *gorm.DB) error {
+		res := tx.Where("project = ? AND id = ?", project, id).Delete(&Schedule{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			// Lost a race with a concurrent delete: roll back rather than log a
+			// deletion this call did not perform.
+			vanished = true
+			return fmt.Errorf("%w: %s/%s", ErrScheduleNotFound, project, id)
+		}
+		return nil
+	}); err != nil {
+		if vanished || errors.Is(err, ErrScheduleNotFound) {
+			return fmt.Errorf("%w: %s/%s", ErrScheduleNotFound, project, id)
+		}
+		return fmt.Errorf("failed to delete schedule: %w", err)
+	}
+	return nil
+}
+
+// ── The provision-failure streak (runtime state, §8.6) ──────────────────────
+//
+// Both methods below write a `schedules` row and BOTH are deliberately exempt
+// from the config log (ConfigMutationExempt). §15.3 rule 3's line is decision vs
+// observation, not table vs table: MarkProjectEventDelivered writes the router's
+// watermark and MarkCustomImageResumed writes launch telemetry, and neither is
+// something a person chose. A failure counter is the same kind of thing — nobody
+// decided it, and appending a config event every minute for a schedule that is
+// failing every minute would bury the log it is supposed to make readable.
+//
+// The DECISION these observations lead to — switching the schedule off — is a
+// config event, written by DisableSchedule with the reason in its rationale.
+// That is the §8.6 precedent for a missing worker, and it is what a human reads
+// in the changelog and undoes.
+
+// ScheduleMaxProvisionFailures is how many CONSECUTIVE firings may fail to start
+// a job before the schedule is disabled (§8.6).
+//
+// Five, deliberately unclever. It has to be high enough that nothing transient
+// retires a schedule a human wanted — an agentd restart, a slow image pull, a
+// Postgres blip, a momentary capacity crunch — and low enough that a `* * * * *`
+// row which can never succeed stops hammering its neighbours within minutes
+// rather than for a working day. Five consecutive total failures is not a blip
+// by any reading, and the cost of being wrong is bounded and reversible: the
+// disable is in the config log with its reason, and re-enabling is one edit.
+const ScheduleMaxProvisionFailures = 5
+
+// NoteScheduleProvisionFailure records that one firing could not be turned into
+// a running job, and returns the new consecutive count.
+//
+// It is NOT for a job that ran and failed. A worker whose jobs keep failing is
+// precisely what §8.7's self-improvement loop exists to repair; retiring its
+// schedule would silence the loop. The caller (scheduler.go) only ever reaches
+// here when no session was started at all.
+func (s *Store) NoteScheduleProvisionFailure(ctx context.Context, project, id, reason string) (int, error) {
+	if project == "" || id == "" {
+		return 0, fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	res := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ? AND id = ?", project, id).
+		Updates(map[string]any{
+			// Incremented in SQL, not read-modify-written, so two agentds
+			// counting the same broken schedule cannot lose an increment.
+			"provision_failures":   gorm.Expr("provision_failures + 1"),
+			"last_provision_error": truncateReason(reason),
+			"updated_at":           eventsNow(),
+		})
+	if res.Error != nil {
+		return 0, fmt.Errorf("failed to record schedule provision failure: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return 0, fmt.Errorf("%w: %s/%s", ErrScheduleNotFound, project, id)
+	}
+	sch, err := s.GetSchedule(ctx, project, id)
+	if err != nil {
+		return 0, err
+	}
+	return sch.ProvisionFailures, nil
+}
+
+// ClearScheduleProvisionFailures zeroes the streak. Called when a firing starts
+// a job — the only thing that counts as the schedule working.
+func (s *Store) ClearScheduleProvisionFailures(ctx context.Context, project, id string) error {
+	if project == "" || id == "" {
+		return fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	if err := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ? AND id = ?", project, id).
+		Updates(map[string]any{
+			"provision_failures":   0,
+			"last_provision_error": "",
+		}).Error; err != nil {
+		return fmt.Errorf("failed to clear schedule provision failures: %w", err)
+	}
+	return nil
+}
+
+// NoteScheduleEvaluated advances the per-schedule watermark to the wall-clock
+// minute a tick has just finished evaluating (RD11). Runtime state: no config
+// event, for the same reason the provision counter writes none — nobody decided
+// anything, and a config record every minute per schedule would bury the log.
+//
+// It NEVER MOVES THE WATERMARK BACKWARDS. The comparison is in the WHERE clause
+// (`last_evaluated < ?`), and the keys sort lexicographically in chronological
+// order, so a second agentd whose clock or loop is behind cannot rewind a peer's
+// progress and cause the same minutes to be reported missed twice. A row that
+// was already at or ahead of `occurrence` is left alone and reported as no
+// error: losing this race is the correct outcome, not a failure.
+func (s *Store) NoteScheduleEvaluated(ctx context.Context, project, id, occurrence string) error {
+	if project == "" || id == "" {
+		return fmt.Errorf("%w: project and id are required", ErrScheduleInvalid)
+	}
+	if occurrence == "" {
+		return fmt.Errorf("%w: occurrence is required", ErrScheduleInvalid)
+	}
+	// UpdateColumns, not Updates: gorm stamps `updated_at` on a map update, and
+	// a schedule that looked edited every sixty seconds would be a lie in every
+	// surface that renders "last changed" — the config log, which is the truth
+	// about edits, would say nothing had happened at all.
+	if err := s.gdb.WithContext(ctx).Model(&Schedule{}).
+		Where("project = ? AND id = ? AND last_evaluated < ?", project, id, occurrence).
+		UpdateColumns(map[string]any{"last_evaluated": occurrence}).Error; err != nil {
+		return fmt.Errorf("failed to record schedule evaluation: %w", err)
+	}
+	return nil
+}
+
+// MarkFiringMissed flips an already-claimed occurrence to `missed`. It exists
+// for the one window the claim cannot cover: the occurrence is claimed first
+// (so nothing can double-fire it) and the process may then die, or the job
+// write may fail, before anything exists to show for it. The row then says a
+// firing happened when nothing did — which is RD11's narrow window.
+//
+// Deliberately NOT named with a configuration noun: schedule_firings is runtime
+// state and the conformance classifier reads "Schedule" as configuration (see
+// the note above ClaimFiring's section).
+func (s *Store) MarkFiringMissed(ctx context.Context, firingID string) error {
+	if firingID == "" {
+		return fmt.Errorf("firing id is required")
+	}
+	res := s.gdb.WithContext(ctx).Model(&ScheduleFiring{}).
+		Where("id = ?", firingID).UpdateColumns(map[string]any{"missed": true})
+	if res.Error != nil {
+		return fmt.Errorf("failed to mark firing missed: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("firing not found")
+	}
+	return nil
+}
+
+// RecordFiringJob writes the whole of what a worker-mode firing produces — the
+// `schedule.fired` event, its delivery, and the event id stamped back onto the
+// firing row — IN ONE TRANSACTION.
+//
+// It replaces three sequential writes, and the reason is RD11's second half: a
+// process killed between the event and the delivery left a `schedule.fired`
+// event sitting in the user's feed for a job that never ran and never would,
+// with the occurrence permanently consumed. The feed said it happened. Nothing
+// had. Either all three rows exist now, or none do — and "none" is a state the
+// catch-up sweep can see (a claimed firing with no event id) and report as
+// missed, which is the whole point of doing it this way rather than papering
+// over it with a retry.
+//
+// The stamp is inside the transaction too, so `event_id == ""` on a claimed
+// firing means exactly one thing: nothing came of this occurrence.
+func (s *Store) RecordFiringJob(ctx context.Context, firingID string, ev *ProjectEvent, d *EventDelivery) (*ProjectEvent, *EventDelivery, error) {
+	if firingID == "" {
+		return nil, nil, fmt.Errorf("firing id is required")
+	}
+	if ev == nil || d == nil {
+		return nil, nil, fmt.Errorf("event and delivery are required")
+	}
+	if err := validateProjectEvent(ev); err != nil {
+		return nil, nil, err
+	}
+	if ev.ID == "" {
+		ev.ID = uuid.New().String()
+	}
+	if ev.OccurredAt == 0 {
+		ev.OccurredAt = eventsNow()
+	}
+	// The delivery is FOR this event by construction — the caller cannot point
+	// it anywhere else, which is one fewer way for the two rows to disagree.
+	d.EventID = ev.ID
+	if err := validateDelivery(d); err != nil {
+		return nil, nil, err
+	}
+	if d.ID == "" {
+		d.ID = uuid.New().String()
+	}
+	if err := s.gdb.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(ev).Error; err != nil {
+			return fmt.Errorf("failed to create project event: %w", err)
+		}
+		if err := tx.Create(d).Error; err != nil {
+			return fmt.Errorf("failed to create delivery: %w", err)
+		}
+		res := tx.Model(&ScheduleFiring{}).Where("id = ?", firingID).
+			UpdateColumns(map[string]any{"event_id": ev.ID})
+		if res.Error != nil {
+			return fmt.Errorf("failed to stamp firing event: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("firing %s not found", firingID)
+		}
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
+	return ev, d, nil
+}
+
+// truncateReason keeps a stored error bounded; the full text is in the log.
+func truncateReason(reason string) string {
+	const max = 500
+	if len(reason) <= max {
+		return reason
+	}
+	return reason[:max] + "…"
+}
+
+// ── Firings (runtime state — the idempotency guard) ─────────────────────────
+
+// ClaimFiring claims one occurrence of one schedule. The first caller for a
+// (schedule_id, scheduled_for) pair gets claimed=true and owns the firing; every
+// later caller — a retry after a crash, a second agentd, a duplicated tick —
+// gets claimed=false and must do nothing (§8.6).
+//
+// Claim-before-fire is deliberate: if the process dies between the claim and the
+// event, the occurrence is consumed and that firing is skipped. Skipping a
+// missed firing is already the documented semantics; double-firing is not.
+func (s *Store) ClaimFiring(ctx context.Context, f *ScheduleFiring) (*ScheduleFiring, bool, error) {
+	if f == nil {
+		return nil, false, fmt.Errorf("firing is required")
+	}
+	if f.ScheduleID == "" {
+		return nil, false, fmt.Errorf("schedule_id is required")
+	}
+	if f.ScheduledFor == "" {
+		return nil, false, fmt.Errorf("scheduled_for is required")
+	}
+	if existing, err := s.findFiring(ctx, f.ScheduleID, f.ScheduledFor); err == nil {
+		return existing, false, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, fmt.Errorf("failed to look up firing: %w", err)
+	}
+	if f.ID == "" {
+		f.ID = uuid.New().String()
+	}
+	if f.FiredAt == 0 {
+		f.FiredAt = eventsNow()
+	}
+	if err := s.gdb.WithContext(ctx).Create(f).Error; err != nil {
+		// Lost the race against a concurrent scheduler: the unique index fired.
+		// Re-read rather than surfacing a driver-specific duplicate-key error.
+		if existing, lookupErr := s.findFiring(ctx, f.ScheduleID, f.ScheduledFor); lookupErr == nil {
+			return existing, false, nil
+		}
+		return nil, false, fmt.Errorf("failed to claim firing: %w", err)
+	}
+	return f, true, nil
+}
+
+func (s *Store) findFiring(ctx context.Context, scheduleID, scheduledFor string) (*ScheduleFiring, error) {
+	var f ScheduleFiring
+	if err := s.gdb.WithContext(ctx).
+		Where("schedule_id = ? AND scheduled_for = ?", scheduleID, scheduledFor).
+		First(&f).Error; err != nil {
+		return nil, err
+	}
+	return &f, nil
+}
+
+// StampFiringEvent records which `schedule.fired` event an occurrence produced.
+//
+// The scheduler no longer calls this: RecordFiringJob does the stamp inside the
+// same transaction as the event and the delivery, so that a claimed firing with
+// no event id means one unambiguous thing (RD11). Kept as the narrow write for
+// any caller that has an event and a firing and nothing else to do.
+func (s *Store) StampFiringEvent(ctx context.Context, firingID, eventID string) error {
+	if firingID == "" || eventID == "" {
+		return fmt.Errorf("firing id and event id are required")
+	}
+	res := s.gdb.WithContext(ctx).Model(&ScheduleFiring{}).
+		Where("id = ?", firingID).Update("event_id", eventID)
+	if res.Error != nil {
+		return fmt.Errorf("failed to stamp firing event: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("firing not found")
+	}
+	return nil
+}
+
+// ListFirings returns a schedule's recorded occurrences, newest-first. History
+// and debugging only; nothing on the firing path reads it.
+func (s *Store) ListFirings(ctx context.Context, project, scheduleID string, limit int) ([]*ScheduleFiring, error) {
+	if project == "" || scheduleID == "" {
+		return nil, fmt.Errorf("project and schedule_id are required")
+	}
+	out := []*ScheduleFiring{}
+	if err := s.gdb.WithContext(ctx).Model(&ScheduleFiring{}).
+		Where("project = ? AND schedule_id = ?", project, scheduleID).
+		Order("scheduled_for DESC").Limit(clampLimit(limit)).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list firings: %w", err)
+	}
+	return out, nil
+}
+
+// ── The cron parser (§8.6: "standard 5-field cron expression") ──────────────
+
+// CronExpr is a parsed 5-field cron expression: minute, hour, day-of-month,
+// month, day-of-week. Each field is a bitmask, so matching a minute is five bit
+// tests and no allocation.
+//
+// Supported syntax is deliberately the classic one and nothing more:
+//
+//	"*"                   every value
+//	"a"                   one value
+//	"a-b"                 an inclusive range
+//	"*/n", "a-b/n", "a/n" a step over a range
+//	"a,b,c"               a list of any of the above
+//	"JAN".."DEC"          three-letter month names
+//	"SUN".."SAT"          three-letter day names
+//
+// Day-of-week accepts 0-7 with both 0 and 7 meaning Sunday. Nicknames (@daily
+// and friends) are refused: the spec says five fields, and quietly accepting a
+// second syntax is how "every minute" happens by accident.
+type CronExpr struct {
+	raw    string
+	minute uint64 // bits 0..59
+	hour   uint64 // bits 0..23
+	dom    uint64 // bits 1..31
+	month  uint64 // bits 1..12
+	dow    uint64 // bits 0..6 (Sunday = 0)
+
+	// domRestricted/dowRestricted implement the one genuinely surprising rule of
+	// classic cron: when BOTH day-of-month and day-of-week are restricted, the
+	// entry fires when EITHER matches (a union, not an intersection). When only
+	// one is restricted it is an ordinary conjunct.
+	domRestricted bool
+	dowRestricted bool
+}
+
+// String returns the expression as written.
+func (c *CronExpr) String() string { return c.raw }
+
+type cronField struct {
+	name  string
+	min   int
+	max   int
+	names map[string]int
+}
+
+var (
+	monthNames = map[string]int{
+		"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+		"jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+	}
+	dowNames = map[string]int{
+		"sun": 0, "mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6,
+	}
+
+	cronFields = []cronField{
+		{name: "minute", min: 0, max: 59},
+		{name: "hour", min: 0, max: 23},
+		{name: "day-of-month", min: 1, max: 31},
+		{name: "month", min: 1, max: 12, names: monthNames},
+		{name: "day-of-week", min: 0, max: 7, names: dowNames},
+	}
+)
+
+// ParseCron parses a standard 5-field cron expression. Whitespace between
+// fields may be any run of spaces or tabs.
+func ParseCron(expr string) (*CronExpr, error) {
+	raw := strings.TrimSpace(expr)
+	if raw == "" {
+		return nil, fmt.Errorf("cron expression is empty (want 5 fields: minute hour day-of-month month day-of-week)")
+	}
+	if strings.HasPrefix(raw, "@") {
+		return nil, fmt.Errorf("cron %q: nicknames like @daily are not supported — write the 5 fields "+
+			"(e.g. `0 0 * * *` for daily at midnight)", raw)
+	}
+	parts := strings.Fields(raw)
+	if len(parts) != 5 {
+		return nil, fmt.Errorf("cron %q: want exactly 5 fields (minute hour day-of-month month day-of-week), got %d",
+			raw, len(parts))
+	}
+	c := &CronExpr{raw: raw}
+	masks := make([]uint64, 5)
+	for i, part := range parts {
+		mask, err := parseCronField(part, cronFields[i])
+		if err != nil {
+			return nil, fmt.Errorf("cron %q: %s field: %w", raw, cronFields[i].name, err)
+		}
+		masks[i] = mask
+	}
+	c.minute, c.hour, c.dom, c.month = masks[0], masks[1], masks[2], masks[3]
+	// Normalise day-of-week: bit 7 (the second spelling of Sunday) folds onto 0.
+	c.dow = masks[4]
+	if c.dow&(1<<7) != 0 {
+		c.dow = (c.dow &^ (1 << 7)) | 1
+	}
+	c.domRestricted = parts[2] != "*"
+	c.dowRestricted = parts[4] != "*"
+	return c, nil
+}
+
+// parseCronField turns one comma-separated field into a bitmask.
+func parseCronField(field string, f cronField) (uint64, error) {
+	var mask uint64
+	for _, item := range strings.Split(field, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			return 0, fmt.Errorf("empty list element in %q", field)
+		}
+		m, err := parseCronItem(item, f)
+		if err != nil {
+			return 0, err
+		}
+		mask |= m
+	}
+	if mask == 0 {
+		return 0, fmt.Errorf("%q matches nothing", field)
+	}
+	return mask, nil
+}
+
+func parseCronItem(item string, f cronField) (uint64, error) {
+	step := 1
+	spec := item
+	if slash := strings.Index(item, "/"); slash >= 0 {
+		spec = item[:slash]
+		stepStr := item[slash+1:]
+		n, err := strconv.Atoi(stepStr)
+		if err != nil || n <= 0 {
+			return 0, fmt.Errorf("step %q in %q must be a positive integer", stepStr, item)
+		}
+		step = n
+	}
+
+	var lo, hi int
+	switch {
+	case spec == "*":
+		lo, hi = f.min, f.max
+	case strings.Contains(spec, "-"):
+		bounds := strings.SplitN(spec, "-", 2)
+		var err error
+		if lo, err = cronValue(bounds[0], f); err != nil {
+			return 0, err
+		}
+		if hi, err = cronValue(bounds[1], f); err != nil {
+			return 0, err
+		}
+		if lo > hi {
+			return 0, fmt.Errorf("range %q is inverted (%d > %d)", spec, lo, hi)
+		}
+	default:
+		v, err := cronValue(spec, f)
+		if err != nil {
+			return 0, err
+		}
+		lo = v
+		// `a/n` (no upper bound) is the common extension meaning "from a to the
+		// end of the field, every n"; a bare `a` is the single value.
+		if step > 1 {
+			hi = f.max
+		} else {
+			hi = v
+		}
+	}
+
+	var mask uint64
+	for v := lo; v <= hi; v += step {
+		mask |= 1 << uint(v)
+	}
+	return mask, nil
+}
+
+func cronValue(s string, f cronField) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty value")
+	}
+	if f.names != nil {
+		if v, ok := f.names[strings.ToLower(s)]; ok {
+			return v, nil
+		}
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a number%s", s, nameHint(f))
+	}
+	if v < f.min || v > f.max {
+		return 0, fmt.Errorf("%d is out of range (%d-%d)", v, f.min, f.max)
+	}
+	return v, nil
+}
+
+func nameHint(f cronField) string {
+	if f.names == nil {
+		return ""
+	}
+	if f.name == "month" {
+		return " or a month name (JAN-DEC)"
+	}
+	return " or a day name (SUN-SAT)"
+}
+
+// Matches reports whether t — interpreted in its own location, which the
+// scheduler sets to the stack-local zone — is a minute this expression fires on.
+// Seconds and sub-second parts of t are ignored.
+func (c *CronExpr) Matches(t time.Time) bool {
+	if c.minute&(1<<uint(t.Minute())) == 0 {
+		return false
+	}
+	if c.hour&(1<<uint(t.Hour())) == 0 {
+		return false
+	}
+	if c.month&(1<<uint(int(t.Month()))) == 0 {
+		return false
+	}
+	domHit := c.dom&(1<<uint(t.Day())) != 0
+	dowHit := c.dow&(1<<uint(int(t.Weekday()))) != 0
+	switch {
+	case c.domRestricted && c.dowRestricted:
+		// Classic cron: restricted on both means EITHER may match.
+		return domHit || dowHit
+	case c.domRestricted:
+		return domHit
+	case c.dowRestricted:
+		return dowHit
+	default:
+		return true
+	}
+}

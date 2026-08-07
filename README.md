@@ -1,680 +1,210 @@
-# agentkit — a reusable agent-runtime library
+# Agent Orange
 
-> **Status: design complete (redesigned) · code ~45–50%.** This is a self-contained distillation of
-> the best of Platinum's agent stack, reorganised around a **Go-native orchestration core** so it can
-> be lifted into its own repository and reused to build *other* agentic products with different
-> toolsets, frameworks, and container backends. Nothing in the Platinum repo imports this folder yet;
-> the live system is untouched. This README is the **canonical overview**; the per-topic deep dives
-> live in [`docs/`](docs/).
+**A runtime for durable, container-backed agent sessions, organised into projects, on which
+self-improving arrangements of workers are composed with prompts alone.**
 
----
+Two layers live in this repo.
 
-## Executive summary
+**The runtime.** A *session* is a system prompt, a base image, MCP tools and skills. The runtime
+provisions a container, runs an in-image agent harness inside it, and streams the conversation back
+over SSE. Sessions are interactive (message back and forth), durable (state persisted), and
+snapshot-able (commit a running session to a new image, then resume it later).
 
-agentkit runs **AI agents inside container images** and renders their output. It cleanly separates the
-**generic machinery** of an agentic environment — *run an agent session inside an image, stream its
-events, snapshot its filesystem, render the conversation* — from the **application-specific** parts
-(which tools the agent has, which framework drives it, which image it runs, how org context is
-assembled, where artifacts are published).
+**The product layer.** A *project* is a namespace holding **workers** (rows of prompt + tools +
+wiring), an append-only labeled **memory** with hybrid keyword/vector search, an **event** spine
+with subscriptions and cron **schedules**, named and versioned **images** and **skills**, and an
+append-only **config log** with point-in-time fold. Workers are woken by events or schedules,
+composed into jobs, and can rewrite each other's prompts through MCP tools.
 
-The central architectural move: **orchestration logic belongs in the host process, written once in
-Go.** Today a separate TypeScript orchestrator owns Docker, lifecycle, archiving, and SSE relay, with
-the Go API as a thin proxy in front of it. agentkit *inverts* that — the generic logic moves up into
-Go, and the only things that vary sit behind small interfaces:
+That last clause is the design's definition of done, and it closes. One worker rewrites another
+worker's system prompt with a rationale, and the next job runs under the new prompt:
+`e2e/features/acceptance-loop.spec.ts`, offline against the mock model. The same loop was observed
+against the real Anthropic API on 2026-07-26, including the prompt-injection boundary holding —
+an event whose text ordered the model to ignore its prompt was treated as content, not as
+instructions.
 
-- **`ExecutionEnvironment`** — *"run an agent session inside an image"* (Docker / DinD / Kubernetes / managed).
-- **`ImageRegistry`** — *"get images in, get snapshots out"* (local tar / blob diff-archive / remote registry).
+## Where to start
 
-With those two interfaces (plus a handful of host hooks), you build a new agent product by supplying an
-**image**, a **tool set**, and a few **host adapters** — and get container orchestration, snapshotting,
-event streaming, persistence, and a polished React chat UI for free.
+Read in this order. Each step assumes the one before it.
 
-### Top-line features
+1. **This file** — what the system is.
+2. [`README-stack.md`](README-stack.md) — run it locally in one command, and look at it.
+3. [`docs/01-architecture.md`](docs/01-architecture.md) — the runtime: the layers, and how Go owns
+   orchestration.
+4. [`docs/product/00-overview.md`](docs/product/00-overview.md) — the product layer's quick map,
+   then [`docs/product/17-product-spec.md`](docs/product/17-product-spec.md) for the goal, the
+   atoms and the binding principles P1–P8.
+5. [`docs/18-workers-memory-events.md`](docs/18-workers-memory-events.md) — operating the product
+   layer: workers, triggers, memory and briefings, the core tools, the config log, the env vars,
+   the known limitations.
+6. The engine reference docs below, by seam, when you need one.
 
-| Capability | What it gives you |
-|---|---|
-| **Go-native orchestration core** | Session lifecycle, idle-reaper, archive loop, recovery, flush guards — all in the host process. No separate orchestrator service. |
-| **Two composable engine interfaces** | `ExecutionEnvironment` + `ImageRegistry`. Swap one implementation to move from laptop Docker → DinD → Kubernetes; the core never changes. |
-| **Pluggable harness (per session)** | The agentic framework — Claude Agent SDK / Claude CLI / Gemini / Codex — is chosen *per session at runtime*. All harness binaries baked into one base image; no engine×harness matrix. |
-| **Always-multi-session sandbox** | The in-image agent hosts N sessions keyed by ID. The *execution environment* decides whether to route many sessions to one sandbox or one-per-session; the sandbox never limits. |
-| **Capability axis + trust gate** | `Backend` / `Tenancy` / `IsolationTier` axes, with a construction-time gate making "multi-tenant + untrusted on plain Docker" *unconstructable*. |
-| **Fleet / placement layer** | Horizontal scaling across a pool of workers with sticky, durable session→worker binding — the core stays stateless across host replicas. |
-| **Unified image model** | Three image kinds (core→app build, session-snapshot, curated user image) on **one snapshot primitive**, content-hash cached. |
-| **One event vocabulary, one reducer** | A single canonical SSE event set and a single pure reducer that renders live *and* replayed sessions identically (CLAUDE.md rule 12). |
-| **Artifacts ≠ snapshots** | Strict separation: artifacts are user-facing deliverables (`ArtifactStore`); snapshots are whole-filesystem images for resume/publish. |
-| **Hermetic testability** | The whole runtime boots against in-memory mocks (no Docker, no registry, no network) and asserts on a recorded interaction log — millisecond integration tests. |
+Two documents are worth reading even though they are not designs:
 
----
+- [`docs/product/06-work-plan.md`](docs/product/06-work-plan.md) — the 37-item build checklist, and
+  after it a **Discovered Issues Log** of what was actually built and what surprised us. It is the
+  most reliable record in the repo of the difference between the design and the code.
+- [`MIGRATION.md`](MIGRATION.md) — how this repo became standalone, and the registry/GCP roadmap.
 
-## Architecture: three runtimes, one contract
+If you are an agent working in this repo, read [`CLAUDE.md`](CLAUDE.md) first instead — it is the
+operating guide, and it carries the rules that keep the engine liftable.
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  HOST PROCESS  (Go — your API server; in Platinum, goapi)                      │
-│                                                                                │
-│   ┌────────────────────────────────────────────────────────────────────────┐ │
-│   │  agentkit Runner  (the public facade — the only thing the host calls)    │ │
-│   │   CreateSession · SendMessage · Stream · Stop · Suspend/Resume · Destroy │ │
-│   │   Snapshot · Status                                                      │ │
-│   └───────────────┬──────────────────────────────┬───────────────────────────┘ │
-│                   │                              │                              │
-│   ┌───────────────▼───────────────┐   ┌──────────▼─────────────┐                │
-│   │  Orchestration core (Go)       │   │  EventPipeline (Go)     │               │
-│   │  • lifecycle state machine     │   │  • consume sandbox SSE  │               │
-│   │  • idle reaper / archive loop  │   │  • compact + searchtext │               │
-│   │  • flush guards, recovery      │   │  • persist via Store    │               │
-│   │  • snapshot/restore coord.     │   │  • relay to client      │               │
-│   └───┬───────────┬───────────────┘   └─────────┬──────────────┘                │
-│       │           │                             │                               │
-│   ┌───▼───────────▼───┐  ┌──────────────┐  ┌────▼────────────┐  ┌────────────┐  │
-│   │ Fleet (placement) │  │ Image        │  │ SessionStore    │  │ Host       │  │
-│   │  └─ Worker = an    │  │ Registry     │  │ ArtifactStore   │  │ extensions │  │
-│   │     ExecutionEnv   │  │ (interface)  │  │ (interfaces)    │  │ • OrgCtx   │  │
-│   │     (interface)    │  │              │  │                 │  │ • Claims   │  │
-│   └───┬───────────────┘  └─────┬────────┘  └─────────────────┘  │ • TokenLog │  │
-│       │ (engine-specific)      │ (build / save·load / push·pull) │ • Enricher │  │
-└───────┼───────────────────────┼─────────────────────────────────┴────────────┘─┘
-        ▼                       ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│  CONTAINER ENGINE   Docker socket │ Docker-in-Docker │ Kubernetes │ managed     │
-│                                                                                │
-│   ┌──────────────────────────────────────────────────────────────────────┐   │
-│   │  IMAGE  (agent image — deps, CLAUDE.md, .claude/skills, harness bins)   │   │
-│   │  ┌────────────────────────────────────────────────────────────────┐   │   │
-│   │  │  IN-IMAGE AGENT  (TypeScript — @agentkit/sandbox)               │   │   │
-│   │  │   Control server (harness-agnostic, MULTI-SESSION):              │   │   │
-│   │  │     POST /sessions · /sessions/:id/query-stream · /stream · ...   │   │   │
-│   │  │     SessionManager · StreamService (buffer+replay) · ToolRegistry │   │   │
-│   │  │   Harness adapters (per session):                                │   │   │
-│   │  │     ClaudeAgentSdkHarness │ ClaudeCliHarness │ Gemini │ Codex …  │   │   │
-│   │  └────────────────────────────────────────────────────────────────┘   │   │
-│   └──────────────────────────────────────────────────────────────────────┘   │
-└──────────────────────────────────────────────────────────────────────────────┘
+## Quickstart
 
-        ▲  SSE event stream (text/event-stream)
-        │
-┌───────┴───────────────────────────────────────────────────────────────────────┐
-│  BROWSER  (React — @agentkit/chat-ui)                                          │
-│    useAgentSession → readSSEStream → agentEventReducer  (THE single codepath)   │
-│    AgentChat · ToolCallGroup · AskUserCard · ArtifactPanel · render plugins     │
-└────────────────────────────────────────────────────────────────────────────────┘
+One command brings up the API, chat UI, and container runtime (Docker required):
+
+```sh
+cp .env.example .env          # optionally set ANTHROPIC_API_KEY=sk-ant-...
+docker compose up --build     # then open http://localhost:8080
 ```
 
-### Dependency direction
+With `ANTHROPIC_API_KEY` set you get a real agent; without one, a deterministic mock model replies
+so the UI works offline. The product layer is wired only when `DATABASE_URL` is set — compose
+always sets it. Details, including login/projects, credential precedence and the e2e loop, are in
+[`README-stack.md`](README-stack.md).
 
-```
-host app ──depends on──▶ agentkit/go ──defines──▶ interfaces ◀──implements── engine adapters (ship w/ lib)
-                                     └──defines──▶ interfaces ◀──implements── host adapters (live in host app)
-```
+This is the standalone demo, not how you embed the engine as a library. For that, see
+[`docs/14-host-adapters.md`](docs/14-host-adapters.md) and `go/examples/standalone/`.
 
-`agentkit/go` defines interfaces and the generic orchestration that consumes them. **Engine adapters**
-(Docker/DinD/K8s, local/blob/remote) ship *with* the library because they're generic. **Host adapters**
-(persistence, org context, token logging, auth) live in the *host app* — that's where a product injects
-its specifics. Tests pass mocks; production passes real engine + real host adapters.
+## The three components
 
-### A message turn, end to end
-
-1. The **host handler** authenticates the user and calls `runner.SendMessage(ctx, ref, msg, w)`.
-2. The **Runner** resolves the session's worker (via the `Fleet`) and ensures its instance is running —
-   *resume* if suspended, *restore from snapshot* (`ImageRegistry.Materialize` → `Provision`) if destroyed.
-3. It enriches via host extensions (`OrgContextProvider`), mints a scoped token (`ScopedClaimsIssuer`),
-   and POSTs the turn to the in-image agent's `/sessions/:id/query-stream`.
-4. The **in-image agent** boots the session's harness, drives the model, and emits an SSE stream.
-5. The **EventPipeline** tees that stream: raw bytes relay straight to the browser; in parallel it
-   compacts + extracts search text and persists via `SessionStore` — guarded by the flush counter so
-   the session can't be archived mid-flush.
-6. Marker events (`artifact_registered`, `table_rendered`, …) fire host hooks: artifact bytes are
-   pulled and saved via `ArtifactStore`; token usage reported via `TokenUsageLogger`.
-7. The browser's single reducer has reconstructed the full conversation — identically to how it would
-   replay it later from storage.
-
----
-
-## The parts of the system
-
-### 1 — `ExecutionEnvironment`: run an agent session inside an image  ([docs/02](docs/02-execution-environment.md))
-
-**The** core interface. *"Given an image and a session spec, make a running instance of the in-image
-agent reachable over HTTP; let me exec into it, suspend/resume it, snapshot it, and destroy it."* How —
-a fresh container, a pod, or an exec into a shared container — is the implementation's concern.
-
-```
-Provision · Suspend · Resume · Exec · Snapshot · Destroy · Status · Recover · OnDestroy · Capabilities
-```
-
-Each verb maps cleanly onto single-container, Docker-in-Docker, and Kubernetes — the orchestration core
-above it *never branches on engine type*. The DinD column is the closest to today's behaviour (most of
-`orchestrator/src/sandbox-manager.ts` *is* the DinD adapter).
-
-**The capability axis + trust gate.** `Capabilities` expresses **three orthogonal axes**, not a single
-boolean:
-
-- **`Backend`** — `docker-socket` / `docker-dind` / `k8s` / `managed`. Descriptive only; the core never branches on it.
-- **`Tenancy`** — `per-session` vs `shared`. The *only* axis the Runner branches on (reuse-a-sandbox vs provision-per-session).
-- **`IsolationTier`** — `process` / `container` / `vm` (gVisor/Kata/Firecracker). The trust boundary.
-
-The "four execution environments" are these axes crossed, **not** four implementations. The **trust
-gate**, validated at construction:
-
-> `Tenancy == TenancyShared` requires `TrustedWorkload == true` **OR** `IsolationTier >= TierVM`.
-
-This makes "multi-tenant + untrusted on plain Docker" *unconstructable* — fail-fast at startup, not a
-runtime branch. And **shared tenancy ⇒ no snapshot** (a file diff is not attributable to a single
-session when sessions are multiplexed), so a `TenancyShared` environment reports `SupportsSnapshot=false`.
-
-### 2 — `ImageRegistry`: get images in, get snapshots out  ([docs/03](docs/03-image-registry.md))
-
-Orthogonal to and composing with `ExecutionEnvironment`. *"Make images present for an engine to run,
-build images from a context, and move images in and out as durable artifacts."*
-
-```
-EnsurePresent · Build · Resolve · Persist · Materialize · Remove · Capabilities
-```
-
-Snapshotting a session = `ExecutionEnvironment.Snapshot()` (commit the running container → image) **then**
-`ImageRegistry.Persist()` (save it durably). Restoring = `Materialize()` **then** `Provision(fromImage:…)`.
-The famous **diff-archive** optimisation (`docker diff` + `getArchive` → tar → gzip → blob, KB–MB
-instead of GBs) is *entirely contained* in the `blobarchive` adapter — the core only knows
-`Persist`/`Materialize`.
-
-Three shipped adapters: **`localbuild`** (dev/DinD — `docker save`/`load`), **`blobarchive`** (today's
-Platinum prod — diff archive to an injected `BlobStore`), **`remote`** (K8s — registry push/pull, sketch).
-
-**The unified image model — three image kinds on one snapshot primitive:**
-
-| Kind | What | How built |
+| Component | Path | What it is |
 |---|---|---|
-| **Core → App** | agentkit base (in-image agent + all harness binaries) + product binaries/skills (`pt`, `CLAUDE.md`) | `Build` (BaseImage + Overlays), at build/CI time |
-| **Session-snapshot** | the *whole filesystem* of a running isolated session | `Snapshot` → `Persist` (diff), on suspend/archive |
-| **User image** | an App image + a *curated* set of artifacts, snapshotted | the **same `Snapshot` primitive** — launch throwaway container, copy artifacts in, snapshot |
+| **Orchestration core** | [`go/`](go/) | The engine — Go module `github.com/binocarlos/badcode-agent-orange`. The `Runner`, session lifecycle, container control, image registry, persistence, the event pipeline, and the whole product layer (`go/agentdb/`, `go/compose.go`, `go/cmd/agentd/`). This is the library a host app embeds. Entry type: `Runner` in `go/agentkit.go`. |
+| **In-image agent** | [`sandbox/`](sandbox/) | TypeScript. The HTTP/SSE control server that runs *inside* each session container and wraps the model harness (`@anthropic-ai/claude-agent-sdk`). `sandbox/Dockerfile` builds the harness image. |
+| **UI library** | [`web/`](web/) | React components: chat (one event reducer renders live and replayed sessions identically) plus the product-layer pages — project settings, workers, events and jobs, subscriptions and schedules, the changelog. No router and no app shell; the shell that composes it is `examples/web/`, which is what the stack serves. |
 
-Session-snapshots and user images differ only in *what's in the container when you snapshot it*.
-Content-hash tagging makes `Resolve` cache hits exact (a returning user with unchanged customisations
-cache-hits instantly, no rebuild). The diff base is the **launch image** (not always `Policy.BaseImage`).
+The engine sits behind two composable interfaces — `ExecutionEnvironment` (how a session container
+runs: Docker / Docker-in-Docker) and `ImageRegistry` (get images in, get snapshots out). Swap an
+implementation to move from laptop Docker to a scaled fleet; the core does not change.
 
-### 3 — `Fleet` & placement: horizontal scaling  ([docs/13](docs/13-fleet-placement.md))
+## Status
 
-The layer between the `Runner` and a *pool* of `ExecutionEnvironment` **workers**. **Each worker IS an
-`ExecutionEnvironment`; the Fleet composes above it** — so a single-worker deployment is just a
-one-worker fleet, and every recipe keeps working unchanged.
+Private use for now — the source is bayesprice-owned (forked wholesale from an in-house Go runtime,
+"agentkit"). A public release would need licensing resolved first.
 
-```
-PlaceForSession · WorkerForSession · Rebind · Register · Deregister · Workers
-```
+The product layer is built: every item in [`docs/product/06-work-plan.md`](docs/product/06-work-plan.md)
+is ticked, and the acceptance loop closes both offline and against the real API. What is
+deliberately *not* done is the first production seeding — the BadCode marketing manager of §8.8 —
+because that is a production act rather than a verification.
 
-The **sticky session→worker binding is durable** (persisted on the host's `SessionStore`, not in library
-memory) — the single most important statelessness decision: two host replicas behind a load balancer
-both resolve the same worker for a session. Placement policy is pluggable (`LeastLoaded` default,
-`RoundRobin`; affinity-aware policies slot in). A **lost worker is just an extreme drain** — a bound
-session whose worker is gone is restored on a healthy worker *iff a snapshot exists* — which is why the
-**restore-portability invariant** holds: **multi-worker fleets require a portable registry**
-(`blobarchive` with a shared blob store, or `remote`), validated at Fleet construction.
+All three packages build and test; the gates are `go build ./... && go vet ./... && go test ./...`
+in `go/` (Go floor **1.25**, raised by the GCP SDK) and each JS package's own `typecheck` + `test`
+scripts. `.github/workflows/ci.yml` runs all three on pushes to `main` and on pull requests, and
+enforces the liftability invariant (no Platinum imports from the `go/` module).
 
-### 4 — Session orchestration: the `Runner`  ([docs/04](docs/04-session-orchestration.md))
+GCP support is implemented and wired into `agentd`: a GCS `BlobStore`, a pluggable registry-auth
+seam with an Application Default Credentials provider, and config-driven backend selection.
+Artifact upload and snapshot push+pull were recorded verified against the live project on
+2026-06-25 — see [`MIGRATION.md`](MIGRATION.md) §4a/§4b for the evidence and its limits.
 
-The public facade and the heart of the inversion. The generic logic that today lives in the TypeScript
-orchestrator is reimplemented **in Go**, in the host process:
+## Experiments — what we actually know
 
-- **Session state machine** with the **flush guard** (cannot transition to `archiving` while
-  `pendingFlushCount > 0`) — the single most important correctness invariant, ported verbatim.
-- **Control loops** — idle reaper (`Suspend` after `SuspendTimeout`) and archive loop
-  (snapshot+persist+destroy after `ArchiveTimeout`), both flush-guard-aware.
-- **Recovery** — `ExecutionEnvironment.Recover()` re-adopts orphaned instances on host restart.
-- **Ensure-running / restore-on-demand** — resolves the worker via the Fleet, then resumes / restores /
-  provisions; **tenancy-aware** (per-session provisions one instance; shared reuses + routes via `/sessions`).
-- **Conversation reload on resume** — reloads persisted history and POSTs `/load-conversation`.
+Nobody knows what the best arrangement of agents is for a given job. Not us, and as far as we can
+tell from the literature, not anyone — the research that exists reports *reversals*, where the
+arrangement that wins flips with the task and with model strength. So this repo treats the org
+chart as an empirical question rather than a matter of taste, and ships the apparatus for asking
+it: **14 seedable topologies** (solo, actor–critic, supervisor, assembly line, blackboard, debate,
+self-organizing pool, temporal hierarchy, escalation, and the controls), **scenario generators**
+whose answers are known in advance, and a comparison rig that runs one task through N org charts
+and ranks them.
 
-Durable identity (session rows, messages, artifacts, snapshot handle), auth, org context, and HTTP
-routing stay the **host's** job. The library ships no HTTP server of its own.
+The discipline matters more than the apparatus, so it is worth stating plainly:
 
-### 5 — Event streaming, compaction, and the single reducer  ([docs/05](docs/05-event-streaming.md))
+- **The scorer is a fact, not a judge.** Every scenario is generated with held-out ground truth, so
+  a flat result means "no improvement", never "blind instrument". Self-graded loops learn to be
+  persuasive; you cannot reward-hack an answer key.
+- **Controls, or it isn't knowledge.** Every experiment runs a no-learning arm and, where it
+  matters, a *placebo* arm — a critic whose rewrites only shuffle instruction order and whose
+  rationale says so. An improvement that hasn't beaten the placebo is churn. We know this bites:
+  in our own comparison rig the placebo ties the real critic **exactly** on rewrite count.
+- **The instrument is frozen.** A worker can be marked frozen, and the tool boundary refuses
+  writes to it; attempts are recorded as events rather than silently denied. A loop cannot edit
+  its own yardstick.
+- **Mock first, spend later.** The model proxy is scriptable, so "the rewrite reached the next
+  job" is asserted offline, byte-for-byte, free — and a behaviour switch proves *delivery*, which
+  reading the database back never does.
+- **Reports are deterministic.** No timestamps, no ids, rounded numbers; two runs of the same
+  config produce byte-identical artifacts, and that diff is how reproducibility is checked.
 
-The spine of the system. The library preserves three properties and moves the host-side half into Go:
+### Run log
 
-- **One event vocabulary** — ~20 generic SSE event types defined canonically in `events/events.go`
-  (message/tool lifecycle, `ask_user`, `artifact_registered`, status). **Application-specific events**
-  (`table_rendered`, `dashboard_created`, …) are *not* in core — they're plugin-defined extension types.
-- **One persistence/compaction step** — `EventPipeline` consumes the in-image SSE stream, relays raw
-  bytes to the client, and in parallel **compacts** (drop transients, merge consecutive deltas) +
-  extracts search text + persists via a `Sink` (which carries the flush-guard hooks).
-- **One rendering reducer** — live events and compacted-replayed events go through the *same* pure
-  `agentEventReducer`. A second reconstruction path is treated as a bug.
+Live record. Each run appends a row and a dated folder under [`docs/product/runs/`](docs/product/runs/);
+nothing here is edited away when a later run supersedes it.
 
-Late-connect replay exists at two layers: the in-image 2000-event buffer (reconnect) and durable replay
-from storage (irrecoverable stream).
-
-### 6 — Artifacts (and why they are not snapshots)  ([docs/06](docs/06-artifacts.md))
-
-The agent produces two very different kinds of persisted bytes; conflating them is the most common way
-these systems get muddled. **Snapshot** = whole filesystem as an image (resume/publish the session).
-**Artifact** = a single user-facing file the agent deliberately produced (download/preview/pin).
-
-`ArtifactStore` — `Save · Load · List · MarkLost` — carries a hard-won status state machine ported
-verbatim:
-
-```
-live ─┬─→ extracted          (bytes uploaded to blob)
-      ├─→ extraction_failed  (retries exhausted)
-      └─→ lost               (instance destroyed before extraction)
-```
-
-with three non-obvious rules the real impl *must* keep: **never regress `extracted` → `live`**;
-**`MarkLost` promotes to `extracted` if a blob already exists**; **`Source` is write-once**. The
-redesign generalises single-file capture to **named folder/file-set capture** — the building block for
-user images.
-
-### 7 — The in-image agent: multi-session control server + harness seam  ([docs/07](docs/07-in-image-agent.md), [docs/12](docs/12-harness.md))
-
-The only code that *must* run inside the container (TypeScript, `@agentkit/sandbox`). It splits into two
-cleanly separated parts:
-
-- **The control server (harness-agnostic, multi-session).** Owns session lifecycle + routing by session
-  ID, the SSE stream + replay buffer, the tool-plugin seam, and credential/proxy plumbing. It hosts **N
-  concurrent sessions** and never limits the count — the *execution environment* decides routing. Knows
-  *nothing* about Docker, suspend/resume, archives, or Azure.
-
-- **Harness adapters (per session).** A **harness** is the thing that drives the model through a turn:
-  Claude Agent SDK, Claude CLI, Gemini CLI, Codex. agentkit treats it as a **first-class, per-session
-  choice**:
-
-  > **All supported harness binaries are baked into the base image.** The harness is chosen *per
-  > session, at runtime, by name.* No execution-environment × harness matrix.
-
-  At session-start the control server resolves the harness, runs a **credential pre-check** (a sandbox
-  that physically can't run the requested harness refuses *the session*, not the turn), and instantiates
-  it. `ClaudeAgentSdkHarness` (today's SDK `query()` loop) is the only adapter shipped now; the seam is
-  open for the rest.
-
-**Multi-session correctness:** routing/state/abort key by session ID (one active turn per session;
-cross-session turns run in parallel); the outbound proxy header uses **`AsyncLocalStorage`** so a global
-`fetch` patch knows *which* session is making a model call.
-
-The HTTP contract (the stable boundary the Go Runner talks to):
-
-```
-POST /sessions · DELETE /sessions/:id · GET /health
-POST /sessions/:id/query-stream · GET /sessions/:id/stream/:queryId · POST /sessions/:id/cancel
-POST /sessions/:id/load-conversation · /reset-conversation
-GET /workspace/files[...] · POST /workspace/scan-secrets · /snapshot · /diff
-```
-
-(Flat v0 routes remain as back-compat shims during migration.)
-
-### 8 — Tools: internal vs external, and the plugin seam  ([docs/08](docs/08-tool-registry.md))
-
-Tools are where a generic runtime becomes a *specific* product.
-
-- **Internal tools** run inside the sandbox and execute for real: `Bash`, `Read`, `Grep`, `Skill`, the
-  `pt` CLI. *Which* internal tools exist is an **image** decision.
-- **External / app-handled tools** don't execute in the sandbox — they return a **marker payload** that
-  the PostToolUse hook turns into an SSE event for the host/UI: `ask_user`, `render_table`,
-  `create_dashboard`, `register_artifact`. The marker→event mapping is *data* (a `ToolPlugin`
-  declaration), not a hard-coded `if/else` ladder.
-
-The core ships the four generic app-handled tools (`ask_user`, `write_file`, `view_image`,
-`screenshot_url`); a product registers the rest as plugins. `ToolRegistry.resolve()` is the single place
-that builds the SDK options block for a turn.
-
-### 9 — Frontend: the rendering package  ([docs/09](docs/09-frontend-components.md))
-
-`@agentkit/chat-ui` — the React code that turns an event stream into a polished chat (~85% reusable from
-`frontend/src/`). The crown jewel is the **single pure `agentEventReducer`** — `(state, event) => state`,
-serving live SSE, durable replay, and tests *identically*. Carbon table/chart widgets factor out behind
-a **render-plugin seam**:
-
-```ts
-interface RenderPlugin<TState> {
-  eventTypes: string[];                                   // extension events this plugin owns
-  reduce(state: TState, event: AgentSSEEvent): TState;    // fold into plugin-scoped (side-channel) state
-  render(props: { event: TState; toolCallId; sessionId }): React.ReactNode;
-}
-```
-
-The host parameterises endpoints, the model list, side-effect callbacks, theme, and the plugin array via
-props/provider — no dependency on Platinum app state, routing, or contexts.
-
-### 10 — Extension points: what a host supplies  ([docs/10](docs/10-extension-points.md))
-
-The doc a host-application author reads. Three categories: **engine adapters** (usually pick a shipped
-one), **host service interfaces** (the bulk of what you write), and **plugins** (tool + render).
-
-| Host interface | Required? | Platinum impl |
-|---|---|---|
-| `SessionStore` | **Yes** | `store.Store` adapter |
-| `BlobStore` | **Yes** | `storage.BlobStore` |
-| `ScopedClaimsIssuer` | **Yes** (security) | HS256 JWT |
-| `OrgContextProvider` | No (default `""`) | merged config + brand + persona |
-| `TokenUsageLogger` | No (no-op) | cost logging |
-| `ArtifactEnricher` | No (identity) | publish paths / brand |
-| `Metrics` | No (no-op) | Prometheus |
-
-Every mock embeds a shared `Recorder`, so a host asserts the exact interaction log — the same hermetic-
-test discipline as the interface-refactor's `testharness`.
-
----
-
-## Deployment recipes  ([docs/11](docs/11-deployment-recipes.md))
-
-The same core runs in three shapes by composing one `ExecutionEnvironment` with one `ImageRegistry`:
-
-| | **A: Dev / tests** | **B: Staging/prod today** | **C: Scaled production** |
+| Date | Experiment | Outcome | Record |
 |---|---|---|---|
-| `ExecutionEnvironment` | `dockerlocal` (or mock) | `dockerdind` | `k8senv` |
-| `ImageRegistry` | `localbuild` (or mock) | `blobarchive` | `remote` |
-| Isolation | shared | per-container | per-pod |
-| Suspend | off | stop/start | scale |
-| Snapshot | local tar | diff archive → blob | registry push (or n/a) |
-| **Core / Runner / EventPipeline / sandbox / web** | **same** | **same** | **same** |
+| 2026-07-28 | First live calibration — does a methodology critic improve an investigator's accuracy on 30 hypotheses with known answers? | **Inconclusive by ceiling, and the harness crashed.** Publishable as a negative result about the task, not the org chart. | [`2026-07-28-calibration-aborted/`](docs/product/runs/2026-07-28-calibration-aborted/) |
 
-Only the bottom rows differ, and they're all behind the two engine interfaces. Everything above them —
-the genuinely valuable, hard-won logic — is written once. Platinum adopts the library at **Recipe B**.
+**What the first run found.** The investigator was right **11 times out of 11** on real model
+calls — escaping confound traps, rejecting planted nulls, and correctly answering "no effect" on
+an underpowered sample instead of overclaiming. The critic ran every round and declined to change
+anything each time: *"No methodological amendment required."* That is the critic working. The
+investigator was already doing the right thing on the first hypothesis it ever saw, so the
+improvement loop had nothing to bite on, and the learning arm never diverged from the no-learning
+arm. **At this model strength, datasets this clean do not discriminate between org charts.** The
+next calibration needs harder instruments — smaller effects, lower n, subtler confounds — verified
+to be hard *before* a token is spent.
 
----
+The run also stopped at hypothesis 9 of 30, and the reasons were ours, not the model's: a delivery
+was recorded as successful for a session in which the model said nothing, the runner polled that
+empty session until it timed out, and the exception took down the whole process before any report
+was written. Eight completed hypotheses and roughly 135k tokens of real spend produced zero
+artifacts; the finding survived because a console log was on screen. All three defects are written
+up in the record, and the fixes are scheduled.
 
-## The three shippable pieces
+We publish this because it is the most useful thing we have: an instrument that reported "nothing
+to see here" when there was nothing to see, and a harness whose brittleness we found for the price
+of one run instead of one project.
 
-| Piece | Path | Language | Package | Role |
-|---|---|---|---|---|
-| **Orchestration core** | [`go/`](go/) | Go | `github.com/binocarlos/badcode-agent-orange` | Session lifecycle, the two engine interfaces, the `Runner`, `EventPipeline`, `ArtifactStore`, `Fleet`, host-extension seams, in-memory mocks. |
-| **In-image agent** | [`sandbox/`](sandbox/) | TypeScript | `@agentkit/sandbox` | The multi-session control server + harness adapters that run *inside* each image. |
-| **Chat UI** | [`web/`](web/) | React/TS | `@agentkit/chat-ui` | The single event reducer + components that render a conversation from its event stream, live or replayed. |
+### What we are not claiming
 
----
+That any topology in this library is better than another. We have not run the tournament yet. What
+exists today is the apparatus, the protocol, and one honest negative result.
 
-## Implementation status (snapshot)
+The tournament is the next step and the shape is already fixed: given a hypothesis and a **token
+budget**, run it through N org charts under equal spend and rank them. The budget is not a
+metaphor — it maps to each arm's daily token ceiling, enforced by the engine.
 
-Design is ~100%. The build plan — the **AG-1…AG-9** sub-issue series in
-[`docs/interface-refactor/stages/06-agent/`](../docs/interface-refactor/stages/06-agent/README.md) — is
-complete: the Go library, the in-image harness seam + multi-session control server, the Docker engine,
-the image model, and the standalone reference host are all implemented and tested.
+### Running them yourself
 
-| Area | Status |
-|---|---|
-| All Go interfaces + in-memory mocks + `Recorder` | ✅ |
-| `events/` pipeline + compaction · `artifacts/` status machine (+ tests) | ✅ |
-| `web/` single reducer + functional render-plugin seam (+ tests) | ✅ |
-| `execenv` capability axis (`Backend`/`Tenancy`/`IsolationTier`) + trust gate (AG-1) | ✅ |
-| `sandbox/` harness seam (`Harness`/`HarnessRegistry`/`ClaudeAgentSdkHarness`) (AG-2) | ✅ |
-| `sandbox/` multi-session control server + AsyncLocalStorage proxy (AG-3) | ✅ |
-| `fleet/` placement (`LeastLoaded`/`RoundRobin`) + durable bindings + tenancy-aware `Runner` (AG-4) | ✅ |
-| `execenv/docker` DinD + socket adapters (AG-5) — *socket live-verified* | ✅ |
-| `imageregistry/{localbuild,blobarchive}` + image model + folder artifacts (AG-6) — *blobarchive live-verified* | ✅ |
-| User images via the snapshot primitive (AG-7) | ✅ |
-| Standalone reference host + Dockerfile + mock proxy (AG-8, the **usable-standalone milestone**) | ✅ |
-| **Integration layer** — `httpapi` mountable handlers (all routes, 28 tests) | ✅ |
-| **Reference adapter pack** — `extension/{sqlitestore,filesblob,devclaims}` (opt-in, dep-isolated) | ✅ |
-| **`web/`** `AgentChatProvider` + `AgentSessionList` + context hooks (60 tests) | ✅ |
-| **`examples/server`** (httpapi + reference adapters + DinD) · **`examples/web`** (Vite app, builds) | ✅ |
-| Base image (bash/ripgrep/git **+ Claude Code CLI baked in**, `IS_SANDBOX=1`) + example demo image | ✅ |
-| Host-adapters reference doc ([docs/14](docs/14-host-adapters.md)) | ✅ |
-| **Full agentic turn live through `examples/server`** (frontend-shaped httpapi → DinD → SSE) | ✅ |
+Everything is offline and free in mock mode:
 
-**Live-verified — a full agentic turn end to end.** Against a real DinD daemon + a mock model proxy, a
-client POST to the `examples/server` `httpapi` handler drives the whole loop: `CreateSession` →
-`SendMessage` streams `connected → message_start → content_delta → query_complete` and the model proxy
-is hit. Getting there hardened four real seams (all with tests): `Provision` now gates on the agent's
-HTTP `/health` before returning (the userland proxy accepts TCP before the agent listens, so an
-immediate `POST /sessions` raced and reset); the agent is addressed via `127.0.0.1` (IPv6-`localhost`
-proxy reset); `query-stream` sends `attachments: []` not `null`; and `Policy.SessionEnv` plumbs
-model-provider config (`ANTHROPIC_BASE_URL`/key) into each session. The base image now bakes in the
-Claude Code CLI with `IS_SANDBOX=1`. Remaining follow-ups (tracked in the AG sub-issues): the
-blobarchive **diff fast-path** (the full-archive path ships) and `localbuild.Build` (docker-build).
-
----
-
-## Quickstart — use agentkit in another project
-
-Add the module:
-
-```bash
-go get github.com/binocarlos/badcode-agent-orange
+```sh
+./e2e/run-stack-e2e.sh up mock
+./e2e/experiments/calibration/run.sh run smoke-4       # the hypothesis lab, 4 scenarios, 2 arms
+./e2e/experiments/triage/run.sh run triage-smoke-6     # routing under misdirection traps
+./e2e/experiments/run.sh compare                       # actor-critic vs placebo vs solo
 ```
 
-Construct a `Runner` from one implementation of each dependency. This is the **exact** wiring the
-reference host uses (`go/examples/standalone/main.go`); swap the in-memory mocks for your own host
-adapters in production.
+Mock numbers are machinery proof, never findings — the scripted model says what the script tells
+it to. The protocol for a real run, including the abort criteria and the attended-run rule, is in
+[`docs/product/14-calibration-runbook.md`](docs/product/14-calibration-runbook.md).
 
-```go
-import (
-    "github.com/binocarlos/badcode-agent-orange"
-    "github.com/binocarlos/badcode-agent-orange/agentkittest"      // dev: in-memory host adapters
-    "github.com/binocarlos/badcode-agent-orange/artifacts"
-    dockerdind "github.com/binocarlos/badcode-agent-orange/execenv/docker"
-    "github.com/binocarlos/badcode-agent-orange/fleet"
-    "github.com/binocarlos/badcode-agent-orange/imageregistry"
-)
-
-// 1. An ExecutionEnvironment — how a session container runs (here: Docker-in-Docker).
-env, _ := dockerdind.NewDinD(dockerdind.DinDConfig{
-    DockerHost: "tcp://localhost:2375", PortRangeStart: 30000, PortRangeEnd: 30100, GatewayIP: "172.17.0.1",
-})
-
-// 2. A durable SessionStore (host-implemented; MemStore for dev) — owns session rows + worker bindings.
-store := agentkittest.NewMemStore()
-
-// 3. A Fleet — one or many workers; scale out by registering more. The trust gate guards
-//    multi-tenant-untrusted-on-plain-Docker at construction.
-f := fleet.NewMemory(store, &fleet.MemFleetOptions{TrustedWorkload: true})
-_ = f.Register(ctx, &fleet.Worker{ID: "dind-1", Env: env, Caps: env.Capabilities()})
-
-// 4. The Runner — the single object your HTTP handlers call.
-runner, err := agentkit.NewRunner(agentkit.Deps{
-    Fleet:     f,
-    Registry:  imageregistry.NewMock(), // prod: imageregistry/blobarchive over your BlobStore
-    Store:     store,
-    Artifacts: artifacts.NewMock(),     // prod: your ArtifactStore
-    Claims:    agentkittest.StaticClaims{Token: "dev"}, // prod: a real scoped-JWT issuer
-    Policy:    agentkit.Policy{BaseImage: "myapp-sandbox:dev", AgentPort: 3010},
-})
-if err != nil { /* trust-gate or wiring error */ }
-_ = runner.Start(ctx)         // background control loops + crash recovery
-defer runner.Close()
-
-// 5. Create a session (choose a harness) and run a turn — SSE streams to the writer.
-_, _ = runner.CreateSession(ctx, agentkit.CreateSessionRequest{
-    SessionID: "s1", Harness: agentkit.HarnessClaudeAgentSDK,
-})
-_ = runner.SendMessage(ctx, agentkit.SessionRef{SessionID: "s1"},
-    agentkit.SendMessageRequest{Content: "Hello"}, os.Stdout)
-```
-
-What a **host** supplies (replacing the dev mocks): a `SessionStore` + `BlobStore` over your DB/object
-store, a `ScopedClaimsIssuer` (per-session token), and optionally `OrgContextProvider` /
-`TokenUsageLogger` / `ArtifactEnricher` / `Metrics` ([docs/10](docs/10-extension-points.md)). The
-in-image agent ships generic tools; product tools/render widgets plug in via the tool- and
-render-plugin seams ([docs/08](docs/08-tool-registry.md), [docs/09](docs/09-frontend-components.md)).
-Run the full live example with `go/examples/standalone` — see [`examples/README.md`](examples/README.md).
-
-### Full-stack integration — HTTP server + reference adapters + web UI
-
-The snippet above wires the `Runner` directly with in-memory mocks. A real product mounts the library's
-**`httpapi`** handlers under its *own* authenticated routes, backed by the **reference adapter pack**
-(persistent, each adapter an opt-in subpackage that pulls only its own dependency). This is exactly the
-shape of [`go/examples/server`](go/examples/server) (backend) and [`examples/web`](examples/web)
-(frontend) — copy them as your starting templates.
-
-**Backend** — reference adapters + `httpapi.New` mounted under your auth middleware:
-
-```go
-import (
-    "github.com/binocarlos/badcode-agent-orange/httpapi"
-    "github.com/binocarlos/badcode-agent-orange/extension/sqlitestore"
-    "github.com/binocarlos/badcode-agent-orange/extension/filesblob"
-    "github.com/binocarlos/badcode-agent-orange/extension/devclaims"
-    "github.com/binocarlos/badcode-agent-orange/imageregistry/blobarchive"
-)
-
-store, _    := sqlitestore.Open(filepath.Join(dataDir, "sessions.db")) // SessionStore (pure-Go SQLite)
-blobs       := filesblob.NewBlobStore(filepath.Join(dataDir, "blobs")) // BlobStore (filesystem)
-artStore    := filesblob.NewArtifactStore(blobs)                       // ArtifactStore (filesystem)
-claims      := devclaims.New([]byte(secret))                           // dev-only HS256 ScopedClaimsIssuer
-registry, _ := blobarchive.New(dockerHost, blobs, "agentkit-snapshots")
-
-runner, _ := agentkit.NewRunner(agentkit.Deps{
-    Fleet: f, Registry: registry, Store: store, Artifacts: artStore, Claims: claims,
-    Policy: agentkit.Policy{BaseImage: "myapp-example:dev", AgentPort: 3010},
-})
-_ = runner.Start(ctx)
-
-// Mount the library's handlers under YOUR auth. The IdentityFunc reads the principal your
-// middleware already verified — the host owns authentication; the library owns runtime.
-api, _ := httpapi.New(httpapi.Config{
-    Runner: runner, Store: store, Artifacts: artStore,
-    Identity: func(r *http.Request) (httpapi.Identity, error) {
-        p, _ := principalFromContext(r.Context()) // set by your middleware from a verified JWT
-        return httpapi.Identity{UserEmail: p.email, Customer: p.customer}, nil
-    },
-})
-http.ListenAndServe(":8099", devAuthMiddleware(api.Mux())) // your middleware wraps the Mux
-```
-
-`Mux()` registers every route (`POST /agent/session`, `…/{id}/message` (SSE), `…/{id}/stream`, status,
-history, artifacts, …). Session-by-ID handlers assume your middleware **already authorized that session
-for the principal** — the host owns the durable session catalog, the library owns runtime. Each
-interface's contract and the reference/mock to use are in
-[docs/14-host-adapters.md](docs/14-host-adapters.md).
-
-**Frontend** — the provider owns data/context; the components render it:
-
-```tsx
-import { AgentChatProvider, AgentSessionList, AgentChat } from "@agentkit/chat-ui";
-
-<AgentChatProvider config={{
-  apiBaseUrl: "http://localhost:8099",
-  getAuthToken: () => `Bearer ${token}`,            // resolved per request (sync or async)
-  models: [{ id: "claude-opus-4-5", label: "Opus" }],
-}}>
-  <AgentSessionList />   {/* the session catalog */}
-  <AgentChat />          {/* the live conversation — reads provider context, no props needed */}
-</AgentChatProvider>
-```
-
-`AgentChatProvider` instantiates the single `useAgentSession` hook (and the single `agentEventReducer`)
-internally; `AgentChat` falls back to provider context when props are omitted (props still override).
-All endpoint paths are overridable via `config.endpoints`.
-
-### Lift-out checklist (to its own repo)
-
-The Go module already imports **nothing** from Platinum (CI enforces this), so the lift is mechanical:
-1. Move `agent-library/` to a new repo root.
-2. Drop the consumer's root `go.mod` `replace` and the yarn workspace links; depend on published
-   versions (`go get github.com/binocarlos/badcode-agent-orange@vX.Y.Z`; `@agentkit/sandbox` + `@agentkit/chat-ui`
-   from the registry).
-3. The CI workflow ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) moves with it unchanged.
-
----
-
-## Documentation map
+## Documentation
 
 | Doc | Topic |
-|-----|-------|
-| [00-vision.md](docs/00-vision.md) | Why this exists; the generic-vs-specific split; goals & non-goals |
-| [01-architecture.md](docs/01-architecture.md) | The layered architecture; the three runtimes; how Go owns orchestration |
-| [02-execution-environment.md](docs/02-execution-environment.md) | **The core interface**; Docker/DinD/K8s; capability axis + trust gate |
-| [03-image-registry.md](docs/03-image-registry.md) | Image build/save/load/push/pull; the unified image model; snapshot-as-image |
-| [04-session-orchestration.md](docs/04-session-orchestration.md) | The orchestration logic moved into Go; lifecycle, reapers, recovery; the `Runner` |
-| [05-event-streaming.md](docs/05-event-streaming.md) | Event vocabulary, compaction, persistence, the single reducer |
-| [06-artifacts.md](docs/06-artifacts.md) | `ArtifactStore`; the snapshot-vs-artifacts distinction; folder capture |
-| [07-in-image-agent.md](docs/07-in-image-agent.md) | The multi-session control server contract |
-| [08-tool-registry.md](docs/08-tool-registry.md) | Internal vs external tools; the marker pattern; tool plugins |
-| [09-frontend-components.md](docs/09-frontend-components.md) | The React rendering package; the render-plugin seam |
-| [10-extension-points.md](docs/10-extension-points.md) | Every seam a host app implements (stores, context, claims, costing) |
-| [11-deployment-recipes.md](docs/11-deployment-recipes.md) | Composition recipes: dev, DinD, Kubernetes |
-| [12-harness.md](docs/12-harness.md) | **The harness seam** — pluggable agentic frameworks, per session |
-| [13-fleet-placement.md](docs/13-fleet-placement.md) | **Fleet & placement** — horizontal scaling across a worker pool |
-| [90-provenance-map.md](docs/90-provenance-map.md) | Every library file → its source in Platinum (the copy plan) |
-| [91-migration-plan.md](docs/91-migration-plan.md) | How Platinum adopts the library without disruption |
+|---|---|
+| [docs/01-architecture.md](docs/01-architecture.md) | The layered architecture; how Go owns orchestration |
+| [docs/02-execution-environment.md](docs/02-execution-environment.md) | The container seam; Docker/DinD; capability axis + trust gate |
+| [docs/03-image-registry.md](docs/03-image-registry.md) | Image build/save/load/push/pull; the unified image model; snapshot-as-image |
+| [docs/05-event-streaming.md](docs/05-event-streaming.md) | Event vocabulary, compaction, persistence, the single reducer |
+| [docs/06-artifacts.md](docs/06-artifacts.md) | `ArtifactStore`; the snapshot-vs-artifacts distinction |
+| [docs/07-in-image-agent.md](docs/07-in-image-agent.md) | The multi-session control server contract; the harness seam |
+| [docs/13-fleet-placement.md](docs/13-fleet-placement.md) | Fleet & placement — horizontal scaling across a worker pool |
+| [docs/14-host-adapters.md](docs/14-host-adapters.md) | Every seam a host app implements (stores, context, claims, costing) |
+| [docs/15-standalone-stack.md](docs/15-standalone-stack.md) | Running the standalone stack; library vs standalone |
+| [docs/18-workers-memory-events.md](docs/18-workers-memory-events.md) | **Operating the product layer** — workers, memory, events, schedules, tools |
+| [docs/product/](docs/product/) | The product spec: `00-overview` (map), `17-product-spec` (entry point), `01`–`09` (component designs), `06-work-plan` (checklist + Discovered Issues Log) |
 
----
+The numbered engine docs have deliberate gaps (there is no 04, 08–12, 16, 17 at the top level;
+`17` is the product spec, under `docs/product/`).
 
-## Migration decision (locked)
+Alongside the numbered docs:
 
-When Platinum adopts agentkit it goes **native Go DinD directly**: the `ExecutionEnvironment` is
-implemented as native Go driving the Docker-in-Docker daemon (porting the orchestrator's lifecycle),
-with **no interim wrapper** over the existing TypeScript orchestrator — which is retired at the flip.
-Platinum consumes agentkit **in-repo first** (root `go.mod` `replace` for the Go module, yarn workspaces
-for `@agentkit/chat-ui` + `@agentkit/sandbox`), and the folder is lifted out to its own repo **last**,
-once parity is reached. Full phasing in [docs/91-migration-plan.md](docs/91-migration-plan.md).
-
-This library is the deep-dive expansion of the Agent domain from
-[`docs/interface-refactor/06-agent.md`](../docs/interface-refactor/06-agent.md): orchestration moves
-*into* Go behind `ExecutionEnvironment` + `ImageRegistry`, and the deliverable is a copied-out, reusable
-codebase rather than in-place stubs.
-
----
-
-## Testing
-
-### Unit Tests (no Docker required)
-
-    # Go — modelproxy, titlebot, events, fleet, artifacts, runner, httpapi, etc.
-    cd go && go test ./... -count=1
-
-    # Sandbox — session manager, stream service, harness utilities, built-in tools, plugin loader
-    cd sandbox && yarn test
-
-    # Chat UI — event reducer, tool formatters, ToolCallGroup, ArtifactPanel, useFileAttachments, etc.
-    cd web && yarn test
-
-    # Mock server — SSE streaming helpers (chunkText, sseEvent, countAssistantMessages)
-    cd mock-server && yarn test
-
-### Go Integration Tests (requires Docker)
-
-    # Build the sandbox image first
-    docker build -t agentkit-sandbox:systemtest sandbox/
-
-    # Run integration tests
-    cd go && go test -tags=integration ./systemtest/ -v -timeout 10m
-
-### Browser E2E Tests (requires Docker + DinD)
-
-Prerequisites:
-
-1. DinD running:
-
-        docker run -d --privileged -p 2375:2375 -e DOCKER_TLS_CERTDIR="" docker:27-dind
-
-2. Sandbox image built and loaded into DinD:
-
-        docker build -t agentkit-sandbox:dev sandbox/
-        docker save agentkit-sandbox:dev | docker -H tcp://localhost:2375 load
-
-Run tests:
-
-    cd e2e && yarn test
-
-This starts the mock server, Go example server, and web dev server automatically via global setup, then
-runs Playwright tests against them.
-
-### Run everything
-
-    # All unit tests across all packages
-    cd go && go test ./... -count=1
-    cd sandbox && yarn test
-    cd web && yarn test
-    cd mock-server && yarn test
-
-    # Typechecks
-    cd sandbox && yarn typecheck
-    cd web && npx tsc --noEmit
-    cd mock-server && yarn typecheck
-
-### Test Architecture
-
-```
-Unit Tests (fast, no infra)
-├── go/            → go test ./... -count=1
-├── sandbox/       → yarn test (vitest)
-├── web/           → yarn test (vitest)
-└── mock-server/   → yarn test (vitest)
-
-Go System Tests (Docker required)
-└── go/systemtest/ → go test -tags=integration
-
-Browser E2E Tests (Docker + DinD)
-└── e2e/           → playwright test
-    ├── examples/server (Go HTTP API)
-    ├── examples/web (React UI)
-    └── mock-server (fake Anthropic API)
-```
+- [docs/product/19-scenario-library.md](docs/product/19-scenario-library.md) — the scenarios an org can be measured on, and what makes one admissible.
+- [docs/product/20-operations-doctrine.md](docs/product/20-operations-doctrine.md) — the operator's manual, and the common-sense block injected into every worker's prompt. Every entry carries a status: nothing is law until a measured A/B says so.
+- [installations/README.md](installations/README.md) — installation images: the derived-image tree, the overlay model, `imagetree`.
+- [README-stack.md](README-stack.md) — running the standalone stack.
+- [MIGRATION.md](MIGRATION.md) — standalone-ification + registry/GCP roadmap and live status.
+- [CLAUDE.md](CLAUDE.md) — the operating guide for an agent working in this repo.

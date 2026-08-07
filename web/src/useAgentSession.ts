@@ -104,6 +104,9 @@ interface UseAgentSessionReturn {
   createSession: (req: CreateAgentSessionRequest) => Promise<string | null>
   sendMessage: (content: string, model?: string, attachmentIds?: string[]) => Promise<void>
   cancelSession: () => Promise<void>
+  /** Delete this session. REJECTS with the server's message on failure, and
+   *  leaves the local session in place when it does. Ask the user first — this
+   *  destroys the conversation. */
   deleteSession: () => Promise<void>
   loadPersonas: (customer: string) => Promise<void>
   resumeSession: (sessionId: string) => Promise<void>
@@ -457,23 +460,48 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
   /** Max reconnection attempts before falling back to DB load */
   const MAX_RECONNECT_ATTEMPTS = 3
 
-  const checkSessionStatus = async (sessionId: string): Promise<{ activeQuery: { queryId: string } | null } | null> => {
+  /** Shown whenever a stream ends and we cannot positively confirm the turn finished. */
+  const CONNECTION_LOST_ERROR = 'Connection lost — loaded conversation from history'
+  /** Shown when we could not even ask whether a turn is in flight. */
+  const STATUS_UNKNOWN_ERROR = 'Could not check whether this session is still running — showing saved history'
+
+  /**
+   * The result of probing a session's status.
+   *
+   * `reachable: false` means we do not know what the session is doing — the
+   * probe errored, timed out or answered non-2xx. It must NEVER be conflated
+   * with `reachable: true, activeQuery: null` ("the server told us nothing is
+   * running"), because the caller uses the latter to decide that a stream that
+   * ended without `query_complete` ended *legitimately*. Collapsing the two is
+   * how a truncated answer used to render as a complete one (doc 22, RD26).
+   */
+  type SessionStatusProbe =
+    | { reachable: true; activeQuery: { queryId: string } | null }
+    | { reachable: false; reason: string }
+
+  const checkSessionStatus = async (sessionId: string): Promise<SessionStatusProbe> => {
     try {
       const resp = await apiFetch(
         endpoints.status(sessionId),
         { signal: AbortSignal.timeout(5000) }
       )
-      if (resp.ok) return await resp.json()
-    } catch {
-      // Status check failed
+      if (!resp.ok) return { reachable: false, reason: `HTTP ${resp.status}` }
+      const body = await resp.json() as { activeQuery?: { queryId: string } | null } | null
+      return { reachable: true, activeQuery: body?.activeQuery ?? null }
+    } catch (err: unknown) {
+      // Network error, timeout, or an unparseable body: we learned nothing.
+      return { reachable: false, reason: err instanceof Error ? err.message : 'status probe failed' }
     }
-    return null
   }
 
-  const attemptReconnect = async (sessionId: string): Promise<Response | null> => {
+  // queryId names the turn to reattach to. It is not optional in practice: the
+  // server keys the reattach on it, and a reconnect without one attaches to
+  // nothing and quietly persists nothing (doc 24 D5). It comes from the status
+  // probe, which is the only thing that knows a turn is in flight.
+  const attemptReconnect = async (sessionId: string, queryId?: string): Promise<Response | null> => {
     try {
       const resp = await apiFetch(
-        endpoints.reconnect(sessionId),
+        endpoints.reconnect(sessionId, queryId),
         { signal: AbortSignal.timeout(AGENT_QUERY_TIMEOUT_MS) }
       )
       if (resp.ok && resp.headers.get('content-type')?.includes('text/event-stream')) {
@@ -485,7 +513,17 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
     return null
   }
 
-  const readSSEStream = async (response: Response, reconnectDepth = 0, expectedSessionId?: string) => {
+  /**
+   * Reads an SSE stream to its end.
+   *
+   * Returns `true` only when the turn is *positively confirmed* finished —
+   * either a `query_complete`/`dag_complete` arrived, or the status probe
+   * answered that the session has no active query. It returns `false` when the
+   * stream simply stopped and we could not confirm why; the caller must then
+   * surface CONNECTION_LOST_ERROR and leave stuck-detection armed rather than
+   * quietly presenting a truncated answer as a complete one (doc 22, RD26).
+   */
+  const readSSEStream = async (response: Response, reconnectDepth = 0, expectedSessionId?: string): Promise<boolean> => {
     const reader = response.body!.getReader()
     const decoder = new TextDecoder()
     let sseBuffer = ''
@@ -531,18 +569,25 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
       }
 
       if (!receivedQueryComplete && sessionIdRef.current && (!expectedSessionId || sessionIdRef.current === expectedSessionId)) {
+        // Until something tells us otherwise, a stream that stopped short is an
+        // UNCONFIRMED end: the agent may still be running in its container.
+        let confirmedComplete = false
         if (reconnectDepth < MAX_RECONNECT_ATTEMPTS) {
           console.log(`[SSE] Stream ended without query_complete — checking for active query (attempt ${reconnectDepth + 1}/${MAX_RECONNECT_ATTEMPTS})`)
           const status = await checkSessionStatus(sessionIdRef.current)
-          if (status?.activeQuery) {
+          if (!status.reachable) {
+            console.warn(`[SSE] Status probe failed (${status.reason}) — cannot confirm the turn finished`)
+          } else if (status.activeQuery) {
             console.log(`[SSE] Active query found (${status.activeQuery.queryId}) — reconnecting`)
-            const reconnectResp = await attemptReconnect(sessionIdRef.current)
+            const reconnectResp = await attemptReconnect(sessionIdRef.current, status.activeQuery.queryId)
             if (reconnectResp) {
-              await readSSEStream(reconnectResp, reconnectDepth + 1, expectedSessionId)
-              return
+              return await readSSEStream(reconnectResp, reconnectDepth + 1, expectedSessionId)
             }
             console.warn('[SSE] Reconnect failed — falling back to persisted messages')
           } else {
+            // The server positively told us nothing is running: the turn really
+            // is over and the persisted state is the whole of it.
+            confirmedComplete = true
             console.log('[SSE] No active query — query may have completed, loading persisted state')
           }
         } else {
@@ -604,13 +649,18 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
           }
         } catch { /* best effort */ }
 
-        if (reconnectDepth >= MAX_RECONNECT_ATTEMPTS) {
-          setError('Connection lost — loaded conversation from history')
+        if (!confirmedComplete) {
+          // Includes the depth >= MAX_RECONNECT_ATTEMPTS case, which never
+          // probes and so can never confirm anything.
+          setError(CONNECTION_LOST_ERROR)
+          eventStateRef.current = { ...eventStateRef.current, error: CONNECTION_LOST_ERROR }
         }
+        return confirmedComplete
       }
     } finally {
       reader.releaseLock()
     }
+    return true
   }
 
   const sendMessage = useCallback(async (content: string, model?: string, attachmentIds?: string[]) => {
@@ -669,11 +719,14 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
         return
       }
 
-      await readSSEStream(response, 0, session.id)
+      const confirmedComplete = await readSSEStream(response, 0, session.id)
 
       setIsStreaming(false)
       setActivityStatus(null)
-      stopStuckDetection()
+      // Only disarm the stuck detector when the turn is *confirmed* over. On an
+      // unconfirmed end the agent may still be producing output, and this is
+      // precisely the moment the detector exists for (doc 22, RD26).
+      if (confirmedComplete) stopStuckDetection()
       eventStateRef.current = { ...eventStateRef.current, isStreaming: false, activityStatus: null }
 
       if (sessionIdRef.current) loadArtifacts(sessionIdRef.current)
@@ -706,18 +759,24 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
 
+  // The hook's own delete (no in-repo caller today; part of the exported API a
+  // host may drive). It REJECTS on failure and clears nothing in that case —
+  // doc 22 RD5: this used to swallow every error and then wipe the local
+  // session anyway, so a delete the server refused looked exactly like one it
+  // performed. Callers must ask the user first and show the rejection;
+  // AgentSessionList is the worked example.
   const deleteSession = useCallback(async () => {
     if (!session) return
     abortControllerRef.current?.abort()
-    try {
-      await apiFetch(endpoints.deleteSession(session.id), { method: 'DELETE' })
-      resetEventState()
-      setSession(null)
-      setMessages([])
-      setIsStreaming(false)
-    } catch {
-      // Silently handle delete errors
+    const resp = await apiFetch(endpoints.deleteSession(session.id), { method: 'DELETE' })
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => '')
+      throw new Error(body.trim() !== '' ? body.trim() : `HTTP ${resp.status}`)
     }
+    resetEventState()
+    setSession(null)
+    setMessages([])
+    setIsStreaming(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
 
@@ -816,8 +875,17 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
       const workflowId = s.workflowId || (s as unknown as Record<string, string>).workflow_id || 'agent'
       const metadata = (s as unknown as Record<string, unknown>).metadata as Record<string, unknown> | undefined
       const sessionModel = (metadata?.model as string) || defaultModel
+      // Why the session failed to start. The server has served this field since
+      // the provisioning path started writing it, and NOTHING in the browser
+      // read it (doc 22, RD20): a session that never came up rendered as a bare
+      // `status: "error"` — the reader could see that something broke and not
+      // what, and the explanatory message only appeared if they sent a SECOND
+      // message. It is a plain string on the wire; anything else is ignored.
+      const rawCreateError = (s as unknown as Record<string, unknown>).create_error
+      const createError = typeof rawCreateError === 'string' ? rawCreateError.trim() : ''
       const resumed: AgentSession = {
         id: s.id,
+        error: createError || undefined,
         status: (s.status as AgentSession['status']) || 'active',
         workflowId,
         persona: s.persona,
@@ -868,6 +936,18 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
       sessionIdRef.current = resumed.id
       setMessages(restored.messages)
 
+      // A failed session says so on screen, in the same banner every other
+      // error uses. When the engine recorded no reason we say THAT rather than
+      // rendering nothing — "broken, cause unrecorded" is information; an empty
+      // transcript is not.
+      if (resumed.status === 'error') {
+        setError(
+          createError !== ''
+            ? `This session failed to start: ${createError}`
+            : 'This session failed to start. No reason was recorded on the session.',
+        )
+      }
+
       startContainerStatePoll(sessionId)
       loadArtifacts(sessionId)
 
@@ -887,7 +967,13 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
       // Check for active streaming query and reconnect if needed
       if (resumed.status === 'active' || resumed.status === 'streaming') {
         const status = await checkSessionStatus(sessionId)
-        if (status?.activeQuery) {
+        if (!status.reachable) {
+          // We could not ask whether a turn is in flight. Say so rather than
+          // rendering the persisted history as if it were the whole story.
+          console.warn(`[SSE] Status probe failed on resume (${status.reason})`)
+          setError(STATUS_UNKNOWN_ERROR)
+          eventStateRef.current = { ...eventStateRef.current, error: STATUS_UNKNOWN_ERROR }
+        } else if (status.activeQuery) {
           eventStateRef.current = { ...eventStateRef.current, isStreaming: true }
           setIsStreaming(true)
           setActivityStatus({ label: 'Reconnecting...', category: 'system' })
@@ -896,14 +982,18 @@ export default function useAgentSession(options: UseAgentSessionOptions = {}): U
           abortControllerRef.current = abortController
           startStuckDetection()
 
-          const reconnectResp = await attemptReconnect(sessionId)
+          const reconnectResp = await attemptReconnect(sessionId, status.activeQuery.queryId)
+          let confirmedComplete = false
           if (reconnectResp) {
-            await readSSEStream(reconnectResp, 0, sessionId)
+            confirmedComplete = await readSSEStream(reconnectResp, 0, sessionId)
+          } else {
+            setError(CONNECTION_LOST_ERROR)
+            eventStateRef.current = { ...eventStateRef.current, error: CONNECTION_LOST_ERROR }
           }
 
           setIsStreaming(false)
           setActivityStatus(null)
-          stopStuckDetection()
+          if (confirmedComplete) stopStuckDetection()
           eventStateRef.current = { ...eventStateRef.current, isStreaming: false, activityStatus: null }
           if (sessionIdRef.current) loadArtifacts(sessionIdRef.current)
         }

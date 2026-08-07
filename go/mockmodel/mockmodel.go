@@ -10,35 +10,31 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
+
+	"github.com/binocarlos/badcode-agent-orange/modelproxy"
 )
 
-// Block is a single content block in a scripted turn. Type ∈ {"text","tool_use","thinking"}.
-type Block struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	Name  string         `json:"name,omitempty"`
-	Input map[string]any `json:"input,omitempty"`
-}
-
-// Turn is one assistant response.
-type Turn struct {
-	Blocks []Block `json:"blocks"`
-}
-
-// Script is an ordered list of turns, selected by assistant-message count.
-type Script struct {
-	Turns []Turn `json:"turns"`
-}
+// Block, Turn and Script are the scripted-mock wire shapes. They are aliases of
+// the modelproxy types so the test-side mock and the agentd mock proxy share ONE
+// script format and ONE SSE renderer (modelproxy.TurnSSE) — a script written for
+// a Go systemtest is the same JSON a compose stack sets in
+// AGENTKIT_MOCK_MODEL_SCRIPT.
+type (
+	// Block is a single content block. Type ∈ {"text","tool_use","thinking"}.
+	Block = modelproxy.Block
+	// Turn is one assistant response.
+	Turn = modelproxy.Turn
+	// Script is an ordered list of turns, selected by assistant-message count.
+	Script = modelproxy.Script
+)
 
 // Server is a scripted Anthropic mock. Embed httptest.Server for .URL / .Close().
 type Server struct {
 	*httptest.Server
-	t       *testing.T
-	script  *Script
-	toolSeq int
+	t      *testing.T
+	script *Script
 
 	// sessionTurns tracks how many complete SSE responses have been served per
 	// session ID (identified by the x-session-id header). This is used as the
@@ -67,7 +63,7 @@ type Server struct {
 // Kept for backward compat / nil-script fallback.
 const sseResponse = "" +
 	"event: message_start\n" +
-	`data: {"type":"message_start","message":{"id":"msg_mock001","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n" +
+	`data: {"type":"message_start","message":{"id":"msg_mock001","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_creation_input_tokens":22,"cache_read_input_tokens":148}}}` + "\n\n" +
 	"event: content_block_start\n" +
 	`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n" +
 	"event: ping\n" +
@@ -169,7 +165,7 @@ func (sp *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	turn := sp.script.Turns[turnIdx]
-	sse := sp.buildTurnSSE(turn)
+	sse := modelproxy.TurnSSE(turn, turnIdx)
 	for _, chunk := range splitSSE(sse) {
 		_, _ = fmt.Fprint(w, chunk)
 		if hasFlusher {
@@ -204,133 +200,5 @@ func (sp *Server) countAssistantMessages(body io.ReadCloser) int {
 	return count
 }
 
-// buildTurnSSE generates a complete SSE stream for one script turn.
-func (sp *Server) buildTurnSSE(turn Turn) string {
-	var sb strings.Builder
-
-	// Determine stop reason.
-	stopReason := "end_turn"
-	for _, b := range turn.Blocks {
-		if b.Type == "tool_use" {
-			stopReason = "tool_use"
-			break
-		}
-	}
-
-	msgID := fmt.Sprintf("msg_mock_%d", sp.toolSeq+1)
-
-	sb.WriteString("event: message_start\n")
-	sb.WriteString(fmt.Sprintf(
-		`data: {"type":"message_start","message":{"id":%q,"type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}`,
-		msgID,
-	))
-	sb.WriteString("\n\n")
-
-	sb.WriteString("event: ping\n")
-	sb.WriteString(`data: {"type":"ping"}`)
-	sb.WriteString("\n\n")
-
-	for i, block := range turn.Blocks {
-		switch block.Type {
-		case "text":
-			sb.WriteString("event: content_block_start\n")
-			sb.WriteString(fmt.Sprintf(
-				`data: {"type":"content_block_start","index":%d,"content_block":{"type":"text","text":""}}`,
-				i,
-			))
-			sb.WriteString("\n\n")
-
-			sb.WriteString("event: content_block_delta\n")
-			sb.WriteString(fmt.Sprintf(
-				`data: {"type":"content_block_delta","index":%d,"delta":{"type":"text_delta","text":%s}}`,
-				i, mustJSON(block.Text),
-			))
-			sb.WriteString("\n\n")
-
-			sb.WriteString("event: content_block_stop\n")
-			sb.WriteString(fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, i))
-			sb.WriteString("\n\n")
-
-		case "thinking":
-			sb.WriteString("event: content_block_start\n")
-			sb.WriteString(fmt.Sprintf(
-				`data: {"type":"content_block_start","index":%d,"content_block":{"type":"thinking","thinking":""}}`,
-				i,
-			))
-			sb.WriteString("\n\n")
-
-			sb.WriteString("event: content_block_delta\n")
-			sb.WriteString(fmt.Sprintf(
-				`data: {"type":"content_block_delta","index":%d,"delta":{"type":"thinking_delta","thinking":%s}}`,
-				i, mustJSON(block.Text),
-			))
-			sb.WriteString("\n\n")
-
-			sb.WriteString("event: content_block_stop\n")
-			sb.WriteString(fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, i))
-			sb.WriteString("\n\n")
-
-		case "tool_use":
-			sp.toolSeq++
-			toolID := fmt.Sprintf("toolu_mock_%d", sp.toolSeq)
-			inputJSON := mustJSON(block.Input)
-
-			sb.WriteString("event: content_block_start\n")
-			sb.WriteString(fmt.Sprintf(
-				`data: {"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":%s,"name":%s,"input":{}}}`,
-				i, mustJSON(toolID), mustJSON(block.Name),
-			))
-			sb.WriteString("\n\n")
-
-			sb.WriteString("event: content_block_delta\n")
-			sb.WriteString(fmt.Sprintf(
-				`data: {"type":"content_block_delta","index":%d,"delta":{"type":"input_json_delta","partial_json":%s}}`,
-				i, mustJSON(inputJSON),
-			))
-			sb.WriteString("\n\n")
-
-			sb.WriteString("event: content_block_stop\n")
-			sb.WriteString(fmt.Sprintf(`data: {"type":"content_block_stop","index":%d}`, i))
-			sb.WriteString("\n\n")
-		}
-	}
-
-	sb.WriteString("event: message_delta\n")
-	sb.WriteString(fmt.Sprintf(
-		`data: {"type":"message_delta","delta":{"stop_reason":%s,"stop_sequence":null},"usage":{"output_tokens":10}}`,
-		mustJSON(stopReason),
-	))
-	sb.WriteString("\n\n")
-
-	sb.WriteString("event: message_stop\n")
-	sb.WriteString(`data: {"type":"message_stop"}`)
-	sb.WriteString("\n\n")
-
-	return sb.String()
-}
-
-// mustJSON returns the JSON encoding of v as a string, panicking on error.
-func mustJSON(v any) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		panic(fmt.Sprintf("mustJSON: %v", err))
-	}
-	return string(b)
-}
-
 // splitSSE splits an SSE stream into individual events (split on \n\n).
-func splitSSE(stream string) []string {
-	var chunks []string
-	for {
-		idx := strings.Index(stream, "\n\n")
-		if idx < 0 {
-			if len(stream) > 0 {
-				chunks = append(chunks, stream)
-			}
-			break
-		}
-		chunks = append(chunks, stream[:idx+2])
-		stream = stream[idx+2:]
-	}
-	return chunks
-}
+func splitSSE(stream string) []string { return modelproxy.SplitSSE(stream) }

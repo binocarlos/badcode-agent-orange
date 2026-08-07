@@ -205,6 +205,95 @@ func TestIssueScopeMappingMultipleSessions(t *testing.T) {
 	}
 }
 
+// --- scoped tokens (embed tokens) ---
+
+// The scope claim round-trips, and it is what confines an embed token to one
+// session while its customer claim still names the whole project.
+func TestIssueScopedRoundTrip(t *testing.T) {
+	secret := []byte("scoped-secret")
+	iss := New(secret)
+	tok, err := iss.IssueScoped(context.Background(),
+		extension.ContextScope{Customer: "wolf", Job: "embed", UserEmail: "api-key:wolf"},
+		"", SessionScope("s-hyp-a"))
+	if err != nil {
+		t.Fatalf("IssueScoped: %v", err)
+	}
+	claims := parse(t, tok, secret)
+	got, _ := claims[ScopeClaim].(string)
+	if got != "session:s-hyp-a" {
+		t.Fatalf("scope claim = %q, want session:s-hyp-a", got)
+	}
+	sid, ok := ParseSessionScope(got)
+	if !ok || sid != "s-hyp-a" {
+		t.Fatalf("ParseSessionScope(%q) = %q, %v", got, sid, ok)
+	}
+	// The rest of the token is an ordinary one.
+	if claims["customer"] != "wolf" || claims["email"] != "api-key:wolf" {
+		t.Fatalf("claims = %v", claims)
+	}
+}
+
+// A token issued without a scope carries no scope claim at all — not an empty
+// one — so nothing about the existing tokens changed.
+func TestIssueWithoutScopeCarriesNoScopeClaim(t *testing.T) {
+	secret := []byte("unscoped-secret")
+	iss := New(secret)
+	for _, tok := range []string{
+		mustIssue(t, iss, ""),
+		mustIssueScoped(t, iss, ""),
+	} {
+		claims := parse(t, tok, secret)
+		if _, present := claims[ScopeClaim]; present {
+			t.Fatalf("unscoped token carries a scope claim: %v", claims)
+		}
+		// And an absent claim reads as the empty string, i.e. unrestricted.
+		if v, _ := claims[ScopeClaim].(string); v != "" {
+			t.Fatalf("absent scope did not read as empty: %q", v)
+		}
+	}
+}
+
+func mustIssue(t *testing.T, iss *Issuer, sid string) string {
+	t.Helper()
+	tok, err := iss.Issue(context.Background(), extension.ContextScope{Customer: "acme"}, sid)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	return tok
+}
+
+func mustIssueScoped(t *testing.T, iss *Issuer, scope string) string {
+	t.Helper()
+	tok, err := iss.IssueScoped(context.Background(), extension.ContextScope{Customer: "acme"}, "", scope)
+	if err != nil {
+		t.Fatalf("IssueScoped: %v", err)
+	}
+	return tok
+}
+
+// sid and scope are independent: a scoped token may still name the session that
+// minted it, and a token with a sid is NOT thereby scoped. Conflating the two
+// would be a live hazard, because agentd signs per-session container tokens and
+// API tokens with the same secret in every real deployment.
+func TestSidDoesNotImplyScope(t *testing.T) {
+	secret := []byte("sid-secret")
+	claims := parse(t, mustIssue(t, New(secret), "s-container"), secret)
+	if claims["sid"] != "s-container" {
+		t.Fatalf("sid = %v", claims["sid"])
+	}
+	if _, present := claims[ScopeClaim]; present {
+		t.Fatal("a token with a sid was implicitly scoped")
+	}
+}
+
+func TestParseSessionScopeRejectsNonSessionScopes(t *testing.T) {
+	for _, s := range []string{"", "session:", "project:wolf", "s-hyp-a", "sessions:x", "SESSION:x"} {
+		if sid, ok := ParseSessionScope(s); ok {
+			t.Fatalf("ParseSessionScope(%q) accepted, returning %q", s, sid)
+		}
+	}
+}
+
 // TestIssueTokenIsHS256 verifies the signing algorithm header.
 func TestIssueTokenIsHS256(t *testing.T) {
 	iss := New([]byte("alg-secret"))

@@ -3,8 +3,11 @@ package agentdb
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
+	"hash/fnv"
 	"log"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -222,163 +225,885 @@ var agentMigrations = []migration{
 		`,
 	},
 	{
-		Name: "019_agent_conversation_index",
-		SQL: `
-			CREATE EXTENSION IF NOT EXISTS vector;
-			CREATE TABLE IF NOT EXISTS agent_conversation_index (
-				session_id        VARCHAR(36) PRIMARY KEY REFERENCES agent_sessions(id) ON DELETE CASCADE,
-				customer          VARCHAR(255) NOT NULL,
-				job               VARCHAR(255) NOT NULL DEFAULT '',
-				user_email        VARCHAR(255) NOT NULL DEFAULT '',
-				workflow_id       VARCHAR(100) NOT NULL DEFAULT '',
-				title             VARCHAR(255) NOT NULL DEFAULT '',
-				summary           TEXT NOT NULL DEFAULT '',
-				summary_embedding vector(1536),
-				transcript_tsv    TSVECTOR,
-				message_count     INT NOT NULL DEFAULT 0,
-				last_activity_at  BIGINT NOT NULL DEFAULT 0,
-				indexed_at        BIGINT NOT NULL DEFAULT 0,
-				source_hash       TEXT NOT NULL DEFAULT ''
-			);
-			CREATE INDEX IF NOT EXISTS idx_aci_customer ON agent_conversation_index(customer);
-			CREATE INDEX IF NOT EXISTS idx_aci_tsv ON agent_conversation_index USING GIN(transcript_tsv);
-			CREATE INDEX IF NOT EXISTS idx_aci_embedding ON agent_conversation_index USING hnsw(summary_embedding vector_cosine_ops);
-		`,
+		Name: "019_agent_sessions_mcp_servers",
+		SQL:  `ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS mcp_servers JSONB NOT NULL DEFAULT '{}';`,
 	},
 	{
-		Name: "020_board_revisions",
+		Name: "020_project_settings",
 		SQL: `
-			CREATE TABLE IF NOT EXISTS board_revisions (
-				id          VARCHAR(36) PRIMARY KEY,
-				parent_id   VARCHAR(36) DEFAULT '',
-				seq         BIGSERIAL UNIQUE,
-				status      VARCHAR(20) NOT NULL DEFAULT 'applied',
-				author      VARCHAR(255) NOT NULL DEFAULT '',
-				message     TEXT NOT NULL DEFAULT '',
-				ops         JSONB NOT NULL DEFAULT '[]',
-				created_at  BIGINT NOT NULL DEFAULT 0
-			);
-			CREATE INDEX IF NOT EXISTS idx_board_revisions_status ON board_revisions(status);
-			CREATE TABLE IF NOT EXISTS board_head (
-				singleton   BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
-				revision_id VARCHAR(36) NOT NULL REFERENCES board_revisions(id)
+			CREATE TABLE IF NOT EXISTS project_settings (
+				project VARCHAR(255) PRIMARY KEY,
+				base_image TEXT NOT NULL DEFAULT '',
+				system_prompt TEXT NOT NULL DEFAULT '',
+				mcp_config JSONB NOT NULL DEFAULT '{}',
+				attention_channel JSONB NOT NULL DEFAULT '{}',
+				max_concurrent_jobs INT NOT NULL DEFAULT 4,
+				daily_tokens_soft BIGINT NOT NULL DEFAULT 0,
+				daily_tokens_hard BIGINT NOT NULL DEFAULT 0,
+				briefing_max_bytes INT NOT NULL DEFAULT 2048,
+				snapshot_ttl_days INT NOT NULL DEFAULT 30,
+				updated_at BIGINT NOT NULL DEFAULT 0
 			);
 		`,
 	},
 	{
-		Name: "021_board_current",
+		Name: "021_workers",
 		SQL: `
-			CREATE TABLE IF NOT EXISTS board_staff (
-				id               VARCHAR(64) PRIMARY KEY,
-				role_fragments   JSONB NOT NULL DEFAULT '[]',
-				skills           JSONB NOT NULL DEFAULT '[]',
-				model_tier       VARCHAR(20) NOT NULL DEFAULT 'mid',
-				memory_namespace VARCHAR(255) NOT NULL DEFAULT '',
-				self_archiving   JSONB NOT NULL DEFAULT '{}',
-				budget           JSONB NOT NULL DEFAULT '{}',
-				last_changed_in  VARCHAR(36) NOT NULL DEFAULT ''
+			CREATE TABLE IF NOT EXISTS workers (
+				project VARCHAR(255) NOT NULL,
+				name VARCHAR(255) NOT NULL,
+				description TEXT NOT NULL DEFAULT '',
+				system_prompt TEXT NOT NULL DEFAULT '',
+				mcp_config JSONB NOT NULL DEFAULT '{}',
+				image TEXT NOT NULL DEFAULT '',
+				max_instances INT NOT NULL DEFAULT 1,
+				briefing JSONB DEFAULT NULL,
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0,
+				PRIMARY KEY (project, name)
 			);
-			CREATE TABLE IF NOT EXISTS board_event_types (
-				id              VARCHAR(64) PRIMARY KEY,
-				kind            VARCHAR(20) NOT NULL DEFAULT 'lifecycle',
-				description     TEXT NOT NULL DEFAULT '',
-				payload_schema  JSONB NOT NULL DEFAULT '{}',
-				last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
-			);
-			CREATE TABLE IF NOT EXISTS board_subscriptions (
-				id                      VARCHAR(64) PRIMARY KEY,
-				event_type              VARCHAR(64) NOT NULL,
-				reaction_kind           VARCHAR(20) NOT NULL,
-				reaction_ref            VARCHAR(64) NOT NULL,
-				applicability_condition TEXT NOT NULL DEFAULT '',
-				enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
-				last_changed_in         VARCHAR(36) NOT NULL DEFAULT ''
-			);
-			CREATE INDEX IF NOT EXISTS idx_board_subs_event ON board_subscriptions(event_type, enabled);
-			CREATE TABLE IF NOT EXISTS board_pipelines (
-				id              VARCHAR(64) PRIMARY KEY,
-				description     TEXT NOT NULL DEFAULT '',
-				stages          JSONB NOT NULL DEFAULT '[]',
-				last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
-			);
-			CREATE TABLE IF NOT EXISTS board_prompt_fragments (
-				id              VARCHAR(64) PRIMARY KEY,
-				kind            VARCHAR(20) NOT NULL DEFAULT 'role',
-				body            TEXT NOT NULL DEFAULT '',
-				last_changed_in VARCHAR(36) NOT NULL DEFAULT ''
-			);
+			CREATE INDEX IF NOT EXISTS idx_workers_project ON workers(project);
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS worker TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS composed_prompt TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_expires_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_worker ON agent_sessions(worker);
 		`,
 	},
 	{
-		Name: "022_board_collapse",
+		// Append-only labeled memory (spec §7.1). content_tsv is a stored
+		// generated column (no trigger to keep in sync); content_embedding is
+		// added only when pgvector is available, so a plain Postgres still
+		// migrates cleanly and search degrades to keyword-only (§7.6.5).
+		Name: "022_memories",
 		SQL: `
-			DROP TABLE IF EXISTS board_staff;
-			DROP TABLE IF EXISTS board_pipelines;
-			DROP TABLE IF EXISTS board_event_types;
-		`,
-	},
-	{
-		Name: "023_tickets",
-		SQL: `
-			CREATE TABLE IF NOT EXISTS tickets (
-				id            VARCHAR(36) PRIMARY KEY,
-				project_id    VARCHAR(64) NOT NULL DEFAULT '',
-				title         TEXT NOT NULL DEFAULT '',
-				objective     TEXT NOT NULL DEFAULT '',
-				acceptance    TEXT NOT NULL DEFAULT '',
-				status        VARCHAR(20) NOT NULL DEFAULT 'backlog',
-				scope         JSONB NOT NULL DEFAULT '{}',
-				result        JSONB NOT NULL DEFAULT '{}',
-				pending_post  JSONB NOT NULL DEFAULT '{}',
-				published_ref VARCHAR(255) NOT NULL DEFAULT '',
-				depends_on    JSONB NOT NULL DEFAULT '[]',
-				parent        VARCHAR(36) NOT NULL DEFAULT '',
-				attempts      INT NOT NULL DEFAULT 0,
-				board_rev     VARCHAR(36) NOT NULL DEFAULT '',
-				created_at    BIGINT NOT NULL DEFAULT 0,
-				updated_at    BIGINT NOT NULL DEFAULT 0
+			CREATE TABLE IF NOT EXISTS memories (
+				id VARCHAR(36) PRIMARY KEY,
+				project TEXT NOT NULL,
+				labels JSONB NOT NULL DEFAULT '{}',
+				content TEXT NOT NULL DEFAULT '',
+				content_tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english'::regconfig, COALESCE(content, ''))) STORED,
+				created_by_worker TEXT NOT NULL DEFAULT '',
+				created_by_session TEXT NOT NULL DEFAULT '',
+				created_at BIGINT NOT NULL DEFAULT 0
 			);
-			CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
-			CREATE INDEX IF NOT EXISTS idx_tickets_project ON tickets(project_id);
+			CREATE INDEX IF NOT EXISTS idx_memories_project_created ON memories(project, created_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_memories_labels ON memories USING GIN(labels);
+			CREATE INDEX IF NOT EXISTS idx_memories_tsv ON memories USING GIN(content_tsv);
+			DO $$
+			BEGIN
+				IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
+					BEGIN
+						CREATE EXTENSION IF NOT EXISTS vector;
+						EXECUTE 'ALTER TABLE memories ADD COLUMN IF NOT EXISTS content_embedding vector(1536)';
+						EXECUTE 'CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories USING hnsw (content_embedding vector_cosine_ops)';
+					EXCEPTION WHEN OTHERS THEN
+						RAISE NOTICE 'agentdb: pgvector setup skipped (%) — memory search degrades to keyword-only', SQLERRM;
+					END;
+				END IF;
+			END $$;
 		`,
 	},
 	{
-		Name: "024_runs",
+		// The event spine (spec §8.1–§8.4): the append-only event log, the
+		// subscriptions that route it, and one delivery row per
+		// (event, subscription) attempt — the at-least-once idempotency guard
+		// and the job-history spine the UI renders.
+		//
+		// Deliberately absent: a per-subscription `concurrency` column and a
+		// `dropped` delivery status. Both were superseded 2026-07-25 by the
+		// worker-level `max_instances` gate — deliveries for a worker at
+		// capacity stay `pending`, so nothing ever produces `dropped`.
+		Name: "023_events_subscriptions_deliveries",
 		SQL: `
-			CREATE TABLE IF NOT EXISTS runs (
-				id             VARCHAR(36) PRIMARY KEY,
-				seq            BIGINT NOT NULL,
-				scope          VARCHAR(255) NOT NULL DEFAULT '',
-				board_revision VARCHAR(36) NOT NULL DEFAULT '',
-				prompt         TEXT NOT NULL DEFAULT '',
-				output         TEXT NOT NULL DEFAULT '',
-				created_at     BIGINT NOT NULL DEFAULT 0
+			CREATE TABLE IF NOT EXISTS project_events (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				type VARCHAR(255) NOT NULL,
+				text TEXT NOT NULL DEFAULT '',
+				envelope JSONB NOT NULL DEFAULT '{}',
+				occurred_at BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				delivered BOOLEAN NOT NULL DEFAULT FALSE
 			);
-			CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_seq ON runs(seq);
+			CREATE INDEX IF NOT EXISTS idx_project_events_project ON project_events(project);
+			CREATE INDEX IF NOT EXISTS idx_project_events_type ON project_events(type);
+			CREATE INDEX IF NOT EXISTS idx_project_events_undelivered ON project_events(delivered, occurred_at);
+
+			CREATE TABLE IF NOT EXISTS subscriptions (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				event_type VARCHAR(255) NOT NULL,
+				filter JSONB NOT NULL DEFAULT '{}',
+				worker VARCHAR(255) NOT NULL,
+				max_firings_per_hour INT NOT NULL DEFAULT 0,
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_subscriptions_project ON subscriptions(project);
+			CREATE INDEX IF NOT EXISTS idx_subscriptions_enabled ON subscriptions(project, enabled);
+
+			CREATE TABLE IF NOT EXISTS event_deliveries (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				event_id VARCHAR(36) NOT NULL,
+				subscription_id VARCHAR(36) NOT NULL,
+				session_id VARCHAR(36) NOT NULL DEFAULT '',
+				status VARCHAR(30) NOT NULL DEFAULT 'pending',
+				started_at BIGINT NOT NULL DEFAULT 0,
+				ended_at BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0,
+				CONSTRAINT event_deliveries_status_check CHECK (
+					status IN ('pending','running','ok','failed','awaiting_human','rate_limited')
+				)
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_event_deliveries_pair
+				ON event_deliveries(event_id, subscription_id);
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_project ON event_deliveries(project);
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_status ON event_deliveries(project, status);
 		`,
 	},
 	{
-		// §10c I-6: remediation columns — ticket disposition + attempt notes
-		// (the retry learning loop) and run attribution (joinable telemetry).
-		Name: "025_remediation",
+		// Schedules (§8.6), their firing ledger, the shared dispatch gate's
+		// columns, and the durable half of request_human_attention (§9).
+		//
+		// `schedules` is configuration and joins the config log (§15.3):
+		// schedule_create / schedule_update / schedule_delete.
+		//
+		// `schedule_firings` is NOT configuration — it is the occurrence ledger
+		// that makes firing idempotent. The UNIQUE (schedule_id, scheduled_for)
+		// index is the whole mechanism: a crash/retry re-claims the same
+		// occurrence and loses, so it cannot double-fire (§8.6). scheduled_for is
+		// the LOCAL WALL-CLOCK minute, which is also the DST answer — see the
+		// ScheduleFiring doc comment.
+		//
+		// event_deliveries gains `worker` and `schedule_id`. `worker` is
+		// denormalised deliberately: the §8.4 step 7 per-worker gate has to count
+		// and queue deliveries for a worker, and a schedule firing has no
+		// subscription row to join through. The alternative — a synthetic
+		// subscription per schedule — would put rows in the user's routing table
+		// that no human created. `schedule_id` records which schedule a firing
+		// came from; it is empty for event-matched deliveries. Schedule-fired
+		// deliveries put the schedule id in `subscription_id` too, so the existing
+		// UNIQUE (event_id, subscription_id) idempotency index keeps working
+		// unchanged for both dispatch paths.
+		//
+		// agent_sessions gains `attention_requested` — the §9 stamp that §8.2
+		// copies onto the worker.finished envelope; `attention_requests` carries
+		// the optional expiry the sweep turns into human.attention.timeout.
+		Name: "024_schedules_and_attention",
 		SQL: `
-			ALTER TABLE tickets ADD COLUMN IF NOT EXISTS disposition VARCHAR(20) NOT NULL DEFAULT '';
-			ALTER TABLE tickets ADD COLUMN IF NOT EXISTS attempt_notes JSONB NOT NULL DEFAULT '[]';
-			ALTER TABLE runs ADD COLUMN IF NOT EXISTS ticket_id VARCHAR(36) NOT NULL DEFAULT '';
-			ALTER TABLE runs ADD COLUMN IF NOT EXISTS session_id VARCHAR(36) NOT NULL DEFAULT '';
+			CREATE TABLE IF NOT EXISTS schedules (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				worker VARCHAR(255) NOT NULL,
+				cron VARCHAR(255) NOT NULL,
+				input TEXT NOT NULL DEFAULT '',
+				enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				updated_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_schedules_project ON schedules(project);
+			CREATE INDEX IF NOT EXISTS idx_schedules_enabled ON schedules(enabled);
+
+			CREATE TABLE IF NOT EXISTS schedule_firings (
+				id VARCHAR(36) PRIMARY KEY,
+				schedule_id VARCHAR(36) NOT NULL,
+				scheduled_for VARCHAR(20) NOT NULL,
+				project VARCHAR(255) NOT NULL,
+				event_id VARCHAR(36) NOT NULL DEFAULT '',
+				fired_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_firings_occurrence
+				ON schedule_firings(schedule_id, scheduled_for);
+			CREATE INDEX IF NOT EXISTS idx_schedule_firings_project ON schedule_firings(project);
+
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS worker VARCHAR(255) NOT NULL DEFAULT '';
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS schedule_id VARCHAR(36) NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_worker
+				ON event_deliveries(project, worker, status);
+
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS attention_requested BOOLEAN NOT NULL DEFAULT FALSE;
+
+			CREATE TABLE IF NOT EXISTS attention_requests (
+				id VARCHAR(36) PRIMARY KEY,
+				project VARCHAR(255) NOT NULL,
+				session_id VARCHAR(36) NOT NULL,
+				worker VARCHAR(255) NOT NULL DEFAULT '',
+				message TEXT NOT NULL DEFAULT '',
+				session_url TEXT NOT NULL DEFAULT '',
+				channel VARCHAR(30) NOT NULL DEFAULT '',
+				delivered BOOLEAN NOT NULL DEFAULT FALSE,
+				expires_at BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL DEFAULT 0,
+				answered_at BIGINT NOT NULL DEFAULT 0,
+				timed_out_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_attention_requests_project ON attention_requests(project);
+			CREATE INDEX IF NOT EXISTS idx_attention_requests_session ON attention_requests(session_id);
+			CREATE INDEX IF NOT EXISTS idx_attention_requests_open
+				ON attention_requests(expires_at)
+				WHERE answered_at = 0 AND timed_out_at = 0;
+		`,
+	},
+	{
+		// Named, versioned, labeled images (§13) and the columns §14's skills
+		// need (I3 builds the skill store and tools on top of them).
+		//
+		// The §13 catalogue is not a new table: it is the existing
+		// agent_custom_images catalogue given an identity (§13.6). Its project
+		// namespace is the existing `customer` column — one namespace column,
+		// not two that can drift; J1 already treats it as the project when it
+		// writes `image_create` config events.
+		//
+		// version 0 means "pre-§13 row", written by the legacy latest-wins
+		// UpsertCustomImage path, so the unique index is PARTIAL: legacy rows
+		// (which may repeat a name across visibility scopes) keep working, while
+		// every catalogue row is uniquely (customer, name, version). That index
+		// is also the concurrency guard for version allocation — two racing
+		// burns of the same name collide on it and one retries, which is what
+		// keeps versions gap-free.
+		//
+		// reaped_at is the §13.7 tombstone: the snapshot_ttl_days reaper (B4)
+		// deletes bytes and stamps the row, so the catalogue never points at
+		// bytes that are gone — resolution fails loudly instead.
+		//
+		// The agent_skills half is columns ONLY (I3 owns the store and the
+		// tools). Both tables reuse their existing `source_session_id` column as
+		// §13.2/§14's created_by_session provenance rather than growing a twin.
+		Name: "025_image_versions_and_skill_columns",
+		SQL: `
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 0;
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '{}';
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS created_by_worker TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS reaped_at BIGINT NOT NULL DEFAULT 0;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_custom_images_version
+				ON agent_custom_images(customer, name, version) WHERE version > 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_custom_images_catalogue
+				ON agent_custom_images(customer, created_at DESC, version DESC) WHERE version > 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_custom_images_labels
+				ON agent_custom_images USING GIN(labels);
+
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS labels JSONB NOT NULL DEFAULT '{}';
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS markdown TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS install_sh TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS created_by_worker TEXT NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_agent_skills_labels ON agent_skills USING GIN(labels);
+		`,
+	},
+	{
+		// The config log (§15) — append-only record of every configuration
+		// mutation. payload is the FULL new state, never a diff. Nothing on the
+		// hot path reads this table; the ordinary tables stay the projections.
+		Name: "026_config_events",
+		SQL: `
+			CREATE TABLE IF NOT EXISTS config_events (
+				id VARCHAR(36) PRIMARY KEY,
+				project TEXT NOT NULL DEFAULT '',
+				actor_worker TEXT NOT NULL DEFAULT '',
+				actor_session TEXT NOT NULL DEFAULT '',
+				action TEXT NOT NULL,
+				payload JSONB NOT NULL DEFAULT '{}',
+				rationale TEXT NOT NULL DEFAULT '',
+				created_at BIGINT NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_config_events_project ON config_events(project);
+			CREATE INDEX IF NOT EXISTS idx_config_events_project_created ON config_events(project, created_at DESC, id DESC);
+			CREATE INDEX IF NOT EXISTS idx_config_events_project_action ON config_events(project, action);
+		`,
+	},
+	{
+		// J2 + B4. Two things the fold (§15.6) and the snapshot reaper (§5, §13.7)
+		// need.
+		//
+		//  1. config_events.seq — a monotonic per-project sequence. §15.6 folds in
+		//     `created_at`/`id` order, but created_at is milliseconds and id is a
+		//     RANDOM uuid, so two writes to the same key inside one millisecond
+		//     fold in an arbitrary order and the fold can disagree with the
+		//     projection it exists to reproduce. seq is allocated inside the
+		//     config-event transaction, so seq order IS commit order. The unique
+		//     index — not the read of MAX(seq) — is what makes allocation correct
+		//     under concurrency; the loser of a race re-reads and retries, exactly
+		//     as image-version allocation does. Existing rows are backfilled
+		//     deterministically by (created_at, id): the best order available for
+		//     history written before the column existed.
+		//
+		//  2. agent_custom_images.expires_at / last_resumed_at — the §5 snapshot
+		//     metadata tuple {source session, created_at, expiry, last_resumed_at}.
+		//     "source session" is the pre-existing source_session_id column and
+		//     created_at already exists, so only these two are new. expires_at is
+		//     stamped at burn time from the project's snapshot_ttl_days and is the
+		//     promise the reaper honours; 0 means never — both "the project set 0"
+		//     and pre-B4 rows, which were burned under no TTL promise at all.
+		Name: "027_config_event_seq_and_snapshot_ttl",
+		SQL: `
+			ALTER TABLE config_events ADD COLUMN IF NOT EXISTS seq BIGINT NOT NULL DEFAULT 0;
+			UPDATE config_events ce SET seq = sub.rn
+				FROM (
+					SELECT id, row_number() OVER (PARTITION BY project ORDER BY created_at, id) AS rn
+					FROM config_events
+				) sub
+				WHERE ce.id = sub.id AND ce.seq = 0;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_config_events_project_seq ON config_events(project, seq);
+
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS expires_at BIGINT NOT NULL DEFAULT 0;
+			ALTER TABLE agent_custom_images ADD COLUMN IF NOT EXISTS last_resumed_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_custom_images_expiry
+				ON agent_custom_images(customer, expires_at) WHERE version > 0 AND reaped_at = 0;
+		`,
+	},
+	{
+		// I3. Migration 025 gave agent_skills its §14 columns; this adds the one
+		// column those columns turned out to need, and the catalogue index.
+		//
+		// `revision` is the append ordinal per (project, name). §14.1 gives a
+		// skill no version and this does not add one — nothing resolves by
+		// revision and there is no `name:revision` reference form. It exists
+		// because "newest wins" needed a deterministic meaning: created_at on
+		// this table is SECONDS and id is a random uuid, so two teachings of one
+		// skill inside a second would otherwise order by coin toss and
+		// `skill_get` could hand back the superseded document.
+		//
+		// The unique index — not the read of MAX(revision) — is what makes
+		// allocation correct under concurrency; a racing writer loses the insert
+		// and retries, exactly as image-version allocation does. Both indexes
+		// are partial on the §14 discriminator (markdown <> ''), so the legacy
+		// host-built population neither collides with them nor bloats them.
+		Name: "028_skill_revisions",
+		SQL: `
+			ALTER TABLE agent_skills ADD COLUMN IF NOT EXISTS revision INT NOT NULL DEFAULT 0;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_skills_revision
+				ON agent_skills(customer, name, revision) WHERE markdown <> '';
+			CREATE INDEX IF NOT EXISTS idx_agent_skills_catalogue
+				ON agent_skills(customer, created_at DESC, name) WHERE markdown <> '';
+		`,
+	},
+	{
+		// The router's two hot sweeps (E3). No new columns — everything §8.4
+		// needs already exists (migration 021 added `lease_expires_at`, 023/024
+		// the delivery tuple) — only the indexes those sweeps run every poll:
+		//
+		//  1. expired-lease sessions. Partial on `lease_expires_at > 0` because
+		//     the overwhelming majority of session rows hold no lease at all,
+		//     and the reaper only ever asks about the ones that do.
+		//  2. queued deliveries per project, which is both the FIFO drain
+		//     (§8.4 step 7) and the running-job counts the capacity gates read.
+		Name: "029_router_sweeps",
+		SQL: `
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_lease
+				ON agent_sessions(lease_expires_at) WHERE lease_expires_at > 0;
+			CREATE INDEX IF NOT EXISTS idx_event_deliveries_project_status
+				ON event_deliveries(project, status, created_at);
+		`,
+	},
+	{
+		// J3. The `config.changed` watermark (§15.4, §15.8).
+		//
+		// Emission happens AFTER the config-event transaction commits, never
+		// inside it, and the spec asks for at-least-once: "a crash between
+		// commit and emit is repaired by a retry rather than by a lost event".
+		// `emitted_at` is what makes the repair queue a cheap indexed read
+		// instead of a scan that re-derives emission state per row.
+		//
+		// It is the only mutable column on config_events, and it records
+		// nothing anybody decided — the same kind of runtime watermark as
+		// project_events.delivered. The append-only invariant of §15.1 is about
+		// the RECORD, which is never rewritten and never deleted.
+		//
+		// Backfill: rows written before this landed are stamped with their own
+		// created_at rather than 0. They pre-date the emitter entirely, so
+		// leaving them unstamped would make the first sweep after deploy
+		// announce the project's whole history as if it had just happened.
+		Name: "030_config_event_emitted",
+		SQL: `
+			ALTER TABLE config_events ADD COLUMN IF NOT EXISTS emitted_at BIGINT NOT NULL DEFAULT 0;
+			UPDATE config_events SET emitted_at = created_at WHERE emitted_at = 0;
+			CREATE INDEX IF NOT EXISTS idx_config_events_unemitted
+				ON config_events(created_at) WHERE emitted_at = 0;
+		`,
+	},
+	{
+		// The provision-failure streak (§8.6). 53 abandoned `* * * * *` rows,
+		// each failing to provision every minute, between them held every host
+		// port and made the whole stack unable to start anything — for as long
+		// as it took a human to notice and delete the rows.
+		//
+		// §8.6 already disables a schedule whose worker is gone. A schedule that
+		// can never provision is the same class of problem, so it gets the same
+		// answer, with a counter to make it bounded rather than clever.
+		//
+		// Both columns are RUNTIME STATE on a configuration row, like
+		// project_events.delivered: they record an observation, not a decision.
+		// The decision they eventually cause — the disable — goes through
+		// DisableSchedule and lands in the config log with its rationale.
+		//
+		// DEFAULT here rather than a gorm `default:` tag, per the store
+		// convention: GORM substitutes a declared default for a zero value on
+		// write, which would make a reset-to-0 unwritable.
+		Name: "031_schedule_provision_failures",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS provision_failures INT NOT NULL DEFAULT 0;
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_provision_error TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// Why a session failed to start. agentd provisions in a background
+		// goroutine and used to keep only `status = "error"` from a failure;
+		// the reason — including the §13 pointer diagnostic that names the
+		// setting, its value, the project and which interpretation the string
+		// was given — was discarded at the `if err != nil` and never logged.
+		// The caller's next message then took the no-instance-and-no-snapshot
+		// path and was told the session was LOST and should be re-created.
+		// Three engineers misdiagnosed that same message in one day.
+		//
+		// A column rather than a key in `metadata`, for the same reason
+		// migration 031 gave schedules `last_provision_error` its own column:
+		// `metadata` is a host-writable grab-bag that stores replace wholesale
+		// (Save writes the whole jsonb), so a reserved key there is one host
+		// write away from vanishing, and cannot be queried or indexed. This is
+		// runtime state on a runtime row — an observation, not a decision — so
+		// it writes no config event.
+		//
+		// DEFAULT here rather than a gorm `default:` tag, per the store
+		// convention: GORM substitutes a declared default for a zero value on
+		// write, which would make the clear-on-success unwritable — and a
+		// reason that outlives its cause is worse than no reason at all.
+		Name: "032_session_create_error",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS create_error TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// Artifact metadata becomes durable (extension/dbartifacts). The
+		// artifacts.Artifact interface type carries a free-form Meta map — today
+		// only Meta["dirDigest"], the content digest of a directory artifact's
+		// entries — and this table had nowhere to put it, so a durable index
+		// would have silently dropped it on every dir capture.
+		//
+		// A column, not a key in some other jsonb blob, because it is the only
+		// field of the portable type without a home here; DEFAULT lives in this
+		// SQL rather than a gorm `default:` tag per the store convention.
+		//
+		// The (session_id, file_path) index backs the dedup key the
+		// ArtifactStore contract is defined on: every Save is a lookup on that
+		// pair. Deliberately NOT unique — the table predates this change and may
+		// already hold duplicate pairs written by the legacy CreateArtifact
+		// path, so a unique index could fail the migration at boot on a live
+		// database. Save still de-dups: it reads the pair inside its
+		// transaction. See docs/06-artifacts.md.
+		Name: "033_agent_artifacts_meta",
+		SQL: `
+			ALTER TABLE agent_artifacts ADD COLUMN IF NOT EXISTS meta JSONB NOT NULL DEFAULT '{}';
+			CREATE INDEX IF NOT EXISTS idx_agent_artifacts_session_path ON agent_artifacts(session_id, file_path);
+			CREATE INDEX IF NOT EXISTS idx_agent_artifacts_customer ON agent_artifacts(customer);
+		`,
+	},
+	{
+		// Frozen workers (F1, docs/product/10-topology-library.md §3): a frozen
+		// worker's configuration cannot be changed by other workers — the core
+		// MCP server refuses worker_update / worker_prompt_write against it —
+		// only by humans through the JWT-guarded HTTP API. The causal-isolation
+		// primitive for measurement instruments.
+		//
+		// DEFAULT here rather than a gorm `default:` tag, per the store
+		// convention (see Worker.Enabled): GORM omits zero-valued fields that
+		// declare a default, which would make `frozen: false` unwritable — an
+		// unfreeze that silently persisted as frozen would lock a worker away
+		// from the very humans the flag exists to reserve it for.
+		Name: "034_workers_frozen",
+		SQL: `
+			ALTER TABLE workers ADD COLUMN IF NOT EXISTS frozen BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+	},
+	{
+		// Session names (T6 of design/2026-08-06-embeddable-agent-orange.md):
+		// the stable handle an embedding application addresses a session by,
+		// because it cannot know a uuid it did not mint and should not have to
+		// store one to render an iframe.
+		//
+		// NULLABLE with no DEFAULT, so the millions of existing rows are simply
+		// unnamed rather than all claiming ''. That leaves two spellings of "no
+		// name" in one column — NULL for everything older than this migration,
+		// '' for everything GORM writes after it — and the index clause has to
+		// exclude both. It cannot be `WHERE name IS NOT NULL` alone: the second
+		// unnamed session created after this lands would collide with the
+		// first, which is every console chat in the project.
+		//
+		// The index is what actually enforces uniqueness. agentdb.CreateSession
+		// maps its violation to ErrSessionNameTaken; it does NOT pre-check with
+		// a SELECT, because two racing creates of the same name would both pass
+		// such a check (same reasoning as the image-version index, migration
+		// 025).
+		//
+		// (customer, name) and not (name): names are project-scoped, per P5 —
+		// two projects may each have a `hypothesis-a` and neither can see the
+		// other's.
+		Name: "035_session_names",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS name TEXT;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_name
+				ON agent_sessions(customer, name) WHERE name IS NOT NULL AND name <> '';
+		`,
+	},
+	{
+		// Session-mode schedules (T9 of
+		// design/2026-08-06-embeddable-agent-orange.md): a schedule may target a
+		// long-lived NAMED session instead of a worker, and deliver its `input`
+		// to that session as the next message rather than starting a fresh job
+		// in a fresh container.
+		//
+		// NOT NULL DEFAULT '' rather than nullable — the opposite of migration
+		// 035's `name`, and for a reason. `worker` beside it is already NOT
+		// NULL, and the mutual exclusion the scheduler branches on reads
+		// "exactly one of these two strings is non-empty" (agentdb.Schedule,
+		// validateSchedule). A nullable column would give that rule three states
+		// to mean "not this mode" instead of one, and there is no partial index
+		// here that a NULL would buy anything for: nothing ever looks a schedule
+		// up BY its target session.
+		//
+		// The DEFAULT is on the column and NOT on the gorm tag, per the
+		// convention stated on agentdb.Schedule: a declared gorm default makes
+		// GORM omit the zero value on write, which is how a field ends up
+		// unwritable. Here the DDL default only serves the existing worker-mode
+		// rows this ALTER backfills.
+		Name: "036_schedule_target_session",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS target_session TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// Why a job failed (RD18/RD20, and the same column RD15 asks for — there
+		// is exactly one). dispatch.go has always known the reason ("host port
+		// pool is exhausted", "worker not found") and only ever logged it, so
+		// the honest answer to "why did my worker fail?" was `docker compose
+		// logs agentd`. The delivery row now carries it out to the UI.
+		//
+		// NOT NULL DEFAULT '' in the DDL rather than a gorm `default:` tag, per
+		// the store convention: '' is meaningful (no reason recorded) and a
+		// gorm default would make it unwritable.
+		Name: "037_event_deliveries_failure_reason",
+		SQL: `
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// A total order for the transcript (RD16). `created_at` is
+		// `time.Now().Unix()` — SECONDS — and the id is a random uuid, so two
+		// queries written inside one second replayed in whatever order Postgres
+		// happened to return: a transcript could render out of order, and a
+		// replay could disagree with what the user watched live. This is the
+		// hazard migration 028 fixed for skills with `revision`; the transcript
+		// never got the same treatment.
+		//
+		// The ordinal comes from a SEQUENCE rather than
+		// `MAX(ordinal)+1 WHERE session_id = ...` because the latter is a
+		// read-then-write: two concurrent inserts read the same maximum and tie,
+		// which is the defect again in a narrower window. nextval is atomic, and
+		// a global (not per-session) counter is still a correct per-session
+		// order — a subsequence of a monotonic sequence is monotonic. Gaps and
+		// values shared across sessions are meaningless here; only "later insert
+		// ⇒ larger ordinal, within a session" is claimed.
+		//
+		// # Backfill
+		//
+		// Existing rows keep their second-resolution `created_at` and are
+		// numbered from it, globally, ordered by (created_at, id). Two legacy
+		// rows written inside one second therefore get *some* order — the same
+		// arbitrary tie-break the reader used to make afresh on every query,
+		// except now it is decided once and frozen in a column. That is strictly
+		// better than today: legacy same-second ties become STABLE (a replay
+		// always agrees with the previous replay) even though they may not be
+		// the true write order, which is information the database never had and
+		// cannot recover. Rows written after this migration are exact.
+		//
+		// Mixed pre/post rows sort correctly by construction: setval leaves the
+		// sequence above every backfilled value, so any new row in a session
+		// outranks all of that session's legacy rows — which is right, it was
+		// written later.
+		//
+		// NOT NULL DEFAULT 0 in the DDL, never a gorm `default:` tag: the insert
+		// supplies the value explicitly and a gorm default would fight it.
+		Name: "038_agent_query_events_ordinal",
+		SQL: `
+			ALTER TABLE agent_query_events ADD COLUMN IF NOT EXISTS ordinal BIGINT NOT NULL DEFAULT 0;
+			CREATE SEQUENCE IF NOT EXISTS agent_query_events_ordinal_seq AS BIGINT START WITH 1;
+			WITH ranked AS (
+				SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
+				FROM agent_query_events
+			)
+			UPDATE agent_query_events AS q
+				SET ordinal = ranked.rn
+				FROM ranked
+				WHERE q.id = ranked.id AND q.ordinal = 0;
+			SELECT setval('agent_query_events_ordinal_seq',
+				GREATEST((SELECT COALESCE(MAX(ordinal), 0) FROM agent_query_events), 1));
+			CREATE INDEX IF NOT EXISTS idx_agent_query_events_session_ordinal
+				ON agent_query_events(session_id, ordinal);
+		`,
+	},
+	{
+		// D5 — the in-flight turn, written down so a RESTARTED agentd can still
+		// answer "is a turn running, and under what id?".
+		//
+		// Two ids, because there are two id spaces and both are needed:
+		//   active_query_id         — the runner's `q-<session>-<n>`, the key
+		//                             agent_query_events rows are written under
+		//                             and the id a client reconnects WITH.
+		//   active_sandbox_query_id — the uuid the in-image agent minted for the
+		//                             same turn, which is the key its in-RAM
+		//                             replay buffer is stored under and therefore
+		//                             the only id that can ATTACH to it.
+		// Held in process memory as well; the columns exist for exactly the case
+		// that erases memory (RD6's crash), so they are runtime state on the
+		// session row like lease_expires_at — no config event (§15.3 rule 3).
+		Name: "039_agent_sessions_active_query",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_query_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_sandbox_query_id TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// The config log becomes append-only IN THE DATABASE (RD13).
+		//
+		// Until now the guarantee was enforced only in tests:
+		// InstallConfigEventGuard is opt-in, every caller is a test, agentd
+		// states in main.go that it never arms it, `config_events` is not even
+		// in the guarded-table set, and `Store.DB()` is exported. So the record
+		// the doctrine work treats as the truth about what changed was
+		// protected by convention and code review — and a convention is not a
+		// promise you can make to a user about an audit log.
+		//
+		// # Why to_jsonb(row) minus the mutable key, not a column list
+		//
+		// Comparing named columns would silently stop covering any column added
+		// later: migration 040 adds a field, nobody remembers the trigger, and
+		// the new column is quietly mutable forever — the exact silent-success
+		// shape this work exists to kill. Diffing the whole row as jsonb with
+		// `emitted_at` removed inverts the default: everything is immutable
+		// unless the trigger is deliberately taught otherwise.
+		//
+		// `emitted_at` is the one legal mutation (migration 030): it is not part
+		// of the record, it is the watermark saying the record's
+		// `config.changed` event has been appended.
+		//
+		// # What this does NOT stop
+		//
+		// A superuser can ALTER TABLE ... DISABLE TRIGGER, and TRUNCATE does not
+		// fire row triggers. This is a guardrail against the application (and
+		// its tests, and a hand-typed UPDATE at a psql prompt), not a defence
+		// against someone who owns the database. The deliberate escape hatch is
+		// the `agentdb.allow_config_events_purge` setting, which
+		// Store.PurgeConfigEvents sets for the length of one transaction — one
+		// greppable place, rather than a trigger nobody can work with. A future
+		// migration that must rewrite this table has to set it too, which is the
+		// intended amount of friction.
+		Name: "040_config_events_append_only",
+		SQL: `
+			CREATE OR REPLACE FUNCTION agentdb_config_events_append_only()
+			RETURNS trigger AS $$
+			BEGIN
+				IF current_setting('agentdb.allow_config_events_purge', true) = 'on' THEN
+					IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+					RETURN NEW;
+				END IF;
+				IF TG_OP = 'DELETE' THEN
+					RAISE EXCEPTION
+						'config_events is append-only: DELETE of % is refused (agentdb migration 039)', OLD.id
+						USING ERRCODE = 'restrict_violation';
+				END IF;
+				IF (to_jsonb(NEW) - 'emitted_at') IS DISTINCT FROM (to_jsonb(OLD) - 'emitted_at') THEN
+					RAISE EXCEPTION
+						'config_events is append-only: only emitted_at may change on % (agentdb migration 039)', OLD.id
+						USING ERRCODE = 'restrict_violation';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_config_events_append_only ON config_events;
+			CREATE TRIGGER trg_config_events_append_only
+				BEFORE UPDATE OR DELETE ON config_events
+				FOR EACH ROW EXECUTE FUNCTION agentdb_config_events_append_only();
+		`,
+	},
+	{
+		// Sessions are SOFT-deleted from here on (doc 22 RD5, work-plan D1).
+		//
+		// `agent_query_events.session_id` cascades (migration 013, and the same
+		// for agent_messages and agent_artifacts), and DELETE /agent/session/{id}
+		// was a hard row delete fired from an unguarded icon button. One click
+		// destroyed the whole conversation, irreversibly, with no tombstone and
+		// no export — which is why the 2026-07-28 calibration run found
+		// `agent_query_events` empty for every session. `deleted_at` breaks that:
+		// the row survives, so the cascade never fires and the transcript stays.
+		//
+		// SECONDS since the epoch (every other timestamp on this table is
+		// `time.Now().Unix()`), 0 while the session is live. NOT NULL DEFAULT 0
+		// in the DDL rather than a gorm `default:` tag, per the store convention
+		// — 0 is a meaningful value here and a declared gorm default would make
+		// GORM omit it on write.
+		//
+		// # Why the name index is narrowed rather than left alone
+		//
+		// Migration 035 made (customer, name) unique for every named row. With a
+		// tombstone that never goes away — the purge is deliberately not built,
+		// see the work plan's G3 — an un-narrowed index would let a deleted
+		// session hold its name FOREVER, against a row nothing lists and nobody
+		// can see. The embedding application that named it (`hypothesis-a`) would
+		// get "name already taken" from an invisible ghost, with no recovery
+		// short of SQL. Adding `deleted_at = 0` frees the name at delete time.
+		//
+		// The cost is stated rather than hidden: a stale URL for a deleted
+		// session's name, once that name is reused, resolves to the NEW session
+		// instead of 404ing. That takes two deliberate human acts (delete, then
+		// re-create under the same name) inside one project, and Session.Name's
+		// immutability promise — that a name never moves while its session lives
+		// — is untouched.
+		//
+		// The tombstone KEEPS its `name` value: an operator reading the row later
+		// (or the purge G3 may authorise) can still see what it was called.
+		Name: "041_agent_sessions_deleted_at",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS deleted_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_deleted_at ON agent_sessions(deleted_at);
+			DROP INDEX IF EXISTS idx_agent_sessions_name;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_name
+				ON agent_sessions(customer, name)
+				WHERE name IS NOT NULL AND name <> '' AND deleted_at = 0;
+		`,
+	},
+	{
+		// A missed schedule occurrence stops being indistinguishable from one
+		// that was never scheduled (RD11).
+		//
+		// `schedules.last_evaluated` is the per-schedule WATERMARK: the
+		// wall-clock minute a tick last looked at this row. It is what lets the
+		// scheduler tell "nothing was due" from "nobody was running", which is
+		// the whole finding — before it, an hour of downtime left no firing row,
+		// no event, no delivery and nothing saying sixty occurrences went by.
+		//
+		// `schedule_firings.missed` marks an occurrence RECORDED AFTER THE FACT:
+		// a row that exists to say "this minute came and went unevaluated", not
+		// to say a job ran. The catch-up never starts a job — §8.6's skip-missed
+		// posture is unchanged and deliberate (see scheduler.go) — so the row and
+		// the `schedule.missed` event are the entire remedy.
+		//
+		// Both are runtime state, not configuration: no config event, exactly
+		// like `provision_failures` (migration 031) and the router's `delivered`
+		// watermark. Both are NOT NULL with a DDL default and NO gorm `default:`
+		// tag, per the convention on agentdb.Schedule — '' and false are the
+		// meaningful zero values here (never evaluated; a real firing).
+		Name: "042_schedule_watermark",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_evaluated TEXT NOT NULL DEFAULT '';
+			ALTER TABLE schedule_firings ADD COLUMN IF NOT EXISTS missed BOOLEAN NOT NULL DEFAULT FALSE;
 		`,
 	},
 }
 
+// migrationLockKey is the Postgres advisory-lock key that serialises migration
+// application. Every process that migrates this schema must compute the same
+// number, so it is derived deterministically from a fixed string rather than
+// picked by hand — and TestMigrationLockKeyIsStable pins the value, because a
+// key that silently changed between two agentd versions would mean two booting
+// replicas no longer exclude each other and the race is back.
+//
+// Masked to 63 bits so the key is positive: it keeps the halves that appear in
+// pg_locks (classid = key>>32, objid = key) straightforward to reason about.
+var migrationLockKey = func() int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("agentdb:migrations"))
+	return int64(h.Sum64() & 0x7fffffffffffffff)
+}()
+
+// migrationLockWait bounds how long a booting process will wait for a peer that
+// is mid-migration. Generous, because the wait is legitimate — the peer is
+// applying DDL to the same database — but finite, because a boot that hangs
+// forever with no output is harder to diagnose than one that fails saying why.
+const migrationLockWait = 5 * time.Minute
+
 // runMigrations creates the tracking table and applies pending migrations.
-func runMigrations(gdb *gorm.DB) error {
+func runMigrations(gdb *gorm.DB) error { return applyMigrations(gdb, agentMigrations) }
+
+// applyMigrations is runMigrations with the list injectable, so tests can drive
+// it with a deliberately broken migration.
+//
+// # Why the whole read-and-apply is under a lock
+//
+// The original shape was: create the tracking table, SELECT the applied set,
+// then apply whatever is missing. With no lock anywhere, two processes starting
+// together both read the same set, both conclude the same migration is pending,
+// and both run it. The loser dies on
+// `duplicate key value violates unique constraint "agentdb_migrations_pkey"`
+// and Open fails. That is not theoretical: `go test ./agentdb/... ./cmd/agentd/...`
+// runs one binary per package in parallel against one database, and it bit us
+// twice in a single day (migrations 032 and 033), both times on a new
+// migration's very first application. In production the same race is two agentd
+// replicas booting together, one of which crashes on start.
+//
+// `CREATE TABLE IF NOT EXISTS` is inside the locked region too, not before it.
+// IF NOT EXISTS is not a concurrency primitive: two sessions that both find the
+// table absent both proceed to create it, and the loser fails on
+// `pg_type_typname_nsp_index`. That was the *first* error the reproduction
+// produced, before it ever reached the pkey collision.
+//
+// # Why a session lock and not pg_advisory_xact_lock
+//
+// pg_advisory_xact_lock releases at the end of its transaction, so covering the
+// read-and-apply with one would mean wrapping every migration in a single
+// transaction. That changes failure semantics for the worse: today a failure in
+// migration 30 leaves 1–29 committed and applied, and the next boot resumes
+// from there; under one big transaction the failure would roll all of them back
+// and every boot would redo the lot. So: a session-level lock, held across the
+// whole loop, with each migration keeping its own transaction.
+//
+// # Why the loser applies nothing rather than failing
+//
+// pg_advisory_lock blocks rather than erroring, and the applied set is read
+// *after* acquisition. The loser therefore wakes to the winner's committed
+// state, finds nothing pending, and boots. That is exactly what a starting
+// replica wants — succeed, having done no work — and it is why moving the SELECT
+// inside the lock matters as much as taking the lock at all. Serialising only
+// the INSERT would leave the loser re-running the migration body.
+//
+// # Why everything runs on one pinned connection
+//
+// A session-level advisory lock belongs to the backend session that took it, so
+// it has to be taken on a specific *sql.Conn rather than on the pool — ask the
+// pool to unlock and it may hand back a different connection, leaving the lock
+// held forever. Having pinned one connection for the lock, the migrations run on
+// that same connection rather than borrowing more from the pool: a pool capped
+// at one connection would otherwise deadlock against its own lock holder, which
+// is a worse boot failure than the race. One connection, one session, one lock.
+func applyMigrations(gdb *gorm.DB, migrations []migration) error {
 	ctx := context.Background()
 	sqlDB, err := gdb.DB()
 	if err != nil {
 		return fmt.Errorf("agentdb: get sql.DB: %w", err)
 	}
 
-	_, err = sqlDB.ExecContext(ctx, `
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("agentdb: migration connection: %w", err)
+	}
+	// Registered before the unlock below, so it runs after it: release the
+	// lock, then hand the connection back.
+	defer conn.Close()
+
+	if usesAdvisoryLocks(gdb) {
+		if err := lockMigrations(ctx, conn); err != nil {
+			return err
+		}
+		// Runs on every exit including a migration that errors mid-way and a
+		// panic out of the loop. A leaked session-level advisory lock would
+		// wedge every subsequent boot on this database — a permanent outage
+		// traded for an intermittent race, which is no trade at all.
+		defer unlockMigrations(conn)
+	}
+
+	_, err = conn.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS agentdb_migrations (
 			name VARCHAR(255) PRIMARY KEY,
 			applied_at TIMESTAMPTZ DEFAULT NOW()
@@ -389,24 +1114,29 @@ func runMigrations(gdb *gorm.DB) error {
 	}
 
 	applied := map[string]bool{}
-	rows, err := sqlDB.QueryContext(ctx, "SELECT name FROM agentdb_migrations")
+	rows, err := conn.QueryContext(ctx, "SELECT name FROM agentdb_migrations")
 	if err != nil {
 		return fmt.Errorf("agentdb: query applied migrations: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
+			rows.Close()
 			return err
 		}
 		applied[name] = true
 	}
+	err = rows.Err()
+	rows.Close() // explicit: the pinned connection is unusable until it closes
+	if err != nil {
+		return fmt.Errorf("agentdb: read applied migrations: %w", err)
+	}
 
-	for _, m := range agentMigrations {
+	for _, m := range migrations {
 		if applied[m.Name] {
 			continue
 		}
-		if err := runOneMigration(sqlDB, m); err != nil {
+		if err := runOneMigration(ctx, conn, m); err != nil {
 			return fmt.Errorf("agentdb: migration %s failed: %w", m.Name, err)
 		}
 		log.Printf("[agentdb] applied migration %s", m.Name)
@@ -414,17 +1144,83 @@ func runMigrations(gdb *gorm.DB) error {
 	return nil
 }
 
-func runOneMigration(db *sql.DB, m migration) error {
-	tx, err := db.Begin()
+// usesAdvisoryLocks is the dialect gate: only Postgres has advisory locks.
+//
+// sqlite has no equivalent and needs none. The sqlite stores in this repo are
+// per-test temp files opened by a single process — there is no second writer to
+// exclude — and sqlite serialises the writers it does have at the file level.
+// Reaching for pg_advisory_lock there would fail on a function sqlite has never
+// heard of, and breaking every sqlite-backed test would be a worse outcome than
+// the race this is fixing.
+//
+// Today the gate is purely defensive: Open() constructs a Postgres dialector and
+// is the only caller of runMigrations, and the tracking table's own
+// `TIMESTAMPTZ DEFAULT NOW()` is not sqlite-parseable anyway. It is here so that
+// if a sqlite-backed caller ever does appear, it meets the old unlocked path
+// rather than an unknown-function error — and so the reason is written down.
+//
+// gorm.DB embeds *gorm.Config, so Dialector is a promoted field and reading it
+// off a zero-value DB panics — hence the Config check before the Dialector one.
+func usesAdvisoryLocks(gdb *gorm.DB) bool {
+	if gdb == nil || gdb.Config == nil || gdb.Dialector == nil {
+		return false
+	}
+	return gdb.Dialector.Name() == "postgres"
+}
+
+// lockMigrations takes the exclusive advisory lock on the given pinned
+// connection, blocking (up to migrationLockWait) if a peer holds it.
+func lockMigrations(ctx context.Context, conn *sql.Conn) error {
+	// Try first so the common case (nobody else booting) costs one round trip
+	// and says nothing, and the uncommon case explains the pause in the log
+	// instead of looking like a hang.
+	var got bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", migrationLockKey).Scan(&got); err != nil {
+		return fmt.Errorf("agentdb: acquire migration lock: %w", err)
+	}
+	if got {
+		return nil
+	}
+
+	log.Printf("[agentdb] another process is migrating this database; waiting up to %s", migrationLockWait)
+	waitCtx, cancel := context.WithTimeout(ctx, migrationLockWait)
+	defer cancel()
+	if _, err := conn.ExecContext(waitCtx, "SELECT pg_advisory_lock($1)", migrationLockKey); err != nil {
+		return fmt.Errorf("agentdb: wait for migration lock (a peer has held it for over %s): %w", migrationLockWait, err)
+	}
+	log.Printf("[agentdb] migration lock acquired")
+	return nil
+}
+
+// unlockMigrations releases the advisory lock, and makes sure the connection
+// cannot go back into the pool still holding it.
+func unlockMigrations(conn *sql.Conn) {
+	// context.Background(), never a caller's: a cancelled context must not be
+	// able to skip the release.
+	if _, err := conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", migrationLockKey); err != nil {
+		// The unlock did not land. Either the backend is already gone — in
+		// which case Postgres has released every lock it held — or the session
+		// is in a state we cannot reason about. Returning driver.ErrBadConn
+		// from Raw marks the *sql.Conn bad so Close destroys the backend
+		// session instead of returning it to the pool still locked. Ending the
+		// session releases the lock either way; that is the guarantee this
+		// falls back on.
+		log.Printf("[agentdb] releasing migration lock: %v (discarding the connection)", err)
+		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	}
+}
+
+func runOneMigration(ctx context.Context, conn *sql.Conn, m migration) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(m.SQL); err != nil {
+	if _, err := tx.ExecContext(ctx, m.SQL); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("INSERT INTO agentdb_migrations (name) VALUES ($1)", m.Name); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO agentdb_migrations (name) VALUES ($1)", m.Name); err != nil {
 		return err
 	}
 	return tx.Commit()

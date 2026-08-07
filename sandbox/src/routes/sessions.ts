@@ -12,7 +12,9 @@ import {
   sessionManager,
   UnknownHarnessError,
   HarnessCredentialsMissingError,
+  InvalidMCPServersError,
 } from '../services/session-manager.js';
+import type { SessionMCPServers } from '../tools/registry.js';
 import { streamService } from '../services/stream-service.js';
 import { sessionContext } from '../session-context.js';
 import { config } from '../config.js';
@@ -27,9 +29,18 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
   // Idempotent if it already exists with the same harness.
   // ---------------------------------------------------------------------------
   fastify.post<{
-    Body: { sessionId: string; harness?: string; model?: string; maxTurns?: number };
+    Body: {
+      sessionId: string;
+      harness?: string;
+      model?: string;
+      maxTurns?: number;
+      // Session MCP servers, snake_case on the wire to match the Go side
+      // (docs/product/01-session-config.md §4.2).
+      mcp_servers?: SessionMCPServers;
+    };
   }>('/sessions', async (request, reply) => {
     const { sessionId, harness, model, maxTurns } = request.body || {};
+    const mcpServers = request.body?.mcp_servers;
 
     if (!sessionId) {
       reply.header('X-Session-Id', '');
@@ -40,7 +51,7 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
     reply.header('X-Session-Id', sessionId);
 
     try {
-      sessionManager.create(sessionId, { harness, model, maxTurns });
+      sessionManager.create(sessionId, { harness, model, maxTurns, mcpServers });
       return { success: true, data: { sessionId } };
     } catch (err) {
       if (err instanceof UnknownHarnessError) {
@@ -48,6 +59,10 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
         return { success: false, error: err.http.body };
       }
       if (err instanceof HarnessCredentialsMissingError) {
+        reply.status(err.http.status);
+        return { success: false, error: err.http.body };
+      }
+      if (err instanceof InvalidMCPServersError) {
         reply.status(err.http.status);
         return { success: false, error: err.http.body };
       }
@@ -102,10 +117,13 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
       try {
         sessionManager.create(sessionId, { harness: body.harness });
       } catch (err) {
-        if (err instanceof UnknownHarnessError || err instanceof HarnessCredentialsMissingError) {
-          const e = err as UnknownHarnessError | HarnessCredentialsMissingError;
-          reply.status(e.http.status);
-          return { success: false, error: e.http.body };
+        if (
+          err instanceof UnknownHarnessError ||
+          err instanceof HarnessCredentialsMissingError ||
+          err instanceof InvalidMCPServersError
+        ) {
+          reply.status(err.http.status);
+          return { success: false, error: err.http.body };
         }
         throw err;
       }
@@ -164,8 +182,9 @@ export async function sessionRoutes(fastify: FastifyInstance): Promise<void> {
       clearInterval(heartbeat);
     });
 
-    // Resolve tools for this turn
-    const resolved = toolRegistry.resolve(body.tools);
+    // Resolve tools for this turn, merging the session's MCP servers over the
+    // in-image registry (docs/product/01-session-config.md §4.3).
+    const resolved = toolRegistry.resolve(body.tools, sess.mcpServers);
 
     // Build the emitter bound to (sessionId, queryId)
     const emit = new BoundHarnessEmitter(streamService, sessionId, queryId);

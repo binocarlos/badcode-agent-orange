@@ -4,7 +4,7 @@
 // See ../../docs/90-provenance-map.md.
 
 import React, { useState, useRef, useEffect } from 'react'
-import { Box, Typography, Collapse, Button } from '@mui/material'
+import { Box, Typography, Collapse, Button, useTheme } from '@mui/material'
 import type { ToolCallInfo } from '../types.js'
 import { getToolDisplayName, getToolCategory, getToolIcon, getToolSummary, parseScriptExecution, stripMcpPrefix } from '../tool-formatters.js'
 import CodeCreatedBlock from './CodeCreatedBlock.js'
@@ -81,6 +81,7 @@ interface ToolCallGroupProps {
 
 /** Renders just the input/output detail for a single tool (no wrapping card). */
 function ToolDetail({ toolCall }: { toolCall: ToolCallInfo }) {
+  const theme = useTheme()
   const [showFullOutput, setShowFullOutput] = useState(false)
   const [showHooks, setShowHooks] = useState(false)
 
@@ -99,14 +100,14 @@ function ToolDetail({ toolCall }: { toolCall: ToolCallInfo }) {
   })()
 
   const renderValue = (value: unknown): React.ReactNode => {
-    if (value === null || value === undefined) return <span style={{ color: '#9ca3af' }}>null</span>
-    if (typeof value === 'boolean') return <span style={{ color: value ? '#16a34a' : '#dc2626' }}>{String(value)}</span>
+    if (value === null || value === undefined) return <span style={{ color: theme.palette.text.disabled }}>null</span>
+    if (typeof value === 'boolean') return <span style={{ color: value ? theme.palette.success.main : theme.palette.error.main }}>{String(value)}</span>
     if (typeof value === 'number') return <span style={{ fontWeight: 500 }}>{value.toLocaleString()}</span>
     if (typeof value === 'string') {
-      if (value.length > 200) return <span style={{ color: '#6b7280' }}>{value.slice(0, 200)}...</span>
+      if (value.length > 200) return <span style={{ color: theme.palette.text.secondary }}>{value.slice(0, 200)}...</span>
       return <span>{value}</span>
     }
-    return <span style={{ color: '#6b7280' }}>{JSON.stringify(value)}</span>
+    return <span style={{ color: theme.palette.text.secondary }}>{JSON.stringify(value)}</span>
   }
 
   const renderKeyValue = (obj: Record<string, unknown>) => (
@@ -139,7 +140,7 @@ function ToolDetail({ toolCall }: { toolCall: ToolCallInfo }) {
             <Box sx={{ mb: 1 }}>
               <img
                 src={`data:${imageData.mimeType};base64,${imageData.base64}`}
-                style={{ maxWidth: '100%', maxHeight: 400, objectFit: 'contain', border: '1px solid rgba(0,0,0,0.06)' }}
+                style={{ maxWidth: '100%', maxHeight: 400, objectFit: 'contain', border: `1px solid ${theme.palette.divider}` }}
               />
             </Box>
           )}
@@ -183,29 +184,29 @@ function ToolDetail({ toolCall }: { toolCall: ToolCallInfo }) {
           <Typography
             onClick={(e) => { e.stopPropagation(); setShowHooks(prev => !prev) }}
             sx={{
-              fontWeight: 600, fontSize: 11, color: '#9ca3af', mb: 0.5,
+              fontWeight: 600, fontSize: 11, color: 'text.disabled', mb: 0.5,
               cursor: 'pointer', userSelect: 'none',
-              '&:hover': { color: '#6b7280' },
+              '&:hover': { color: 'text.secondary' },
             }}
           >
             PROCESSING ({toolCall.hookEvents.length}) {showHooks ? '▾' : '▸'}
           </Typography>
           <Collapse in={showHooks} unmountOnExit>
-            <Box sx={{ pl: 1, borderLeft: '2px solid #e5e7eb' }}>
+            <Box sx={{ pl: 1, borderLeft: '2px solid', borderColor: 'divider' }}>
               {toolCall.hookEvents.map((hook, i) => {
                 const time = new Date(hook.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
                 const stdout = hook.payload?.stdout as string | undefined
                 const stderr = hook.payload?.stderr as string | undefined
                 return (
                   <Box key={i} sx={{ mb: 0.5 }}>
-                    <Typography sx={{ fontSize: 11, color: '#9ca3af', fontFamily: 'monospace' }}>
+                    <Typography sx={{ fontSize: 11, color: 'text.disabled', fontFamily: 'monospace' }}>
                       [{hook.hookType}] {time}
                     </Typography>
                     {(stdout || stderr) && (
                       <Box
                         component="pre"
                         sx={{
-                          m: 0, mt: 0.25, fontSize: 11, color: '#6b7280',
+                          m: 0, mt: 0.25, fontSize: 11, color: 'text.secondary',
                           fontFamily: 'monospace', whiteSpace: 'pre-wrap',
                           maxHeight: 100, overflow: 'auto',
                         }}
@@ -233,8 +234,8 @@ function Spinner({ size = 14 }: { size?: number }) {
         display: 'inline-block',
         width: size,
         height: size,
-        border: '2px solid #e5e7eb',
-        borderTopColor: '#3b82f6',
+        border: '2px solid', borderColor: 'divider',
+        borderTopColor: 'primary.main',
         borderRadius: '50%',
         animation: 'toolSpin 0.7s linear infinite',
         '@keyframes toolSpin': { '100%': { transform: 'rotate(360deg)' } },
@@ -319,7 +320,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
     const summary = getToolSummary(tc.name, tc.input)
 
     const statusIcon: React.ReactNode = tc.status === 'running' ? <Spinner /> : tc.status === 'error' ? '✗' : '✓'
-    const statusColor = tc.status === 'running' ? '#3b82f6' : tc.status === 'error' ? '#9ca3af' : '#22c55e'
+    const statusColor = tc.status === 'running' ? 'primary.main' : tc.status === 'error' ? 'text.disabled' : 'success.main'
 
     return (
       <Box
@@ -354,7 +355,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
             {statusIcon}
           </Typography>
           {tc.elapsedSeconds !== undefined && (
-            <Typography component="span" sx={{ color: '#9ca3af', fontSize: 12, flexShrink: 0 }}>
+            <Typography component="span" sx={{ color: 'text.disabled', fontSize: 12, flexShrink: 0 }}>
               {tc.elapsedSeconds.toFixed(1)}s
             </Typography>
           )}
@@ -362,7 +363,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
             <Typography
               component="span"
               sx={{
-                color: '#6b7280',
+                color: 'text.secondary',
                 fontSize: 12,
                 ml: 'auto',
                 whiteSpace: 'nowrap',
@@ -391,7 +392,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
       : `${toolCalls.length} steps completed`
 
   const headerIcon: React.ReactNode = currentlyRunning ? <Spinner /> : hasError ? null : '✓'
-  const headerColor = currentlyRunning ? '#3b82f6' : hasError ? '#9ca3af' : '#22c55e'
+  const headerColor = currentlyRunning ? 'primary.main' : hasError ? 'text.disabled' : 'success.main'
 
   return (
     <Box
@@ -408,7 +409,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
         onClick={handleHeaderClick}
         sx={{
           p: '8px 12px',
-          backgroundColor: '#f9fafb',
+          backgroundColor: 'action.hover',
           cursor: 'pointer',
           display: 'flex',
           alignItems: 'center',
@@ -419,10 +420,10 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
         <Typography component="span" sx={{ color: headerColor, fontWeight: 600, fontSize: 14 }}>
           {headerIcon}
         </Typography>
-        <Typography component="span" sx={{ fontWeight: 600, fontSize: 13, color: '#374151' }}>
+        <Typography component="span" sx={{ fontWeight: 600, fontSize: 13, color: 'text.primary' }}>
           {headerText}
         </Typography>
-        <Typography component="span" sx={{ color: '#9ca3af', fontSize: 13, ml: 'auto' }}>
+        <Typography component="span" sx={{ color: 'text.disabled', fontSize: 13, ml: 'auto' }}>
           {expanded ? '▾' : '▸'}
         </Typography>
       </Box>
@@ -470,7 +471,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
             const isExpanded = expandedToolId === tc.id
 
             const statusIcon: React.ReactNode = tc.status === 'running' ? <Spinner /> : tc.status === 'error' ? '✗' : '✓'
-            const statusColor = tc.status === 'running' ? '#3b82f6' : tc.status === 'error' ? '#9ca3af' : '#22c55e'
+            const statusColor = tc.status === 'running' ? 'primary.main' : tc.status === 'error' ? 'text.disabled' : 'success.main'
 
             return (
               <Box key={tc.id}>
@@ -496,7 +497,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
                     {statusIcon}
                   </Typography>
                   {tc.elapsedSeconds !== undefined && (
-                    <Typography component="span" sx={{ color: '#9ca3af', fontSize: 12, flexShrink: 0 }}>
+                    <Typography component="span" sx={{ color: 'text.disabled', fontSize: 12, flexShrink: 0 }}>
                       {tc.elapsedSeconds.toFixed(1)}s
                     </Typography>
                   )}
@@ -504,7 +505,7 @@ export default function ToolCallGroup({ toolCalls }: ToolCallGroupProps) {
                     <Typography
                       component="span"
                       sx={{
-                        color: '#6b7280',
+                        color: 'text.secondary',
                         fontSize: 12,
                         ml: 'auto',
                         whiteSpace: 'nowrap',

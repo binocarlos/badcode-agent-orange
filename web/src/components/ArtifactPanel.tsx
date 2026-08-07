@@ -8,7 +8,7 @@
 //   - Removed the list/tree view toggle; the panel always renders the tree.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useCallback, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Box, Typography, IconButton } from '@mui/material'
 import {
   ArrowForward as ArrowIcon,
@@ -37,15 +37,15 @@ interface ArtifactPanelProps {
 }
 
 const STATUS_DOT_COLORS: Record<string, string> = {
-  live: '#16a34a',
-  extracted: '#2563eb',
-  lost: '#9ca3af',
+  live: 'success.main',
+  extracted: 'primary.main',
+  lost: 'text.disabled',
 }
 
 function TodoStatusIcon({ status }: { status: TodoItem['status'] }) {
-  if (status === 'completed') return <CheckCircleIcon sx={{ fontSize: 16, color: '#16a34a' }} />
-  if (status === 'in_progress') return <DotIcon sx={{ fontSize: 16, color: '#2563eb', '@keyframes pulse': { '0%, 100%': { opacity: 1 }, '50%': { opacity: 0.4 } }, animation: 'pulse 1.5s ease-in-out infinite' }} />
-  return <UncheckedIcon sx={{ fontSize: 16, color: '#9ca3af' }} />
+  if (status === 'completed') return <CheckCircleIcon sx={{ fontSize: 16, color: 'success.main' }} />
+  if (status === 'in_progress') return <DotIcon sx={{ fontSize: 16, color: 'primary.main', '@keyframes pulse': { '0%, 100%': { opacity: 1 }, '50%': { opacity: 0.4 } }, animation: 'pulse 1.5s ease-in-out infinite' }} />
+  return <UncheckedIcon sx={{ fontSize: 16, color: 'text.disabled' }} />
 }
 
 // Simple flat list tree view (no external ArtifactTreeView dependency)
@@ -68,7 +68,7 @@ function ArtifactFlatTree({ artifacts, onSelect }: { artifacts: ArtifactInfo[]; 
       {Array.from(grouped.entries()).map(([dir, items]) => (
         <Box key={dir}>
           {dir !== '/' && (
-            <Typography sx={{ fontSize: 11, color: '#9ca3af', px: 1, py: 0.25, fontFamily: 'monospace' }}>
+            <Typography sx={{ fontSize: 11, color: 'text.disabled', px: 1, py: 0.25, fontFamily: 'monospace' }}>
               {dir}/
             </Typography>
           )}
@@ -89,8 +89,8 @@ function ArtifactFlatTree({ artifacts, onSelect }: { artifacts: ArtifactInfo[]; 
                 '&:hover': { backgroundColor: 'action.hover' },
               }}
             >
-              <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: STATUS_DOT_COLORS[a.status] || '#9ca3af', flexShrink: 0 }} />
-              <Typography sx={{ fontSize: 12, color: '#374151', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: a.status === 'lost' ? 'line-through' : 'none' }}>
+              <Box sx={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: STATUS_DOT_COLORS[a.status] || 'text.disabled', flexShrink: 0 }} />
+              <Typography sx={{ fontSize: 12, color: 'text.primary', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: a.status === 'lost' ? 'line-through' : 'none' }}>
                 {a.fileName}
               </Typography>
             </Box>
@@ -125,15 +125,15 @@ export default function ArtifactPanel({
     <Box
       sx={{
         width: 320,
-        borderLeft: '1px solid #e5e7eb',
-        backgroundColor: '#f9fafb',
+        borderLeft: '1px solid', borderColor: 'divider',
+        backgroundColor: 'action.hover',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
       }}
     >
       {hasTodos && (
-        <Box sx={{ p: '8px 12px', borderBottom: '1px solid #e5e7eb' }}>
+        <Box sx={{ p: '8px 12px', borderBottom: '1px solid', borderColor: 'divider' }}>
           <Typography sx={{ fontWeight: 600, fontSize: 14, mb: 0.75 }}>
             Tasks ({completedCount}/{todos.length})
           </Typography>
@@ -142,7 +142,7 @@ export default function ArtifactPanel({
               <TodoStatusIcon status={todo.status} />
               <Typography sx={{
                 fontSize: 12,
-                color: todo.status === 'completed' ? '#9ca3af' : '#374151',
+                color: todo.status === 'completed' ? 'text.disabled' : 'text.primary',
                 textDecoration: todo.status === 'completed' ? 'line-through' : 'none',
                 lineHeight: 1.4,
               }}>
@@ -152,7 +152,7 @@ export default function ArtifactPanel({
           ))}
         </Box>
       )}
-      <Box sx={{ p: '8px 12px', borderBottom: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Box sx={{ p: '8px 12px', borderBottom: '1px solid', borderColor: 'divider', display: 'flex', alignItems: 'center', gap: 1 }}>
         <Typography sx={{ fontWeight: 600, fontSize: 14, flex: 1 }}>
           Artifacts ({artifacts.length})
         </Typography>
@@ -162,7 +162,7 @@ export default function ArtifactPanel({
             onClick={() => onPinToDashboard(sessionId)}
             title="Pin to dashboard"
             aria-label="pin to dashboard"
-            sx={{ color: '#6b7280' }}
+            sx={{ color: 'text.secondary' }}
           >
             <PinIcon sx={{ fontSize: 16 }} />
           </IconButton>
@@ -175,16 +175,16 @@ export default function ArtifactPanel({
         onClick={handleViewAll}
         sx={{
           p: '8px 16px',
-          borderTop: '1px solid #e5e7eb',
+          borderTop: '1px solid', borderColor: 'divider',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           cursor: 'pointer',
-          '&:hover': { backgroundColor: '#f1f5f9' },
+          '&:hover': { backgroundColor: 'action.hover' },
         }}
       >
-        <Typography sx={{ fontSize: 12, color: '#2563eb', fontWeight: 500 }}>View all artifacts</Typography>
-        <ArrowIcon sx={{ fontSize: 14, color: '#2563eb', ml: 0.5 }} />
+        <Typography sx={{ fontSize: 12, color: 'primary.main', fontWeight: 500 }}>View all artifacts</Typography>
+        <ArrowIcon sx={{ fontSize: 14, color: 'primary.main', ml: 0.5 }} />
       </Box>
     </Box>
   )

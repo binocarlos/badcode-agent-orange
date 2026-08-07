@@ -39,12 +39,26 @@ export async function streamSSEResponse(
 ): Promise<void> {
   const messageId = `msg_mock_${String(state.requestCount).padStart(3, '0')}`
 
+  // The usage object is the CAPTURED shape, not a two-key invention.
+  //
+  // Until 2026-07-29 this emitted `{input_tokens, output_tokens}` — a shape no
+  // real Anthropic response has ever had. A mock that omits
+  // `cache_creation_input_tokens` / `cache_read_input_tokens` cannot exercise
+  // the components that carry most of a cached turn's input bill, which is how
+  // RD2 survived: the mock agreed with the (broken) reader instead of with the
+  // provider. Real responses always carry all four; with a large composed
+  // prompt the cache read dominates, so the mock bills that way too.
   sseEvent(res, 'message_start', {
     type: 'message_start',
     message: {
       id: messageId, type: 'message', role: 'assistant', content: [], model,
       stop_reason: null, stop_sequence: null,
-      usage: { input_tokens: 100, output_tokens: 0 },
+      usage: {
+        input_tokens: 100,
+        output_tokens: 0,
+        cache_creation_input_tokens: 220,
+        cache_read_input_tokens: 1480,
+      },
     },
   })
   await delay(delayMs)

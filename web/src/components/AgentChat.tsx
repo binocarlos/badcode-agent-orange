@@ -12,6 +12,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, Button, Typography, Alert, Switch, Chip, Divider } from '@mui/material'
+import { alpha } from '@mui/material/styles'
 import type { ActivityStatus, AgentMessage, ArtifactInfo, AskUserQuestionInfo, CreatedDashboardInfo, RenderedTableInfo, RenderedChartInfo, TodoItem } from '../types.js'
 import { getToolCategory, getToolIcon } from '../tool-formatters.js'
 import AgentMarkdown from './AgentMarkdown.js'
@@ -151,7 +152,6 @@ export default function AgentChat(props: AgentChatProps) {
   const selectedModel   = props.selectedModel   ?? ctx?.selectedModel  ?? ''
   const onModelChange   = props.onModelChange   ?? ctx?.setSelectedModel ?? (() => {})
   const models          = props.models          ?? ctx?.config.models   ?? []
-  const _lastHeartbeat  = props.lastHeartbeat   ?? ctx?.lastHeartbeat
   const stuckStatus     = props.stuckStatus     ?? ctx?.stuckStatus
   const onNudge         = props.onNudge         ?? ctx?.nudgeAgent
   const readOnly        = props.readOnly
@@ -166,7 +166,7 @@ export default function AgentChat(props: AgentChatProps) {
   const forkedMessageCount = props.forkedMessageCount
 
   const [input, setInput] = useState('')
-  const [viewerArtifact, setViewerArtifact] = useState<ArtifactInfo | null>(null)
+  const [, setViewerArtifact] = useState<ArtifactInfo | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -455,12 +455,12 @@ export default function AgentChat(props: AgentChatProps) {
                               owns rendering via renderPluginSlots above, so suppress these debug
                               cards — otherwise a stray "📈 Chart: X" leaks in next to the widget. */}
                           {plugins.length === 0 && (toolCallTables.get(tc.id) || []).map(table => (
-                            <Box key={table.id} sx={{ mt: 1, p: 1.5, border: '1px solid #e5e7eb', borderRadius: 1, backgroundColor: '#f9fafb', fontSize: 12, color: '#6b7280' }}>
+                            <Box key={table.id} sx={{ mt: 1, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, backgroundColor: 'action.hover', fontSize: 12, color: 'text.secondary' }}>
                               📊 Table: {table.title || table.id}
                             </Box>
                           ))}
                           {plugins.length === 0 && (toolCallCharts.get(tc.id) || []).map(chart => (
-                            <Box key={chart.id} sx={{ mt: 1, p: 1.5, border: '1px solid #e5e7eb', borderRadius: 1, backgroundColor: '#f9fafb', fontSize: 12, color: '#6b7280' }}>
+                            <Box key={chart.id} sx={{ mt: 1, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, backgroundColor: 'action.hover', fontSize: 12, color: 'text.secondary' }}>
                               📈 Chart: {chart.title || chart.id}
                             </Box>
                           ))}
@@ -475,7 +475,7 @@ export default function AgentChat(props: AgentChatProps) {
                             />
                           )}
                           {plugins.length === 0 && toolCallDashboards.has(tc.id) && (
-                            <Box sx={{ mt: 1, p: 1.5, border: '1px solid #e5e7eb', borderRadius: 1, backgroundColor: '#f9fafb', fontSize: 12, color: '#6b7280' }}>
+                            <Box sx={{ mt: 1, p: 1.5, border: '1px solid', borderColor: 'divider', borderRadius: 1, backgroundColor: 'action.hover', fontSize: 12, color: 'text.secondary' }}>
                               🗂️ Dashboard created
                             </Box>
                           )}
@@ -526,11 +526,11 @@ export default function AgentChat(props: AgentChatProps) {
                   ))}
                 </Box>
                 {showForkDivider && (
-                  <Divider sx={{ my: 2, borderStyle: 'dashed', borderColor: '#d1d5db' }}>
+                  <Divider sx={{ my: 2, borderStyle: 'dashed', borderColor: 'divider' }}>
                     <Chip
                       label="Forked from published app — new messages below"
                       size="small"
-                      sx={{ fontSize: 11, color: '#6b7280', backgroundColor: '#f9fafb', fontWeight: 500 }}
+                      sx={{ fontSize: 11, color: 'text.secondary', backgroundColor: 'action.hover', fontWeight: 500 }}
                     />
                   </Divider>
                 )}
@@ -549,9 +549,9 @@ export default function AgentChat(props: AgentChatProps) {
 
         {/* Preparing tool card (file write preview) */}
         {!readOnly && isStreaming && activityStatus?.category === 'preparing_tool' && activityStatus.toolName && toolInputBuffer && (
-          <Box sx={{ px: 2, py: 1, borderTop: '1px solid #f3f4f6', backgroundColor: '#f9fafb', display: 'flex', alignItems: 'center', gap: 1 }}>
-            <Box sx={{ width: 14, height: 14, border: '2px solid #e5e7eb', borderTopColor: '#6b7280', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }, flexShrink: 0 }} />
-            <Typography sx={{ fontSize: 12, color: '#6b7280', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <Box sx={{ px: 2, py: 1, borderTop: '1px solid', borderColor: 'divider', backgroundColor: 'action.hover', display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ width: 14, height: 14, border: '2px solid', borderColor: 'divider', borderTopColor: 'text.secondary', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }, flexShrink: 0 }} />
+            <Typography sx={{ fontSize: 12, color: 'text.secondary', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {activityStatus.toolName}: {toolInputBuffer.slice(-120)}
             </Typography>
           </Box>
@@ -559,28 +559,28 @@ export default function AgentChat(props: AgentChatProps) {
 
         {/* System status */}
         {!readOnly && !isStreaming && activityStatus?.category === 'system' && (
-          <Box sx={{ px: 2, py: '6px', display: 'flex', alignItems: 'center', gap: 1, fontSize: 13, color: '#6b7280', borderTop: '1px solid #f3f4f6' }}>
-            <Box sx={{ width: 16, height: 16, border: '2px solid #e5e7eb', borderTopColor: '#6b7280', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }, flexShrink: 0 }} />
+          <Box sx={{ px: 2, py: '6px', display: 'flex', alignItems: 'center', gap: 1, fontSize: 13, color: 'text.secondary', borderTop: '1px solid', borderColor: 'divider' }}>
+            <Box sx={{ width: 16, height: 16, border: '2px solid', borderColor: 'divider', borderTopColor: 'text.secondary', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }, flexShrink: 0 }} />
             <span style={{ fontWeight: 500 }}>{activityStatus.label}</span>
           </Box>
         )}
 
         {/* Activity status line */}
         {!readOnly && isStreaming && activityStatus && (
-          <Box sx={{ px: 2, py: '6px', display: 'flex', alignItems: 'center', gap: 1, fontSize: 13, color: '#6b7280', borderTop: '1px solid #f3f4f6' }}>
-            <Box sx={{ width: 16, height: 16, border: '2px solid #e5e7eb', borderTopColor: '#6b7280', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }, flexShrink: 0 }} />
+          <Box sx={{ px: 2, py: '6px', display: 'flex', alignItems: 'center', gap: 1, fontSize: 13, color: 'text.secondary', borderTop: '1px solid', borderColor: 'divider' }}>
+            <Box sx={{ width: 16, height: 16, border: '2px solid', borderColor: 'divider', borderTopColor: 'text.secondary', borderRadius: '50%', animation: 'spin 0.8s linear infinite', '@keyframes spin': { '100%': { transform: 'rotate(360deg)' } }, flexShrink: 0 }} />
             {activityStatus.toolName && (
               <span>{getToolIcon(getToolCategory(activityStatus.toolName, activityStatus.toolInput))}</span>
             )}
             <span style={{ fontWeight: 500 }}>{activityStatus.label}</span>
             {activityStatus.detail && (
-              <span style={{ color: '#9ca3af' }}>{activityStatus.detail}</span>
+              <span style={{ color: 'text.disabled' }}>{activityStatus.detail}</span>
             )}
             {activityStatus.elapsedSeconds != null && activityStatus.elapsedSeconds > 0 && (
-              <span style={{ color: '#9ca3af' }}>{activityStatus.elapsedSeconds}s</span>
+              <span style={{ color: 'text.disabled' }}>{activityStatus.elapsedSeconds}s</span>
             )}
             {activityStatus.category === 'preparing_tool' && activityStatus.toolInputPreview && !toolInputBuffer && (
-              <span style={{ color: '#9ca3af', fontFamily: 'monospace', fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{activityStatus.toolInputPreview}</span>
+              <span style={{ color: 'text.disabled', fontFamily: 'monospace', fontSize: 11, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{activityStatus.toolInputPreview}</span>
             )}
           </Box>
         )}
@@ -593,7 +593,7 @@ export default function AgentChat(props: AgentChatProps) {
           return (
             <Box sx={{ px: 2, py: '4px', display: 'flex', gap: 1, flexWrap: 'wrap' }}>
               {active.map(a => (
-                <Chip key={a.agentId} size="small" label={`${a.agentType || 'Sub-agent'} running...`} sx={{ fontSize: 11, height: 22, backgroundColor: '#eef2ff', color: '#4338ca', fontWeight: 500 }} />
+                <Chip key={a.agentId} size="small" label={`${a.agentType || 'Sub-agent'} running...`} sx={{ fontSize: 11, height: 22, backgroundColor: (t) => alpha(t.palette.primary.main, 0.12), color: 'primary.main', fontWeight: 500 }} />
               ))}
             </Box>
           )
@@ -601,8 +601,8 @@ export default function AgentChat(props: AgentChatProps) {
 
         {/* Possibly stuck banner */}
         {!readOnly && isStreaming && stuckStatus === 'possibly_stuck' && (
-          <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, backgroundColor: '#fffbeb', borderTop: '1px solid #fde68a' }}>
-            <Typography sx={{ fontSize: 13, flex: 1, color: '#92400e' }}>
+          <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, backgroundColor: (t) => alpha(t.palette.warning.main, 0.12), borderTop: '1px solid', borderColor: (t) => alpha(t.palette.warning.main, 0.4) }}>
+            <Typography sx={{ fontSize: 13, flex: 1, color: 'warning.main' }}>
               The agent has been quiet for a while. It may be working on something complex.
             </Typography>
             <Button variant="outlined" color="info" size="small" onClick={onCancel} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -613,13 +613,53 @@ export default function AgentChat(props: AgentChatProps) {
 
         {/* Stuck detection banner */}
         {!readOnly && isStreaming && stuckStatus === 'likely_stuck' && (
-          <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, backgroundColor: '#fef2f2', borderTop: '1px solid #fecaca' }}>
-            <Typography sx={{ fontSize: 13, flex: 1, color: '#991b1b' }}>
+          <Box sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, backgroundColor: (t) => alpha(t.palette.error.main, 0.12), borderTop: '1px solid', borderColor: (t) => alpha(t.palette.error.main, 0.4) }}>
+            <Typography sx={{ fontSize: 13, flex: 1, color: 'error.main' }}>
               The agent appears to be stuck. No activity for over 2 minutes.
             </Typography>
             {onNudge && (
               <Button variant="contained" color="info" size="small" onClick={onNudge} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
                 Send Nudge
+              </Button>
+            )}
+            <Button variant="outlined" color="info" size="small" onClick={onCancel} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
+              Stop
+            </Button>
+          </Box>
+        )}
+
+        {/* Unconfirmed-end banner.
+         *
+         * The two banners above are gated on isStreaming and are correct for the
+         * live case: heartbeats stop while a stream is attached, so the detector
+         * escalates and the operator is told the agent has gone quiet.
+         *
+         * They cannot fire on the case they matter most for. When a stream ends
+         * without `query_complete` and the status probe cannot confirm the turn
+         * finished, useAgentSession sets isStreaming=false (it must — holding it
+         * true disables the composer forever) but deliberately leaves the stuck
+         * detector ARMED (doc 22 RD26 / item B1). That combination —
+         * !isStreaming with a non-'ok' stuckStatus — is reachable by no other
+         * path: every other stop calls stopStuckDetection(), which resets to
+         * 'ok'. So it is a precise signal for "we lost this turn and never
+         * learned how it ended", and it is what this banner renders.
+         *
+         * It deliberately does NOT repeat the "Connection lost" error alert
+         * above, which states what already happened. This states what may still
+         * be happening — the agent can still be running in its container,
+         * producing output that will never reach this transcript — and offers
+         * the two actions that resolve it. Both clear the banner, because both
+         * call stopStuckDetection(). The composer stays enabled throughout
+         * (item P2's defect must not come back in another costume). */}
+        {!readOnly && !isStreaming && (stuckStatus === 'possibly_stuck' || stuckStatus === 'likely_stuck') && (
+          <Box data-testid="unconfirmed-end-banner" sx={{ px: 2, py: 1, display: 'flex', alignItems: 'center', gap: 1.5, backgroundColor: (t) => alpha(t.palette.warning.main, 0.12), borderTop: '1px solid', borderColor: (t) => alpha(t.palette.warning.main, 0.4) }}>
+            <Typography sx={{ fontSize: 13, flex: 1, color: 'warning.main' }}>
+              This turn&apos;s end was never confirmed. The agent may still be running — anything it
+              produced since the connection dropped will not appear here.
+            </Typography>
+            {onNudge && (
+              <Button variant="contained" color="info" size="small" onClick={onNudge} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
+                Resume
               </Button>
             )}
             <Button variant="outlined" color="info" size="small" onClick={onCancel} sx={{ textTransform: 'none', fontSize: 12, whiteSpace: 'nowrap' }}>
@@ -641,13 +681,13 @@ export default function AgentChat(props: AgentChatProps) {
                 fileAttachments.addFiles(e.dataTransfer.files)
               }
             }}
-            sx={{ p: '12px 16px', borderTop: '1px solid #e5e7eb', display: 'flex', flexDirection: 'column', gap: 1 }}
+            sx={{ p: '12px 16px', borderTop: '1px solid', borderColor: 'divider', display: 'flex', flexDirection: 'column', gap: 1 }}
           >
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
               {/* Model toggle (only shown when 2 models provided) */}
               {hasModelToggle && (
                 <Box sx={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-                  <Typography sx={{ fontSize: 13, fontWeight: selectedModel === models[0].id ? 600 : 400, color: selectedModel === models[0].id ? '#1f2937' : '#9ca3af' }}>
+                  <Typography sx={{ fontSize: 13, fontWeight: selectedModel === models[0].id ? 600 : 400, color: selectedModel === models[0].id ? 'text.primary' : 'text.disabled' }}>
                     {models[0].label}
                   </Typography>
                   <Switch
@@ -657,7 +697,7 @@ export default function AgentChat(props: AgentChatProps) {
                     disabled={isStreaming}
                     sx={{ mx: 0.5 }}
                   />
-                  <Typography sx={{ fontSize: 13, fontWeight: selectedModel === models[1].id ? 600 : 400, color: selectedModel === models[1].id ? '#1f2937' : '#9ca3af' }}>
+                  <Typography sx={{ fontSize: 13, fontWeight: selectedModel === models[1].id ? 600 : 400, color: selectedModel === models[1].id ? 'text.primary' : 'text.disabled' }}>
                     {models[1].label}
                   </Typography>
                 </Box>
@@ -693,13 +733,13 @@ export default function AgentChat(props: AgentChatProps) {
                 sx={{
                   flex: 1,
                   p: '8px 12px',
-                  border: '1px solid #d1d5db',
+                  border: '1px solid', borderColor: 'divider',
                   borderRadius: '8px',
                   resize: 'none',
                   fontSize: 14,
                   fontFamily: 'inherit',
                   outline: 'none',
-                  '&:focus': { borderColor: '#3b82f6' },
+                  '&:focus': { borderColor: 'primary.main' },
                 }}
               />
               {isStreaming ? (

@@ -3,7 +3,7 @@
 // Import paths updated: artifactTree/types → local. Added @untitledui/file-icons dependency.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { Box, Collapse, Typography } from '@mui/material'
 import {
   Folder as FolderIcon,
@@ -16,10 +16,10 @@ import type { ArtifactTreeNode } from '../artifactTree.js'
 import type { ArtifactInfo } from '../types.js'
 
 const STATUS_DOT_COLORS: Record<string, string> = {
-  live: '#16a34a',
-  extracted: '#2563eb',
-  lost: '#9ca3af',
-  extraction_failed: '#ef4444',
+  live: 'success.main',
+  extracted: 'primary.main',
+  lost: 'text.disabled',
+  extraction_failed: 'error.main',
 }
 
 interface ArtifactTreeViewProps {
@@ -72,20 +72,20 @@ function TreeNode({
             py: '3px',
             cursor: 'pointer',
             borderRadius: '4px',
-            '&:hover': { backgroundColor: '#f3f4f6' },
+            '&:hover': { backgroundColor: 'action.hover' },
           }}
         >
           {expanded ? (
-            <ExpandMoreIcon sx={{ fontSize: 16, color: '#6b7280' }} />
+            <ExpandMoreIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
           ) : (
-            <ChevronRightIcon sx={{ fontSize: 16, color: '#6b7280' }} />
+            <ChevronRightIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
           )}
           {expanded ? (
-            <FolderOpenIcon sx={{ fontSize: 16, color: '#f59e0b' }} />
+            <FolderOpenIcon sx={{ fontSize: 16, color: 'warning.main' }} />
           ) : (
-            <FolderIcon sx={{ fontSize: 16, color: '#f59e0b' }} />
+            <FolderIcon sx={{ fontSize: 16, color: 'warning.main' }} />
           )}
-          <Typography sx={{ fontSize: 13, fontWeight: 500, color: '#374151' }}>
+          <Typography sx={{ fontSize: 13, fontWeight: 500, color: 'text.primary' }}>
             {node.name}
           </Typography>
         </Box>
@@ -122,9 +122,9 @@ function TreeNode({
         py: '3px',
         cursor: 'pointer',
         borderRadius: '4px',
-        backgroundColor: isSelected ? '#dbeafe' : undefined,
+        backgroundColor: isSelected ? 'action.selected' : undefined,
         opacity: isLost ? 0.5 : 1,
-        '&:hover': { backgroundColor: isSelected ? '#dbeafe' : '#f3f4f6' },
+        '&:hover': { backgroundColor: isSelected ? 'action.selected' : 'action.hover' },
       }}
     >
       <Box
@@ -132,7 +132,7 @@ function TreeNode({
           width: 7,
           height: 7,
           borderRadius: '50%',
-          backgroundColor: STATUS_DOT_COLORS[artifact.status] || '#9ca3af',
+          backgroundColor: STATUS_DOT_COLORS[artifact.status] || 'text.disabled',
           flexShrink: 0,
         }}
       />
@@ -140,7 +140,7 @@ function TreeNode({
       <Typography
         sx={{
           fontSize: 13,
-          color: isSelected ? '#1d4ed8' : '#374151',
+          color: isSelected ? 'primary.main' : 'text.primary',
           fontWeight: isSelected ? 600 : 400,
           overflow: 'hidden',
           textOverflow: 'ellipsis',

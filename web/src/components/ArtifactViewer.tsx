@@ -9,7 +9,7 @@
 //   - Import paths updated: types/artifactFilters/artifactTree/prismLanguage → local.
 // See ../../docs/90-provenance-map.md.
 
-import React, { useState, useCallback, useMemo, useRef, ReactNode } from 'react'
+import { useState, useCallback, useMemo, useRef, ReactNode } from 'react'
 import {
   Box,
   Button,
@@ -25,6 +25,7 @@ import {
   TableSortLabel,
   Dialog,
   Tooltip,
+  useTheme,
 } from '@mui/material'
 import {
   Close as CloseIcon,
@@ -81,10 +82,10 @@ interface ArtifactViewerProps {
 }
 
 const STATUS_DOT_COLORS: Record<string, string> = {
-  live: '#16a34a',
-  extracted: '#2563eb',
-  lost: '#9ca3af',
-  extraction_failed: '#ef4444',
+  live: 'success.main',
+  extracted: 'primary.main',
+  lost: 'text.disabled',
+  extraction_failed: 'error.main',
 }
 
 function formatFileSize(bytes: number): string {
@@ -235,15 +236,15 @@ export default function ArtifactViewer({
         sx={{
           width: 280,
           minWidth: 280,
-          borderRight: '1px solid #e5e7eb',
-          backgroundColor: '#fafafa',
+          borderRight: '1px solid', borderColor: 'divider',
+          backgroundColor: 'background.default',
           display: 'flex',
           flexDirection: 'column',
           overflow: 'hidden',
         }}
       >
-        <Box sx={{ p: '10px 12px', borderBottom: '1px solid #e5e7eb' }}>
-          <Typography sx={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>
+        <Box sx={{ p: '10px 12px', borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Typography sx={{ fontSize: 13, fontWeight: 600, color: 'text.primary' }}>
             Files ({artifacts.length})
           </Typography>
         </Box>
@@ -263,8 +264,8 @@ export default function ArtifactViewer({
               gap: 1,
               px: 2,
               py: 1,
-              borderBottom: '1px solid #e5e7eb',
-              backgroundColor: 'white',
+              borderBottom: '1px solid', borderColor: 'divider',
+              backgroundColor: 'background.paper',
               minHeight: 44,
             }}
           >
@@ -273,7 +274,7 @@ export default function ArtifactViewer({
                 width: 8,
                 height: 8,
                 borderRadius: '50%',
-                backgroundColor: STATUS_DOT_COLORS[selected.status] || '#9ca3af',
+                backgroundColor: STATUS_DOT_COLORS[selected.status] || 'text.disabled',
                 flexShrink: 0,
               }}
             />
@@ -308,13 +309,13 @@ export default function ArtifactViewer({
             <Chip
               label={selected.artifactType}
               size="small"
-              sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: '#e2e8f0', color: '#475569' }}
+              sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: 'divider', color: 'text.secondary' }}
             />
             {selected.artifactType === 'code' && (
               <Chip
                 label={getLanguageFromFilename(selected.fileName)}
                 size="small"
-                sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: '#dbeafe', color: '#1d4ed8' }}
+                sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: 'action.selected', color: 'primary.main' }}
               />
             )}
             {selected.artifactType === 'webapp' && customer && onPublishWebapp && (
@@ -323,7 +324,7 @@ export default function ArtifactViewer({
                   size="small"
                   onClick={() => onPublishWebapp(sessionId, selected)}
                   disabled={selected.status === 'lost' || selected.status === 'extraction_failed'}
-                  sx={{ color: '#2563eb' }}
+                  sx={{ color: 'primary.main' }}
                 >
                   <ShareIcon sx={{ fontSize: 20 }} />
                 </IconButton>
@@ -334,7 +335,7 @@ export default function ArtifactViewer({
               onClick={handleDownload}
               disabled={selected.status === 'lost' || selected.status === 'extraction_failed'}
               title="Download"
-              sx={{ color: '#2563eb' }}
+              sx={{ color: 'primary.main' }}
             >
               <DownloadIcon sx={{ fontSize: 20 }} />
             </IconButton>
@@ -347,10 +348,10 @@ export default function ArtifactViewer({
         )}
 
         {/* Content area */}
-        <Box sx={{ flex: 1, overflow: 'auto', backgroundColor: '#fafafa' }}>
+        <Box sx={{ flex: 1, overflow: 'auto', backgroundColor: 'background.default' }}>
           {!selected && (
             <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-              <Typography sx={{ fontSize: 14, color: '#9ca3af' }}>
+              <Typography sx={{ fontSize: 14, color: 'text.disabled' }}>
                 Select a file to preview
               </Typography>
             </Box>
@@ -364,7 +365,7 @@ export default function ArtifactViewer({
 
           {selected && content.status === 'error' && (
             <Box sx={{ p: 3, textAlign: 'center' }}>
-              <Typography sx={{ color: '#ef4444', fontSize: 14 }}>{content.message}</Typography>
+              <Typography sx={{ color: 'error.main', fontSize: 14 }}>{content.message}</Typography>
             </Box>
           )}
 
@@ -374,7 +375,6 @@ export default function ArtifactViewer({
               content={content}
               sessionId={sessionId}
               apiBaseUrl={apiBaseUrl}
-              authHeader={authHeader}
               onImageClick={setLightboxUrl}
               onDownload={handleDownload}
               renderPlatinumData={renderPlatinumData}
@@ -407,7 +407,7 @@ export default function ArtifactViewer({
       open
       onClose={onClose}
       fullScreen
-      PaperProps={{ sx: { backgroundColor: '#fafafa' } }}
+      PaperProps={{ sx: { backgroundColor: 'background.default' } }}
     >
       {viewerContent}
     </Dialog>
@@ -421,7 +421,6 @@ function ContentRenderer({
   content,
   sessionId,
   apiBaseUrl = '/api/v1',
-  authHeader,
   onImageClick,
   onDownload,
   renderPlatinumData,
@@ -430,7 +429,6 @@ function ContentRenderer({
   content: { text?: string; blobUrl?: string }
   sessionId: string
   apiBaseUrl?: string
-  authHeader?: string
   onImageClick: (url: string) => void
   onDownload: () => void
   renderPlatinumData?: (data: PlatinumArtifactData) => ReactNode
@@ -442,7 +440,7 @@ function ContentRenderer({
 
   // Webapp: iframe with src URL (enables relative imports for JS/CSS)
   if (artifact.artifactType === 'webapp') {
-    return <WebappRenderer artifact={artifact} sessionId={sessionId} apiBaseUrl={apiBaseUrl} authHeader={authHeader} />
+    return <WebappRenderer artifact={artifact} sessionId={sessionId} apiBaseUrl={apiBaseUrl} />
   }
 
   // HTML: sandboxed iframe
@@ -513,7 +511,7 @@ function ContentRenderer({
   // Markdown
   if ((artifact.artifactType === 'report' && isMarkdown) && content.text !== undefined) {
     return (
-      <Box sx={{ p: 3, backgroundColor: 'white' }}>
+      <Box sx={{ p: 3, backgroundColor: 'background.paper' }}>
         <AgentMarkdown content={content.text} />
       </Box>
     )
@@ -551,12 +549,12 @@ function ContentRenderer({
           />
         </Box>
 
-        <Typography sx={{ fontSize: 16, fontWeight: 600, color: '#1f2937', mb: 0.5, wordBreak: 'break-word' }}>
+        <Typography sx={{ fontSize: 16, fontWeight: 600, color: 'text.primary', mb: 0.5, wordBreak: 'break-word' }}>
           {artifact.fileName}
         </Typography>
 
         {(artifact.fileSize != null || artifact.description) && (
-          <Typography sx={{ fontSize: 13, color: '#6b7280', mb: 0.5 }}>
+          <Typography sx={{ fontSize: 13, color: 'text.secondary', mb: 0.5 }}>
             {[
               artifact.fileSize != null ? formatFileSize(artifact.fileSize) : null,
               artifact.description,
@@ -564,7 +562,7 @@ function ContentRenderer({
           </Typography>
         )}
 
-        <Typography sx={{ fontSize: 12, color: '#9ca3af', mb: 3, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        <Typography sx={{ fontSize: 12, color: 'text.disabled', mb: 3, textTransform: 'uppercase', letterSpacing: 0.5 }}>
           {ext ? `.${ext} file` : 'Binary file'} — no preview available
         </Typography>
 
@@ -587,22 +585,22 @@ function WebappRenderer({
   artifact,
   sessionId,
   apiBaseUrl = '/api/v1',
-  authHeader,
 }: {
   artifact: ArtifactInfo
   sessionId: string
   apiBaseUrl?: string
-  authHeader?: string
 }) {
   const iframeSrc = useMemo(() => {
     const filePath = webappEntryRelPath(artifact)
-    const token = authHeader?.replace(/^Bearer\s+/, '')
-    // Embed JWT in the URL path so relative sub-resources (JS/CSS) automatically carry the token
-    if (token) {
-      return `${apiBaseUrl}/webapp/${sessionId}/${token}/${filePath}`
-    }
+    // No credential in this URL. It used to be `/webapp/{session}/{JWT}/{path}`,
+    // which put the console's full-project bearer token in the address bar of an
+    // iframe running with `allow-scripts allow-same-origin` — i.e. reachable by
+    // agent-authored JS — and into every access log and Referer along the way.
+    // The route it pointed at does not exist in this repo either, so nothing is
+    // lost by dropping it (design/2026-08-06-embeddable-agent-orange.md, T13 and
+    // its Out of Scope entry: building that route is a separate decision).
     return `${apiBaseUrl}/agent/session/${sessionId}/workspace/files/${filePath}`
-  }, [artifact, sessionId, apiBaseUrl, authHeader])
+  }, [artifact, sessionId, apiBaseUrl])
 
   return (
     <Box sx={{ height: '100%', minHeight: 500 }}>
@@ -659,7 +657,7 @@ function CsvRenderer({ text }: { text: string }) {
   }, [csv.rows, sortCol, sortDir])
 
   return (
-    <Box sx={{ overflow: 'auto', backgroundColor: 'white' }}>
+    <Box sx={{ overflow: 'auto', backgroundColor: 'background.paper' }}>
       <Table size="small" stickyHeader>
         <TableHead>
           <TableRow>
@@ -688,7 +686,7 @@ function CsvRenderer({ text }: { text: string }) {
           ))}
         </TableBody>
       </Table>
-      <Typography sx={{ fontSize: 12, color: '#6b7280', textAlign: 'center', py: 1 }}>
+      <Typography sx={{ fontSize: 12, color: 'text.secondary', textAlign: 'center', py: 1 }}>
         {csv.totalRows} row{csv.totalRows !== 1 ? 's' : ''}
       </Typography>
     </Box>
@@ -696,9 +694,10 @@ function CsvRenderer({ text }: { text: string }) {
 }
 
 function CodeRenderer({ text, fileName }: { text: string; fileName: string }) {
+  const muiTheme = useTheme()
   return (
     <Highlight
-      theme={themes.vsLight}
+      theme={muiTheme.palette.mode === 'dark' ? themes.vsDark : themes.vsLight}
       code={text}
       language={getPrismLanguage(fileName)}
     >
@@ -722,7 +721,7 @@ function CodeRenderer({ text, fileName }: { text: string; fileName: string }) {
                   width: '3em',
                   textAlign: 'right',
                   paddingRight: '1em',
-                  color: '#9ca3af',
+                  color: 'text.disabled',
                   userSelect: 'none',
                   flexShrink: 0,
                 }}

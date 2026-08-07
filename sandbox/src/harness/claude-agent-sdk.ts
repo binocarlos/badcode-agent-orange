@@ -15,9 +15,48 @@ import * as https from 'node:https';
 import * as net from 'node:net';
 import { v4 as uuidv4 } from 'uuid';
 import { processAttachments, EmbeddedImage } from '../services/attachment-prompt.js';
-import type { QueryRequest } from '../types/index.js';
+import type { QueryRequest, TokenUsage } from '../types/index.js';
 import type { Harness, TurnContext } from './harness.js';
 import type { HarnessDescriptor } from './registry.js';
+import { resolveSessionMCPServers } from '../tools/registry.js';
+
+// ---------------------------------------------------------------------------
+// Token usage
+//
+// The one place the provider's snake_case usage object becomes the camelCase
+// shape every stored `query_complete` envelope carries and
+// `go/agentdb/token_usage.go` reads.
+//
+// It forwards every SEPARATELY-BILLED component, not just `input_tokens`. The
+// SDK's own `BetaUsage` (via `NonNullableUsage` in
+// `@anthropic-ai/claude-agent-sdk`) documents three distinct input fields —
+// `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` —
+// and none of them includes the others. See `TokenUsage` in ../types/index.ts
+// for why the remaining `BetaUsage` members are excluded.
+//
+// Defensive `?? 0`: `NonNullableUsage` types the cache fields as `number`, but
+// this harness also runs against recorded/mock transports whose usage object is
+// hand-written, and a missing key must read as zero spend rather than NaN — a
+// NaN would propagate through the jsonb cast and silently zero the ledger,
+// which is the class of bug this whole change exists to end.
+// ---------------------------------------------------------------------------
+
+type ProviderUsage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+};
+
+export function readTokenUsage(usage: ProviderUsage | undefined | null): TokenUsage {
+  const u = usage ?? {};
+  return {
+    inputTokens: u.input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    cacheCreationInputTokens: u.cache_creation_input_tokens ?? 0,
+    cacheReadInputTokens: u.cache_read_input_tokens ?? 0,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Per-session header proxy
@@ -503,6 +542,25 @@ export class ClaudeAgentSdkHarness implements Harness {
         delete subprocessEnv['ANTHROPIC_API_KEY'];
       }
 
+      // Session-supplied MCP servers (docs/product/01-session-config.md §4).
+      // Whole-value ${VAR} references in env/headers are resolved HERE, at spawn
+      // time, from the environment the MCP processes will actually inherit. An
+      // unset or empty variable throws — we never spawn an MCP server with an
+      // unresolved or empty credential; the catch below turns it into a loud
+      // AGENT_ERROR event instead.
+      const sessionMcpServers = resolveSessionMCPServers(
+        resolved.sessionMCPServers ?? {},
+        subprocessEnv,
+      );
+      const sessionMcpNames = Object.keys(sessionMcpServers);
+      if (sessionMcpNames.length > 0) {
+        console.log(
+          `[ClaudeAgentSdkHarness] Session MCP servers resolved: ${sessionMcpNames.join(', ')}`,
+        );
+      }
+      // Session config wins on name collision (§4.3).
+      const mcpServers = { ...resolved.mcpServers, ...sessionMcpServers };
+
       console.log(`[SSE-DEBUG][ClaudeAgentSdkHarness] Entering SDK for-await loop at ${Date.now()}`);
       for await (const message of query({
         prompt: promptInput,
@@ -518,7 +576,7 @@ export class ClaudeAgentSdkHarness implements Harness {
           settingSources: ['project'],
           allowedTools: resolved.allowedTools,
           disallowedTools: resolved.disallowedTools,
-          mcpServers: resolved.mcpServers,
+          mcpServers,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           includePartialMessages: true,
@@ -665,25 +723,25 @@ export class ClaudeAgentSdkHarness implements Harness {
 
           emit.messageEnd(messageId);
 
+          // Read usage BEFORE branching on subtype. `SDKResultSuccess` and
+          // `SDKResultError` both declare `usage: NonNullableUsage` and
+          // `total_cost_usd: number` — a turn that burns tokens and then hits
+          // `error_max_turns` or `error_during_execution` has spent exactly as
+          // much as one that succeeded. Until 2026-07-29 the error branch
+          // passed `undefined` for both, so the runaway case — the one the
+          // spend brake exists for — was the unmetered one.
+          const usage = readTokenUsage(message.usage);
+
           if (message.subtype === 'success') {
             console.log(`[ClaudeAgentSdkHarness] Query completed successfully`);
             if (resultContent) {
               this.conversationHistory.push({ role: 'assistant', content: resultContent });
             }
-            emit.endQuery(
-              'completed',
-              resultContent,
-              message.total_cost_usd,
-              {
-                inputTokens: message.usage.input_tokens,
-                outputTokens: message.usage.output_tokens,
-              },
-              resolvedModel,
-            );
+            emit.endQuery('completed', resultContent, message.total_cost_usd, usage, resolvedModel);
           } else {
             const errorMsg = message.errors?.join(', ') || 'Unknown error';
             console.error(`[ClaudeAgentSdkHarness] Query completed with error: ${errorMsg}`);
-            emit.endQuery('error', undefined, undefined, undefined, resolvedModel);
+            emit.endQuery('error', undefined, message.total_cost_usd, usage, resolvedModel);
           }
         }
       }
@@ -694,6 +752,11 @@ export class ClaudeAgentSdkHarness implements Harness {
       console.error('Stack:', errorStack);
 
       emit.error('AGENT_ERROR', errorMsg);
+      // No usage here, and that is not the same omission as the `result`
+      // error branch above: this path is a THROW out of the query loop, so no
+      // result message ever arrived and the provider never reported a bill.
+      // Tokens may genuinely have been spent upstream; the harness has no way
+      // to know how many. Recorded as unmetered rather than guessed.
       emit.endQuery('error', undefined, undefined, undefined, resolvedModel);
     } finally {
       // Always close the per-session proxy, whether the query succeeded or failed.

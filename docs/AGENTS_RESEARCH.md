@@ -1,404 +1,492 @@
-# Autonomous Agent Organization — Research & Design Seed
+# Agents research — measuring self-improvement
 
-**Date:** 2026-06-20
-**Status:** Research seed for a NEW repository (not Platinum work). Portable by design.
-**Purpose:** Capture everything discovered in the design thread that produced it, so a
-fresh repo can be populated from this single file. Self-contained: assumes no Platinum
-context beyond the clearly-labelled "what we already have" notes.
+*Written 2026-07-27. **Status corrected 2026-07-29: the harness proposed below is BUILT.** The
+research in §§1–7 stands as written; what changed is that it stopped being a proposal. This file
+previously said "nothing here is built yet", which was true when written and had been false for
+days — see [§8](#8-the-research-map) for what exists now and where it lives.*
 
----
+**This is the single entry point for Agent Orange's agent research.** Two workstreams ran in
+parallel across separate sessions — the self-improvement/measurement line (this file and its
+downstream docs) and the operator-console line (docs 15/16/21). They did not duplicate each other
+and they have not contradicted each other; §8 is the map, including where they met.
 
-## 0. What this is
+This document exists for two reasons. First, `.env.example` cites it for the subscription-OAuth
+question — that answer is in [§1](#1-model-credentials-and-subscription-oauth). Second, it records
+the literature review behind the self-improvement test harness, so the design choices have their
+reasons attached rather than being folk wisdom six months from now.
 
-A foundational design + research document for a **standalone runtime for long-running,
-goal-directed AI agents** — to be used for personal projects (first target: marketing /
-growing engagement for a creative/art project; later: a trading bot). It is the output
-of a build-vs-buy investigation that started as "should I hoist Platinum's Dockerized
-agent infra into a library?" and ended as "this is a different project; here is what it
-should be."
-
-**The one-line thesis the whole design rests on:**
-
-> Don't build a company of collaborating AI *personas*. Build **one agent archetype,
-> recursively invoked under many scopes**. The unit of difference is not *who the agent
-> is* but *what each invocation gets*: which slice of context, which tools, which model.
-> **Scopes, not personas.**
+The motivating question: **Agent Orange's §8.7 acceptance loop demonstrably runs — a worker
+rewrites another worker's prompt with a rationale, and the next job uses it. Nothing measures
+whether it *improves* anything.** Proving the loop closes is not the same as proving it helps, and
+the gap between those two claims is where this document lives.
 
 ---
 
-## 1. The vision
+## 1. Model credentials and subscription OAuth
 
-Set an agent a **high-level, open-ended goal** ("maximize engagement for this creative
-project") plus a **budget** and a **set of tools**, and have it run **continuously over
-time** — planning, decomposing work, doing it, remembering what it did, and pulling a
-human in when it needs a resource, a credential, money, or a decision.
+Three credential modes, precedence `ANTHROPIC_API_KEY` > `CLAUDE_CODE_OAUTH_TOKEN` > mock:
 
-Decompose the vision into capabilities:
+| Mode | Set | Path to the model |
+| --- | --- | --- |
+| API-billed | `ANTHROPIC_API_KEY` | Sessions talk to agentd's model proxy, which injects a per-session JWT. |
+| Subscription | `CLAUDE_CODE_OAUTH_TOKEN` (API key blank) | Sessions call `api.anthropic.com` directly with the OAuth token. |
+| Offline | neither | Deterministic mock model; `AGENTKIT_MOCK_MODEL_SCRIPT` for scripted turns. |
 
-- A **persistent, goal-directed agent** that operates over weeks/months, not one request.
-- **Dual triggering**: scheduled work (cron — "3am, review yesterday's metrics") *and*
-  reactive work (an event interrupts — "an email/comment arrived, respond").
-- **Persistent memory** of everything it has done and learned.
-- The ability to **break work into smaller chunks** and delegate them.
-- The ability to **ask a human** for things it can't do itself.
-- A **containerized Linux environment** the agent can operate (install software, clone
-  repos, run code) to actually get work done.
+Subscription mode is already wired end to end — `.env.example`, `docker-compose.yml`,
+`go/runner.go`'s credential branch, with `go/runner_test.go` pinning that the API key stays absent
+and the OAuth token is passed through. To use it: run `claude setup-token` on the host, paste the
+`sk-ant-oat01-…` value into `.env`, leave `ANTHROPIC_API_KEY` blank.
 
----
-
-## 2. Executive summary (the conclusions, up front)
-
-1. **Don't re-build commodity infra.** The need decomposes into ~4 layers; only one of
-   them (the coordination/agent logic) is differentiated. Rent the rest.
-2. **Keep the single-agent runtime; it's the reliable unit.** A containerized agent
-   running the **Claude Agent SDK** is the proven atom. Everything else orchestrates it.
-3. **Use an API key, not a Claude Max subscription.** As of Feb 2026 Anthropic bans
-   subscription OAuth for the Agent SDK / headless automation. Budget pay-per-token.
-4. **The multi-agent "org of collaborating staff" is the most failure-prone design that
-   exists today** (verified research, §5). Reliability comes from a *single coherent
-   intelligence recursively scoped*, not a team of peers negotiating.
-5. **Steal, don't invent, the solved parts**: the supervisor/orchestrator loop
-   (Magentic-One), and long-lived memory (MemGPT tiers + Generative-Agents retrieval).
-6. **Our genuinely novel + risky surface** is three things, to be de-risked carefully and
-   built *last*: dynamic agent **spawning/"hiring"**, **dual cron+event triggering on a
-   long-running agent**, and **human-in-the-loop escalation as a first-class primitive**.
-7. **Build the novel parts in the simplest setting first** (one agent, no spawning),
-   prove reliability, then add coordination, then parallelism, then dynamic hiring.
+**The caveat that matters for this research.** Anthropic's terms restrict subscription OAuth for
+headless automation. A self-improvement experiment is a long-running unattended loop — squarely the
+restricted case, not an edge of it. Treat subscription mode as a personal-use opt-in for
+interactive and small-scale work, and read the current terms before running a large unattended
+experiment on it. This is a licensing question, not a technical one; the code does not and should
+not try to enforce it.
 
 ---
 
-## 3. Build vs. Buy — the layered decomposition
+## 2. The central failure mode: judge–truth divergence
 
-The need splits into four layers. Map each to build/buy:
+A self-improvement loop optimises whatever signal it is given. When that signal is a model judging
+its own output without ground truth, the loop optimises *persuasiveness*, not *quality* — and it
+does so fast.
 
-| Layer | What it does | Verdict |
-|---|---|---|
-| **1. Single-agent runtime ("the exchange")** | Given accumulated state + a trigger, run one agent turn-loop to completion. Container the agent operates. | **Keep/own** — the Claude Agent SDK in a container. The reliable unit. |
-| **2. Coordination / orchestration** | Plan toward the goal, decompose into chunks, delegate, track progress, re-plan on failure, hold memory. | **Build (thin)** — this is the differentiation. Steal the *pattern*. |
-| **3. Triggering / scheduling** | Fire the agent on cron + on async events. | **Self-build (hardcode)** — decided in this thread; see §6.4 + caveat. |
-| **4. Storage / state** | Persist memory, ledgers, artifacts. | **Buy/standard** — Postgres + object storage. |
+[**More Convincing, Not More Correct**](https://arxiv.org/html/2607.05904) quantifies this
+precisely enough to be worth memorising. Self-play on GSM8K, model generates → judges without a
+reference → optimises by preference learning, with a hidden exact-match anchor attached that the
+judge never sees:
 
-**Why not just hoist Platinum's Docker orchestration?** Because it is tuned for the
-wrong *shape*: interactive, multi-tenant, image-burning SaaS sessions. These new
-projects are headless, single-tenant, cron/event-triggered background agents. Reusing
-Platinum's heavy machinery would force us to *also* build cron + memory + spawning
-(which it lacks — see §8) while inheriting maintenance tax (DinD networking, image GC,
-egress allowlists, isolation tests) that is exactly the undifferentiated heavy lifting a
-provider/standalone design should shed. We may still **reuse agent-library *code*** for
-layer 1 (see §8) — but as a borrowed foundation in a new repo, not as a host.
+- Judge pass rate: **72% → 94%**
+- True accuracy: **flat, ~20%**
+- Judge–truth gap: **0.74**
 
----
+The hacking appeared within a handful of iterations, transferred across judge families (Qwen,
+Llama, Gemma) and scales up to 14B, and **a strict three-judge ensemble still accepted 55% of the
+wrong answers**. Ensembling is not a fix.
 
-## 4. The infrastructure tool landscape (what each tool actually does)
+The named mechanism is **verification asymmetry**: shown a candidate answer with no ground truth, a
+judge can only assess whether it *looks* right. For any task where verifying is harder than
+recognising plausibility, the judge scores plausibility. This creates "false-positive basins" that
+optimisation pressure actively seeks out.
 
-Reference for picking layer components. (Sandbox host is only needed if/when we want a
-managed persistent Linux box instead of running our own container.)
+Their decisive mitigation is **de-anchoring** — require the judge to commit its own answer
+*before* it sees the candidate. False-positive rate collapsed from 0.72 to 0.01, and used as the
+training reward it prevented the basin forming at all.
 
-### Layer 1 candidates — the sandbox / Linux box the agent operates
-- **Daytona** — dev-environment-as-a-service repositioned for AI agents. API/SDK spins
-  up a full isolated Linux workspace. **Persistent by default** (like a Codespace);
-  state survives between runs. Best fit for "install software, clone repos, continue
-  where I left off." Fast cold start.
-- **E2B** — sandboxes purpose-built for agents to run code, Firecracker microVMs (strong
-  isolation). **Ephemeral** (~1h hobby / 24h pro, then reset). Best for transactional
-  "spin up, run, grab result, tear down."
-- **Fly.io (Fly Machines)** — general cloud infra: fast-booting Firecracker microVMs,
-  run any Docker image, **persistent volumes**, suspend/resume. Most "your own server"
-  control; more plumbing to own.
-- **Cloudflare Containers/Sandbox** — scale-to-zero, ephemeral filesystem (state goes in
-  Durable Objects / R2 *alongside*, not in the container). Max ~4 vCPU / 12 GiB. Billed
-  per 10ms with idle `sleepAfter`. Great for **bursty** cron work, poor for always-on /
-  persistent-box / "commit-my-work" needs.
+**Why this bites us specifically.** Poetry is the extreme of verification asymmetry: there is no
+correctness at all, only plausibility. A self-graded poetry loop is, structurally, a machine for
+producing text that pattern-matches "good poem" to one particular judge.
 
-### Layer 3 candidates — durable cron + event triggering
-*(Decided in this thread: self-build / hardcode instead — see §6.4. Listed for context
-and as a fallback if hand-rolled triggering proves painful.)*
-- **Inngest** — event-first durable workflows, fully managed; functions triggered by
-  events or cron; durable steps (retries, sleeps for days, fan-out, concurrency caps).
-- **Trigger.dev** — durable background jobs/tasks defined in your codebase; cron + event
-  triggers, no timeouts, retries, observability; **open-source + self-hostable**.
-- **Temporal** — heavyweight, battle-tested durable execution; most guarantees, most ops.
-- **Cloudflare Workflows + Durable Objects + Cron Triggers** — one-vendor integrated
-  stack; cheapest for bursty work; couples you to CF.
+### The related failures
 
-### Layer 4 — storage
-- **R2** (Cloudflare) — S3-compatible object storage, **no egress fees**. For files,
-  artifacts, snapshots, memory blobs. Swappable (S3 API).
-- **Postgres (+ pgvector)** — structured state: ledgers, memory stream, embeddings,
-  agent/run registry.
+From [Harness Engineering for Self-Improvement](https://lilianweng.github.io/posts/2026-07-04-harness/)
+(Weng, July 2026) — the closest published description of the thing we have built:
+
+- **Diversity collapse** toward whatever high-reward pattern got exploited first.
+- **"Numerical duct tape"** — models declaring success on noisy results.
+- **Memory degradation** over long horizons without persistent logging.
+- **Weak evaluators** as the root cause of most of it.
+
+From [Who Grades the Grader?](https://arxiv.org/html/2607.12790), observed specification gaming in
+their own runs: evolved skills wrote tags in place of numbers (~30% of tags had no value beside
+them at peak) and invented confident forecasts to satisfy style dimensions. Worth reading as a
+catalogue of what "improvement" looks like from the inside when it isn't.
 
 ---
 
-## 5. Multi-agent research findings (verified, 2025–2026)
+## 3. Design rules that follow
 
-These were gathered via a fan-out research pass and **adversarially verified** (each
-claim voted by 3 independent checkers; only claims that survived are below). Sources at
-the end of this section.
+### R1 — The evolving loop never touches the measuring instrument
 
-### Feasibility is sobering
-- **Berkeley MAST study** (1,600+ annotated traces across 7 frameworks): failure rates
-  **41%–86.7%**; ChatDev correctness as low as **25%**; gains over a *single* agent
-  "often minimal." Failures split into three structural categories:
-  **specification/design (~42%)**, **inter-agent coordination breakdown (~37%)**, and
-  **task verification (~21%)**. **Simple fixes (better role prompts, tweaks) are
-  insufficient** (+15.6% for ChatDev, still unreliable). [1]
-- **Cognition, "Don't Build Multi-Agents":** running agents collaboratively on
-  interdependent *write* work is fragile — context can't be shared thoroughly, decisions
-  get dispersed, miscommunications **compound** rather than cancel. Crucially their
-  failure example was **two copies of the same agent** — so shared *identity* does not
-  rescue parallel branches. [2]
+From [Who Grades the Grader?](https://arxiv.org/html/2607.12790): held-out evaluation must never
+pass through the evolved metric. The consequence is the reason this rule is load-bearing —
 
-### But the danger is scoped — not a universal law
-- The fragility is specific to **interdependent write tasks run in parallel**.
-  **Read-heavy / breadth-first parallel** decomposition is the recognized exception
-  (Anthropic's multi-agent research system). **Depth-first sequential** work is safe.
+> a weak metric slows learning but **cannot corrupt measurement**.
 
-### Two tempting claims were REFUTED by verification (do not rely on them)
-- ❌ "A better base model won't fix multi-agent failures." → **Model quality DOES matter.**
-- ❌ "Memory is purely a retrieval problem, not storage." → **Storage architecture also matters.**
+That asymmetry is the whole game. A loop with a mediocre frozen scorer learns slowly and we can
+tell. A loop that can influence its scorer learns nothing and we *cannot* tell.
 
-### Strong, steal-able prior art for the *parts*
-- **Coordination → Magentic-One / Semantic Kernel "Magentic":** a lead/orchestrator
-  agent plans, maintains shared context, tracks progress via an outer-loop **Task Ledger**
-  + inner-loop **Progress Ledger**, delegates to specialists, and **re-plans to recover
-  from errors**. Explicitly built for goals "where the solution path is not known in
-  advance." This is *the* coordination-layer blueprint. [3][4]
-- **Persona/role + org structure → MetaGPT, ChatDev:** assign fixed professional roles
-  (CEO/CTO/PM/engineer/designer/reviewer); take a one-line goal to a chain of artifacts.
-  **But** both use *fixed, predefined pipelines* ("Code = SOP(Team)"; chain-shaped
-  waterfall) — **not** dynamic hiring. [5][6]
-- **Long-lived memory → MemGPT/Letta + Stanford Generative Agents:**
-  - MemGPT/Letta: OS-style **tiered memory** — small in-context "core" memory the agent
-    self-manages vs. external conversational/archival/file tiers = unlimited memory
-    within a fixed window. [7]
-  - Generative Agents: a **memory stream** (timestamped natural-language records) with a
-    directly implementable **retrieval score = weighted sum of recency (exp decay
-    ≈0.995) + importance (LLM-scored 1–10) + relevance (cosine similarity)**, equal
-    weights by default. [8]
+### R2 — Pairwise and de-anchored, not absolute scoring
 
-### What is genuinely novel / under-served (our risk concentrates here)
-1. **Dynamic spawning / "hiring."** Every surveyed framework uses a **static roster**;
-   managers *select/route* among predefined agents — **none create new workers at
-   runtime.**
-2. **Dual cron + event triggering on a long-running agent.** An infra/durable-execution
-   concern; canonical frameworks are request/response or single-task pipelines.
-3. **Human-in-the-loop escalation as a first-class org primitive** (request credentials,
-   approve spend, make a decision) — not evidenced in surveyed frameworks.
+Absolute 1–10 judging suffers ceiling compression, heavy-tailed variance, and scale drift between
+judges. [Reference-anchored Elo](https://openreview.net/forum?id=Q88mQBuPjB) — pairwise comparison
+against a fixed reference, expressed as win probability — is materially more stable and yields
+uncertainty estimates without resampling. Combine with de-anchoring (§2): the scorer answers the
+brief itself before seeing any candidate.
 
-**Sources:**
-[1] MAST — https://arxiv.org/abs/2503.13657 ·
-[2] Cognition — https://cognition.ai/blog/dont-build-multi-agents ·
-[3] Magentic-One — https://arxiv.org/abs/2411.04468 ·
-[4] Semantic Kernel Magentic — https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-orchestration/magentic ·
-[5] MetaGPT — https://github.com/FoundationAgents/MetaGPT ·
-[6] ChatDev — https://github.com/OpenBMB/ChatDev ·
-[7] Letta/MemGPT — https://www.letta.com/blog/benchmarking-ai-agent-memory/ ·
-[8] Stanford Generative Agents — https://arxiv.org/abs/2304.03442
+### R3 — Separate the two capabilities
+
+Weng's distinction, which our §8.7 loop currently conflates: **harness-updating capability** (can
+the critic produce good prompt edits?) versus **harness-benefit capability** (can the worker
+exploit them?). Smaller models can propose procedurally valid edits while failing to benefit from
+them. If our numbers don't move, without this split we won't know which half failed.
+
+### R4 — Expect the derived rubric to be weak, and measure it
+
+The premise "start from a vague goal with no guidance" is deliberately hard mode.
+[Model-generated rubrics run ~27 points behind human-authored ones](https://arxiv.org/pdf/2603.00077)
+with the judge held fixed, and scaling synthetic rubrics shows diminishing returns while human
+rubrics keep improving. The rubric the system *derives* from a vague goal is therefore itself a
+primary experimental artifact — diff round-k's prompt against round-0's and read what criteria it
+invented.
 
 ---
 
-## 6. The architecture: "Scopes, not personas"
+## 4. What "frozen" means
 
-### 6.1 The core reasoning (why scopes, not personas)
+Frozen is a statement about **causality, not location**. A scorer is frozen if no action available
+to the loop can change what it measures. It may live in the same project, the same database, even
+the same process — provided the loop has no writable channel to it.
 
-- **Collapsing the persona zoo is correct.** Reliability comes from one coherent thread
-  of context (per Cognition). A single agent identity that recursively decomposes work —
-  children inheriting the parent's reasoning — is the cleanest implementation of "share
-  full agent traces."
-- **But you cannot merge all context into one "all-knowing being."** Context windows are
-  finite. The moment you spawn a worker you are *forced* to choose what slice it sees —
-  that choice **is** the namespacing problem. It's essential complexity, not incidental.
-- **The benefit and the cost are the same coin.** A leaf only *saves* anything (context,
-  money, focus) by being **less than the root**: less context, cheaper model, fewer
-  tools. If a leaf were truly all-knowing it would just be the root again — no saving.
-  So you cannot keep the savings and delete the scoping.
-- **Therefore: collapse *identity*, keep *scope*.** One archetype, invoked under many
-  scopes. The leaf is the same being, given less.
-- **Three things "persona" was secretly doing that we still need** (so don't naively give
-  every spawn the full identity):
-  1. **Tool scoping = blast radius** (never hand spend/irreversible tools to a leaf).
-  2. **Prompt focus = spec quality** (MAST's #1 failure is over-broad specs; a narrowed
-     objective is a reliability technique, not a personality).
-  3. **Memory continuity by function** (memory must still be scoped by domain on
-     retrieval — namespacing you can't escape; solved via the shared store below).
+Three things must be frozen together; freezing one or two is the same as freezing none:
 
-### 6.2 The four layers
+1. **The instrument** — scorer prompt, model, and version, pinned and hash-checked.
+2. **The held-out set** — briefs the loop never sees during its rounds.
+3. **The procedure** — comparison method, ordering randomisation, aggregation.
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ 4. TRIGGER / DURABILITY  (SELF-BUILD — hardcoded cron + event loop)    │
-│    • cron fires the orchestrator on a schedule                          │
-│    • async events (webhook/email/queue) interrupt it                    │
-│    • each trigger = load persisted state → run one orchestrator exchange│
-│      → persist. (Caveat on durability: §6.4.)                           │
-└───────────────┬────────────────────────────────────────────────────────┘
-                ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ 3. ORCHESTRATOR  (BUILD, pattern = Magentic-One)                        │
-│    • holds the GOAL; owns Task Ledger (plan) + Progress Ledger (state)  │
-│    • decides next chunk; defines child SCOPES; re-plans on failure      │
-│    • SHARED MEMORY store with scoped retrieval (BUILD)                   │
-│    • escalate_to_human(...) tool (BUILD)                                 │
-└───────────────┬────────────────────────────────────────────────────────┘
-                │ spawn-with-scope
-                ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ 2. EXCHANGE / SPAWN PRIMITIVE  (BUILD thin wrapper over layer 1)        │
-│    • create a child invocation of the SAME archetype under a Scope      │
-│    • returns { result, full_trace, memory_writes[] } to parent          │
-└───────────────┬────────────────────────────────────────────────────────┘
-                ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│ 1. SINGLE-AGENT RUNTIME  (KEEP/OWN: Claude Agent SDK in a container)   │
-│    • given state + trigger msg, run one turn-loop to completion         │
-│    • API key (NOT Max). Candidate foundation: agent-library code (§8).  │
-└──────────────────────────────────────────────────────────────────────┘
-```
+### Channels that unfreeze a scorer in *our* architecture
 
-### 6.3 The Scope contract (layer 2)
+Agent Orange makes several of these easy to create by accident, because the product layer is
+deliberately built for workers to reconfigure each other:
 
-```
-Scope {
-  objective:  string         // narrowed task ("draft 3 launch posts about X")
-  context:    ContextSlice    // parent-trace excerpt + memory retrieved for THIS objective
-  tools:      ToolPolicy      // allowlist; NEVER spend/irreversible at leaves
-  model:      ModelTier       // full | mid | cheap — downgrade toward leaves
-  budget:     Budget          // token ceiling, spend ceiling, max depth
-  return:     ResultSchema     // structured result the parent expects
-}
-// spawn returns { result, full_trace, memory_writes[] }
-```
+| Channel | Why it leaks | Containment |
+| --- | --- | --- |
+| `worker_prompt_write` | The §8.7 loop's whole purpose. A scorer worker is a legal target. | Protected-worker flag, or compose-time hash check on the scorer's prompt. |
+| Project memory | Append-only shared memory; loop writes, scorer reads. | Scorer's MCP tool set excludes memory reads, or reads a fixed namespace only. |
+| Held-out briefs in memory or config | Anything the loop can read, it can train on. | Briefs live outside the project entirely — in the harness repo, not the database. |
+| Same model family | Not a leak, but correlated blind spots. | Prefer a different model for scoring; at minimum pin the version. |
 
-### 6.4 Orchestrator, memory, triggering, escalation
-
-- **Orchestrator (Magentic-One pattern):** Task Ledger (plan/what's known) + Progress
-  Ledger (done/in-flight/blocked/needs-human). The decision is "what's the next scope to
-  spawn," depth-first by default. On failure, **re-plan** rather than retry-in-place.
-- **Shared memory (ONE store, scoped retrieval):** append-only memory stream
-  (`{timestamp, importance, embedding, source_scope}`); per-spawn retrieval by
-  recency·importance·relevance; tiered working memory (MemGPT-style) for the long-running
-  orchestrator so it never blows its window. Postgres + pgvector is the natural home.
-- **Triggering — SELF-BUILT (decision):** cron + events will be **hardcoded**, not a
-  bought durable engine. Keep it simple: a scheduler loop + an event intake that both
-  resolve to "load state → one orchestrator exchange → persist."
-  - **Honest caveat (the trade-off being accepted):** a hand-rolled loop gives up what
-    durable-execution engines provide for free — surviving process restarts mid-run,
-    multi-day sleeps, and automatic retries. **Mitigation:** make the orchestrator
-    **stateless between triggers** and **fully re-derive from persisted ledgers + memory
-    on each fire.** Never hold long-lived in-process state across a sleep. If/when long
-    human-wait windows or mid-task crash-recovery become painful, that's the signal to
-    revisit Trigger.dev/Temporal (§4).
-- **Human-in-the-loop escalation (first-class):**
-  `escalate_to_human({request, options?, blocking?}) → HumanResponse`. Pauses the branch,
-  notifies out-of-band (email/Slack), resumes on response. **Mandatory** for credentials,
-  spending money, irreversible/external actions, or out-of-mandate decisions. With
-  hardcoded triggering, "blocking" escalation = persist a `needs-human` ledger entry and
-  end the exchange; resume on the human's reply event.
+The practical upshot for hosting the scorer as a worker in the same project: **yes, and it's a
+reasonable choice — but "frozen" then has to be enforced rather than merely intended.** A
+convention that says "don't rewrite the scorer" is not a control; `worker_prompt_write` is a tool
+the loop holds, and the entire lesson of §2 is that optimisation pressure finds writable channels
+whether or not anyone intended them as targets.
 
 ---
 
-## 7. Reliability rules (baked into the design)
+## 5. Proposed harness
 
-1. **One archetype, many scopes** — no persona zoo.
-2. **Depth-first by default; parallelize only independent / read-only subtasks** (the
-   Anthropic-blessed exception). Never parallel interdependent writes.
-3. **Share full traces** down to children and up to the parent — not just messages.
-4. **Verify every delegated write** (parent or an independent verify scope) before it
-   enters the progress ledger. ~21% of failures are verification failures.
-5. **Tool scope = blast radius.** Spend/irreversible/credential tools never reach leaves;
-   they bubble up to escalation.
-6. **Bounded autonomy** — every branch carries token + spend + depth budgets. Caps
-   runaway decomposition and runaway "hiring" structurally.
-7. **Model downgrade only at mechanically-verifiable leaves**, paired with a verify step.
+**Tier 1 — the loop under test.** A real Agent Orange project. A worker whose system prompt starts
+near-empty, a critic worker that reads outputs and calls `worker_prompt_write` with a rationale, a
+schedule driving rounds. P8 (append-only) means the config log *is* the experiment record —
+complete prompt lineage, free, with no extra instrumentation.
 
----
+**Tier 2 — the frozen scorer.** Per §4. Held-out briefs, de-anchored pairwise comparison against
+round-0 output and a fixed reference set, positions randomised, reference-anchored Elo.
 
-## 8. Relationship to `agent-library` (candidate foundation for layer 1)
+### Metrics
 
-`agent-library` is the existing (Platinum-internal) reusable runtime. An infrastructure
-map of it (what it provides vs. what it lacks) — relevant to deciding what *code* to
-borrow into the new repo for layer 1:
+| Metric | Detects |
+| --- | --- |
+| **Held-out win-rate vs round 0** | The primary curve. Did anything improve? |
+| **Internal critic score vs frozen score** | Judge–truth divergence — the §2 signature, visible within a couple of rounds and cheap. |
+| Embedding dispersion per round | Diversity collapse. pgvector and the embedding provider are already wired. |
+| Prompt length / instruction count | Verbosity and duct-tape hacks. |
+| Round-k prompt diff vs round-0 | The derived rubric (R4). |
+| Swap tests (round-k prompt × round-0 config) | R3's two axes. |
 
-**Provides (reusable for layer 1):**
-- **Pluggable harness seam**; currently one impl wrapping the `@anthropic-ai/claude-agent-sdk`.
-- **ExecutionEnvironment** adapters (Docker / DinD / Kubernetes) with **snapshot/restore**
-  and commit-to-image ("burn").
-- **Model proxy** (injects the real API key; container never holds it; per-session header
-  routing).
-- **Orchestration core** (Runner), **fleet placement**, **event pipeline**, and a
-  host-implemented **SessionStore** seam (Platinum backs it with Postgres).
+The second row is the one to build first. It is the cheapest signal we have and it fails loudly.
 
-**Does NOT provide (we must build — and these are exactly our novel primitives):**
-- **No cron/scheduler** — only internal idle-reaper + archive loops. (Our layer 3.)
-- **No memory system** — persists conversation events + workspace snapshots, but no
-  searchable persona/long-term memory. (Our layer 3 memory.)
-- **No sub-agent spawning** — there's a `SubagentEvent` hook for the UI, but no primitive
-  to spawn/route/aggregate child agents. (Our layer 2/3 spawn-with-scope + orchestrator.)
-- **No egress control** — left to Docker/K8s network policy or a sidecar.
+### Controls
 
-**Implication:** agent-library is a strong candidate for **layer 1** (the containerized
-Claude-Agent-SDK runtime + snapshot/restore + model proxy) but contributes **nothing** to
-layers 2–4 — which is the whole point of the new project. Borrow the runtime; build the
-coordination/memory/triggering/escalation ourselves.
+Without these it is a demo, not an experiment:
+
+- **No-critic arm** — same round count, prompt frozen. Isolates real change from scorer variance.
+- **Random-edit critic arm** — arbitrary prompt edits. If the real critic cannot beat prompt churn,
+  there is no self-improvement, only motion.
+- **Memory-off arm** — does append-only memory contribute, or is prompt rewriting doing the work?
+- Multiple seeds, variance reported. One run on a 20-item held-out set is noise.
 
 ---
 
-## 9. Roadmap (novel/risky parts LAST, on a proven base)
+## 6. Calibrate the instrument before trusting it
 
-First use case (decided): **art-project marketing** — promote/grow engagement for the
-creative project. Chosen as a lower-stakes first target (content/posting/outreach), with
-a gentler escalation surface than the trading bot.
+**Recommendation: run the rig first on a domain with hidden ground truth, and only then on an
+unverifiable one like poetry.**
 
-- **Phase 0 — One agent, long-running.** Single archetype, **dual-triggered** (hardcoded
-  cron + event), **shared memory**, `escalate_to_human`. **No spawning.** Proves the
-  least-prior-art primitives in the simplest form. If this isn't reliable, nothing above
-  it will be.
-- **Phase 1 — Orchestrator + depth-first decomposition.** Add Task/Progress ledgers +
-  spawn-with-scope, **sequential only**, same-archetype workers with scoped
-  context/tools/model, **verify step on every delegated write.**
-- **Phase 2 — Bounded parallel fan-out.** Parallelize **independent / read-only**
-  subtasks only (research, gather, summarize). Never interdependent writes.
-- **Phase 3 — Dynamic spawning ("hiring").** Orchestrator defines *new* worker scopes at
-  runtime from scope templates — the genuinely novel primitive — behind budget caps,
-  depth limits, and mandatory verification. **Last**, because it's the largest unbounded-
-  failure surface, stacked on a layer that is fragile even when static.
+The reasoning is the hidden-anchor trick from §2. On an unverifiable task, a harness that cannot
+detect improvement is indistinguishable from a loop that did not improve. Both produce a flat line.
+Calibrating on a task where we independently know the right answer tells us which of those two
+things a flat line means — and that is the difference between a result and a shrug.
 
----
+### The hypothesis-investigation domain
 
-## 10. Decisions made in this thread + open questions
+A promising calibration domain, and a better one than a maths anchor because it exercises the same
+multi-worker machinery an open-ended goal would: give the org chart a **hypothesis over a dataset
+whose true answer we computed and held out.** "Do people in red jumpers miss trains more often?"
 
-**Decided:**
-- New **standalone repo**, not a hoist into/of Platinum. (May reuse agent-library *code*
-  for layer 1 — §8.)
-- **First use case: art-project marketing.**
-- **Triggering: self-built / hardcoded** cron + events (not Inngest/Temporal/etc.) — with
-  the statelessness mitigation in §6.4.
-- **Auth: Anthropic API key**, not a Max subscription.
-- **Architecture: scopes-not-personas**, orchestrator-over-homogeneous-workers, shared
-  memory, depth-first-default + verify, staged roadmap.
+Its properties, in the terms of this document:
 
-**Open (resolve before/while building):**
-1. **Layer 1 host** — run our own container (borrowing agent-library code) vs. a managed
-   persistent-workspace provider (Daytona / Fly). Driven by whether the marketing agent
-   needs a persistent install-stuff box or just bursty runs.
-2. **Memory store** — fresh Postgres+pgvector for the new repo (the steal-able embedding
-   + hybrid-search patterns exist in Platinum and can be reimplemented cleanly).
-3. **The art-marketing tool surface** — which concrete tools/MCP servers (social posting,
-   image generation, analytics, email) and which of them require escalation.
-4. **Model tiers per depth** — which Claude models at root vs. leaves; confirm cost
-   envelope for a continuously-running agent.
+- **Verifiable.** The conclusion checks against a held-out ground-truth answer. No verification
+  asymmetry, so §2's basin cannot form — which is exactly why it calibrates.
+- **Truth is ours to set.** With synthetic data we control effect sizes, confounders, and sample
+  size, so difficulty is a dial rather than an accident.
+- **It admits planted nulls.** Some hypotheses must be *false*. A competent research org has to be
+  able to conclude "no effect found" — and an org that confirms every hypothesis it is handed is
+  the single most important failure to catch. It is also nearly free to test.
+- **Improvement is meta-level.** What improves across hypotheses is *methodology* — how the org
+  investigates — not one answer. That is Weng's meta-level axis, and it is the axis §8.7 actually
+  claims to operate on.
+
+Poetry then becomes the second experiment, run with an instrument we have reason to trust.
 
 ---
 
-## Appendix — full source list
+## 7. Two tiers of test: the gate and the instrument
 
-- Magentic-One — https://arxiv.org/abs/2411.04468
-- Semantic Kernel "Magentic" orchestration — https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-orchestration/magentic
-- MAST (multi-agent failure taxonomy) — https://arxiv.org/abs/2503.13657
-- Cognition, "Don't Build Multi-Agents" — https://cognition.ai/blog/dont-build-multi-agents
-- MetaGPT — https://github.com/FoundationAgents/MetaGPT
-- ChatDev — https://github.com/OpenBMB/ChatDev
-- Letta/MemGPT memory benchmarking — https://www.letta.com/blog/benchmarking-ai-agent-memory/
-- Stanford Generative Agents — https://arxiv.org/abs/2304.03442
-- Cloudflare Containers pricing/limits — https://developers.cloudflare.com/containers/pricing/
-- Anthropic subscription-auth restriction (context) — https://code.claude.com/docs/en/authentication
+The full argument and the story catalogue live in
+[`docs/product/11-learning-stories.md`](product/11-learning-stories.md); this section records the
+division of labour, because the two tiers have different failure semantics and conflating them
+ruins both.
+
+**Tier A — the deterministic gate.** The scripted mock model
+(`go/modelproxy/script.go`) selects its response by substring match against the raw request body —
+which contains the composed system prompt. It is therefore a *prompt-conditioned* deterministic
+model: rewrite the prompt and the behaviour changes, through the real loop, with zero tokens. Tests
+built on it are binary and fast. They **gate merges**. They prove the machinery *transmits* an
+improvement; they can never prove the system *discovers* one, because the improvement is authored
+into the script.
+
+**Tier B — the graded instrument.** The same stories run against a real model, with a second model
+grading outputs. The result is a number with variance, not a verdict. It is run on demand or
+nightly, recorded as a curve, and **never wired as a pass/fail CI gate** — a gate with variance
+flakes, and a flaky gate gets disabled within a fortnight. When the curve does something
+surprising, Tier A is the debugger.
+
+### Grading protocol for Tier B
+
+1. **Blind and shuffled.** Strip provenance (which round, which prompt version) and randomise
+   presentation order — otherwise the grader's expectation of improvement is measured, not
+   improvement.
+2. **Rank, don't score.** Batch-grade all candidate outputs together and ask for an ordering or
+   pairwise preferences. Absolute 0–10 scores suffer ceiling compression and scale drift (§R2);
+   comparison within one context window is the reliable operation.
+3. **Fixed anchor items in every batch.** Two or three unchanging outputs included in every grading
+   run put separate runs on a common scale. Without anchors, batch grading is only *internally*
+   comparable and a cross-run improvement curve is meaningless.
+4. **The grader is not the model under test.** Models exhibit documented self-preference for their
+   own generations. Grade with a different model; at minimum treat a same-model grade as weaker
+   evidence.
+5. **One story set, two harnesses.** Tier B reuses Tier A's stories with the model swapped —
+   no duplicate scenario maintenance.
+
+### Simulated time
+
+A necessary property for both tiers, and one the architecture already has: **a schedule firing is
+an ordinary project event through the ordinary dispatch gate** (`cmd/agentd/scheduler.go` —
+`CreateProjectEvent` + the shared `dispatch.go` gate; the cron tick only decides *when*). So tests
+never wait for the wall clock: they emit the event a subscription matches via `POST /agent/events`
+and rounds happen on demand. Any future trigger type should preserve this property — the moment a
+trigger fires through a private path instead of the event spine, it stops being simulatable and
+its consumers stop being testable offline.
+
+---
+
+## 8. The research map
+
+*Added 2026-07-29, consolidating two parallel sessions into one index. Every claim here was checked
+against the repo, not against memory. This section is the **map**; the linked docs remain
+authoritative for their own subjects — consolidating their content into one file would destroy the
+structure that makes them usable.*
+
+### Did the two threads diverge?
+
+**No.** They worked different surfaces and met at three named points, each of which resolved
+cleanly:
+
+| | Self-improvement line | Operator-console line |
+| --- | --- | --- |
+| Question | Does the §8.7 loop actually *improve* anything, and how would we know? | What does a human see, and can they operate it? |
+| Docs | this file, 10, 11, 12, 13, 14, 19, 20, 22, `doctrine/`, `runs/` | 15, 16, 21, `ux-review/` |
+| Output | 14 topology seeds, 3 scenario rigs, doctrine-v1, 29 readiness findings | the console, built and UX-reviewed against a populated fixture org |
+
+**Where they met.** *(Corrected 2026-07-29 by the self-improvement session against `git log`; the
+first draft had the two lines swapped.)*
+
+1. **The self-improvement line executed work-plan 13's Wave 7** — DR1, SC1, SC3 — and ran the L3X
+   live calibration, which produced the L3H/L3M items. The console line ran the readiness audits
+   (doc 22) in parallel. Coordinated, not accidental.
+2. **`20-operations-doctrine.md` gained OM-9 (from SC1) and OM-10 (from SC3)** — both from the
+   self-improvement line, hours apart, and every commit touching that file is from that line. The
+   console line's contribution was catching that the two rows had been left in the wrong order and
+   fixing it: a real find, but a review of one thread's doc rather than a second author on it.
+3. **`e2e/mock-scripts/README.md` cost two hand-resolved conflicts — inside one thread, not
+   between them.** Both were between *parallel executors of the self-improvement line* (DR1 and
+   SC1 each appending a row, then SC1 moving its own to avoid the collision it had verified). The
+   rule that came out of it is the valuable part and is unchanged: a shared index file needs its
+   insertion point stated in the executor's brief.
+
+**No contradictions found.** The failure that did occur was different and worth naming: **four docs
+claimed "nothing here is built" long after their subjects were built** (this file, 10, 11, 15). That
+is the same defect class doc 22 exists to hunt — a confident statement that was true when written
+and silently stopped being true. All four corrected 2026-07-29.
+
+### The map
+
+**Research and principles**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| **this file** (§§1–7) | The literature: judge–truth divergence, the five-point grading protocol, what "frozen" means, calibrate-on-facts, the two-tier gate/instrument split, simulated time | Research **executed**; §§1–7 unchanged and still the reasoning |
+| [`product/12`](product/12-composition-playbook.md) | Composition principles **C1–C8** and the ordered plan that became work-plan 13 | Plan complete |
+| [`product/19`](product/19-scenario-library.md) | The scenario-admissibility contract, and 5 scenarios (SC-0 hypothesis lab, SC-1 triage, SC-3 gauntlet built; SC-2/4/5 catalogued) | Three built |
+| [`product/20`](product/20-operations-doctrine.md) | The operator's manual **OM-1–OM-10**, and the worker doctrine block **WD-1–WD-10** | doctrine-v1 written; **every entry still `candidate`** |
+| [`product/doctrine/doctrine-v1.md`](product/doctrine/doctrine-v1.md) | The canonical injected bytes | Immutable once referenced; **reaches no real user yet** (doc 22 RD21) |
+
+**Instruments (built)**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| [`product/10`](product/10-topology-library.md) | Org charts as data; the frozen-worker design | **14 seeds built**, registry + preview + apply + UI flow |
+| [`product/11`](product/11-learning-stories.md) | The deterministic gate: MR-1/2/3 and stories S1–S9 | **Built and green**, runs offline on the scripted mock |
+| [`product/14`](product/14-calibration-runbook.md) | The live-run protocol: arms, metrics, abort criteria | Written; **executed once**, see runs/ and §5a |
+| [`e2e/experiments/`](../e2e/experiments/) | The harnesses themselves — the map's one pointer at the code: `calibration/` (SC-0 plus DR1's doctrine axis), `triage/` (SC-1), `gauntlet/` (SC-3), `tierb/` (the §7 graded protocol), and C1's comparison rig | Built; every smoke report byte-reproducible and committed. SC-3's delivery claim is proven by collapse: disable the doctrine injection and the protected arm reproduces the unprotected one in every column |
+
+**Records and open work**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| [`product/13`](product/13-work-plan-self-improvement.md) | The executed plan, waves 1–7, plus ~90 Discovered Issues | **Open: L3H, L3M.** The best record of what was actually built |
+| [`product/22`](product/22-readiness.md) | The silent-success failure class, the readiness bar, the durability table, findings **RD1–RD29** | **3 fixed** (RD1, RD2, RD4); the rest specified |
+| [`product/runs/`](product/runs/) | Dated run records — currently one, the aborted first calibration | Living; the README's run log links here |
+
+**Operator console (the other thread)**
+
+| Doc | Holds | Status |
+| --- | --- | --- |
+| [`product/15`](product/15-operator-console-design.md) | What the browser shows; the backend seams it needed | **Built** (doc 16, all items) |
+| [`product/16`](product/16-work-plan-operator-console.md) | That build's plan and its discoveries | Complete |
+| [`product/21`](product/21-console-ux-review.md) | The populated-state critique and motion design, reviewed against a realistic fixture org | Complete; screenshots in `product/ux-review/` |
+
+### Starting a fresh thread from this file
+
+*Added 2026-07-29 by the self-improvement session, at Kai's ask: make this file a sufficient
+**entry point**, so a new thread can reach the whole corpus from here and mine it.*
+
+This file is a **map, not the corpus**. It is ~400 lines; what it points at is a few thousand,
+plus the code. §§1–7 hold the research reasoning in full and are self-contained. Everything else
+is a pointer, deliberately — inlining the specialist docs would duplicate them and start them
+drifting the same day.
+
+**The one calibration to carry into everything below: exactly one live real-model run has ever
+happened** (2026-07-28, recorded in `product/runs/`, and it aborted). Every other claim in this
+repository — every rig, every seed, every doctrine entry, every green suite — is **mock-proven**:
+deterministic, honest about transmission, and silent about whether any of it helps a real model do
+better work. Read every "built" and "green" below with that in mind.
+
+**Where to start, by purpose:**
+
+| If you want to… | Read, in order |
+| --- | --- |
+| Understand the system | [`CLAUDE.md`](../CLAUDE.md) → [`01-architecture`](01-architecture.md) → [`product/17`](product/17-product-spec.md) |
+| Know what was actually built and what bit us | the two Discovered Issues Logs: [`product/06`](product/06-work-plan.md) (236 entries, the product layer) and [`product/13`](product/13-work-plan-self-improvement.md) (93, the research layer) |
+| Know what is known about *composition* | §§1–7 here → [`product/12`](product/12-composition-playbook.md) → [`product/20`](product/20-operations-doctrine.md) |
+| Know what is not ready for people | [`product/22`](product/22-readiness.md) (49 RD findings) |
+| Find the code | the repo map in [`CLAUDE.md`](../CLAUDE.md); harnesses in [`e2e/experiments/`](../e2e/experiments/) |
+
+### The complete corpus
+
+Everything knowledge-bearing, linked from one place. The map above covers the research era; this
+covers the rest, which was previously unreachable from this file.
+
+**Product specification and component designs** — what the product *is*:
+
+| Doc | Holds |
+| --- | --- |
+| [`product/17`](product/17-product-spec.md) | **The authoritative spec**: goal, atoms, binding principles P1–P8, non-goals. Status: BUILT |
+| [`product/00`](product/00-overview.md) | The quick map of the component designs |
+| [`product/01`](product/01-session-config.md) – [`product/05`](product/05-management-tools.md) | Session config, workers (incl. §6.2 composition), memory, events + schedules, management tools |
+| [`product/06`](product/06-work-plan.md) | The executed 37-item build **plus 236 Discovered Issues** — the single richest record in the repo |
+| [`product/07`](product/07-reference-prompts.md) – [`product/09`](product/09-config-log.md) | Reference prompts, images + skills, the config log |
+
+**Engine reference** — how it runs:
+
+| Doc | Holds |
+| --- | --- |
+| [`01`](01-architecture.md), [`02`](02-execution-environment.md), [`03`](03-image-registry.md) | Architecture; the container seam; the image registry |
+| [`05`](05-event-streaming.md), [`06`](06-artifacts.md), [`07`](07-in-image-agent.md) | The canonical event vocabulary; artifacts; the in-image agent |
+| [`13`](13-fleet-placement.md), [`14`](14-host-adapters.md), [`15`](15-standalone-stack.md) | Fleet placement; host adapters + multi-tenancy; the standalone stack |
+| [`18`](18-workers-memory-events.md) | The product layer from an **operator's** seat — read before touching workers/memory/events |
+| [`../MIGRATION.md`](../MIGRATION.md) | The standalone/registry/GCP roadmap and live status, incl. dated verification testimony |
+
+**Research history** — how the current design was reached (dated records; deliberately *not*
+updated as the world moves, because they are testimony):
+
+| Doc | Holds |
+| --- | --- |
+| [`product/2026-07-22-landscape-learnings.md`](product/2026-07-22-landscape-learnings.md) | The landscape survey behind "no existing project covers this shape" |
+| [`product/2026-07-25-fold-*.md`](product/) | Two fold records: what the landscape work and the walkthrough changed in the spec |
+| [`product/runs/`](product/runs/) | Dated run records. Currently one: the aborted first calibration |
+
+**Operating knowledge that lives outside `docs/`** — small files, disproportionate value:
+
+| File | Holds |
+| --- | --- |
+| [`../CLAUDE.md`](../CLAUDE.md) | The operating guide: repo map, build/test gates, the standing rules. **The real front door** |
+| [`../e2e/mock-scripts/README.md`](../e2e/mock-scripts/README.md) | How to make the mock model call tools — and the accumulated trap list (body-match leaks, rule ordering, JSON-encoded keys). Every scripted test depends on it |
+| [`../e2e/experiments/*/README.md`](../e2e/experiments/) | One per harness: what its smoke proves and, explicitly, what it does not |
+| [`../installations/README.md`](../installations/README.md) | Image layering and the derived-image tree |
+| [`product/16`](product/16-work-plan-operator-console.md), [`product/23`](product/23-work-plan-console-remaining.md) | The console build and its close-out tickets |
+
+### Transferable lessons — the classes, not the instances
+
+The 329 Discovered Issues entries are individually specific; these are the **classes** they keep
+re-teaching. This layer exists because a fresh thread asking "what can we apply elsewhere?" should
+not have to read 2,000 lines to find the shape. Each names where its instances live.
+
+1. **Silent success — a status that was never true.** The dominant failure class here. A delivery
+   recorded `ok` whose session produced nothing (L3X); token readers summing zero against a shape
+   no row carries, so the budget brakes were inert for a month (TOK1); a web fixture that *invented*
+   the schema it asserted against. → doc 22 (the whole doc), doc 13 (TOK1, L3X).
+2. **Storage is not delivery.** A write can succeed, be config-logged, and never reach a model.
+   Only a behaviour switch proves arrival; prove the switch non-vacuous by breaking it. → OM-9;
+   doc 13 (SC1, DR1); every learning story.
+3. **Attribute by actor, never count project-wide.** Where a legitimate worker moves the same
+   counter a signal reads, a total reports the innocent as guilty. → OM-10; doc 13 (SC3).
+4. **Controls, or it isn't knowledge.** A placebo critic ties the real one on every activity metric
+   (`prompt_writes` 2±0 vs 2±0); only outcome predicates separate them. → C7; doc 13 (C1).
+5. **Determinism is environment-scoped until proven otherwise.** Two runs on one machine agreed;
+   a third from another checkout did not, because two workers raced for a sequence number. Same-
+   machine repetition cannot detect this. → doc 13 (SC3).
+6. **Status lines rot silently.** Eight documents across both threads claimed "nothing is built"
+   or carried unticked boxes long after their subjects shipped. It is the same defect class as (1),
+   aimed at ourselves. → §8's own correction history; doc 12/14/19/20 headers.
+7. **Ceiling effects hide in green results.** 11/11 correct with zero prompt rewrites is not a
+   working improvement loop; it is a task with no room to improve. An instrument that cannot show
+   failure cannot show learning. → `product/runs/2026-07-28-calibration-aborted/`.
+8. **Prompt-scripted tests have a grammar of their own.** Rule order carries what predicates
+   cannot, and the correct order *inverts* with how many workers consume one transcript. →
+   `e2e/mock-scripts/README.md`; doc 13 (H0, T4–T7, SC1, DR1).
+
+### What is actually unfinished
+
+Stated plainly, because three docs' status lines used to imply otherwise:
+
+1. **L3H + L3M** — **neither started** (status owned by the self-improvement line, 2026-07-29).
+   *L3H* hardens the calibration runner: an empty assistant reply must become a recorded abort
+   rather than a 180-second hang, and no throw may bypass report-writing — in the L3X run an
+   unhandled poll timeout destroyed eight already-completed hypotheses. *L3M* needs a manifest hard
+   enough that improvement has room to show, and **its shape is genuinely open**: L3X's ceiling
+   result (11/11 first-try correct, zero rewrites, the critic declining on the record) is an
+   argument for pointing the loop at real underspecified work rather than engineering harder
+   synthetic puzzles. Neither alone makes a second live run worth paying for.
+2. **The readiness blockers** — doc 22's RD5/RD6/RD17/RD18 in particular: no way to fire the first
+   job from the UI, mock mode indistinguishable from real, session delete destroying conversations,
+   and crash/reconnect losing the model's response.
+3. **Doctrine promotion** — every WD entry is `candidate`. The instrument to promote WD-1 exists
+   (SC-3); no entry has yet won a measured A/B.
+4. **The first production seeding** (spec §8.8) — deliberately Kai's, deliberately not done.
+
+---
+
+## Sources
+
+- [More Convincing, Not More Correct: Self-Play Reward Hacking of Reference-Free LLM Judges](https://arxiv.org/html/2607.05904)
+- [Who Grades the Grader? Co-Evolving Evaluation Metrics and Skills for Self-Improving LLM Agents](https://arxiv.org/html/2607.12790)
+- [Harness Engineering for Self-Improvement — Lil'Log](https://lilianweng.github.io/posts/2026-07-04-harness/)
+- [Robust LLM-Based Scoring via Reference-Anchored ELO Estimation](https://openreview.net/forum?id=Q88mQBuPjB)
+- [Autorubric: Unifying Rubric-based LLM Evaluation](https://arxiv.org/pdf/2603.00077)
+- [Semantic Voting: A Self-Evaluation-Free Approach for Efficient LLM Self-Improvement on Unverifiable Open-ended Tasks](https://arxiv.org/pdf/2509.23067)
+- [Darwin Gödel Machine](https://sakana.ai/dgm/) and [Gödel Agent](https://arxiv.org/html/2410.04444v1) — self-modification precedents
+- [On The Statistical Limits of Self-Improving Agents](https://arxiv.org/pdf/2510.04399)

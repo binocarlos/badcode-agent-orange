@@ -1,0 +1,856 @@
+import type { APIRequestContext, APIResponse } from '@playwright/test'
+
+// Product-layer API fixtures for the standalone-stack e2e.
+//
+// Every feature test needs the same four things: a login, a token scoped to a
+// throwaway project, a typed client over the /agent/* routes, and a way to wait
+// for something the backend does asynchronously. They live here so a feature
+// spec is a story about the feature rather than a pile of fetch calls.
+//
+// Wire shapes below are transcribed from the handlers in go/httpapi (workers.go,
+// project_settings.go, events.go) and the row structs in go/agentdb — when a
+// handler changes, this file is what must change with it.
+//
+// Everything is driven through the web origin (http://localhost:8080), not
+// agentd directly: nginx proxies /auth/ and /agent/ to agentd (deploy/
+// web.nginx.conf), so the tests exercise the same path a browser does.
+
+export const TEST_EMAIL = 'test@example.com'
+export const TEST_PASSWORD = 'orange-e2e'
+
+/** Projects the stack-e2e overlay maps to the test account (AGENTKIT_PROJECT_MAP). */
+export const MAPPED_PROJECTS = ['apples-oranges', 'pears-plums'] as const
+
+/** Where a permalink points: the web UI's externally reachable base URL. */
+export function permalinkBase(): string {
+  return (
+    process.env.AGENTKIT_PUBLIC_BASE_URL ||
+    process.env.STACK_BASE_URL ||
+    'http://localhost:8080'
+  ).replace(/\/$/, '')
+}
+
+/** The canonical session permalink (cmd/agentd/permalink.go, web/src/permalink.ts). */
+export function sessionPermalink(project: string, session: string): string {
+  return `${permalinkBase()}/p/${encodeURIComponent(project)}/s/${encodeURIComponent(session)}`
+}
+
+// ── Row shapes (go/agentdb) ─────────────────────────────────────────────────
+
+export interface ProjectSettings {
+  project: string
+  base_image: string
+  system_prompt: string
+  mcp_config: Record<string, unknown>
+  attention_channel: Record<string, unknown>
+  max_concurrent_jobs: number
+  daily_tokens_soft: number
+  daily_tokens_hard: number
+  briefing_max_bytes: number
+  snapshot_ttl_days: number
+  updated_at: number
+}
+
+export interface Worker {
+  project: string
+  name: string
+  description: string
+  system_prompt: string
+  mcp_config: Record<string, unknown>
+  image: string
+  briefing?: string[] | null
+  max_instances: number
+  enabled: boolean
+  /** F1: frozen workers cannot be changed by other workers (MCP refuses). */
+  frozen: boolean
+  created_at: number
+  updated_at: number
+}
+
+/** The PUT body for a worker. Absent fields take their default — PUT replaces. */
+export interface WorkerBody {
+  description?: string
+  system_prompt?: string
+  mcp_config?: Record<string, unknown>
+  image?: string
+  max_instances?: number
+  briefing?: string[] | null
+  enabled?: boolean
+  /** nil → false. Freeze/unfreeze ride the ordinary worker PUT (the human path). */
+  frozen?: boolean
+}
+
+export interface EventEnvelope {
+  depth: number
+  source: 'worker' | 'external' | 'schedule' | 'core'
+  worker: string
+  session_id: string
+  interactive: boolean
+  attention_requested: boolean
+  reason?: string
+}
+
+export interface ProjectEvent {
+  id: string
+  project: string
+  type: string
+  text: string
+  envelope: EventEnvelope
+  occurred_at: number
+  created_at: number
+  delivered: boolean
+}
+
+export interface Subscription {
+  id: string
+  project: string
+  event_type: string
+  filter: Record<string, unknown>
+  worker: string
+  max_firings_per_hour: number
+  enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface EventDelivery {
+  id: string
+  project: string
+  event_id: string
+  subscription_id: string
+  session_id: string
+  status: 'pending' | 'running' | 'ok' | 'failed' | 'awaiting_human' | 'rate_limited'
+  started_at: number
+  ended_at: number
+  created_at: number
+  updated_at: number
+}
+
+/** One persisted message of a session transcript. */
+export interface SessionMessage {
+  id: string
+  session_id: string
+  role: string
+  content: string
+  sequence_num: number
+  created_at: number
+}
+
+/** A schedule row (§8.6) — a cron expression and the input it delivers. */
+export interface Schedule {
+  id: string
+  project: string
+  worker: string
+  cron: string
+  input: string
+  enabled: boolean
+  /**
+   * Consecutive firings that started no job. Runtime state, not configuration:
+   * it is reset by the first firing that starts one, and at
+   * `ScheduleMaxProvisionFailures` (5) the scheduler switches the schedule off.
+   * That mechanism is what stops an abandoned `* * * * *` row from holding host
+   * ports forever — see features/schedule-resilience.stack.spec.ts.
+   */
+  provision_failures: number
+  last_provision_error: string
+  created_at: number
+  updated_at: number
+}
+
+/** What the in-image agent reports about a turn (sandbox `session_info`). */
+export interface SessionInfo {
+  tools: string[]
+  model: string
+  mcpServers: Array<{ name: string; status: string }>
+}
+
+/** The session row, trimmed to what the e2e suite asserts on. */
+export interface SessionRow {
+  id: string
+  customer: string
+  status: string
+  title: string
+  /** The product worker this job ran as; '' for a plain human session (§6.5). */
+  worker?: string
+  /**
+   * The full system prompt ComposeJob produced for this job (§6.2) — core
+   * preamble, project prompt, worker prompt and the memory briefings. This is
+   * how a test sees what a job actually ran with, rather than what it assumes.
+   */
+  composed_prompt?: string
+  /**
+   * Why the background create failed, stored on the row so a later reader can
+   * still find out (`GET /agent/session/{id}`).
+   *
+   * Empty for a CAPACITY failure, deliberately: a full host is true for one
+   * instant and stops being true the moment somebody deletes a session, so
+   * storing it would plant a reason guaranteed to go stale. Capacity is asked
+   * of the environment live instead, and a stored configuration reason is never
+   * overwritten by one — a session with a bad `base_image` on a saturated host
+   * reports saturation now and `base_image` once a port frees.
+   */
+  create_error?: string
+}
+
+// ── Topologies (work plan 13, T2/T4–T7) ─────────────────────────────────────
+
+/** One question a topology asks before it can render (go/topology). */
+export interface TopologyQuestion {
+  id: string
+  prompt: string
+  type: 'string' | 'bool' | 'choice'
+  choices?: string[]
+  default?: unknown
+  required: boolean
+}
+
+/** One built-in topology, as `GET /agent/topologies` lists it. */
+export interface TopologyInfo {
+  name: string
+  version: string
+  description: string
+  questions: TopologyQuestion[]
+}
+
+/**
+ * A rendered bundle: PROJECT-AGNOSTIC rows of the ordinary config types —
+ * project/ids/timestamps are zero until apply stamps them (T1's invariant).
+ */
+export interface TopologyBundle {
+  workers: Worker[]
+  subscriptions: Subscription[]
+  schedules: Schedule[]
+  settings_patch?: Partial<ProjectSettings>
+  memory_seeds?: unknown[]
+  preconditions: { images?: string[]; skills?: string[] }
+}
+
+/** The preview diff against the project's current config (go/httpapi/topologies.go). */
+export interface TopologyDiff {
+  new_workers: string[]
+  colliding_workers: string[]
+  new_subscriptions: Array<{ event_type: string; worker: string }>
+  new_schedules: Array<{ cron: string; worker: string; input: string }>
+  settings_fields: string[]
+  memory_seeds: number
+}
+
+/** The whole preview response. `applicable` is the one-word verdict. */
+export interface TopologyPreview {
+  topology: TopologyInfo
+  bundle: TopologyBundle
+  diff: TopologyDiff
+  missing_images: string[]
+  missing_skills: string[]
+  applicable: boolean
+}
+
+/** The preview/apply request body: which topology, and the answers. */
+export interface TopologyBody {
+  name: string
+  version: string
+  answers: Record<string, unknown>
+}
+
+/** Everything an apply created, read back, plus the `topology_apply` receipt. */
+export interface TopologyApplyResult {
+  workers: Worker[]
+  subscriptions: Subscription[]
+  schedules: Schedule[]
+  settings?: ProjectSettings
+  memories?: unknown[]
+  event: ConfigEvent
+}
+
+/** One record in the config log (§15.2), as `GET /agent/config-events` returns it. */
+export interface ConfigEvent {
+  id: string
+  project: string
+  seq: number
+  actor_worker: string
+  actor_session: string
+  action: string
+  payload: Record<string, unknown>
+  rationale: string
+  created_at: number
+}
+
+// ── Login ───────────────────────────────────────────────────────────────────
+
+export interface Login {
+  email: string
+  projects: Array<{ id: string; token: string }>
+  wildcard?: boolean
+  login_token?: string
+}
+
+/**
+ * Logs in with the fixed stack-e2e password account and returns its project
+ * tokens plus the wildcard login token (cmd/agentd/googleauth.go). The account
+ * is an implicit wildcard, so it can mint tokens for project ids that do not
+ * exist yet — which is how a test gets an empty project of its own.
+ */
+export async function login(request: APIRequestContext): Promise<Login> {
+  const resp = await request.post('/auth/password', {
+    data: { email: TEST_EMAIL, password: TEST_PASSWORD },
+  })
+  if (!resp.ok()) {
+    throw new Error(`login failed: ${resp.status()} ${await resp.text()}`)
+  }
+  return (await resp.json()) as Login
+}
+
+/** Exchanges a wildcard login token for a token scoped to `project`. */
+export async function mintProjectToken(
+  request: APIRequestContext,
+  loginToken: string,
+  project: string,
+): Promise<string> {
+  const resp = await request.post('/auth/project-token', {
+    data: { token: loginToken, project },
+  })
+  if (!resp.ok()) {
+    throw new Error(`project-token for ${project} failed: ${resp.status()} ${await resp.text()}`)
+  }
+  return ((await resp.json()) as { id: string; token: string }).token
+}
+
+/**
+ * The marker every project this suite creates carries.
+ *
+ * The leak check (helpers/occupancy.ts) finds this suite's projects by this
+ * prefix, so minting and checking read the same constant and cannot drift: a
+ * fixture that invents its own prefix would otherwise escape the check
+ * silently, which is the one weakness the safety net had by construction.
+ * Anything NOT minted here is treated as a human's and left alone — the stack
+ * is shared.
+ */
+export const E2E_PROJECT_PREFIX = 'e2e-'
+
+/**
+ * A run-scoped project id, always carrying E2E_PROJECT_PREFIX. Project ids must
+ * be kebab-case and <= 64 chars (authProjectTokenHandler validates), and a
+ * unique one per test keeps repeated runs against one long-lived stack from
+ * colliding.
+ */
+export function uniqueProject(prefix = 'e2e'): string {
+  const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  const named = prefix.toLowerCase().startsWith(E2E_PROJECT_PREFIX)
+    ? prefix.toLowerCase()
+    : `${E2E_PROJECT_PREFIX}${prefix.toLowerCase()}`
+  return `${named}-${stamp}`
+}
+
+// ── The project client ──────────────────────────────────────────────────────
+
+/**
+ * A typed client over the /agent/* routes, bound to one project's token.
+ *
+ * Two levels on purpose: the named methods throw on a non-2xx (a test asserting
+ * a feature should not have to check status codes), while `raw` returns the
+ * APIResponse untouched so isolation tests can assert 404/403 without a throw.
+ */
+export class ProjectClient {
+  constructor(
+    private readonly request: APIRequestContext,
+    readonly project: string,
+    readonly token: string,
+  ) {}
+
+  private headers(): Record<string, string> {
+    return { Authorization: `Bearer ${this.token}` }
+  }
+
+  /** The unchecked escape hatch: returns the response whatever its status. */
+  raw(method: 'GET' | 'PUT' | 'POST' | 'DELETE', path: string, data?: unknown): Promise<APIResponse> {
+    const opts = { headers: this.headers(), ...(data === undefined ? {} : { data }) }
+    switch (method) {
+      case 'GET':
+        return this.request.get(path, opts)
+      case 'PUT':
+        return this.request.put(path, opts)
+      case 'POST':
+        return this.request.post(path, opts)
+      case 'DELETE':
+        return this.request.delete(path, opts)
+    }
+  }
+
+  private async json<T>(method: 'GET' | 'PUT' | 'POST' | 'DELETE', path: string, data?: unknown): Promise<T> {
+    const resp = await this.raw(method, path, data)
+    if (!resp.ok()) {
+      throw new Error(`${method} ${path} → ${resp.status()}: ${await resp.text()}`)
+    }
+    return (await resp.json()) as T
+  }
+
+  // ── Project settings (§5) ─────────────────────────────────────────────────
+
+  getSettings(): Promise<ProjectSettings> {
+    return this.json<ProjectSettings>('GET', '/agent/project-settings')
+  }
+
+  /** PUT is whole-object: an absent field is written as its zero value. */
+  putSettings(body: Partial<ProjectSettings>): Promise<ProjectSettings> {
+    return this.json<ProjectSettings>('PUT', '/agent/project-settings', body)
+  }
+
+  // ── Workers (§6) ──────────────────────────────────────────────────────────
+
+  async listWorkers(): Promise<Worker[]> {
+    const { workers } = await this.json<{ workers: Worker[] }>('GET', '/agent/workers')
+    return workers ?? []
+  }
+
+  getWorker(name: string): Promise<Worker> {
+    return this.json<Worker>('GET', `/agent/workers/${encodeURIComponent(name)}`)
+  }
+
+  putWorker(name: string, body: WorkerBody = {}): Promise<Worker> {
+    return this.json<Worker>('PUT', `/agent/workers/${encodeURIComponent(name)}`, body)
+  }
+
+  async deleteWorker(name: string): Promise<void> {
+    const resp = await this.raw('DELETE', `/agent/workers/${encodeURIComponent(name)}`)
+    if (resp.status() !== 204) {
+      throw new Error(`DELETE worker ${name} → ${resp.status()}: ${await resp.text()}`)
+    }
+  }
+
+  /**
+   * Flips `enabled` and changes nothing else, by reading the stored row and
+   * writing it back with one field different.
+   *
+   * The read-modify-write is the point, not ceremony. PUT is whole-object, and
+   * the config log picks `worker_enable`/`worker_disable` only when every other
+   * field is byte-identical (§15.3) — so a body that merely omits `mcp_config`
+   * writes null over the stored `{}` and the change is logged as a
+   * `worker_update` instead. Sending the row back entire is what makes a toggle
+   * a toggle.
+   */
+  async toggleWorkerEnabled(name: string, enabled: boolean): Promise<Worker> {
+    const stored = await this.getWorker(name)
+    const body: WorkerBody = {
+      description: stored.description,
+      system_prompt: stored.system_prompt,
+      mcp_config: stored.mcp_config,
+      image: stored.image,
+      max_instances: stored.max_instances,
+      enabled,
+      frozen: stored.frozen,
+    }
+    if (stored.briefing != null) body.briefing = stored.briefing
+    return this.putWorker(name, body)
+  }
+
+  /**
+   * Flips `frozen` and changes nothing else — the human freeze/unfreeze path
+   * (F1, decided D4: an ordinary config mutation over plain JWT). Same
+   * read-modify-write shape as toggleWorkerEnabled and for the same reason:
+   * the config log picks `worker_freeze`/`worker_unfreeze` only when every
+   * other field is byte-identical.
+   */
+  async setWorkerFrozen(name: string, frozen: boolean): Promise<Worker> {
+    const stored = await this.getWorker(name)
+    const body: WorkerBody = {
+      description: stored.description,
+      system_prompt: stored.system_prompt,
+      mcp_config: stored.mcp_config,
+      image: stored.image,
+      max_instances: stored.max_instances,
+      enabled: stored.enabled,
+      frozen,
+    }
+    if (stored.briefing != null) body.briefing = stored.briefing
+    return this.putWorker(name, body)
+  }
+
+  // ── Events (§8) ───────────────────────────────────────────────────────────
+
+  /** Posts an external trigger. Core stamps the envelope; a sender cannot. */
+  postEvent(body: { type: string; text?: string }): Promise<ProjectEvent> {
+    return this.json<ProjectEvent>('POST', '/agent/events', body)
+  }
+
+  async listEvents(opts: { type?: string; limit?: number; offset?: number } = {}): Promise<ProjectEvent[]> {
+    const { events } = await this.json<{ events: ProjectEvent[] }>('GET', `/agent/events${query(opts)}`)
+    return events ?? []
+  }
+
+  createSubscription(body: {
+    event_type: string
+    worker: string
+    filter?: Record<string, unknown>
+    max_firings_per_hour?: number
+    enabled?: boolean
+  }): Promise<Subscription> {
+    return this.json<Subscription>('POST', '/agent/subscriptions', body)
+  }
+
+  async listSubscriptions(): Promise<Subscription[]> {
+    const { subscriptions } = await this.json<{ subscriptions: Subscription[] }>('GET', '/agent/subscriptions')
+    return subscriptions ?? []
+  }
+
+  updateSubscription(id: string, body: Record<string, unknown>): Promise<Subscription> {
+    return this.json<Subscription>('PUT', `/agent/subscriptions/${encodeURIComponent(id)}`, body)
+  }
+
+  async deleteSubscription(id: string): Promise<void> {
+    await this.json<{ deleted: boolean }>('DELETE', `/agent/subscriptions/${encodeURIComponent(id)}`)
+  }
+
+  // ── Topologies (T2: preview/apply; T4–T7 drive these) ─────────────────────
+
+  /** The built-in topology catalogue. */
+  async listTopologies(): Promise<TopologyInfo[]> {
+    const { topologies } = await this.json<{ topologies: TopologyInfo[] }>('GET', '/agent/topologies')
+    return topologies ?? []
+  }
+
+  /** Renders + diffs without writing anything — the look-before-you-leap half. */
+  previewTopology(body: TopologyBody): Promise<TopologyPreview> {
+    return this.json<TopologyPreview>('POST', '/agent/topologies/preview', body)
+  }
+
+  /** The atomic apply. Throws on refusal — use `raw` to assert a 409. */
+  applyTopology(body: TopologyBody): Promise<TopologyApplyResult> {
+    return this.json<TopologyApplyResult>('POST', '/agent/topologies/apply', body)
+  }
+
+  // ── The config log (§15.9) ────────────────────────────────────────────────
+
+  /**
+   * The project's configuration history, newest first. Project scoping is the
+   * token's, so there is no cross-project read to get wrong.
+   */
+  async configEvents(
+    opts: { action?: string; actor_worker?: string; before_seq?: number; limit?: number } = {},
+  ): Promise<ConfigEvent[]> {
+    const { config_events } = await this.json<{ config_events: ConfigEvent[] }>(
+      'GET',
+      `/agent/config-events${query(opts)}`,
+    )
+    return config_events ?? []
+  }
+
+  // ── Schedules (§8.6) ──────────────────────────────────────────────────────
+
+  createSchedule(body: {
+    worker: string
+    cron: string
+    input: string
+    enabled?: boolean
+    rationale?: string
+  }): Promise<Schedule> {
+    return this.json<Schedule>('POST', '/agent/schedules', body)
+  }
+
+  async listSchedules(): Promise<Schedule[]> {
+    const { schedules } = await this.json<{ schedules: Schedule[] }>('GET', '/agent/schedules')
+    return schedules ?? []
+  }
+
+  async listDeliveries(
+    opts: { event_id?: string; subscription_id?: string; status?: string; limit?: number } = {},
+  ): Promise<EventDelivery[]> {
+    const { deliveries } = await this.json<{ deliveries: EventDelivery[] }>('GET', `/agent/deliveries${query(opts)}`)
+    return deliveries ?? []
+  }
+
+  // ── Waiting for the backend to catch up ───────────────────────────────────
+
+  /**
+   * Polls deliveries until `predicate` accepts the list, or the timeout expires.
+   * The router (E3) writes these rows asynchronously, so any assertion about a
+   * job having started is a wait, never a single read.
+   */
+  waitForDeliveries(
+    predicate: (rows: EventDelivery[]) => boolean,
+    opts: { event_id?: string; subscription_id?: string; timeoutMs?: number } = {},
+  ): Promise<EventDelivery[]> {
+    const { timeoutMs = 30_000, ...filter } = opts
+    return poll(() => this.listDeliveries(filter), predicate, timeoutMs, 'deliveries')
+  }
+
+  /** Polls the event log until `predicate` accepts it. */
+  waitForEvents(
+    predicate: (rows: ProjectEvent[]) => boolean,
+    opts: { type?: string; timeoutMs?: number } = {},
+  ): Promise<ProjectEvent[]> {
+    const { timeoutMs = 30_000, ...filter } = opts
+    return poll(() => this.listEvents(filter), predicate, timeoutMs, 'events')
+  }
+
+  // ── Sessions ──────────────────────────────────────────────────────────────
+
+  /** Sessions this client created, for cleanup. */
+  private readonly created: string[] = []
+
+  /** Creates a session and returns its id. */
+  async createSession(body: { job?: string; persona?: string; systemPrompt?: string } = {}): Promise<string> {
+    const { id } = await this.json<{ id: string }>('POST', '/agent/session', body)
+    this.created.push(id)
+    return id
+  }
+
+  /**
+   * Deletes every session in this project — not merely the ones this client
+   * created.
+   *
+   * That distinction is the whole point. The router creates a session per
+   * delivery, so an acceptance test that posts one event ends up owning three
+   * or four sessions it never asked for, and a browser test creates them
+   * through the UI. Tracking only `createSession` calls leaks all of those.
+   *
+   * Sweeping the project is safe because every test gets a fresh, run-scoped
+   * project of its own (`newProjectClient`) — there is nothing else in it.
+   *
+   * Not optional housekeeping: a session holds a *running host port* until it
+   * is deleted, nothing reaps them on a timer, and the pool is exactly 100
+   * wide. Past that, every session fails to provision — since the port-pool fix
+   * with an error that names the host limit, and before it with "has no running
+   * instance and no snapshot", which looked exactly like a product bug and was
+   * not one. The clear message makes the leak diagnosable; it does not make it
+   * harmless, and this sweep is still what prevents it.
+   */
+  async cleanup(): Promise<void> {
+    this.created.splice(0)
+    // Stop the cascade BEFORE sweeping sessions. A test that posts one event
+    // leaves the router working: each job that finishes emits worker.finished,
+    // which starts more jobs, for as long as the subscriptions and schedules
+    // exist. Deleting sessions first just races that — the containers a test
+    // leaks are mostly ones created after it finished.
+    for (const sub of await this.listSubscriptions().catch(() => [])) {
+      await this.raw('DELETE', `/agent/subscriptions/${encodeURIComponent(sub.id)}`).catch(() => {})
+    }
+    for (const sched of await this.listSchedules().catch(() => [])) {
+      await this.raw('DELETE', `/agent/schedules/${encodeURIComponent(sched.id)}`).catch(() => {})
+    }
+    await this.waitForCreatesToSettle()
+    for (const row of await this.listAllSessions()) {
+      if (row?.id) await this.raw('DELETE', `/agent/session/${encodeURIComponent(row.id)}`).catch(() => {})
+    }
+  }
+
+  /**
+   * Waits until no session in this project is still `creating`.
+   *
+   * Deleting one that is mid-create is how this suite leaked containers without
+   * leaking sessions: `POST /agent/session` answers 200 with status "creating"
+   * and provisions in the background, so a DELETE that lands first removes the
+   * row and the create then produces a container belonging to nothing. Nothing
+   * reaps it, and it holds a host port for as long as the stack lives.
+   *
+   * Bounded and best-effort on purpose. It is a courtesy to the next run, not a
+   * guarantee — the guarantee is teardown, which counts what is actually there
+   * and fails the run. A create still unsettled after this long is a finding in
+   * its own right, and letting cleanup proceed surfaces it as a leak rather
+   * than hiding it in a hang.
+   */
+  async waitForCreatesToSettle(timeoutMs = 30_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const rows = await this.listAllSessions().catch(() => [])
+      if (!rows.some((r) => r?.status === 'creating')) return
+      if (Date.now() >= deadline) return
+      await new Promise((r) => setTimeout(r, 500))
+    }
+  }
+
+  /** Deletes one session, releasing its container and its host port. */
+  async deleteSession(id: string): Promise<void> {
+    await this.raw('DELETE', `/agent/session/${encodeURIComponent(id)}`)
+  }
+
+  /**
+   * Every session in this project, whoever created it.
+   *
+   * `user_email=*` is load-bearing: the route defaults to the caller's own
+   * email, and the router creates job sessions under a different one. Without
+   * it, exactly the sessions a test did not create are the ones it misses —
+   * which is why `cleanup` and any "nothing was provisioned" assertion have to
+   * share this one reader rather than each writing the query out.
+   */
+  async listAllSessions(): Promise<Array<{ id?: string; status?: string }>> {
+    const resp = await this.raw('GET', '/agent/sessions?user_email=*&limit=500').catch(() => null)
+    if (!resp?.ok()) return []
+    const listed = (await resp.json().catch(() => [])) as unknown
+    const rows = Array.isArray(listed) ? listed : ((listed as { sessions?: unknown[] })?.sessions ?? [])
+    return rows as Array<{ id?: string; status?: string }>
+  }
+
+  /**
+   * Sends a message and waits for the turn to finish.
+   *
+   * The route answers with the turn's SSE stream, so the response body arriving
+   * complete *is* the end-of-turn signal — no polling needed.
+   */
+  async sendMessage(sessionId: string, content: string, timeoutMs = 120_000): Promise<string> {
+    const resp = await this.request.post(`/agent/session/${encodeURIComponent(sessionId)}/message`, {
+      headers: this.headers(),
+      data: { content },
+      timeout: timeoutMs,
+    })
+    if (!resp.ok()) throw new Error(`send message → ${resp.status()}: ${await resp.text()}`)
+    return resp.text()
+  }
+
+  /** Snapshots the session and destroys its container (§4.5's snapshot half). */
+  async archiveSession(sessionId: string): Promise<{ kind: string; ref: string }> {
+    return this.json('POST', `/agent/session/${encodeURIComponent(sessionId)}/archive`)
+  }
+
+  /** Re-provisions an archived session — the resume path that must re-supply MCP config. */
+  async restoreSession(sessionId: string): Promise<{ SessionID: string; State: string }> {
+    return this.json('POST', `/agent/session/${encodeURIComponent(sessionId)}/restore`)
+  }
+
+  /**
+   * The `session_info` payloads the in-image agent emitted for this session.
+   *
+   * This is the one window onto what the *container* actually received: the
+   * harness reports the model, the tool names it was given, and every MCP
+   * server with its connection status. `status: "connected"` means a real
+   * JSON-RPC handshake with that server succeeded and its tool list came back —
+   * which is as close to "callable" as mock mode can get, since the mock model
+   * emits a fixed script and can never be made to invoke a tool.
+   */
+  async sessionInfoEvents(sessionId: string): Promise<SessionInfo[]> {
+    const rows = await this.queryEvents(sessionId)
+    return rows.filter((e) => e.type === 'session_info').map((e) => e.data as unknown as SessionInfo)
+  }
+
+  /** Every stored SSE event for a session, oldest first. */
+  async queryEvents(sessionId: string): Promise<Array<{ type: string; data: Record<string, unknown> }>> {
+    const body = await this.json<{ events?: unknown[] }>(
+      'GET',
+      `/agent/session/${encodeURIComponent(sessionId)}/query-events`,
+    )
+    const out: Array<{ type: string; data: Record<string, unknown> }> = []
+    for (const row of body.events ?? []) {
+      const raw = (row as { events?: unknown }).events
+      const parsed = typeof raw === 'string' ? (JSON.parse(raw) as unknown[]) : ((raw ?? []) as unknown[])
+      for (const ev of parsed) {
+        const e = ev as { type?: string; data?: Record<string, unknown> }
+        if (e.type) out.push({ type: e.type, data: e.data ?? {} })
+      }
+    }
+    return out
+  }
+
+  /** The `error` events a session emitted — how the in-image agent fails loudly. */
+  async errorEvents(sessionId: string): Promise<Array<{ code?: string; message?: string }>> {
+    return (await this.queryEvents(sessionId))
+      .filter((e) => e.type === 'error')
+      .map((e) => e.data as { code?: string; message?: string })
+  }
+
+  /** Waits for the in-image agent to report a session_info matching `predicate`. */
+  waitForSessionInfo(
+    sessionId: string,
+    predicate: (info: SessionInfo[]) => boolean,
+    timeoutMs = 60_000,
+  ): Promise<SessionInfo[]> {
+    return poll(
+      () => this.sessionInfoEvents(sessionId),
+      predicate,
+      timeoutMs,
+      `session_info for ${sessionId}`,
+    )
+  }
+
+  /** The persisted transcript of a session — what a replay has to work from. */
+  async listMessages(sessionId: string): Promise<SessionMessage[]> {
+    const { messages } = await this.json<{ count: number; messages: SessionMessage[]; total: number }>(
+      'GET',
+      `/agent/session/${encodeURIComponent(sessionId)}/messages`,
+    )
+    return messages ?? []
+  }
+
+  /** The session row, including its status. */
+  getSession(sessionId: string): Promise<SessionRow> {
+    return this.json<SessionRow>('GET', `/agent/session/${encodeURIComponent(sessionId)}`)
+  }
+
+  /** The canonical permalink for a session in this project. */
+  permalink(sessionId: string): string {
+    return sessionPermalink(this.project, sessionId)
+  }
+}
+
+/**
+ * Logs in and returns a client for a brand-new, run-scoped project. This is the
+ * fixture nearly every feature test starts with: an empty project nobody else
+ * is writing to.
+ */
+export async function newProjectClient(
+  request: APIRequestContext,
+  prefix = 'e2e',
+): Promise<ProjectClient> {
+  const auth = await login(request)
+  if (!auth.login_token) {
+    throw new Error('login returned no wildcard login_token — is AGENTKIT_TEST_LOGIN set on agentd?')
+  }
+  const project = uniqueProject(prefix)
+  const token = await mintProjectToken(request, auth.login_token, project)
+  return new ProjectClient(request, project, token)
+}
+
+/**
+ * A client for a project that already exists — typically one a browser test
+ * created through the UI, so an assertion can be made against the API for the
+ * same project. The wildcard test account can mint a token for any id.
+ */
+export async function projectClient(
+  request: APIRequestContext,
+  project: string,
+): Promise<ProjectClient> {
+  const auth = await login(request)
+  const existing = auth.projects.find((p) => p.id === project)
+  if (existing) return new ProjectClient(request, project, existing.token)
+  if (!auth.login_token) throw new Error('login returned no wildcard login_token')
+  return new ProjectClient(request, project, await mintProjectToken(request, auth.login_token, project))
+}
+
+/** A client for one of the pre-mapped projects (apples-oranges, pears-plums). */
+export async function mappedProjectClient(
+  request: APIRequestContext,
+  project: string,
+): Promise<ProjectClient> {
+  const auth = await login(request)
+  const found = auth.projects.find((p) => p.id === project)
+  if (!found) {
+    throw new Error(`login granted no token for ${project} (got ${auth.projects.map((p) => p.id).join(', ')})`)
+  }
+  return new ProjectClient(request, project, found.token)
+}
+
+// ── Small utilities ─────────────────────────────────────────────────────────
+
+function query(params: Record<string, string | number | undefined>): string {
+  const parts = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== '')
+    .map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`)
+  return parts.length ? `?${parts.join('&')}` : ''
+}
+
+/** Polls `read` until `predicate` accepts the value; throws with the last value. */
+export async function poll<T>(
+  read: () => Promise<T>,
+  predicate: (value: T) => boolean,
+  timeoutMs: number,
+  what: string,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  let last: T | undefined
+  for (;;) {
+    last = await read()
+    if (predicate(last)) return last
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${what}; last value: ${JSON.stringify(last)}`)
+    }
+    await new Promise((r) => setTimeout(r, 250))
+  }
+}

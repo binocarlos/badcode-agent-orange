@@ -10,6 +10,8 @@ package docker
 import (
 	"fmt"
 	"sync"
+
+	"github.com/binocarlos/badcode-agent-orange/execenv"
 )
 
 // PortAllocator manages a finite pool of host ports for DinD mode.
@@ -18,11 +20,23 @@ import (
 // agent at http://localhost:<port>. The allocator maintains a set of
 // "available" ports and a map of session→port for adopted/allocated leases.
 //
+// The pool is the hard ceiling on live sessions per host — one port each, held
+// until the session is deleted or a host reclaims its idle container (agentd
+// does, via agentkit.Policy.ArchiveTimeout; a host that sets no timeout gets
+// the old behaviour, where nothing ever gave a port back). That ceiling is a
+// legitimate limit, so exhaustion is not a bug; being unable to TELL that it is
+// what happened is. Hence the range is remembered and every exhaustion error
+// names it (see Allocate) and wraps execenv.ErrNoCapacity.
+//
 // Ported from orchestrator/src/sandbox-manager.ts PortAllocator@55.
 type PortAllocator struct {
 	mu        sync.Mutex
-	available []int            // sorted free pool
-	allocated map[string]int   // sessionID → port
+	available []int          // sorted free pool
+	allocated map[string]int // sessionID → port
+
+	// The pool as configured — kept so an error can say WHICH pool is full and
+	// how big it is, rather than "no available ports".
+	rangeStart, rangeEnd, size int
 }
 
 // NewPortAllocator creates a PortAllocator covering the inclusive range
@@ -37,9 +51,38 @@ func NewPortAllocator(rangeStart, rangeEnd int) (*PortAllocator, error) {
 		avail = append(avail, p)
 	}
 	return &PortAllocator{
-		available: avail,
-		allocated: make(map[string]int),
+		available:  avail,
+		allocated:  make(map[string]int),
+		rangeStart: rangeStart,
+		rangeEnd:   rangeEnd,
+		size:       len(avail),
 	}, nil
+}
+
+// exhausted builds the operator-facing error for a full pool. Caller holds mu.
+//
+// Every clause here is load-bearing: WHICH resource (the host port pool), HOW
+// BIG it is, WHAT is holding it (live sessions, until deleted), and — the clause
+// that would have saved a day — that this is a property of the HOST and not of
+// the session being started, so re-creating the session cannot help.
+func (pa *PortAllocator) exhausted() error {
+	return fmt.Errorf("%w: the host port pool is exhausted — all %d ports in %d-%d are leased to "+
+		"live sessions, and a session holds its port until it is deleted, so every further session "+
+		"on this host will fail the same way until one is released (a host capacity limit, not a "+
+		"lost or broken session)",
+		execenv.ErrNoCapacity, pa.size, pa.rangeStart, pa.rangeEnd)
+}
+
+// Capacity implements execenv.CapacityReporter: nil if a port is free, the
+// exhaustion error if not. It allocates nothing, so a caller can ask "is this
+// host full?" without consuming the last port to find out.
+func (pa *PortAllocator) Capacity() error {
+	pa.mu.Lock()
+	defer pa.mu.Unlock()
+	if len(pa.available) == 0 {
+		return pa.exhausted()
+	}
+	return nil
 }
 
 // Allocate leases a port for sessionID. If sessionID already has a lease the
@@ -53,7 +96,7 @@ func (pa *PortAllocator) Allocate(sessionID string) (int, error) {
 		return port, nil
 	}
 	if len(pa.available) == 0 {
-		return 0, fmt.Errorf("port pool exhausted: no available ports in the sandbox port pool")
+		return 0, pa.exhausted()
 	}
 	// Take lowest available port (list is kept sorted on construction; Adopt
 	// also inserts in order).

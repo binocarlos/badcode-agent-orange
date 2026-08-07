@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 
@@ -25,6 +26,7 @@ type MemStore struct {
 	sessions       map[string]*agentdb.Session
 	queryEvents    map[string][]events.Envelope // key: sessionID+"\x00"+queryID
 	workerBindings map[string]string            // sessionID -> workerID
+	activeQueries  map[string][2]string         // sessionID -> {runner queryID, sandbox queryID}
 }
 
 // NewMemStore returns an empty in-memory store.
@@ -33,7 +35,38 @@ func NewMemStore() *MemStore {
 		sessions:       map[string]*agentdb.Session{},
 		queryEvents:    map[string][]events.Envelope{},
 		workerBindings: map[string]string{},
+		activeQueries:  map[string][2]string{},
 	}
+}
+
+// SetActiveQuery / GetActiveQuery / ClearActiveQuery mirror the optional
+// active-query capability on *agentdb.Store: the join between the runner's
+// persistence id for a turn and the sandbox's stream id for the same turn.
+// Kept in a side map rather than on the session row so a runner test that never
+// seeded a session still exercises the path (see agentdb/activequery.go).
+func (s *MemStore) SetActiveQuery(ctx context.Context, sessionID, queryID, sandboxQueryID string) error {
+	s.mu.Lock()
+	s.activeQueries[sessionID] = [2]string{queryID, sandboxQueryID}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *MemStore) GetActiveQuery(ctx context.Context, sessionID string) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := s.activeQueries[sessionID]
+	return ids[0], ids[1], nil
+}
+
+// ClearActiveQuery is conditional on queryID still being the recorded turn —
+// see the store's version for why an unconditional clear loses live turns.
+func (s *MemStore) ClearActiveQuery(ctx context.Context, sessionID, queryID string) error {
+	s.mu.Lock()
+	if s.activeQueries[sessionID][0] == queryID {
+		delete(s.activeQueries, sessionID)
+	}
+	s.mu.Unlock()
+	return nil
 }
 
 // Seed inserts a session row (the host would normally persist it before CreateSession).
@@ -55,12 +88,45 @@ func (s *MemStore) GetSession(ctx context.Context, id string) (*agentdb.Session,
 	return &cp, nil
 }
 
+// SessionExists satisfies agentkit.SessionExistenceChecker: a definite yes/no
+// about the row, never an error, so tests can drive the archive loop's
+// orphan-container branch.
+func (s *MemStore) SessionExists(ctx context.Context, id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.sessions[id]
+	return ok, nil
+}
+
 func (s *MemStore) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agentdb.Session, error) {
 	s.mu.Lock()
 	cp := *sess
 	s.sessions[sess.ID] = &cp
 	s.mu.Unlock()
 	return &cp, nil
+}
+
+// DeleteSession removes a session row, mirroring the optional DeleteSession
+// seam httpapi.DeleteSession probes for on the host's store. Idempotent.
+func (s *MemStore) DeleteSession(ctx context.Context, id string) error {
+	s.mu.Lock()
+	delete(s.sessions, id)
+	s.mu.Unlock()
+	return nil
+}
+
+// SetSessionAttentionRequested writes the §9 per-turn stamp on a session row —
+// the one-column update agentkit's §8.2 emitter uses to clear the flag once it
+// has copied it onto a `worker.finished` envelope.
+func (s *MemStore) SetSessionAttentionRequested(ctx context.Context, sessionID string, requested bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sess, ok := s.sessions[sessionID]
+	if !ok {
+		return fmt.Errorf("memstore: session %q not found", sessionID)
+	}
+	sess.AttentionRequested = requested
+	return nil
 }
 
 func (s *MemStore) PersistQueryEventsFlat(ctx context.Context, sessionID, queryID string, evs []events.Envelope, searchText string) error {
@@ -72,14 +138,37 @@ func (s *MemStore) PersistQueryEventsFlat(ctx context.Context, sessionID, queryI
 	return nil
 }
 
+// ListQueryEventsFlatForQuery returns the events persisted for ONE turn — the
+// read half of the reconnect merge (agentkit's queryEventReader capability).
+func (s *MemStore) ListQueryEventsFlatForQuery(ctx context.Context, sessionID, queryID string) ([]events.Envelope, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	evs, ok := s.queryEvents[sessionID+"\x00"+queryID]
+	if !ok {
+		return nil, nil
+	}
+	out := make([]events.Envelope, len(evs))
+	copy(out, evs)
+	return out, nil
+}
+
 func (s *MemStore) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	var out []events.Envelope
-	for k, evs := range s.queryEvents {
+	// Map iteration order is random, so collect the matching query keys and sort
+	// them: a flat event list whose turns arrive in a different order on every
+	// call is not a conversation, and callers that reconstruct one (rehydration,
+	// worker.finished transcripts) would be silently non-deterministic.
+	var keys []string
+	for k := range s.queryEvents {
 		if strings.HasPrefix(k, sessionID+"\x00") {
-			out = append(out, evs...)
+			keys = append(keys, k)
 		}
+	}
+	sort.Strings(keys)
+	var out []events.Envelope
+	for _, k := range keys {
+		out = append(out, s.queryEvents[k]...)
 	}
 	return out, nil
 }

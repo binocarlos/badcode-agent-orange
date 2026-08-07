@@ -37,7 +37,7 @@ func TestBuilderProducesTurnsAndIsJSONPortable(t *testing.T) {
 
 func TestSSEForTurnMatchesServerOutput(t *testing.T) {
 	s := NewScript().Turn().Text("HELLO_FIXTURE").Build()
-	sse := s.SSEForTurn(t, 0)
+	sse := SSEForTurn(t, s, 0)
 	if !strings.Contains(sse, "HELLO_FIXTURE") || !strings.Contains(sse, "message_stop") {
 		t.Errorf("SSEForTurn missing content/terminator: %s", sse)
 	}

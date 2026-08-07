@@ -1,0 +1,120 @@
+{
+  "rules": [
+    {
+      "match": "xpa-editor",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The note shipped without a headline line. Systemic: the scribe's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "xpa-scribe",
+                "system_prompt": "You file catalogue notes. Close with a totals line. Open with the date line.\n[XPA-HEADLINE-RULE] Always open your note with a line starting \"Headline:\".",
+                "rationale": "the note shipped without a headline line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the scribe a standing headline rule; the next note will open with one."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "xps-shuffler",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Control duty: reshuffling the clerk's standing orders without judging them."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "xps-clerk",
+                "system_prompt": "You file catalogue notes. Open with the date line. Close with a totals line.",
+                "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reshuffle done; the rationale records that it was arbitrary."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "XPA-HEADLINE-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Headline: the apple crop is in.\nThe catalogue note is filed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "Open with the date line. Close with a totals line",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "XPS-REORDERED: date first, totals last. The catalogue note is filed."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "xpa-scribe",
+      "turns": [
+        {
+          "blocks": [
+            { "type": "text", "text": "The catalogue note is filed, plain and unadorned." }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "xps-clerk",
+      "turns": [
+        {
+          "blocks": [
+            { "type": "text", "text": "The catalogue note is filed, plain and unadorned." }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "xpz-hermit",
+      "turns": [
+        {
+          "blocks": [
+            { "type": "text", "text": "The catalogue note is filed, plain and unadorned." }
+          ]
+        }
+      ]
+    }
+  ]
+}

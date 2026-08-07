@@ -10,22 +10,22 @@
 //
 //  1. Build the sandbox image:
 //
-//	   docker build -t agentkit-sandbox:dev agent-library/sandbox
+//     docker build -t agentkit-sandbox:dev agent-library/sandbox
 //
 //  2. Load it into the DinD daemon (if running inside DinD rather than host Docker):
 //
-//	   docker save agentkit-sandbox:dev | docker -H tcp://localhost:2375 load
+//     docker save agentkit-sandbox:dev | docker -H tcp://localhost:2375 load
 //
 //  3. Start the mock model proxy (no real API key required):
 //
-//	   go run ./examples/mockproxy
+//     go run ./examples/mockproxy
 //
 //  4. Run this binary:
 //
-//	   DOCKER_HOST=tcp://localhost:2375 \
-//	   BASE_IMAGE=agentkit-sandbox:dev \
-//	   ANTHROPIC_BASE_URL=http://172.17.0.1:4000 \
-//	   go run ./examples/standalone
+//     DOCKER_HOST=tcp://localhost:2375 \
+//     BASE_IMAGE=agentkit-sandbox:dev \
+//     ANTHROPIC_BASE_URL=http://172.17.0.1:4000 \
+//     go run ./examples/standalone
 //
 // Expected output: two turns complete in parallel, SSE events printed to stdout,
 // and a final confirmation line.

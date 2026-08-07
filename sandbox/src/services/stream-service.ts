@@ -1,5 +1,5 @@
 import { FastifyReply } from 'fastify';
-import { SSEEvent, SSEEventType } from '../types/index.js';
+import { SSEEvent, SSEEventType, TokenUsage } from '../types/index.js';
 import { sessionContext } from '../session-context.js';
 
 /**
@@ -244,7 +244,7 @@ export class StreamService {
     status: string,
     result?: string,
     totalCostUsd?: number,
-    usage?: { inputTokens: number; outputTokens: number },
+    usage?: TokenUsage,
     model?: string,
     sessionId = '',
   ): void {

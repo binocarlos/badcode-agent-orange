@@ -75,7 +75,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 	persona         TEXT NOT NULL DEFAULT '',
 	status          TEXT NOT NULL DEFAULT '',
 	snapshot_handle TEXT NOT NULL DEFAULT '',
-	worker_id       TEXT NOT NULL DEFAULT ''
+	worker_id       TEXT NOT NULL DEFAULT '',
+	mcp_servers     TEXT NOT NULL DEFAULT '{}',
+	create_error    TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS query_events (
@@ -90,6 +92,55 @@ CREATE TABLE IF NOT EXISTS query_events (
 	if err != nil {
 		return fmt.Errorf("sqlitestore: createTables: %w", err)
 	}
+	// CREATE TABLE IF NOT EXISTS leaves a DB written by an older build alone, so
+	// columns added later need an explicit ALTER. Session MCP config
+	// (docs/product/01-session-config.md §4.5) must survive resume: without the
+	// column the fallback store would silently drop it and a resumed session
+	// would come back with no tools.
+	if err := addColumnIfMissing(db, "sessions", "mcp_servers", `TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return err
+	}
+	// Why a session failed to start (agentdb migration 032's column, here).
+	// Without it the fallback store would drop the reason and the operator
+	// would be back to "no running instance and no snapshot — session must be
+	// re-created", which is the whole defect this column exists to close.
+	if err := addColumnIfMissing(db, "sessions", "create_error", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// The in-flight turn's two ids (agentdb migration 039's columns, here).
+	// Without them a turn interrupted by this process dying is unfindable
+	// afterwards: nothing knows a turn was running, and nothing knows the id the
+	// in-image agent's replay buffer is keyed by.
+	if err := addColumnIfMissing(db, "sessions", "active_query_id", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(db, "sessions", "active_sandbox_query_id", `TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	return nil
+}
+
+// addColumnIfMissing adds a column to an existing table, treating "it is already
+// there" as success. sqlite has no ADD COLUMN IF NOT EXISTS.
+func addColumnIfMissing(db *sql.DB, table, column, decl string) error {
+	rows, err := db.Query(`SELECT 1 FROM pragma_table_info(?) WHERE name = ?`, table, column)
+	if err != nil {
+		return fmt.Errorf("sqlitestore: inspect %s.%s: %w", table, column, err)
+	}
+	present := rows.Next()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("sqlitestore: inspect %s.%s: %w", table, column, err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("sqlitestore: inspect %s.%s: %w", table, column, err)
+	}
+	if present {
+		return nil
+	}
+	if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, decl)); err != nil {
+		return fmt.Errorf("sqlitestore: add %s.%s: %w", table, column, err)
+	}
 	return nil
 }
 
@@ -98,19 +149,33 @@ CREATE TABLE IF NOT EXISTS query_events (
 // GetSession returns the session row for id.
 func (s *Store) GetSession(ctx context.Context, id string) (*agentdb.Session, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, customer, job, user_email, persona, status, snapshot_handle, worker_id FROM sessions WHERE id=?`, id)
+		`SELECT id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers, create_error FROM sessions WHERE id=?`, id)
 	var sess agentdb.Session
-	if err := row.Scan(&sess.ID, &sess.Customer, &sess.Job, &sess.UserEmail, &sess.Persona, &sess.Status, &sess.SnapshotHandle, &sess.WorkerID); err != nil {
+	var mcp string
+	if err := row.Scan(&sess.ID, &sess.Customer, &sess.Job, &sess.UserEmail, &sess.Persona, &sess.Status, &sess.SnapshotHandle, &sess.WorkerID, &mcp, &sess.CreateError); err != nil {
 		return nil, fmt.Errorf("sqlitestore: GetSession %q: %w", id, err)
+	}
+	if mcp != "" && mcp != "{}" {
+		if err := json.Unmarshal([]byte(mcp), &sess.MCPServers); err != nil {
+			return nil, fmt.Errorf("sqlitestore: GetSession %q: mcp_servers: %w", id, err)
+		}
 	}
 	return &sess, nil
 }
 
 // UpdateSession upserts the session row.
 func (s *Store) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agentdb.Session, error) {
+	mcp := "{}"
+	if len(sess.MCPServers) > 0 {
+		blob, err := json.Marshal(sess.MCPServers)
+		if err != nil {
+			return nil, fmt.Errorf("sqlitestore: UpdateSession %q: mcp_servers: %w", sess.ID, err)
+		}
+		mcp = string(blob)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO sessions(id, customer, job, user_email, persona, status, snapshot_handle, worker_id)
-		 VALUES(?,?,?,?,?,?,?,?)
+		`INSERT INTO sessions(id, customer, job, user_email, persona, status, snapshot_handle, worker_id, mcp_servers, create_error)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   customer        = CASE WHEN excluded.customer        != '' THEN excluded.customer        ELSE customer        END,
 		   job             = CASE WHEN excluded.job             != '' THEN excluded.job             ELSE job             END,
@@ -118,8 +183,12 @@ func (s *Store) UpdateSession(ctx context.Context, sess *agentdb.Session) (*agen
 		   persona         = CASE WHEN excluded.persona         != '' THEN excluded.persona         ELSE persona         END,
 		   status          = CASE WHEN excluded.status          != '' THEN excluded.status          ELSE status          END,
 		   snapshot_handle = excluded.snapshot_handle,
-		   worker_id       = excluded.worker_id`,
-		sess.ID, sess.Customer, sess.Job, sess.UserEmail, sess.Persona, sess.Status, sess.SnapshotHandle, sess.WorkerID,
+		   worker_id       = excluded.worker_id,
+		   mcp_servers     = excluded.mcp_servers,
+		   -- Unconditional, unlike the CASE-guarded columns above: a create that
+		   -- finally succeeds must be able to CLEAR the reason it failed before.
+		   create_error    = excluded.create_error`,
+		sess.ID, sess.Customer, sess.Job, sess.UserEmail, sess.Persona, sess.Status, sess.SnapshotHandle, sess.WorkerID, mcp, sess.CreateError,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitestore: UpdateSession %q: %w", sess.ID, err)
@@ -183,6 +252,27 @@ func (s *Store) PersistQueryEventsFlat(ctx context.Context, sessionID, queryID s
 	return nil
 }
 
+// ListQueryEventsFlatForQuery returns the events persisted for ONE turn — the
+// optional RunnerStore capability that lets a reconnect append to a turn instead
+// of replacing it (see events.Splice). Implemented here so the sqlite fallback
+// does not silently lose reconnected turns the Postgres store keeps.
+func (s *Store) ListQueryEventsFlatForQuery(ctx context.Context, sessionID, queryID string) ([]events.Envelope, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT payload FROM query_events WHERE session_id=? AND query_id=?`, sessionID, queryID)
+	var payload string
+	if err := row.Scan(&payload); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("sqlitestore: ListQueryEventsFlatForQuery %q/%q: %w", sessionID, queryID, err)
+	}
+	var evs []events.Envelope
+	if err := json.Unmarshal([]byte(payload), &evs); err != nil {
+		return nil, fmt.Errorf("sqlitestore: ListQueryEventsFlatForQuery unmarshal: %w", err)
+	}
+	return evs, nil
+}
+
 // ListQueryEventsFlat returns all events for a session as a flat slice.
 func (s *Store) ListQueryEventsFlat(ctx context.Context, sessionID string) ([]events.Envelope, error) {
 	rows, err := s.db.QueryContext(ctx,
@@ -240,4 +330,50 @@ func (s *Store) SetWorkerBinding(ctx context.Context, sessionID, workerID string
 // ClearWorkerBinding removes the sticky binding for sessionID.
 func (s *Store) ClearWorkerBinding(ctx context.Context, sessionID string) error {
 	return s.SetWorkerBinding(ctx, sessionID, "")
+}
+
+// SetActiveQuery records the in-flight turn: the runner's id for it (the key its
+// rows are written under) and the in-image agent's (the key its replay buffer is
+// keyed by). See agentdb/activequery.go for why both are needed.
+func (s *Store) SetActiveQuery(ctx context.Context, sessionID, queryID, sandboxQueryID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions(id, active_query_id, active_sandbox_query_id) VALUES(?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET active_query_id=excluded.active_query_id,
+		                               active_sandbox_query_id=excluded.active_sandbox_query_id`,
+		sessionID, queryID, sandboxQueryID,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlitestore: SetActiveQuery %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// GetActiveQuery returns the in-flight turn's (runner id, sandbox id); both
+// empty when nothing is recorded as running.
+func (s *Store) GetActiveQuery(ctx context.Context, sessionID string) (string, string, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT active_query_id, active_sandbox_query_id FROM sessions WHERE id=?`, sessionID)
+	var qid, sqid string
+	if err := row.Scan(&qid, &sqid); err != nil {
+		if err == sql.ErrNoRows {
+			return "", "", nil
+		}
+		return "", "", fmt.Errorf("sqlitestore: GetActiveQuery %q: %w", sessionID, err)
+	}
+	return qid, sqid, nil
+}
+
+// ClearActiveQuery forgets the in-flight turn, but only if queryID is still the
+// recorded one — an interrupted turn that a newer turn has replaced must not be
+// able to erase its successor's ids.
+func (s *Store) ClearActiveQuery(ctx context.Context, sessionID, queryID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET active_query_id='', active_sandbox_query_id=''
+		 WHERE id=? AND active_query_id=?`,
+		sessionID, queryID,
+	)
+	if err != nil {
+		return fmt.Errorf("sqlitestore: ClearActiveQuery %q: %w", sessionID, err)
+	}
+	return nil
 }

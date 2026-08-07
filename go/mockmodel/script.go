@@ -1,6 +1,10 @@
 package mockmodel
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/binocarlos/badcode-agent-orange/modelproxy"
+)
 
 // ScriptBuilder builds a Script declaratively via a fluent API.
 type ScriptBuilder struct{ s *Script }
@@ -63,8 +67,7 @@ func (tb *TurnBuilder) StreamText(s string, chunkChars int) *TurnBuilder {
 
 // SSEForTurn returns the exact SSE the mock would emit for turn i. Used to write
 // the shared fixture the frontend jsdom test replays.
-func (s *Script) SSEForTurn(t *testing.T, i int) string {
+func SSEForTurn(t *testing.T, s *Script, i int) string {
 	t.Helper()
-	sp := &Server{t: t}
-	return sp.buildTurnSSE(s.Turns[i])
+	return modelproxy.TurnSSE(s.Turns[i], i)
 }

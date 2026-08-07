@@ -14,17 +14,23 @@ import (
 // When AgentDB is set, returns structured messages with pagination.
 // When AgentDB is nil, falls back to the legacy query-events path.
 func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.AgentDB == nil {
-		h.listQueryEventsLegacy(w, r)
-		return
-	}
-
-	_, ok := h.identify(w, r)
+	// Authorize before the AgentDB/legacy fork, not inside each arm. The legacy
+	// arm used to run first and authenticate but never check ownership, which
+	// left the sqlite fallback as the one route pair a project credential could
+	// still read another project's transcript through.
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
-
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
+	if h.cfg.AgentDB == nil {
+		h.listQueryEventsLegacy(w, r, sid)
+		return
+	}
+
 	limit := 500
 	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
 		limit = v
@@ -61,17 +67,20 @@ func (h *Handlers) Messages(w http.ResponseWriter, r *http.Request) {
 // When AgentDB is set, returns structured event rows.
 // When AgentDB is nil, falls back to the legacy path.
 func (h *Handlers) QueryEvents(w http.ResponseWriter, r *http.Request) {
-	if h.cfg.AgentDB == nil {
-		h.listQueryEventsLegacy(w, r)
-		return
-	}
-
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
+	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
+	if h.cfg.AgentDB == nil {
+		h.listQueryEventsLegacy(w, r, sid)
+		return
+	}
 
-	evts, err := h.cfg.AgentDB.ListQueryEvents(r.Context(), r.PathValue("id"))
+	evts, err := h.cfg.AgentDB.ListQueryEvents(r.Context(), sid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -109,8 +118,11 @@ func (h *Handlers) ListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := h.cfg.AgentDB.ListSessions(r.Context(), &agentdb.SessionQuery{
 		UserEmail: userEmail,
 		Customer:  id.Customer,
-		Limit:     limit,
-		Offset:    offset,
+		// ?worker= narrows to one worker's job history server-side, so a worker
+		// page never has to filter a page of sessions in the browser.
+		Worker: r.URL.Query().Get("worker"),
+		Limit:  limit,
+		Offset: offset,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -149,13 +161,10 @@ func (h *Handlers) SearchMessages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"results": results})
 }
 
-// listQueryEventsLegacy is the legacy path when AgentDB is nil.
-func (h *Handlers) listQueryEventsLegacy(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
-	if !ok {
-		return
-	}
-	sid := r.PathValue("id")
+// listQueryEventsLegacy is the legacy path when AgentDB is nil. Its two callers
+// (Messages, QueryEvents) have already run identify + ownsSession, which is why
+// it takes the session id rather than re-reading it from the request.
+func (h *Handlers) listQueryEventsLegacy(w http.ResponseWriter, r *http.Request, sid string) {
 	evs, err := h.cfg.Store.ListQueryEventsFlat(r.Context(), sid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

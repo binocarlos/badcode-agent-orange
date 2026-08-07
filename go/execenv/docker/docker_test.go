@@ -62,15 +62,15 @@ type fakeDockerAPI struct {
 	CallLog []string
 
 	// CreateErr, StartErr, … are per-method error hooks for failure injection.
-	CreateErr  error
-	StartErr   error
-	StopErr    error
-	RemoveErr  error
-	InspectErr error
-	CommitErr  error
-	ListErr    error
-	ExecErr    error
-	AttachErr  error
+	CreateErr      error
+	StartErr       error
+	StopErr        error
+	RemoveErr      error
+	InspectErr     error
+	CommitErr      error
+	ListErr        error
+	ExecErr        error
+	AttachErr      error
 	InspectExecErr error
 }
 
@@ -537,6 +537,9 @@ func newTestDinD(d *fakeDockerAPI) *DinD {
 	cfg := DinDConfig{
 		GatewayIP: "172.17.0.1",
 		Network:   "bridge",
+		// An 11-port pool is under the low-water mark from its first allocation,
+		// so silence the warning here; TestDinDReportsCapacity asserts on it.
+		Logf: func(string, ...any) {},
 	}
 	e := newDinDWith(cfg, d, ports)
 	// Inject a poller that always returns true immediately (no sleeps).
@@ -873,12 +876,12 @@ func TestSocket_Recover(t *testing.T) {
 	// Add a container that has the managed label and session ID but no port binding
 	// (socket mode doesn't use ports — we use container name for address).
 	d.containers["cid-s1"] = &fakeContainer{
-		id:     "cid-s1",
-		name:   "sandbox-my-sess",
-		image:  "img",
-		labels: map[string]string{labelManaged: "true", labelSessionID: "my-sess"},
+		id:      "cid-s1",
+		name:    "sandbox-my-sess",
+		image:   "img",
+		labels:  map[string]string{labelManaged: "true", labelSessionID: "my-sess"},
 		running: true,
-		ports:  nat.PortMap{nat.Port("3010/tcp"): []nat.PortBinding{{HostIP: ""}}},
+		ports:   nat.PortMap{nat.Port("3010/tcp"): []nat.PortBinding{{HostIP: ""}}},
 	}
 	// A stopped managed container — should be reclaimed (destroyed), not adopted.
 	d.containers["cid-s2"] = &fakeContainer{

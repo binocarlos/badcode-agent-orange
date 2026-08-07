@@ -37,6 +37,12 @@ interface SessionsContextValue {
    */
   refresh: (opts?: { userEmail?: string }) => Promise<void>
   select: (id: string) => void
+  /**
+   * Delete a session. REJECTS with the server's own message when the delete
+   * fails, and the session leaves the list only on success — callers must
+   * handle the rejection and show it (AgentSessionList does, in its confirm
+   * dialog). Ask the user first: this destroys the conversation.
+   */
   delete: (id: string) => Promise<void>
 }
 
@@ -133,17 +139,23 @@ export function AgentChatProvider({
     resumeSession(id)
   }, [resumeSession])
 
+  // delete THROWS on failure, and removes the row from the list only once the
+  // server has agreed (doc 22 RD5). It used to swallow every error and drop the
+  // session from the list regardless: the list said "gone", the next refresh
+  // said "still here", and nobody was told why — the browser twin of the
+  // handler that discarded its delete error and answered 204.
   const deleteSessionItem = useCallback(async (id: string): Promise<void> => {
-    try {
-      const headers = await resolveAuthHeader()
-      await fetch(apiBaseUrl + endpoints.deleteSession(id), {
-        method: 'DELETE',
-        headers,
-      })
-      setSessions((prev) => prev.filter((s) => s.id !== id))
-    } catch (err) {
-      console.error('[AgentSessions] delete failed:', err)
+    const headers = await resolveAuthHeader()
+    const resp = await fetch(apiBaseUrl + endpoints.deleteSession(id), {
+      method: 'DELETE',
+      headers,
+    })
+    if (!resp.ok) {
+      // The server's own sentence when it wrote one; the status otherwise.
+      const body = await resp.text().catch(() => '')
+      throw new Error(body.trim() !== '' ? body.trim() : `HTTP ${resp.status}`)
     }
+    setSessions((prev) => prev.filter((s) => s.id !== id))
   }, [apiBaseUrl, endpoints, resolveAuthHeader])
 
   const sessionsValue = useMemo<SessionsContextValue>(

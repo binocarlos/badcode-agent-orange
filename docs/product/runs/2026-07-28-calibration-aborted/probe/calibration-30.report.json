@@ -1,0 +1,106 @@
+{
+  "schema": "agent-orange/experiments/calibration-report@1",
+  "run": {
+    "id": "calibration-30",
+    "description": "Runbook §2: 30 hypolab hypotheses (10 real-effect, 8 planted-null, 8 confound-trap, 4 underpowered, shuffled) through hypothesis-lab@v1 with the critic live (A), with the critic unsubscribed (B), and optionally with a sham critic (C). Ground truth lives in the harness and reaches the project only inside the frozen fact-checker's own check events.",
+    "mode": "live",
+    "manifest": "e2e/experiments/calibration/manifest-30.json",
+    "datasetSeed": 20260728,
+    "window": 10,
+    "dailyTokensHard": 3000000,
+    "covariatesHint": "age_group — it may drive both jumper colour and lateness, so compare within age groups\nbefore concluding, and say which comparison your verdict rests on.\n\nOUTPUT CONTRACT (keep this rule whatever else changes):\nEnd your reply with a final line reading exactly one of:\nVERDICT: effect\nVERDICT: no-effect\nNothing may follow that line. \"effect\" means the treatment column causally raises the outcome rate;\n\"no-effect\" means it does not, or that this sample cannot honestly support the claim."
+  },
+  "arms": [
+    {
+      "id": "A-critic-live",
+      "note": "hypothesis-lab@v1 as applied: the methodology critic reads every finish and may rewrite the investigator between hypotheses.",
+      "investigator": "cala-invest",
+      "critic": "cala-critic",
+      "checker": "cala-judge",
+      "criticDisabled": false,
+      "criticShammed": false
+    }
+  ],
+  "metrics": [
+    {
+      "arm": "A-critic-live",
+      "hypotheses": 3,
+      "window": 1,
+      "accuracy": 1,
+      "accuracy_first": 1,
+      "accuracy_last": 1,
+      "accuracy_delta": 0,
+      "planted_null_false_confirm_rate": 0,
+      "confound_escaped_rate": 1,
+      "confound_fooled_rate": 0,
+      "underpowered_overclaim_rate": 0,
+      "real_effect_detection_rate": 1,
+      "unparseable": 0,
+      "prompt_writes": 0,
+      "freeze_refused": 0,
+      "delivery_ok_rate": 1,
+      "checker_agreement": 1,
+      "checker_unparseable": 0,
+      "tokens_total": 35132
+    }
+  ],
+  "outcomes": [
+    {
+      "arm": "A-critic-live",
+      "hypotheses": [
+        {
+          "id": "h01",
+          "kind": "real-effect",
+          "expected": "effect",
+          "truthEffect": true,
+          "verdict": "effect",
+          "conclusion": "Excellent! The analysis is complete. Let me summarize the findings.\n\n## Analysis Report: [CAL-H01] Does wearing a red jumper cause lateness?\n\n**Method:** Stratified analysis comparing lateness rates between red-jumper wearers and others, controlling for age_group as a potential confounder. Chi-square tests used for statistical significance.\n\n### Key Findings:\n\n**Overall (unadjusted):**\n- Red jumper: 50.8% late (95/187)\n- Other: 34.7% late (74/213)\n- Difference: +16.1 percentage points (chi² = 10.53, p < 0.01)\n\n**Stratified by age_group (controlling for confounding):**\n\n| Age Group | Red Jumper Late | Other Late | Difference | Chi² |\n|-----------|-----------------|------------|------------|------|\n| Young | 58.8% (50/85) | 43.3% (45/104) | +15.6 pp | 4.53 (p < 0.05) |\n| Old | 44.1% (45/102) | 26.6% (29/109) | +17.5 pp | 7.10 (p < 0.01) |\n\n### Confounding Check:\nAge_group does correlate with both jumper color and lateness (young people are late more often AND wear red more often). However, after stratifying, the association between red jumper and lateness **persists within both age strata**:\n- Young: +15.6 pp difference (statistically significant at p < 0.05)\n- Old: +17.5 pp difference (statistically significant at p < 0.01)\n\nThe effect sizes are consistent across strata (no Simpson's paradox), confirming the association is not explained away by age_group confounding.\n\n### Conclusion:\nThe data show a robust association between wearing a red jumper and being late, with an effect size of approximately +16 percentage points. This association holds **within both age groups**, ruling out age_group as a confounder that explains away the relationship. The effect is statistically significant (p < 0.01 overall and within the old stratum; p < 0.05 within the young stratum).\n\n**Confidence:** High. The stratified analysis confirms the effect is real and not a confounding artifact of age.\n\n**Effect size:** Wearing a red jumper is associated with approximately 16-17 percentage points higher probability of being late, consistent across age groups.\n\nVERDICT: effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match\n\nThe stated verdict \"effect\" correctly aligns with the ground truth \"effect=true\"—both confirm that wearing a red jumper causally raises the lateness rate, and the investigation appropriately found this effect persists after controlling for age_group confounding.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 19006
+        },
+        {
+          "id": "h02",
+          "kind": "confound-trap",
+          "expected": "no-effect",
+          "truthEffect": false,
+          "verdict": "no-effect",
+          "conclusion": "Let me analyze the data directly by computing the contingency tables.\n\n**Method: Stratified Analysis (Mantel-Haenszel approach)**\n\nI'll compute late rates by jumper color within each age group to control for age_group as a confounder, then assess whether jumper color has an independent effect.\n\n## Parsing the data and computing statistics:\n\n**Overall counts from the 400 rows:**\n\n| | Red Jumper | Other Jumper |\n|---|---|---|\n| Young | 131 | 69 |\n| Old | 47 | 153 |\n\nThis shows strong confounding: red jumpers are much more common among young people (131 red vs 47 old with red), while \"other\" jumpers are more common among old people (153 old vs 69 young with other).\n\n**Lateness rates by age group and jumper color:**\n\n**Young age group:**\n- Red jumper: 90 late out of 131 → **68.7% late**\n- Other jumper: 47 late out of 69 → **68.1% late**\n- Difference: +0.6 percentage points (negligible)\n\n**Old age group:**\n- Red jumper: 11 late out of 47 → **23.4% late**\n- Other jumper: 43 late out of 153 → **28.1% late**  \n- Difference: -4.7 percentage points (red actually slightly *lower*, opposite direction)\n\n## Interpretation:\n\nThe naive overall comparison would show red jumper wearers are late more often, but this is entirely due to confounding by age: young people both (1) prefer red jumpers and (2) are late much more often (~68% vs ~27%).\n\n**Within age groups** (the valid comparison controlling for the confounder):\n- Among young people: virtually no difference (68.7% vs 68.1%)\n- Among old people: no meaningful difference, and the direction is actually reversed (23.4% vs 28.1%)\n\nThe apparent association in the raw data is a classic example of Simpson's paradox driven by age_group confounding.\n\n## Conclusion:\n\nAfter stratifying by age_group, there is no evidence that wearing a red jumper causes increased lateness. The within-stratum differences are small (0.6pp for young, -4.7pp for old) and inconsistent in direction. The hypothesis is not supported by this data.\n\n**Confidence:** High. The stratified analysis cleanly removes the confounding, and the null result is clear in both age groups.\n\nVERDICT: no-effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match\n\nThe stated verdict \"no-effect\" correctly aligns with the ground truth \"effect=false\" — both conclude that jumper color has no causal effect on lateness, and the investigation correctly identified age_group as the confounder driving a spurious association (Simpson's paradox).",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 4059
+        },
+        {
+          "id": "h03",
+          "kind": "planted-null",
+          "expected": "no-effect",
+          "truthEffect": false,
+          "verdict": "no-effect",
+          "conclusion": "## Analysis Report: Hypothesis H03\n\n**Hypothesis:** Wearing a red jumper causes a person to be late for the train more often.\n\n### Method\nI used **stratified analysis with the Cochran-Mantel-Haenszel (CMH) test**, controlling for `age_group` as a potential confounder. This approach compares lateness rates between red and other jumper wearers *within* each age stratum, then pools the evidence.\n\n### Results\n\n**Marginal (unadjusted) rates:**\n- Red jumper: 107/320 late = 33.4%\n- Other jumper: 91/280 late = 32.5%\n- Raw difference: +0.9 percentage points (red higher)\n\n**Stratified rates controlling for age_group:**\n\n| Age Group | Red Late Rate | Other Late Rate | Difference |\n|-----------|---------------|-----------------|------------|\n| Young     | 53/151 = 35.1% | 48/134 = 35.8% | **-0.7 pp** |\n| Old       | 54/169 = 32.0% | 43/146 = 29.5% | **+2.5 pp** |\n\nWithin strata, the effect is inconsistent: young red-wearers are actually *slightly less* likely to be late, while old red-wearers are slightly more likely — but both differences are very small.\n\n**Statistical tests:**\n- CMH statistic: **0.063** (critical value 3.841, p >> 0.05)\n- Mantel-Haenszel pooled odds ratio: **1.045** (95% CI: 0.74 – 1.47)\n- Chi-square within young stratum: 0.016 (not significant)\n- Chi-square within old stratum: 0.230 (not significant)\n\n### Conclusion\n\nAfter controlling for age_group, there is **no evidence** that wearing a red jumper increases lateness. The pooled odds ratio of 1.045 is essentially 1.0, and the 95% confidence interval (0.74–1.47) clearly includes 1.0. The within-stratum comparisons show the effect is negligible and inconsistent in direction across age groups. The CMH test is far from significance. This sample cannot support the causal claim.\n\n**Confidence:** High. The sample size (n=600) provides adequate power, and the effect size is tiny in both strata.\n\nVERDICT: no-effect",
+          "checkerCall": "match",
+          "checkerReply": "Verdict: match\n\nThe stated verdict of \"no-effect\" correctly aligns with the ground truth that jumper color has no actual effect on lateness (effect=false). The investigation avoided a false positive by properly concluding there was no evidence for the causal claim.",
+          "deliveryStatuses": [
+            "ok",
+            "ok"
+          ],
+          "promptWrites": [],
+          "freezeRefusals": 0,
+          "tokens": 12067
+        }
+      ]
+    }
+  ],
+  "table": "arm            hypotheses  accuracy  accuracy_first  accuracy_last  accuracy_delta  planted_null_false_confirm_rate  confound_escaped_rate  underpowered_overclaim_rate  real_effect_detection_rate  unparseable  prompt_writes  freeze_refused  checker_agreement  delivery_ok_rate  tokens_total\n-------------  ----------  --------  --------------  -------------  --------------  -------------------------------  ---------------------  ---------------------------  --------------------------  -----------  -------------  --------------  -----------------  ----------------  ------------\nA-critic-live  3           1         1               1              0               0                                1                      0                            1                           0            0              0               1                  1                 35132"
+}

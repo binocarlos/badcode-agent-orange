@@ -19,7 +19,19 @@ services:
     environment:
       AGENTKIT_JWT_SECRET: stack-e2e-secret
       AGENTKIT_TEST_LOGIN: "test@example.com:orange-e2e"
-      AGENTKIT_PROJECT_MAP: '{"test@example.com":["apples-oranges","pears-plums"]}'
+      # The project map in its OBJECT form (design 2026-08-06, T1), so the
+      # embedding suite can exercise an API key and the embed page's
+      # frame-ancestors header. The flat form is still what a plain `docker
+      # compose up` uses; both are supported forever, and the two are told apart
+      # by the shape of the values, not by key names.
+      AGENTKIT_PROJECT_MAP: '{"users":{"test@example.com":["apples-oranges","pears-plums"]},"projects":{"apples-oranges":{"api_key_env":"APPLES_API_KEY","allowed_origins":["https://wolf.example.test","http://localhost:5173"]}}}'
+      # The key value itself, named by api_key_env above. It has to be declared
+      # HERE rather than in .env: docker-compose.yml forwards only
+      # AGENTKIT_PROJECT_MAP / _FILE to agentd, never arbitrary per-project key
+      # variables, so a key set in .env would leave the project silently
+      # keyless. ≥24 chars or agentd refuses to boot (a weak key is worse than
+      # none).
+      APPLES_API_KEY: stack-e2e-apples-api-key-0123456789
       GOOGLE_CLIENT_ID: ""
       ANTHROPIC_API_KEY: ${STACK_E2E_ANTHROPIC_API_KEY:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${STACK_E2E_CLAUDE_CODE_OAUTH_TOKEN:-}

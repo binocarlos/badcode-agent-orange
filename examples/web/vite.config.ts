@@ -4,6 +4,18 @@ import path from "node:path";
 
 export default defineConfig({
   plugins: [react()],
+  // Two entry points, not one SPA with a route: `index.html` is the console
+  // shell (login → project picker → workspace) and `embed.html` is the
+  // tokened single-session iframe page, which must carry none of that shell.
+  // nginx serves them apart (deploy/web.nginx.conf).
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, "index.html"),
+        embed: path.resolve(__dirname, "embed.html"),
+      },
+    },
+  },
   resolve: {
     alias: {
       "@agentkit/chat-ui": path.resolve(__dirname, "../../web/src/index.ts"),

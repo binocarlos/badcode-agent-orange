@@ -1,7 +1,7 @@
 // The harness seam: a pluggable interface for agentic frameworks.
 // See agent-library/docs/12-harness.md for the design rationale.
 
-import type { QueryRequest } from '../types/index.js';
+import type { QueryRequest, TokenUsage } from '../types/index.js';
 import type { ResolvedTools } from '../tools/registry.js';
 import type { Config } from '../config.js';
 import type { StreamService } from '../services/stream-service.js';
@@ -77,7 +77,7 @@ export interface HarnessEmitter {
     status: string,
     result?: string,
     totalCostUsd?: number,
-    usage?: { inputTokens: number; outputTokens: number },
+    usage?: TokenUsage,
     model?: string,
   ): void;
 
@@ -188,7 +188,7 @@ export class BoundHarnessEmitter implements HarnessEmitter {
     status: string,
     result?: string,
     totalCostUsd?: number,
-    usage?: { inputTokens: number; outputTokens: number },
+    usage?: TokenUsage,
     model?: string,
   ): void {
     this.streamService.endQuery(this.queryId, status, result, totalCostUsd, usage, model, this.sessionId);

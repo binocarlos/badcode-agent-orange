@@ -164,9 +164,18 @@ func TestDeleteSession(t *testing.T) {
 	if _, err := s.GetSession(ctx, "s1"); err == nil {
 		t.Fatalf("expected not-found after delete")
 	}
-	// Deleting a nonexistent session is a no-op, not an error.
-	if err := s.DeleteSession(ctx, "never-existed"); err != nil {
-		t.Fatalf("delete nonexistent: %v", err)
+	// Deleting a session that is not there is an ERROR, and specifically
+	// ErrSessionNotFound. This assertion used to read "a no-op, not an error",
+	// which is the shape doc 22's RD5 filed as its second defect: the handler
+	// answered 204 whatever happened, so a delete that deleted nothing reported
+	// success. The HTTP layer's only honest answer here is 404, and it cannot
+	// give one if the store says "fine".
+	if err := s.DeleteSession(ctx, "never-existed"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("delete nonexistent: want ErrSessionNotFound, got %v", err)
+	}
+	// Same for a second delete of an already soft-deleted session.
+	if err := s.DeleteSession(ctx, "s1"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("double delete: want ErrSessionNotFound, got %v", err)
 	}
 }
 
@@ -174,17 +183,19 @@ func TestDeleteSession(t *testing.T) {
 func seedListSessions(t *testing.T, s *Store) {
 	t.Helper()
 	ctx := context.Background()
-	mk := func(id, email, customer, job, status, workflow string, updatedAt int64) {
+	mk := func(id, email, customer, job, status, workflow, worker string, updatedAt int64) {
 		mustCreateSession(t, s, &Session{
 			ID: id, UserEmail: email, Customer: customer, Job: job,
-			Status: status, WorkflowID: workflow,
+			Status: status, WorkflowID: workflow, Worker: worker,
 			CreatedAt: updatedAt, UpdatedAt: updatedAt,
 		})
 	}
-	mk("a1", "alice@acme.com", "acme", "job1", "active", "chat", 100)
-	mk("a2", "bob@acme.com", "acme", "job2", "archived", "chat", 200)
-	mk("a3", "Carol@Acme.com", "acme", "job1", "active", "eval-run", 300)
-	mk("g1", "gus@globex.com", "globex", "job1", "active", "chat", 400)
+	// a1/a3 are worker jobs; a2 is a plain chat session (empty worker), which is
+	// what makes "no filter" and "filter by worker" distinguishable below.
+	mk("a1", "alice@acme.com", "acme", "job1", "active", "chat", "triager", 100)
+	mk("a2", "bob@acme.com", "acme", "job2", "archived", "chat", "", 200)
+	mk("a3", "Carol@Acme.com", "acme", "job1", "active", "eval-run", "summariser", 300)
+	mk("g1", "gus@globex.com", "globex", "job1", "active", "chat", "triager", 400)
 
 	// a1 gets 2 messages (one tool call) and 1 artifact.
 	if err := s.CreateMessages(ctx, []*Message{
@@ -223,6 +234,10 @@ func TestListSessions_FiltersAndCounts(t *testing.T) {
 		{"by job", &SessionQuery{Job: "job2"}, []string{"a2"}},
 		{"by status", &SessionQuery{Status: "archived"}, []string{"a2"}},
 		{"has messages", &SessionQuery{HasMessages: true}, []string{"a1"}},
+		{"by worker", &SessionQuery{Worker: "triager"}, []string{"g1", "a1"}},
+		{"by worker within a customer", &SessionQuery{Customer: "acme", Worker: "triager"}, []string{"a1"}},
+		{"unknown worker is empty", &SessionQuery{Worker: "nobody"}, []string{}},
+		{"empty worker is no filter, not worker=''", &SessionQuery{Customer: "acme"}, []string{"a3", "a2", "a1"}},
 		{"exclude workflow prefix", &SessionQuery{Customer: "acme", ExcludeWorkflowIDPrefix: "eval-"}, []string{"a2", "a1"}},
 		{"limit", &SessionQuery{Limit: 2}, []string{"g1", "a3"}},
 		{"offset", &SessionQuery{Limit: 2, Offset: 2}, []string{"a2", "a1"}},
@@ -518,5 +533,41 @@ func TestListSessionUsers(t *testing.T) {
 	}
 	if empty == nil || len(empty) != 0 {
 		t.Fatalf("expected empty non-nil slice, got %#v", empty)
+	}
+}
+
+// TestSessionExistsIsDefiniteOrAnError pins the contract the archive loop leans
+// on (doc 22, RD8): SessionExists answers the row question WITHOUT the
+// "not found is an error" conflation GetSession has, and without pattern
+// matching an error string. A false here authorises destroying a container, so
+// it must never be produced by anything other than a successful query that
+// found nothing.
+func TestSessionExistsIsDefiniteOrAnError(t *testing.T) {
+	ctx := context.Background()
+	s := newSessionTestStore(t)
+	mustCreateSession(t, s, &Session{
+		ID: "s-present", Customer: "acme", Job: "j1",
+		WorkflowID: "chat", UserEmail: "u@acme.com",
+	})
+
+	if ok, err := s.SessionExists(ctx, "s-present"); err != nil || !ok {
+		t.Fatalf("SessionExists(present) = %v, %v; want true, nil", ok, err)
+	}
+	// GetSession makes absence an error; SessionExists makes it an answer.
+	if _, err := s.GetSession(ctx, "s-gone"); err == nil {
+		t.Fatal("GetSession on a missing row returned no error — the premise of this method has changed")
+	}
+	ok, err := s.SessionExists(ctx, "s-gone")
+	if err != nil {
+		t.Fatalf("SessionExists(missing) returned an error (%v) — an error means 'assume present' and would leak the port for ever", err)
+	}
+	if ok {
+		t.Fatal("SessionExists(missing) = true")
+	}
+
+	// An empty id is a caller bug, not an absent session: it must not answer
+	// "false" and license a teardown.
+	if ok, err := s.SessionExists(ctx, ""); err == nil || ok {
+		t.Fatalf(`SessionExists("") = %v, %v; want false, error`, ok, err)
 	}
 }

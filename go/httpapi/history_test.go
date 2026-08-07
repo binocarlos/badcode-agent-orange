@@ -50,9 +50,11 @@ func TestStatusHappyPath(t *testing.T) {
 	}
 	// Response shape: {sessionId, sandboxState, activeQuery:{queryId}}
 	var out struct {
-		SessionID    string          `json:"sessionId"`
-		SandboxState string          `json:"sandboxState"`
-		ActiveQuery  *struct{ QueryID string `json:"queryId"` } `json:"activeQuery"`
+		SessionID    string `json:"sessionId"`
+		SandboxState string `json:"sandboxState"`
+		ActiveQuery  *struct {
+			QueryID string `json:"queryId"`
+		} `json:"activeQuery"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)

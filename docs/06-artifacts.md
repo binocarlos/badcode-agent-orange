@@ -8,7 +8,7 @@ way these systems get muddled. The library keeps them on separate interfaces wit
 | What | The *whole filesystem* of a session, as an image | A *single user-facing file* the agent produced |
 | Why | Resurrect/suspend the session; publish it as a reusable app | Let the user download/preview/pin a deliverable |
 | Interface | `ExecutionEnvironment.Snapshot` + `ImageRegistry` ([02](02-execution-environment.md), [03](03-image-registry.md)) | `ArtifactStore` (this doc) |
-| Granularity | One per session (latest), opaque | Many per session, each with type/label/status |
+| Granularity | One *archive* snapshot per session (latest), opaque — plus any number of named `name:version` catalogue entries an agent burns with `image_create` | Many per session, each with type/label/status |
 | Lifecycle | live container → image → durable handle → restored container | live-in-workspace → extracted-to-blob → (or lost) |
 
 A session can be snapshotted (so it resumes tomorrow) while *also* having ten artifacts (a report, a
@@ -16,9 +16,12 @@ chart JSON, a generated web app). These are orthogonal operations on orthogonal 
 
 ## The `ArtifactStore` contract
 
-This is the same interface designed in the interface-refactor
-([../docs/interface-refactor/06-agent.md](../../docs/interface-refactor/06-agent.md)), carried into
-the library with its proven status semantics.
+`go/artifacts/artifacts.go` holds **only** the interface and the portable types — there is no
+implementation in that package. The shipped implementations are `extension/dbartifacts` (bytes in a
+`BlobStore`, metadata in Postgres — what `cmd/agentd` wires when `DATABASE_URL` is set),
+`extension/blobartifacts` (bytes in a `BlobStore`, metadata in an in-process map — the sqlite
+fallback), and `artifacts.MockArtifactStore` in `mock.go`; `dir.go` holds
+`WriteTarToBlobs`, the tar-stream → per-file-blob helper the directory path uses.
 
 ```go
 package artifacts
@@ -29,16 +32,20 @@ import (
 )
 
 // ArtifactStore persists and retrieves agent artifacts — files produced in the session
-// workspace and registered for download/preview. The real impl wraps a metadata store
-// (rows) + a BlobStore (bytes); the mock keeps both in memory.
+// workspace and registered for download/preview.
 type ArtifactStore interface {
 	// Save upserts artifact metadata (dedup on session_id + file_path) and, when content
-	// is non-nil, uploads bytes and sets Status="extracted". Preserves the
-	// live → extracted, never-regress rule.
+	// is non-nil, persists bytes and sets Status="extracted". Preserves the
+	// live → extracted, never-regress rule and write-once Source.
+	//
+	// When art.IsDir is true, content MUST be a tar stream: the impl untars it and
+	// writes one blob per regular file under the artifact's blob PREFIX (BlobPath),
+	// and sets FileSize to the sum of entry sizes.
 	Save(ctx context.Context, art *Artifact, content io.Reader) (*Artifact, error)
 
 	// Load returns metadata plus an open reader for the bytes. reader is nil if the
-	// artifact is metadata-only (e.g. status "lost").
+	// artifact is metadata-only (status "lost"), if the bytes are gone, or if the
+	// artifact is a directory (no single byte stream — list the BlobPath prefix).
 	Load(ctx context.Context, artifactID string) (*Artifact, io.ReadCloser, error)
 
 	// List returns all artifacts for a session.
@@ -47,10 +54,15 @@ type ArtifactStore interface {
 	// MarkLost flags all still-"live" artifacts for a session as lost — called when the
 	// instance is destroyed before extraction.
 	MarkLost(ctx context.Context, sessionID string) error
+
+	// CaptureFolder slurps a named set of files (or a single file — the degenerate
+	// case) from a tar stream and saves it as one artifact identified by
+	// (sessionID, name).
+	CaptureFolder(ctx context.Context, sessionID, name string, content io.Reader) (*Artifact, error)
 }
 
-// Artifact is the generic artifact shape (a redefinition of types.AgentArtifact, owned by
-// the library so it depends on nothing in Platinum).
+// Artifact is the generic artifact shape, owned by the library so it depends on nothing in
+// any host app.
 type Artifact struct {
 	ID           string
 	SessionID    string
@@ -63,6 +75,7 @@ type Artifact struct {
 	MimeType     string
 	FileSize     int64
 	Source       string // "tool" | "auto" | "upload" (never overwritten once set)
+	IsDir        bool   // when true, BlobPath is a PREFIX and bytes are one blob per file
 	// Host-specific fields live in a generic bag so the library type stays portable.
 	Meta map[string]string
 }
@@ -77,7 +90,7 @@ const (
 )
 ```
 
-## The status state machine (ported verbatim — it's hard-won)
+## The status state machine (hard-won)
 
 ```
 live ─┬─→ extracted          (bytes successfully uploaded to blob)
@@ -88,92 +101,190 @@ extracted → [terminal] served from blob
 lost      → [terminal] 410 Gone
 ```
 
-Two non-obvious rules from `store_agent_artifacts.go` that the library's real impl **must** keep
-(they're encoded in the mock too, so tests catch regressions):
+Three non-obvious rules every implementation **must** keep (held by `extension/dbartifacts`,
+`extension/blobartifacts` and `artifacts.MockArtifactStore`, so `artifacts_test.go`,
+`blobartifacts_test.go` and `dbartifacts_test.go` catch regressions):
 
-1. **Never regress `extracted` → `live`.** An upsert that arrives with `live` after the artifact is
-   already `extracted` keeps `extracted`. (`UpsertAgentArtifact` lines ~50–54.)
+1. **Never regress `extracted` → `live`.** A `Save` that arrives with `live` after the artifact is
+   already `extracted` keeps `extracted`.
 2. **`MarkLost` promotes instead of losing when a blob exists.** If a "live" artifact already has a
    `BlobPath`, `MarkLost` makes it `extracted`, not `lost` — the bytes are safe even though the
-   container is gone. (`MarkArtifactsLost` lines ~150–151.)
-3. **`Source` is write-once.** Once set, it's never overwritten by a later upsert.
+   container is gone.
+3. **`Source` is write-once.** Once set, it's never overwritten by a later `Save`.
 
-## The three extraction patterns (ported from `agent.go`)
+## How bytes actually reach blob storage
 
-The current Go code has three ways an artifact's bytes reach blob storage. The library expresses all
-three through `ArtifactStore.Save`, with the host deciding which pattern fires:
+**One path is wired by the library**, and it is the only one that fires without host code:
 
-1. **Eager upload on create** — host registers `live`, then a background goroutine pulls the file from
-   the workspace (`ExecutionEnvironment.Exec` / the in-image `/workspace/files/*` endpoint) and
-   `Save`s with content → `extracted`. (`createAgentArtifact` + `eagerUploadArtifact`.)
-2. **SSE-triggered** — the `artifact_registered` marker in the live stream triggers the host hook,
-   which pulls + `Save`s directly as `extracted` and injects `artifacts_updated`.
-   (`uploadAndRegisterArtifact`.)
-3. **Direct extraction** — the in-image agent hands base64 content out-of-band; host `Save`s
-   immediately. (`extractAgentArtifactInternal`.)
+- **SSE-triggered.** The `artifact_registered` marker event in the live stream fires the Runner's
+  `onArtifactRegistered` hook ([05](05-event-streaming.md)). It reads `filePath` off the event,
+  resolves it under `/workspace`, pulls the bytes from the running instance, and `Save`s. The
+  artifact metadata (`label`, `artifactType`, `description`) comes from the event's own fields;
+  `Source` is `"auto"`. Any per-artifact failure is swallowed — it must never fail the turn.
 
-The *pulling* of bytes from the workspace is an `ExecutionEnvironment`/sandbox-contract concern; the
-*storing* is `ArtifactStore`. The library wires pattern (2) by default (via the event pipeline hook)
-and exposes the others as host-callable helpers.
+Everything else is host-composed on top of `Save` / `CaptureFolder`: an upload route
+(`httpapi` `Upload`, `Source: "upload"`), a metadata-only registration (`CreateArtifact`, saved with
+nil content so the artifact stays `live`), or a host-driven eager pull. The *pulling* of bytes from
+the workspace is an `ExecutionEnvironment`/sandbox-contract concern; the *storing* is `ArtifactStore`.
 
-## Download / self-heal
+## Download
 
-`Load` mirrors `downloadAgentArtifact`'s logic:
+`Load` is deliberately dumb — it reports state, it does not repair it:
 
-- **`extracted`** → open the blob (via the host's `BlobStore`); the library returns the reader.
-- **`live`** → self-heal: if the blob actually exists, promote to `extracted` and serve; if not,
-  return "still preparing" (the host maps this to HTTP 202).
-- **`lost`** → return a sentinel error (host maps to 410 Gone).
+- bytes present in the `BlobStore` → metadata **and** an open reader.
+- `lost`, no `BlobPath`, blob missing from the backend, or `IsDir` → metadata and a **nil reader**.
+  There is no sentinel error for these; a caller must check `reader != nil`, not `err != nil`.
+- a genuine backend failure → a wrapped error.
 
-The host owns the HTTP status mapping; the `ArtifactStore` returns typed states/errors.
+There is **no self-heal**: a `live` artifact whose blob happens to exist is not promoted to
+`extracted` by `Load`. (`MarkLost` is what performs that promotion, on destroy.)
 
-## Webapp artifacts (a worked example of host specificity)
+### The download route (it exists now)
 
-Platinum's "webapp" artifact type extracts an entire `dist/` tree and serves it behind a tokenised
-URL, emitting a `webapp_ready` event. In the library this is **not** core — it's a host pattern built
-on the generic pieces: a webapp is an artifact whose `ArtifactType="webapp"`, whose extraction copies a
-*directory* (host loop over `List`/`Save`), and whose readiness event is a host-registered extension
-event. The generic core ships single-file artifacts; multi-file/webapp is a documented host recipe.
+This section used to say the shipped `httpapi` handlers did **not** map the nil-reader cases and
+that "nobody has made that decision in this repo". **That is no longer true.**
+`go/httpapi/artifacts_download.go` is exactly that decision, and it ships three routes:
 
-## Folder artifacts (generalized capture) and their link to user images
+```
+GET /agent/artifacts/{id}/download
+GET /agent/sessions/by-name/{name}/artifacts
+GET /agent/sessions/by-name/{name}/artifacts/file?path=…
+```
 
-The v0 `ArtifactStore` captured a **single file** per artifact. The redesign generalises this to a
-**named folder/file-set capture**: at any point you can tell a running (isolated) session "slurp this
-set of paths out of the workspace, name it, and store it in the BlobStore as one artifact." The bytes
-are pulled via the in-image agent (`GET /workspace/files/*`) or `ExecutionEnvironment.Exec` + tar, then
-`Save`d. Per-file behaviour is the degenerate case (a one-path set); the status state machine and
-dedup/never-regress rules are unchanged.
+`serveArtifactBytes` (`artifacts_download.go:165`) is the single place artifact bytes leave the
+package. The nil-reader mapping is `artifactUnavailable` (`artifacts_download.go:237-259`),
+evaluated in this order — the order is load-bearing:
 
-This folder-capture is the **building block for user images** ([03](03-image-registry.md)). A user
-image is "an App image + a named set of artifacts copied in, then snapshotted" — so the flow is:
-capture the useful files as a folder artifact → `Runner.BuildUserImage` launches a throwaway container,
-copies those artifacts in, and snapshots. The artifact is the *portable, container-independent* unit;
-the user image is the *re-launchable* unit derived from it.
+| Condition | Status | Why |
+| --- | --- | --- |
+| `status = lost` | **410 Gone** | the container was destroyed before extraction; no retry helps |
+| `status = extraction_failed` | **409 Conflict** | there are no bytes to serve |
+| `IsDir` | **409 Conflict** | checked *before* the live case, because retrying a directory will never produce one byte stream, so 202 would be a lie. The message points at the list route |
+| `status = live` | **202 Accepted** | registered but not yet extracted — the one case where the client should come back |
+| otherwise | **410 Gone** | extracted, but the blob is not in the store: the bytes existed and no longer do |
 
-Note the three-way distinction this completes:
-- **Artifact** = named files/folders in the BlobStore (download/preview/seed a user image).
-- **Session-snapshot image** = the *whole* filesystem of a live isolated session (suspend/restore).
-- **User image** = App image + curated artifacts, snapshotted (re-launchable capability).
+Other decisions worth knowing before you build on it:
 
-All three are unsupported under shared tenancy (no per-session file attribution) except plain artifact
-capture from a session that is itself the only one in its container.
+- **A `Load` error maps to 404, not 500.** Both shipped backends report an unknown id as a wrapped
+  error with no sentinel distinguishing it from a backend fault, and 404 is the required answer for
+  a foreign id anyway. The 404 body is `ownsSession`'s string **byte for byte** (`not found`) — a
+  distinguishable "artifact not found" would let a session-scoped embed token tell "exists but
+  belongs elsewhere" from "no such id".
+- **`Content-Disposition: attachment`**, plus `X-Content-Type-Options: nosniff` and
+  `application/octet-stream` when `MimeType` is empty. Security, not UX: an agent can write an
+  artifact containing HTML, and serving it inline would be scripting on the console's own origin.
+  Every console call site fetches into a blob URL, so nothing is lost. The filename comes from
+  `path.Base(FilePath)` — the portable `artifacts.Artifact` has no `FileName` field.
+- **No `Content-Length`.** `FileSize` is metadata written by a different call than the bytes, and a
+  stale value would truncate the response.
+- The by-name routes' tenancy rides entirely on the name resolver
+  (`go/httpapi/sessions_byname.go:102`): `GetArtifactByPath` takes a session **id** with no
+  customer parameter, so no handler in the package may pass a session id that came from a request.
+  A session id in the query string is ignored. `?path` is tried with and without a leading slash.
+
+Integration guide for callers outside the console: [`19-embedding.md`](19-embedding.md) § 6.
+
+## Webapp artifacts
+
+`ArtifactType == "webapp"` is handled **in core**, not by a host: `onArtifactRegistered` takes the
+directory containing the registered entry file, tars it out of the workspace, and stores it as one
+directory artifact whose `FilePath` is that directory (guarding against an entry at the workspace
+root, so the whole workspace is never captured). That is what makes a bundled app's JS/CSS/font
+assets survive, rather than only `index.html`.
+
+What is *not* in the module: any code that **serves** a webapp behind a tokenised URL, and any
+emission of `webapp_ready`. `web/`'s reducer handles `webapp_ready` if something sends one, but
+nothing in this repo does. Serving remains a host recipe.
+
+## Folder artifacts (generalized capture)
+
+The v0 `ArtifactStore` captured a **single file** per artifact. That is now generalised to a
+**named folder/file-set capture** (`CaptureFolder`, `Artifact.IsDir`): slurp a set of paths out of a
+running session's workspace as a tar stream, name it, and store it as one artifact — one blob per
+regular file under a shared `BlobPath` prefix, with per-file size and SHA-256 recorded by
+`artifacts.WriteTarToBlobs`. Per-file behaviour is the degenerate case; the status state machine and
+the dedup / never-regress rules are unchanged.
+
+## Named images: what shipped, and what did not
+
+An earlier plan for **user images** — "an App image plus a named set of artifacts copied into a
+throwaway container, then snapshotted" — is **not what got built**. Two half-finished helpers for it
+(`lookupImageCache`, `snapshotPersistCache` in `go/runner.go`) exist and are called by nothing; there
+is no `Runner.BuildUserImage` method, despite `Deps.Blobs`' comment implying one.
+
+What shipped instead is the product layer's **image catalogue**
+([`product/08-images-and-skills.md`](product/08-images-and-skills.md), spec §13): a named, versioned,
+append-only record of a **session snapshot**. `image_create` is a thin naming layer over
+`Runner.Snapshot` — an agent snapshots *its own* container (the session is taken from its token,
+never from an argument) and a catalogue row is written pointing at the resulting handle. No artifacts
+are copied in. Curation is "get a container into the shape you want, then burn it", not "assemble one
+from parts".
+
+So the honest distinction is two-way, not three:
+
+- **Artifact** = named files/folders in the `BlobStore` — the portable, container-independent unit
+  (download, preview, hand to a human).
+- **Snapshot image** = the *whole* filesystem of a session. Anonymous when the archive loop takes it
+  (restore this session later); named `name:version` when an agent takes it via `image_create`
+  (launch new sessions from it).
+
+Both need per-session file attribution and are therefore unsupported under shared tenancy, except
+plain artifact capture from a session that is the only one in its container.
 
 ## What's host-owned vs library-owned
 
-| Library-owned (generic) | Host-owned (Platinum-specific) |
-|-------------------------|-------------------------------|
-| `ArtifactStore` interface + status state machine + dedup/never-regress rules | The `BlobStore` backend (Azure/fs/hybrid) — injected |
-| `Artifact` portable type + `Meta` bag | Publishing to a Files area (`Docs/Agent Reports/...`) |
-| The three extraction patterns as wired hooks | `webapp_ready` / tokenised webapp serving |
-| `MarkLost` on destroy (via `ExecutionEnvironment.OnDestroy`) | Office-Online SAS preview URLs |
-| In-memory mock with identical semantics | Brand/theme enrichment of artifact metadata (via `ArtifactEnricher`) |
+| Library-owned (generic) | Host-owned (injected / product-specific) |
+|-------------------------|-------------------------------------------|
+| `ArtifactStore` interface + status state machine + dedup/never-regress rules | The `BlobStore` backend (GCS / fs / hybrid) — injected |
+| `Artifact` portable type + `IsDir` + `Meta` bag | Publishing to a product's files area |
+| The `artifact_registered` marker hook, incl. webapp directory capture | `webapp_ready` / tokenised webapp serving |
+| `MarkLost` on destroy (via `ExecutionEnvironment.OnDestroy`) | Signed preview URLs; HTTP status mapping for missing bytes |
+| In-memory mock with identical semantics | Brand/theme enrichment of artifact metadata (via an `ArtifactEnricher`) |
 
-## Mapping: today → library
+Where the code lives: the interface and types in `go/artifacts/artifacts.go`, the tar helper in
+`dir.go`, the mock in `mock.go`, and the two implementations in `go/extension/dbartifacts/`
+(Postgres index — what `cmd/agentd` wires with `DATABASE_URL` set) and
+`go/extension/blobartifacts/` (in-process index — the sqlite fallback). The table-side methods are
+`go/agentdb/artifacts_durable.go`. Snapshot/archive handling is **not** here — that is snapshot, see
+[03](03-image-registry.md).
 
-| Today | Library |
-|-------|---------|
-| `store_agent_artifacts.go` (`UpsertAgentArtifact`, `MarkArtifactsLost`, dedup/never-regress) | `artifacts/artifacts.go` real impl + `artifacts/mock.go` |
-| `types/agent.go` `AgentArtifact` | `artifacts.Artifact` (redefined, portable) |
-| `agent.go` `createAgentArtifact`/`eagerUploadArtifact`/`uploadAndRegisterArtifact`/`extractAgentArtifactInternal` | three extraction patterns over `ArtifactStore.Save` + event-pipeline hook |
-| `agent.go` `downloadAgentArtifact` self-heal | `ArtifactStore.Load` typed states |
-| `agent.go` snapshot/archive handlers | **not** here — those are snapshot, see [03](03-image-registry.md) |
+## Where metadata lives (durability)
+
+Bytes always go to the `BlobStore`. The **metadata index** depends on what `agentd` is wired to:
+
+| `DATABASE_URL` | Store | Index | Survives a restart |
+|---|---|---|---|
+| set (compose always sets it) | `extension/dbartifacts` | Postgres `agent_artifacts` | **yes** |
+| unset (sqlite fallback) | `extension/blobartifacts` | in-process map | **no** |
+
+The index is deliberately **not** in the blob store. An index in object storage cannot be queried,
+and every concurrent write becomes a read-modify-write race on one JSON object — a database built on
+a bucket. `agent_artifacts` has existed since migration 002, is indexed, and is scoped by
+`customer`; migration 033 adds the `meta` jsonb column for the one field of the portable type with
+no column of its own (`Meta["dirDigest"]`) plus a `(session_id, file_path)` index for the dedup key.
+
+Blob layout is unchanged and shared by both stores: `_artifacts/bytes/<id>` for a file,
+`_artifacts/dirs/<id>/…` for the one-blob-per-file layout of a directory artifact.
+
+> **The sqlite fallback still loses metadata.** It is the pre-existing behaviour, kept rather than
+> refusing to boot, and `agentd` logs it loudly at startup. Two things go wrong there, both pinned
+> by `blobartifacts`' `TestIndexIsNotDurableAcrossRestart`: rows vanish while their bytes stay in the
+> bucket, orphaned; and the in-process ID counter restarts at 1, so the first artifact written after
+> a restart takes the blob key of the first one written before it and **overwrites those bytes**.
+> `dbartifacts` mints UUIDs, so IDs never collide.
+
+**Tenancy.** Each row carries the `customer` of its session. The `ArtifactStore` interface is
+session-keyed and has no project parameter, so project scoping is enforced in two places: `httpapi`'s
+artifact routes check session ownership before calling in (404, not 403 — existence is not leaked),
+and the table-level reads `ListArtifactsForCustomer` / `GetArtifactForCustomer` (mirrored on
+`dbartifacts` as `ListForCustomer` / `LoadForCustomer`) refuse cross-project reads. The negative
+tests are `agentdb.TestArtifactProjectIsolation` (+ the live-Postgres twin),
+`dbartifacts.TestProjectIsolation`, and `httpapi.TestArtifactRoutesAreProjectScoped`.
+
+**Known orphan path, narrowed by migration 041.** `agent_artifacts.session_id` has been
+`REFERENCES agent_sessions(id) ON DELETE CASCADE` since migration 002. Deleting a session no longer
+fires it: `Store.DeleteSession` stamps `deleted_at` instead of removing the row (doc 22 RD5), so
+the artifact index survives the delete along with the transcript. The cascade is still there and
+still correct — a real `DELETE FROM agent_sessions` (the purge nobody has authorised yet, work plan
+doc 24 G3) would take the rows and leave the bytes. Both halves are pinned by
+`TestLivePG_ArtifactRowsSurviveASessionDelete`. Nothing sweeps those blobs yet.

@@ -50,6 +50,34 @@ const (
 
 // RunnerStore is the minimal DB surface the Runner and Fleet require. Both
 // *agentdb.Store and agentkittest.MemStore satisfy this interface.
+//
+// Two OPTIONAL capabilities are probed for by type assertion rather than
+// required here, because RunnerStore is host-implemented and adding a method to
+// it breaks every host:
+//
+//	ListQueryEventsFlatForQuery(ctx, sessionID, queryID) ([]events.Envelope, error)
+//
+// A store that implements it lets Runner.Stream persist what a reconnect drains
+// out of the in-image replay buffer (merged onto what the turn already has — see
+// events.Splice). A store that does not keeps the previous behaviour: the
+// reconnect relays bytes to the browser and persists nothing.
+//
+//	SetActiveQuery(ctx, sessionID, queryID, sandboxQueryID string) error
+//	GetActiveQuery(ctx, sessionID string) (queryID, sandboxQueryID string, err error)
+//	ClearActiveQuery(ctx, sessionID, queryID string) error
+//
+// A store that implements these lets an in-flight turn outlive the process
+// running it: Status can still name the turn after a restart, and Stream can
+// still translate that name into the id the in-image agent's replay buffer is
+// keyed by. Without them a turn is only reconnectable from the process that
+// dispatched it — which is not the process a crash leaves you with.
+//
+//	SessionExists(ctx, sessionID) (bool, error)   — see SessionExistenceChecker
+//
+// A store that implements it lets the archive loop tell an ORPHANED container
+// (one whose session row is gone) from a session whose snapshot merely failed.
+// A store that does not keeps the previous behaviour: an orphan is skipped for
+// ever, which is the port leak that capability exists to stop.
 type RunnerStore interface {
 	GetSession(ctx context.Context, id string) (*agentdb.Session, error)
 	UpdateSession(ctx context.Context, session *agentdb.Session) (*agentdb.Session, error)
@@ -60,6 +88,28 @@ type RunnerStore interface {
 	GetWorkerBinding(ctx context.Context, sessionID string) (string, bool, error)
 	SetWorkerBinding(ctx context.Context, sessionID, workerID string) error
 	ClearWorkerBinding(ctx context.Context, sessionID string) error
+}
+
+// SessionExistenceChecker is the OPTIONAL RunnerStore capability the archive
+// loop uses to distinguish an orphaned container from a session whose snapshot
+// failed for an ordinary reason (registry down, disk full, engine hiccup).
+//
+// The distinction is not cosmetic and it is not inferrable from the snapshot
+// error: `Recover` re-adopts any container labelled with a session id, so a
+// container can outlive its row. With no row `Snapshot` fails at
+// SetSnapshotHandle, the archive loop keeps the container, and it does so again
+// every minute for ever — one host port from a pool of 100 gone until the
+// process restarts. Keeping the container is the RIGHT answer for a genuine
+// failure (the session is resumable and its filesystem is the only copy) and
+// the WRONG answer for an orphan, so the loop must ask.
+//
+// The contract is deliberately three-valued in effect: (true, nil) and
+// (false, err) both mean "do not destroy". Only a definite (false, nil) — the
+// store answered, and the row is not there — authorises teardown. A store that
+// cannot answer, or is momentarily unreachable, must never cause a live
+// session's container to be destroyed.
+type SessionExistenceChecker interface {
+	SessionExists(ctx context.Context, sessionID string) (bool, error)
 }
 
 // Deps holds one implementation of every dependency the Runner needs. Engine and
@@ -98,6 +148,32 @@ type Deps struct {
 	SkillCatalog   SkillCatalog                     // nil -> hoisted skills captured as artifacts but not cataloged
 	CustomImages   CustomImageCatalog               // nil -> custom-image launch ids are ignored (base fallback)
 
+	// Images resolves a worker's §13 image pointer (a bare `name`, or
+	// `name:version`) into a launch image, for sessions whose resolved
+	// SessionContext carries a WorkerImage. It is the SAME seam job composition
+	// uses (ComposeJobInput.ImageResolver), deliberately: one resolver, so a
+	// worker job and an interactive session on the same worker cannot launch
+	// from different environments.
+	//
+	// nil is legal and means "this host has no image catalogue" — but a nil
+	// resolver facing a SessionContext that DOES carry a worker pointer is an
+	// error, never a fallback to the base image (§13.3).
+	Images ImageResolver
+
+	// WorkerEvents is the event-spine store the Runner appends the §8.2 internal
+	// events to (`worker.finished` / `worker.failed`) when a session is a worker
+	// job. nil -> no internal events are emitted, which is the correct behaviour
+	// for a host embedding the engine without the product event layer.
+	// *agentdb.Store satisfies it.
+	WorkerEvents WorkerEventStore
+	// Snapshots is the §13 image catalogue the snapshot TTL reaper sweeps (B4,
+	// §5/§13.7). nil -> no reaping, whatever Policy.SnapshotReapInterval says.
+	// It must be a store WITHOUT agentdb.InstallConfigEventGuard armed: the
+	// reaper tombstones a guarded projection table outside the config-event seam
+	// on purpose (storage GC is not a configuration decision — see
+	// snapshot_reaper.go).
+	Snapshots SnapshotCatalog
+
 	Policy Policy
 }
 
@@ -106,8 +182,14 @@ type Deps struct {
 type Policy struct {
 	BaseImage      string
 	ArchiveTimeout time.Duration // 0 disables the archive loop (idle snapshot + destroy)
-	MaxConcurrent  int
-	AgentPort      int // in-image agent port (default 3010)
+	// SnapshotReapInterval is how often the snapshot TTL reaper sweeps the image
+	// catalogue for versions whose expiry has passed (§5). 0 disables it. The
+	// expiry itself is per project (project_settings.snapshot_ttl_days, 0 =
+	// never); this is only how often we look. Hours, not minutes — reaping is
+	// storage housekeeping, and a pass that finds nothing still costs queries.
+	SnapshotReapInterval time.Duration
+	MaxConcurrent        int
+	AgentPort            int // in-image agent port (default 3010)
 
 	// SessionEnv is a static set of environment variables injected into every
 	// session container the Runner provisions (merged in sessionEnv; per-session
@@ -132,6 +214,14 @@ type Policy struct {
 	// container, not the host). Deliberately excluded from user-image throwaway
 	// builds so dev binds never alter snapshotted images.
 	Mounts []execenv.Mount
+
+	// EventFlushCadence is how often an in-flight turn's collected events are
+	// flushed to the store, so a crash mid-turn does not lose everything the model
+	// said. 0 selects the default (DefaultEventFlushCadence); a NEGATIVE value
+	// disables periodic flushing, restoring the persist-once-at-query_complete
+	// behaviour. Tests use a tiny value; production wants seconds, not
+	// milliseconds — every flush is a full re-write of the turn's row.
+	EventFlushCadence time.Duration
 
 	// TrustedWorkload declares that the workloads run in this Runner are trusted
 	// (e.g. an internal dev box or a known-safe CI job). When true, shared-tenancy
@@ -221,12 +311,21 @@ type SessionRef struct {
 
 // CreateSessionRequest carries the config to provision a session instance.
 type CreateSessionRequest struct {
-	SessionID    string
-	Persona      string
-	Customer     string
-	Job          string
-	UserEmail    string
-	Model        string
+	SessionID string
+	Persona   string
+	Customer  string
+	Job       string
+	UserEmail string
+	Model     string
+	// SystemPrompt is the composed system prompt of a worker job. It is
+	// load-bearing ONLY together with Worker (below): the pair is what makes the
+	// runner persist `composed_prompt` on the session row, and that column is
+	// what every turn of the session is then run with (runner.turnSystemPrompt).
+	//
+	// Without Worker it is currently ignored — a session with no composed prompt
+	// resolves its prompt per turn from Deps.SessionContext instead. Do not read
+	// this field as "a system prompt for any session"; wiring that up would need
+	// the persistence rule in persistComposition widened to match.
 	SystemPrompt string
 	MaxTurns     int
 	// Image is an explicit base-image override (takes highest precedence; E2E use).
@@ -241,7 +340,40 @@ type CreateSessionRequest struct {
 	// Empty value is equivalent to HarnessClaudeAgentSDK (the sandbox default).
 	// See agent-library/docs/12-harness.md.
 	Harness Harness
+
+	// MCPServers configures Model Context Protocol servers available to the
+	// in-image harness for the lifetime of the session. Merged with (never
+	// replacing) the sandbox's built-in tool registry.
+	//
+	// Persisted on the session row at create time so resume / re-provision can
+	// re-supply it — MCP config is session config, not filesystem state, so a
+	// snapshot does not carry it (docs/product/01-session-config.md §4.5).
+	MCPServers map[string]MCPServerConfig
+
+	// Worker names the product-level worker (persona) whose job this session is
+	// (docs/product/02-workers.md §6.5). Empty for plain vanilla sessions.
+	//
+	// When set, the request is expected to carry a composed session: SystemPrompt
+	// is ComposedJob.SystemPrompt, and the runner records both on the session row
+	// (`worker`, `composed_prompt`) at create time, so every transcript is tied
+	// to the exact prompt that produced it (§6.2). Not to be confused with the
+	// fleet-placement worker (which host runs the container).
+	Worker string
 }
+
+// MCPServerConfig describes one MCP server available to a session
+// (docs/product/01-session-config.md §4.1). Exactly one transport: stdio
+// (Command/Args/Env) or http/sse (URL/Headers). Env and Headers values may be
+// whole-value ${VAR} references naming an environment variable of the session
+// container, resolved at MCP-process spawn time — never secret values (§4.4).
+//
+// Aliased from agentdb because the session row is where it is persisted and
+// agentdb cannot import this package (cycle); the two names are interchangeable.
+type MCPServerConfig = agentdb.MCPServerConfig
+
+// MCPServers is a name-keyed set of MCP server configs. Alias of
+// agentdb.MCPServers.
+type MCPServers = agentdb.MCPServers
 
 // SendMessageRequest is one user turn.
 type SendMessageRequest struct {

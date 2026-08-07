@@ -1,0 +1,68 @@
+{
+  "_README": [
+    "GENERATED — do not hand-edit. Sorted JSON key list of each Go struct the",
+    "operator console mirrors, captured from encoding/json via the struct tags.",
+    "Regenerate: cd go && AGENTKIT_UPDATE_WIRE_SHAPES=1 go test -count=1 ./agentdb -run TestWireShapesMatchCapturedFile",
+    "(-count=1 matters: this file is outside the Go module, so go test's cache does not track it.)",
+    "Readers: go/agentdb/wire_shapes_test.go (engine) and web/src/wireShapes.test.ts (browser).",
+    "Why it exists: the console PUTs these objects whole and rebuilds them from an",
+    "explicit field list, so a field present on one side and absent on the other is",
+    "written back as its zero value the next time a human saves. See doc 22 RD29.",
+    "Keys are captured from a FULLY POPULATED struct, so `omitempty` fields",
+    "(Worker.briefing, Schedule.target_session) are included."
+  ],
+  "shapes": {
+    "ProjectSettings": [
+      "attention_channel",
+      "base_image",
+      "briefing_max_bytes",
+      "daily_tokens_hard",
+      "daily_tokens_soft",
+      "max_concurrent_jobs",
+      "mcp_config",
+      "project",
+      "snapshot_ttl_days",
+      "system_prompt",
+      "updated_at"
+    ],
+    "Schedule": [
+      "created_at",
+      "cron",
+      "enabled",
+      "id",
+      "input",
+      "last_evaluated",
+      "last_provision_error",
+      "project",
+      "provision_failures",
+      "target_session",
+      "updated_at",
+      "worker"
+    ],
+    "Subscription": [
+      "created_at",
+      "enabled",
+      "event_type",
+      "filter",
+      "id",
+      "max_firings_per_hour",
+      "project",
+      "updated_at",
+      "worker"
+    ],
+    "Worker": [
+      "briefing",
+      "created_at",
+      "description",
+      "enabled",
+      "frozen",
+      "image",
+      "max_instances",
+      "mcp_config",
+      "name",
+      "project",
+      "system_prompt",
+      "updated_at"
+    ]
+  }
+}

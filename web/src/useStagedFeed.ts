@@ -1,0 +1,160 @@
+// useStagedFeed — arrivals land in a buffer, not in the list (doc 21 §4.2).
+//
+// X removed auto-refresh because "tweets would disappear from view mid-read";
+// Slack, GitHub and every log live-tail landed on the same shape. So a feed on
+// this console NEVER inserts a row under the operator's eyes unless the top of
+// the list is already on screen. Everything else stages behind the "N new"
+// pill, and the pill is the WCAG 2.2.2 pause mechanism rather than a nicety.
+//
+// The state machine is pure and lives here, because it is the part that is easy
+// to get subtly wrong and impossible to see wrong:
+//
+//   - the FIRST batch is the backfill: everything becomes visible, nothing is
+//     an arrival, nothing animates (§4.2's "animate on arrival, never on
+//     render" — the gate that stops the whole list fading in on load);
+//   - ids, not positions, decide what is new, so an SSE reconnect or a refetch
+//     that re-delivers the same page fires nothing;
+//   - a paused feed stages everything and highlights nothing.
+
+import { useCallback, useRef, useState } from 'react'
+import { HIGHLIGHT_CAP } from './feedhighlight.js'
+
+export interface StagedFeedState {
+  /** Ids the operator has been shown. */
+  shown: Set<string>
+  /** Ids waiting behind the pill, oldest staged first. */
+  staged: string[]
+  /** Ids that became visible on the last transition — what highlights. */
+  arrivals: Set<string>
+  /** True when the last transition brought more than HIGHLIGHT_CAP at once. */
+  capped: boolean
+  /** False until the backfill has been absorbed. */
+  hydrated: boolean
+}
+
+export function emptyStagedFeed(): StagedFeedState {
+  return { shown: new Set(), staged: [], arrivals: new Set(), capped: false, hydrated: false }
+}
+
+/** Arrivals become highlights only while there are few enough to count; past
+ *  the cap the block boundary carries the news (§4.2). */
+function arrivalsFor(ids: readonly string[]): { arrivals: Set<string>; capped: boolean } {
+  if (ids.length > HIGHLIGHT_CAP) return { arrivals: new Set(), capped: true }
+  return { arrivals: new Set(ids), capped: false }
+}
+
+export interface StageOptions {
+  /** True when the viewport is at the head of the list — the only condition
+   *  under which a row may insert itself. */
+  autoFlush: boolean
+  /** True when the operator has paused live updates. */
+  paused: boolean
+}
+
+/**
+ * Absorb the current page of ids.
+ *
+ * Returns `prev` by identity when nothing changed, so a poll that found nothing
+ * causes no re-render and no animation restarts on rows that never moved.
+ */
+export function stageFeed(
+  prev: StagedFeedState,
+  ids: readonly string[],
+  { autoFlush, paused }: StageOptions,
+): StagedFeedState {
+  if (!prev.hydrated) {
+    return { shown: new Set(ids), staged: [], arrivals: new Set(), capped: false, hydrated: true }
+  }
+
+  const stagedSet = new Set(prev.staged)
+  const incoming = ids.filter((id) => !prev.shown.has(id) && !stagedSet.has(id))
+  if (incoming.length === 0) return prev
+
+  if (paused || !autoFlush) {
+    return { ...prev, staged: [...prev.staged, ...incoming], arrivals: new Set(), capped: false }
+  }
+
+  const shown = new Set(prev.shown)
+  for (const id of incoming) shown.add(id)
+  return { ...prev, shown, ...arrivalsFor(incoming) }
+}
+
+/** Show everything staged. This is what the pill's click does. */
+export function flushStagedFeed(prev: StagedFeedState): StagedFeedState {
+  if (prev.staged.length === 0) return prev
+  const shown = new Set(prev.shown)
+  for (const id of prev.staged) shown.add(id)
+  return { ...prev, shown, staged: [], ...arrivalsFor(prev.staged) }
+}
+
+// ---------------------------------------------------------------------------
+// The hook
+// ---------------------------------------------------------------------------
+
+export interface StagedFeed<T> {
+  /** The rows the operator may see now, in the order they were given. */
+  visible: T[]
+  /** How many are waiting behind the pill. */
+  stagedCount: number
+  /** Ids to highlight — empty when the batch was capped. */
+  arrivals: Set<string>
+  /** True when the last batch exceeded the highlight cap. */
+  capped: boolean
+  /** Show the staged rows. */
+  flush: () => void
+}
+
+export interface UseStagedFeedOptions {
+  /** True while the head of the list is on screen (see `useAtHead`). */
+  atHead?: boolean
+  /** True when the operator has paused live updates. */
+  paused?: boolean
+}
+
+/**
+ * Stage a list of rows. `idOf` must be stable and unique — the delivery id, the
+ * event id, the config event id: the same key the row is React-keyed by.
+ */
+export function useStagedFeed<T>(
+  items: readonly T[],
+  idOf: (item: T) => string,
+  { atHead = true, paused = false }: UseStagedFeedOptions = {},
+): StagedFeed<T> {
+  const [state, setState] = useState<StagedFeedState>(emptyStagedFeed)
+
+  // Render-phase absorption, this package's one-shot-init pattern: an effect
+  // would paint one frame of the new rows before staging them, which is exactly
+  // the mid-read insert the whole mechanism exists to prevent.
+  const ids = items.map(idOf)
+  // Ephemeral render-phase ref-guard, never persisted. The join separator only
+  // has to be a character no row id can contain, so that two different id
+  // lists cannot produce the same key. It was a raw NUL, which made this file
+  // grep as binary; U+001F holds the same guarantee, written as an escape.
+  const idsKey = ids.join('\u001f')
+  const lastKey = useRef<string | null>(null)
+  let current = state
+  if (lastKey.current !== idsKey) {
+    lastKey.current = idsKey
+    const next = stageFeed(state, ids, { autoFlush: atHead, paused })
+    if (next !== state) {
+      current = next
+      setState(next)
+    }
+  }
+
+  const flush = useCallback(() => setState((prev) => flushStagedFeed(prev)), [])
+
+  // Cheap enough to do every render (one Set lookup per row) and correct
+  // without a dependency list that would have to include a function prop.
+  const visible = items.filter((item) => current.shown.has(idOf(item)))
+
+  return {
+    visible,
+    stagedCount: current.staged.length,
+    arrivals: current.arrivals,
+    capped: current.capped,
+    flush,
+  }
+}
+
+export default useStagedFeed

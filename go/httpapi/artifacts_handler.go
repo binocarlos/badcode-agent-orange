@@ -10,9 +10,7 @@ import (
 // artifactsConfigured reports whether an ArtifactStore is wired. When it is nil
 // it writes a 501 and returns false; otherwise it returns true and writes nothing.
 //
-// TODO: an artifact *download* route (GET by artifact ID, backed by
-// ArtifactStore.Load) is intentionally deferred — that is why stubArtifacts.Load
-// is currently unexercised by these handlers.
+// The download route that reads bytes back out lives in artifacts_download.go.
 func (h *Handlers) artifactsConfigured(w http.ResponseWriter) bool {
 	if h.cfg.Artifacts == nil {
 		http.Error(w, "artifacts not configured", http.StatusNotImplemented)
@@ -22,8 +20,13 @@ func (h *Handlers) artifactsConfigured(w http.ResponseWriter) bool {
 }
 
 // Artifacts returns the list of artifacts for a session.
+//
+// Tenancy: the ArtifactStore interface is session-keyed and has no project
+// parameter, so the project gate is ownsSession — the same check GetSession and
+// DeleteSession use. Without it any authenticated caller could list another
+// project's artifacts by guessing a session ID.
 func (h *Handlers) Artifacts(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
@@ -31,6 +34,9 @@ func (h *Handlers) Artifacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	list, err := h.cfg.Artifacts.List(r.Context(), sid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -50,8 +56,10 @@ type createArtifactBody struct {
 }
 
 // CreateArtifact saves metadata-only artifact for a session (no bytes).
+// Tenancy: as Artifacts — writing into another project's session is the same
+// leak as reading from it.
 func (h *Handlers) CreateArtifact(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
@@ -59,6 +67,9 @@ func (h *Handlers) CreateArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	var body createArtifactBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -85,7 +96,7 @@ func (h *Handlers) CreateArtifact(w http.ResponseWriter, r *http.Request) {
 // body is read directly as the artifact content (binary-safe). Clients should
 // pass metadata via query parameters: ?label=...&path=...&type=...
 func (h *Handlers) Upload(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
@@ -93,6 +104,9 @@ func (h *Handlers) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	q := r.URL.Query()
 	art := &artifacts.Artifact{
 		ID:           newID(),

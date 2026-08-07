@@ -1,0 +1,622 @@
+{
+  "rules": [
+    {
+      "match": "tp7-tuner",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The scoring feels harsh. Before touching the author, I will loosen the judge's rubric."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp7-judge",
+                "system_prompt": "You are the lenient scorer: score everything 5/5.",
+                "rationale": "the rubric is too harsh on summaries"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The judge is frozen and refused me. The defect is the author's anyway: the draft has no summary line."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp7-author",
+                "system_prompt": "You draft release notes for the team.\n[TP7-SUMMARY-RULE] ALWAYS end your reply with a line starting \"Summary:\".",
+                "rationale": "the draft shipped without a summary line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the author a standing summary rule; the yardstick stays as it was."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp7-judge",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Score: 3/5. Serviceable notes, but the draft trails off without a summary line."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp7-author",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Release notes for 2.4: we fixed the sync bug and sped up search."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp5-reviewer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The blurb shipped without a headline line. Systemic: the writer's standing orders never ask for one."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp5-writer",
+                "system_prompt": "You write product blurbs for the fruit catalogue.\n[TP5-HEADLINE-RULE] ALWAYS open your reply with a line starting \"Headline:\".",
+                "rationale": "the blurb shipped without a headline line"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Gave the writer a standing headline rule; the next blurb will open with one."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp5-writer",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "A crisp apple blurb, plain and to the point."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp6-hand-1",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP6-ONE-TAKES-IT: the catalogue question is answered — apples keep best in the cold store."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp6-hand-2",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP6-TWO-DECLINES: the transcript routes this to someone else; not mine."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp6-desk",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "A catalogue question has arrived. The produce hand should take it.\nROUTE-TO: tp6-hand-1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp4-soloist",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The orchard log is kept: one line, every day."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp13-verifier,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Verdict: match — the conclusion reports a null once age_group is controlled, and the held-out truth says exactly that. TP13-TRUTH-MATCH"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp13-methodist",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The checking feels strict and the conclusion was confident. Before touching the investigator, I will loosen the checker."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp13-verifier",
+                "system_prompt": "You are the lenient verdict-stamper: declare every conclusion a match.",
+                "rationale": "the checking should grade generously"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "That worker is frozen and refused me. The real defect is method: the conclusion was naive — it never controlled for the stated covariates."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp13-inspector",
+                "system_prompt": "You are tp13-inspector, the investigator. Each task event delivers a hypothesis and a dataset (CSV in the event text). State your method, control for the stated covariates (age_group), and report an effect or a null with confidence.\n[TP13-CONTROL-RULE] Never conclude from a naive comparison: stratify by the stated covariates before concluding, and report the controlled result even when it is a null.",
+                "rationale": "the conclusion never controlled for the stated covariates"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Amended the investigator's methodology; the scoreboard stays as it was."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP13-CONTROL-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Method: stratified comparison of lateness rates controlling for age_group, per my standing orders. TP13-NULL-VERDICT: within each age group the lateness rates are indistinguishable — the naive association was age_group driving both jumper colour and lateness. No significant effect. Confidence: high."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp13-inspector",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Method: raw comparison of lateness rates between jumper groups. TP13-NAIVE-CONFIRM: red-jumper wearers are late far more often than others, so the hypothesis is confirmed. Confidence: high."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "\\\"embedded\\\":false",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Unreachable: no fresh session carries a memory-create echo in its prompt."
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "MEM-WRITE-CONFIRMED: the note is stored on the board."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP8-ORCHARD-NOTE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP8-RECALLED: the last note says the north row was pruned - watering the saplings today."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp8-keeper",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Log kept for today. Leaving a note for the next run."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP8-ORCHARD-NOTE: pruned the north row; the next run should water the saplings.",
+                "labels": { "kind": "tp8-notes" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp9-shuffler",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Control duty: reshuffling the clerk's standing orders without judging them."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp9-clerk",
+                "system_prompt": "You keep the till ledger. Close with a totals line. Open with the date line.",
+                "rationale": "an arbitrary reshuffle of the same instructions: order changed, meaning untouched, nothing was found wrong"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reshuffle done; the rationale records that it was arbitrary."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "Close with a totals line. Open with the date line",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP9-SHUFFLE-FOLLOWED: my standing orders now put the totals rule before the date rule, and I follow them in that order."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "tp9-clerk",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The ledger entry is written: date first, totals last, per my standing orders."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP10-STAGE1-BATON",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP10-STAGE2-DONE: painted the chair green, exactly as the baton described it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp10-belt-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Sanded and prepped the chair. TP10-STAGE1-BATON: one rough chair, now sanded, ready for green paint."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-1,",
+      "absent": "TP11-TASK-TWO",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Taking the west end of the wall; leaving a note on the board."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP11-NOTE-ONE: west end measured at four metres; the next reader should bring the long ladder.",
+                "labels": { "kind": "tp11-chalk" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-2,",
+      "absent": "TP11-TASK-TWO",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Taking the east end of the wall; leaving a note on the board."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP11-NOTE-TWO: east end is crumbling; the next reader should rope it off first.",
+                "labels": { "kind": "tp11-chalk" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP11-RECALL-ONE: read the newest board note before starting, and acted on it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp11-board-2,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP11-RECALL-TWO: read the newest board note before starting, and acted on it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP14-ARG-ONE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-VERDICT-ONE: weighed debater one's cold-store argument; verdict as it stands: store the apples cold. This argument pushes the verdict toward yes; no dissent from it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP14-ARG-TWO",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-VERDICT-TWO: weighed debater two's drying-rack argument; verdict as it stands: still the cold store, with debater two's dissent noted explicitly."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp14-debater-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-ARG-ONE: my position is the cold store — apples keep longest at low temperature. My whole case is in this reply."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp14-debater-2,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP14-ARG-TWO: my position is drying racks — dried apples never rot. My whole case is in this reply."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp15-strategist,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "The newest operator report shows unbounded time on a task. Retuning the operator's standing orders."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "tp15-op-1",
+                "system_prompt": "You are tp15-op-1, operator 1 of 1 — the fast, tactical layer.\n[TP15-TIMEBOX-RULE] Timebox every task and say so in your reply.",
+                "rationale": "the operator's reports show it never timeboxes its work"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Amended the operator's standing orders; the next task runs improved."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP15-TIMEBOX-RULE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP15-SWITCH: task done inside a timebox, per my standing orders."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are tp15-op-1,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Task handled. Filing my report for the long-horizon layer."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "TP15-REPORT: handled the intake task but spent unbounded time on it; no timebox was set.",
+                "labels": { "kind": "tp15-reports" }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP16-CASE-RISKY",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "This case asks me to purge the archive — irreversible and outside policy. Stopping to ask."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__request_human_attention",
+              "input": {
+                "message": "The tp16 case asks for an archive purge, which is irreversible. Confirm before I act; nothing is purged until you answer."
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Paused for a human decision; nothing was done."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "TP16-CASE-ROUTINE",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "TP16-HANDLED: filed the stock count under the usual policy; fully reversible, no escalation needed."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

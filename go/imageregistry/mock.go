@@ -12,7 +12,7 @@ import (
 )
 
 // MockImageRegistry is an in-memory ImageRegistry. It round-trips Snapshot refs
-// through Persist/Materialize in memory so suspend/restore is testable with no
+// through Persist/Materialize in memory so archive/restore is testable with no
 // Docker and no blob storage. Records every call.
 type MockImageRegistry struct {
 	recorder.Recorder

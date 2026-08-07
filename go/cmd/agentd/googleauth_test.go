@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -91,6 +92,115 @@ func TestProjectMap_Resolve(t *testing.T) {
 			t.Errorf("resolve(%s) = %v wildcard=%v ok=%v, want n=%d wildcard=%v ok=%v",
 				tt.email, projects, wildcard, ok, tt.wantN, tt.wantWildcard, tt.wantOK)
 		}
+	}
+}
+
+// --- the object form ---
+
+// The object form carries per-project config (API key env var, framing origins)
+// alongside the user→projects map the flat form has always been. Both forms stay
+// valid forever: the flat one is what every existing deployment has mounted.
+func TestParseProjectMapObjectForm(t *testing.T) {
+	raw := `{
+	  "users":    {"Kai@Example.COM": ["wolf", "demo"]},
+	  "projects": {
+	    "wolf":     {"api_key_env": "WOLF_API_KEY", "allowed_origins": ["https://wolf.badcode.dev", "http://localhost:5173"]},
+	    "unwanted": {}
+	  }
+	}`
+	s, err := parseProjectSettings([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := s.users["kai@example.com"]; len(got) != 2 || got[0] != "wolf" {
+		t.Fatalf("users = %v", s.users)
+	}
+	if got := s.projects["wolf"].APIKeyEnv; got != "WOLF_API_KEY" {
+		t.Fatalf("api_key_env = %q", got)
+	}
+	if got := s.projects["wolf"].AllowedOrigins; len(got) != 2 || got[1] != "http://localhost:5173" {
+		t.Fatalf("allowed_origins = %v", got)
+	}
+	// A project nobody is a member of is legal: an API-key-only integration has
+	// no console users at all.
+	if _, ok := s.projects["unwanted"]; !ok {
+		t.Fatal("a project referenced by no user was dropped")
+	}
+}
+
+// parseProjectMap keeps its old signature and old behaviour — it is what the
+// login handlers take — and simply reads the users half of whichever form
+// arrived.
+func TestParseProjectMapAcceptsBothForms(t *testing.T) {
+	for _, raw := range []string{
+		`{"a@b.c": ["p1"]}`,
+		`{"users": {"a@b.c": ["p1"]}}`,
+		`{"users": {"a@b.c": ["p1"]}, "projects": {"p1": {"api_key_env": "P1_KEY"}}}`,
+	} {
+		pm, err := parseProjectMap([]byte(raw))
+		if err != nil {
+			t.Fatalf("parse(%s): %v", raw, err)
+		}
+		if len(pm["a@b.c"]) != 1 || pm["a@b.c"][0] != "p1" {
+			t.Fatalf("parse(%s) = %v", raw, pm)
+		}
+	}
+}
+
+func TestParseProjectMapObjectFormErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string // substring the message must contain
+	}{
+		{"unknown top-level key", `{"users": {"a@b.c": ["p"]}, "teams": {}}`, "teams"},
+		{"mixed forms", `{"a@b.c": ["p"], "projects": {"p": {}}}`, "mixes"},
+		{"bad env var name", `{"projects": {"wolf": {"api_key_env": "WOLF-API-KEY"}}}`, "wolf"},
+		{"origin with a path", `{"projects": {"wolf": {"allowed_origins": ["https://wolf.dev/embed"]}}}`, "wolf"},
+		{"origin not absolute", `{"projects": {"wolf": {"allowed_origins": ["wolf.dev"]}}}`, "wolf"},
+		{"origin plain http", `{"projects": {"wolf": {"allowed_origins": ["http://wolf.dev"]}}}`, "wolf"},
+		{"origin wildcard", `{"projects": {"wolf": {"allowed_origins": ["*"]}}}`, "wolf"},
+		{"bad project id", `{"projects": {"Wolf_Prod": {}}}`, "Wolf_Prod"},
+		{"nothing at all", `{"users": {}, "projects": {}}`, "empty"},
+		{"user with no projects", `{"users": {"a@b.c": []}}`, "a@b.c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseProjectSettings([]byte(tt.raw))
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error %q does not name %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// A localhost origin over plain http is the one http exception — it is what a
+// Vite dev server serves the embedding app from.
+func TestParseProjectMapAllowsLocalhostOverHTTP(t *testing.T) {
+	for _, origin := range []string{"http://localhost:5173", "http://127.0.0.1:8080", "http://localhost"} {
+		raw := `{"projects": {"wolf": {"allowed_origins": ["` + origin + `"]}}}`
+		if _, err := parseProjectSettings([]byte(raw)); err != nil {
+			t.Fatalf("%s: %v", origin, err)
+		}
+	}
+}
+
+func TestLoadProjectMapReadsTheObjectForm(t *testing.T) {
+	env := map[string]string{
+		"AGENTKIT_PROJECT_MAP": `{"users": {"a@b.c": ["wolf"]}, "projects": {"wolf": {"api_key_env": "WOLF_API_KEY"}}}`,
+	}
+	s, err := loadProjectSettings(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if s.projects["wolf"].APIKeyEnv != "WOLF_API_KEY" {
+		t.Fatalf("projects = %v", s.projects)
+	}
+	if len(s.users["a@b.c"]) != 1 {
+		t.Fatalf("users = %v", s.users)
 	}
 }
 
@@ -242,6 +352,191 @@ func TestAuthGoogleHandler(t *testing.T) {
 	})
 }
 
+// verifyRequest builds a POST /auth/verify-google request carrying an API key,
+// which is the only credential that route accepts.
+func verifyRequest(body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/auth/verify-google", strings.NewReader(body))
+	req.Header.Set(apiKeyHeader, goodKey)
+	return req
+}
+
+func TestAuthVerifyGoogleHandler(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     int               // what tokeninfo answers
+		info       map[string]string // what tokeninfo returns
+		body       string            // the request body
+		wantStatus int
+		wantEmail  string
+	}{
+		{
+			name:       "verified email comes back lowercased",
+			status:     200,
+			info:       map[string]string{"aud": "client-1", "email": "Kai@Example.com", "email_verified": "true"},
+			body:       `{"credential":"c"}`,
+			wantStatus: http.StatusOK,
+			wantEmail:  "kai@example.com",
+		},
+		{
+			name:       "tokeninfo rejects the token",
+			status:     400,
+			info:       map[string]string{"error": "invalid_token"},
+			body:       `{"credential":"c"}`,
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			// A token minted for a different client id is somebody else's user.
+			name:       "audience mismatch",
+			status:     200,
+			info:       map[string]string{"aud": "other-client", "email": "a@b.c", "email_verified": "true"},
+			body:       `{"credential":"c"}`,
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "unverified email",
+			status:     200,
+			info:       map[string]string{"aud": "client-1", "email": "a@b.c", "email_verified": "false"},
+			body:       `{"credential":"c"}`,
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "empty credential",
+			status:     200,
+			info:       map[string]string{"aud": "client-1", "email": "a@b.c", "email_verified": "true"},
+			body:       `{}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "malformed body",
+			status:     200,
+			info:       map[string]string{"aud": "client-1", "email": "a@b.c", "email_verified": "true"},
+			body:       `not json`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := fakeTokeninfo(t, tt.status, tt.info)
+			defer srv.Close()
+			h := authVerifyGoogleHandler(&googleVerifier{clientID: "client-1", tokeninfoURL: srv.URL})
+
+			rec := httptest.NewRecorder()
+			h(rec, verifyRequest(tt.body))
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+			// The whole point of this route: an identity, and nothing that
+			// grants anything. Asserted on the raw JSON so a future field
+			// (a token, a project list) fails the test rather than passing
+			// unnoticed through a typed decode.
+			var got map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v (%s)", err, rec.Body)
+			}
+			if len(got) != 2 {
+				t.Fatalf("response has %d fields, want exactly {email, email_verified}: %v", len(got), got)
+			}
+			if got["email"] != tt.wantEmail {
+				t.Fatalf("email = %v, want %q", got["email"], tt.wantEmail)
+			}
+			if got["email_verified"] != true {
+				t.Fatalf("email_verified = %v, want true", got["email_verified"])
+			}
+		})
+	}
+}
+
+// TestVerifyGoogleRequiresAnAPIKey pins the wiring decision: the route lives
+// INSIDE apiAuthMiddleware (unlike /auth/google, which is on the unauthenticated
+// root mux), and refuses every credential that is not a project API key. An
+// unauthenticated Google-token-verification oracle would let anyone turn a
+// stolen ID token into an email address.
+func TestVerifyGoogleRequiresAnAPIKey(t *testing.T) {
+	verified := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		verified++
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"aud": "client-1", "email": "kai@example.com", "email_verified": "true",
+		})
+	}))
+	defer srv.Close()
+
+	secret := []byte("test-secret")
+	mux := http.NewServeMux()
+	mux.Handle("POST /auth/verify-google",
+		authVerifyGoogleHandler(&googleVerifier{clientID: "client-1", tokeninfoURL: srv.URL}))
+	h := apiAuthMiddleware(secret, wolfKeys(t), mux)
+
+	jwtToken, err := devclaims.New(secret).Issue(context.Background(), extensionScope("kai@example.com", "wolf"), "")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		header     [2]string
+		wantStatus int
+	}{
+		{"api key", [2]string{apiKeyHeader, goodKey}, http.StatusOK},
+		// A console JWT — and, more sharply, an embed token handed to a browser
+		// inside a third-party page — must not be able to verify identities.
+		{"console jwt", [2]string{"Authorization", "Bearer " + jwtToken}, http.StatusForbidden},
+		{"no credential", [2]string{"", ""}, http.StatusUnauthorized},
+		{"bad api key", [2]string{apiKeyHeader, "0123456789abcdef0123456789abcdeX"}, http.StatusUnauthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := verified
+			req := httptest.NewRequest(http.MethodPost, "/auth/verify-google",
+				strings.NewReader(`{"credential":"c"}`))
+			if tt.header[0] != "" {
+				req.Header.Set(tt.header[0], tt.header[1])
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body)
+			}
+			// A refused caller must not reach Google at all: the route is an
+			// oracle only for whoever it actually answers.
+			if wantHits := 0; tt.wantStatus != http.StatusOK && verified-before != wantHits {
+				t.Fatalf("tokeninfo hit %d time(s) on a refused request", verified-before)
+			}
+		})
+	}
+}
+
+// TestVerifyGoogleRouteIsOnlyMountedWhenGoogleIsConfigured covers the acceptance
+// criterion "404s when Google auth is not configured" at the mux, which is where
+// the condition actually lives.
+func TestVerifyGoogleRouteIsOnlyMountedWhenGoogleIsConfigured(t *testing.T) {
+	tests := []struct {
+		name     string
+		clientID string
+		want     int
+	}{
+		// Registered: an empty body is refused by the handler, which proves the
+		// route exists without going near Google.
+		{"google configured", "client-1", http.StatusBadRequest},
+		{"google not configured", "", http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			registerVerifyGoogle(mux, tt.clientID)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, verifyRequest(`{}`))
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.want, rec.Body)
+			}
+		})
+	}
+}
+
 func TestAuthPasswordHandler(t *testing.T) {
 	secret := []byte("test-secret")
 	issuer := devclaims.NewWithTTL(secret, time.Hour)
@@ -375,7 +670,7 @@ func TestAuthConfigHandler(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			authConfigHandler(tt.clientID, tt.password)(rec, httptest.NewRequest(http.MethodGet, "/auth/config", nil))
+			authConfigHandler(tt.clientID, tt.password, credentialModeMock)(rec, httptest.NewRequest(http.MethodGet, "/auth/config", nil))
 			var resp struct {
 				Modes          []string `json:"modes"`
 				GoogleClientID string   `json:"google_client_id"`

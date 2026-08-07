@@ -30,15 +30,22 @@ type sessionResp struct {
 	Job      string `json:"job"`
 	Persona  string `json:"persona"`
 	Status   string `json:"status"`
+	// CreateError is why the session failed to start; omitted when it didn't.
+	// A `status: "error"` with nothing beside it is the same unreachable
+	// diagnostic the SSE path had.
+	CreateError string `json:"create_error,omitempty"`
 }
 
 // Status reports combined runtime + durable state for a session.
 func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 	status, err := h.cfg.Runner.Status(r.Context(), ref)
 	if err != nil {
@@ -64,11 +71,14 @@ func (h *Handlers) Status(w http.ResponseWriter, r *http.Request) {
 
 // Cancel cancels the in-flight query without tearing the instance down.
 func (h *Handlers) Cancel(w http.ResponseWriter, r *http.Request) {
-	_, ok := h.identify(w, r)
+	id, ok := h.identify(w, r)
 	if !ok {
 		return
 	}
 	sid := r.PathValue("id")
+	if !h.ownsSession(w, r, id, sid) {
+		return
+	}
 	ref := agentkit.SessionRef{SessionID: sid}
 	if err := h.cfg.Runner.Stop(r.Context(), ref); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -84,11 +94,26 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sid := r.PathValue("id")
+	// GetSession does its own row-loading tenancy check below rather than going
+	// through ownsSession (it would double-load the row), so the session-scope
+	// leg has to be applied explicitly here.
+	if !scopeAllows(id, sid) {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
 
 	// When AgentDB is set, return the full session row (includes title, metadata, etc.)
 	if h.cfg.AgentDB != nil {
 		session, err := h.cfg.AgentDB.GetSession(r.Context(), sid)
 		if err != nil {
+			http.Error(w, "session not found", http.StatusNotFound)
+			return
+		}
+		// Same defense-in-depth tenancy check as the Store branch below: the row
+		// now carries `composed_prompt`, which contains the project's system
+		// prompt and its memory briefings — never serve it across projects.
+		// 404, not 403, so existence does not leak.
+		if session.Customer != "" && id.Customer != "" && session.Customer != id.Customer {
 			http.Error(w, "session not found", http.StatusNotFound)
 			return
 		}
@@ -106,6 +131,19 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 			"current_node":   session.CurrentNode,
 			"metadata":       session.Metadata,
 			"snapshot_state": session.SnapshotState,
+			// Why this session failed to start, when it did. A UI showing
+			// `status: "error"` with no explanation is the same defect one
+			// layer up from the SSE one — the operator can see that something
+			// broke and not what. "" whenever the create succeeded.
+			"create_error": session.CreateError,
+			// Composition provenance (§6.2, C2). `worker` names the worker this
+			// job ran as ("" for a plain human session) and `composed_prompt` is
+			// the EXACT system prompt ComposeJob produced for it — preamble +
+			// project prompt + worker prompt + memory briefing sections. It is
+			// the only way to prove from outside that a memory written by one
+			// job reached the next job's prompt (§7.4), which is what G1 asserts.
+			"worker":          session.Worker,
+			"composed_prompt": session.ComposedPrompt,
 		})
 		return
 	}
@@ -127,11 +165,12 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return camelCase JSON so the browser useAgentSession hook can parse it.
 	writeJSON(w, sessionResp{
-		ID:       sess.ID,
-		Customer: sess.Customer,
-		Job:      sess.Job,
-		Persona:  sess.Persona,
-		Status:   sess.Status,
+		ID:          sess.ID,
+		Customer:    sess.Customer,
+		Job:         sess.Job,
+		Persona:     sess.Persona,
+		Status:      sess.Status,
+		CreateError: sess.CreateError,
 	})
 }
 
@@ -151,14 +190,24 @@ func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Remove the session row too — a deleted session must not linger in
-	// listings. Runner.Destroy only tears down the runtime instance.
+	// Mark the session deleted too — it must not linger in listings.
+	// Runner.Destroy only tears down the runtime instance.
+	//
+	// The error is REPORTED, not discarded (doc 22 RD5): this used to be `_ =`
+	// followed by an unconditional 204, so a delete that failed told the caller
+	// it had succeeded and the session reappeared on the next refresh.
 	if h.cfg.AgentDB != nil {
-		_ = h.cfg.AgentDB.DeleteSession(r.Context(), sid)
+		if err := h.cfg.AgentDB.DeleteSession(r.Context(), sid); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	} else if del, ok := h.cfg.Store.(interface {
 		DeleteSession(ctx context.Context, id string) error
 	}); ok {
-		_ = del.DeleteSession(r.Context(), sid)
+		if err := del.DeleteSession(r.Context(), sid); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -166,7 +215,17 @@ func (h *Handlers) DeleteSession(w http.ResponseWriter, r *http.Request) {
 // ownsSession loads the session row and enforces the caller's customer scope,
 // mirroring the GetSession tenancy check. Writes 404 and returns false on a
 // missing or cross-tenant session (404 not 403, so existence isn't leaked).
+//
+// It is the single authorization gate for every session-by-ID route; see the
+// tenancy contract in httpapi.go.
 func (h *Handlers) ownsSession(w http.ResponseWriter, r *http.Request, id Identity, sid string) bool {
+	// A session-scoped credential (an embed token) is confined to one id before
+	// we even look the row up — no store round-trip, and no way to probe which
+	// sibling sessions exist by timing the response.
+	if !scopeAllows(id, sid) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return false
+	}
 	var customer string
 	if h.cfg.AgentDB != nil {
 		sess, err := h.cfg.AgentDB.GetSession(r.Context(), sid)
@@ -188,6 +247,13 @@ func (h *Handlers) ownsSession(w http.ResponseWriter, r *http.Request, id Identi
 		return false
 	}
 	return true
+}
+
+// scopeAllows reports whether a credential may act on this session id. An empty
+// SessionScope is unrestricted (within Customer); a non-empty one must match
+// exactly.
+func scopeAllows(id Identity, sid string) bool {
+	return id.SessionScope == "" || id.SessionScope == sid
 }
 
 // snapshotResp is the JSON shape returned by the Snapshot handler.

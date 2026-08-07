@@ -4,8 +4,7 @@
 // Dependency added: prism-react-renderer.
 // See ../../docs/90-provenance-map.md.
 
-import React from 'react'
-import { Box, Chip, Typography } from '@mui/material'
+import { Box, Chip, Typography, useTheme } from '@mui/material'
 import { Highlight, themes } from 'prism-react-renderer'
 import { getLanguageFromFilename } from '../artifactFilters.js'
 import { getPrismLanguage } from '../prismLanguage.js'
@@ -23,6 +22,7 @@ export default function ArtifactCodePreview({
   previewLines = 5,
   expanded = false,
 }: ArtifactCodePreviewProps) {
+  const muiTheme = useTheme()
   const lines = code.split('\n')
   const totalLines = lines.length
   const language = getLanguageFromFilename(fileName)
@@ -30,18 +30,18 @@ export default function ArtifactCodePreview({
   const displayCode = expanded ? code : lines.slice(0, previewLines).join('\n')
 
   return (
-    <Box sx={{ border: '1px solid #e5e7eb', borderRadius: '6px', overflow: 'hidden', backgroundColor: '#f8fafc' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 0.5, borderBottom: '1px solid #e5e7eb', backgroundColor: '#f1f5f9' }}>
+    <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: '6px', overflow: 'hidden', backgroundColor: 'action.hover' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', px: 1.5, py: 0.5, borderBottom: '1px solid', borderColor: 'divider', backgroundColor: 'action.hover' }}>
         <Chip
           label={language}
           size="small"
-          sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: '#e2e8f0', color: '#475569' }}
+          sx={{ height: 20, fontSize: 11, fontWeight: 500, backgroundColor: 'divider', color: 'text.secondary' }}
         />
-        <Typography sx={{ fontSize: 11, color: '#94a3b8' }}>
+        <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
           {totalLines} lines
         </Typography>
       </Box>
-      <Highlight theme={themes.vsLight} code={displayCode} language={prismLang}>
+      <Highlight theme={muiTheme.palette.mode === 'dark' ? themes.vsDark : themes.vsLight} code={displayCode} language={prismLang}>
         {({ style, tokens, getLineProps, getTokenProps }) => (
           <pre
             style={{
@@ -67,8 +67,8 @@ export default function ArtifactCodePreview({
         )}
       </Highlight>
       {!expanded && totalLines > previewLines && (
-        <Box sx={{ px: 1.5, py: 0.5, borderTop: '1px solid #e5e7eb', textAlign: 'center' }}>
-          <Typography sx={{ fontSize: 11, color: '#94a3b8' }}>
+        <Box sx={{ px: 1.5, py: 0.5, borderTop: '1px solid', borderColor: 'divider', textAlign: 'center' }}>
+          <Typography sx={{ fontSize: 11, color: 'text.disabled' }}>
             +{totalLines - previewLines} more lines
           </Typography>
         </Box>

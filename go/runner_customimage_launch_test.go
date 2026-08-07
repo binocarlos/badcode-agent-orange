@@ -27,7 +27,7 @@ func TestResolveLaunchImage_CustomImageMaterialized(t *testing.T) {
 	}
 	r.deps.CustomImages = &fakeCustomImages{handle: h, ok: true}
 
-	ref, err := r.resolveLaunchImage(context.Background(), "", "img-1", "a@acme.com", "acme")
+	ref, _, err := r.resolveLaunchImage(context.Background(), "", "img-1", "a@acme.com", "acme", nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestResolveLaunchImage_CustomImageNotVisible_FallsBackToBase(t *testing.T) 
 	r.deps.Policy.BaseImage = "base:dev"
 	r.deps.CustomImages = &fakeCustomImages{ok: false} // not found / not visible
 
-	ref, err := r.resolveLaunchImage(context.Background(), "", "img-missing", "a@acme.com", "acme")
+	ref, _, err := r.resolveLaunchImage(context.Background(), "", "img-missing", "a@acme.com", "acme", nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestResolveLaunchImage_CustomImageNotVisible_FallsBackToBase(t *testing.T) 
 func TestResolveLaunchImage_ExplicitImageStillWinsOverCustom(t *testing.T) {
 	r, _, _, _, _, _ := newTestRunner(t)
 	r.deps.CustomImages = &fakeCustomImages{ok: true}
-	ref, err := r.resolveLaunchImage(context.Background(), "explicit:tag", "img-1", "a@acme.com", "acme")
+	ref, _, err := r.resolveLaunchImage(context.Background(), "explicit:tag", "img-1", "a@acme.com", "acme", nil)
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}

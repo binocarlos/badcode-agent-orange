@@ -9,7 +9,12 @@ import (
 func newCustomImageTestStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t) // from artifacts_test.go (sqlite + AutoMigrate(&Artifact{}))
-	if err := s.gdb.AutoMigrate(&CustomImage{}); err != nil {
+	// UpsertCustomImage is a configuration mutation: it dual-writes the catalog
+	// row and a config_events record in one transaction (§15.4), so the log
+	// table must exist too.
+	// ProjectSettings too: CreateCustomImage reads snapshot_ttl_days to stamp the
+	// §5 expiry at burn time (B4).
+	if err := s.gdb.AutoMigrate(&CustomImage{}, &ConfigEvent{}, &ProjectSettings{}); err != nil {
 		t.Fatalf("automigrate CustomImage: %v", err)
 	}
 	return s
@@ -121,7 +126,7 @@ func TestUpsertCustomImage_PersistsBaseImageID(t *testing.T) {
 		OwnerEmail:  "u@acme.com",
 		ContentHash: "h1",
 		BaseImageID: "base-img-1",
-	})
+	}, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -142,7 +147,7 @@ func TestUpsertCustomImage_PersistsBaseImageID(t *testing.T) {
 		OwnerEmail:  "u@acme.com",
 		ContentHash: "h2",
 		BaseImageID: "base-img-2",
-	}); err != nil {
+	}, ConfigWrite{}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	got2, err := s.GetCustomImage(ctx, row.ID, "u@acme.com", "acme")
@@ -156,7 +161,7 @@ func TestUpsertCustomImage_PersistsBaseImageID(t *testing.T) {
 
 func mustUpsertImg(t *testing.T, s *Store, ci *CustomImage) *CustomImage {
 	t.Helper()
-	out, err := s.UpsertCustomImage(context.Background(), ci)
+	out, err := s.UpsertCustomImage(context.Background(), ci, ConfigWrite{})
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}

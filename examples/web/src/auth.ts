@@ -5,6 +5,15 @@
 export interface AuthConfig {
   modes: Array<"google" | "password" | "dev">;
   google_client_id: string;
+  /**
+   * Which model credential agentd booted with: "mock" | "api-key" |
+   * "subscription" (RD18). The mock is the DEFAULT — both credential lines ship
+   * blank in `.env.example` — and it produces plausible canned output
+   * everywhere, so the shell shows it permanently. Optional because an older
+   * agentd does not send it, and an absent mode renders no badge rather than a
+   * guessed one.
+   */
+  credential_mode?: string;
 }
 
 export interface ProjectToken {

@@ -70,7 +70,39 @@ services:
       DOCKER_HOST: tcp://localhost:2375
       AGENTKIT_IMAGE: ${BASE_IMAGE:-agentkit-sandbox:dev}
       AGENTKIT_SELF_URL: http://172.17.0.1:8099
+      # Where a human clicking a session permalink lands (the web UI's
+      # externally reachable base URL) — NOT AGENTKIT_SELF_URL, which is a DinD
+      # bridge address only containers can reach. Route: /p/<project>/s/<session>.
+      AGENTKIT_PUBLIC_BASE_URL: ${AGENTKIT_PUBLIC_BASE_URL:-http://localhost:${WEB_PORT:-8080}}
+      # Memory's semantic leg (§7.5): none (default) | mock. Without this line the
+      # variable never reached agentd, so setting it in .env silently did nothing
+      # and memory search stayed keyword+recency whatever the docs said.
+      AGENTKIT_EMBEDDING_BACKEND: ${AGENTKIT_EMBEDDING_BACKEND:-}
+      # Host port pool for session containers. Unset → 30001-30100, i.e. 100
+      # concurrent sessions on this host — one live session leases one port and
+      # holds it until the session is DELETED. Set both or neither; nonsense is
+      # refused at boot. A test stack narrows it (…START=40000, …END=40002) to
+      # reach the pool-exhausted error deliberately instead of with 100 sessions.
+      AGENTKIT_PORT_RANGE_START: ${AGENTKIT_PORT_RANGE_START:-}
+      AGENTKIT_PORT_RANGE_END: ${AGENTKIT_PORT_RANGE_END:-}
+      # Session garbage collection (gc.go). Unset → a session idle for 30m has
+      # its container snapshotted and released — the session ROW survives and
+      # the next message restores it, so this frees a container and its host
+      # port without losing a conversation. Without it nothing reclaims
+      # anything on a timer and the port pool above only ever drains.
+      AGENTKIT_SESSION_IDLE_TIMEOUT: ${AGENTKIT_SESSION_IDLE_TIMEOUT:-}
+      # How often the snapshot TTL reaper sweeps expired catalogue images
+      # (§13.7). Unset → 6h. The expiry itself is per project
+      # (project_settings.snapshot_ttl_days). "off" disables either loop.
+      AGENTKIT_SNAPSHOT_REAP_INTERVAL: ${AGENTKIT_SNAPSHOT_REAP_INTERVAL:-}
       AGENTKIT_JWT_SECRET: ${AGENTKIT_JWT_SECRET:-}
+      # OPTIONAL. The signing key for per-session container tokens. Unset (the
+      # normal case) agentd derives it from AGENTKIT_JWT_SECRET, so a session
+      # container's token is not a project credential and nothing needs
+      # configuring. Set it only to roll the session key independently — and
+      # never to the same value as AGENTKIT_JWT_SECRET (agentd warns at boot).
+      # Forwarded here so setting it in .env is not a silent no-op.
+      AGENTKIT_SESSION_JWT_SECRET: ${AGENTKIT_SESSION_JWT_SECRET:-}
       # Login modes (see .env.example). Neither set → legacy dev-open demo.
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       AGENTKIT_TEST_LOGIN: ${AGENTKIT_TEST_LOGIN:-}
@@ -80,7 +112,23 @@ services:
       # Claude Code subscription token (`claude setup-token`). Only used when
       # ANTHROPIC_API_KEY is unset → sessions bill the subscription directly.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Offline mock-model script (see .env.example). Only read when
+      # ANTHROPIC_API_KEY is unset. Unset → today's canned single-text-turn mock;
+      # set → the mock can emit tool_use, which is how an offline test makes a
+      # worker call an MCP tool. FILE is a path INSIDE this container.
+      AGENTKIT_MOCK_MODEL_SCRIPT: ${AGENTKIT_MOCK_MODEL_SCRIPT:-}
+      AGENTKIT_MOCK_MODEL_SCRIPT_FILE: ${AGENTKIT_MOCK_MODEL_SCRIPT_FILE:-}
       AGENTKIT_DATA: /data
+      # MCP credential allowlist (see .env.example). Comma-separated NAMES of
+      # environment variables agentd forwards into every session container, so
+      # the sandbox can resolve the ${VAR} references in MCP config. Unset =
+      # forward nothing. agentd refuses to forward its own secrets (JWT secret,
+      # model keys, DATABASE_URL) even if listed.
+      AGENTKIT_MCP_ENV: ${AGENTKIT_MCP_ENV:-}
+      # …and the variables themselves must reach agentd. Compose cannot pass a
+      # dynamic set of names, so add one line per credential you allowlisted:
+      #   GMAIL_API_KEY: ${GMAIL_API_KEY:-}
+      #   NOTION_AUTH: ${NOTION_AUTH:-}
       # Storage backends — unset = local (fs blobs + blob-archive). See .env.example.
       AGENTKIT_BLOB_BACKEND: ${AGENTKIT_BLOB_BACKEND:-}
       GCS_BUCKET: ${GCS_BUCKET:-}
@@ -98,6 +146,10 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
     volumes:
       - agentd-data:/data
+      # Offline mock-model script as a file, for scripts too long to sit on one
+      # .env line. Uncomment BOTH this and AGENTKIT_MOCK_MODEL_SCRIPT_FILE:
+      #  - ./mock-model-script.json:/mock-model-script.json:ro
+      #    …with AGENTKIT_MOCK_MODEL_SCRIPT_FILE=/mock-model-script.json
       # GCP credentials (ADC) for gcs/ociregistry — pick ONE (see docs/15):
       #  • local dev: mount your gcloud ADC (after `gcloud auth application-default login`)
       #    - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
