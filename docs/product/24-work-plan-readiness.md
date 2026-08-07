@@ -308,7 +308,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   *Validation:* WEB. Report whether `useConfigLog`'s "not wired vs failed" distinction (which is
   already correct) is worth extracting as a shared helper — do not extract it unless it is clean.
 
-- [ ] **B3 — RD29: a wire-shape guard, in the `token_usage.go` discipline.** No drift today —
+- [x] **B3 — RD29: a wire-shape guard, in the `token_usage.go` discipline.** No drift today —
   `ProjectSettings` (11 fields), `Worker` (13), `Subscription` (9), `Schedule` (10) all match their
   browser mirrors — but the mechanism is live and silent: `coerceProjectSettings`/`coerceWorker`
   build a fresh object from an **explicit field list**, so an unknown key is dropped on read; the
@@ -356,7 +356,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
 
 *Doc 22's durability blockers. Go-side; sequenced by file, not parallel — D2/D4 and D3/I1 collide.*
 
-- [ ] **D1 — RD5: deleting a session destroys the conversation, irreversibly, from an unguarded
+- [x] **D1 — RD5: deleting a session destroys the conversation, irreversibly, from an unguarded
   one-click button.** ⚠ **CONFLICT-WATCH** *(three lines in `go/httpapi/lifecycle.go`, held by the
   embeddable session — land the rest first if it is still uncommitted)*.
   `agent_query_events.session_id REFERENCES agent_sessions(id) ON DELETE CASCADE`
@@ -470,7 +470,7 @@ failed fetch — the silent-success class, in the surface a user actually looks 
   it; an untouched one still dies (the reaper must not become vacuous).
   *Validation:* GO + GOPG.
 
-- [ ] **S2 — RD11: missed schedule occurrences vanish without a trace.**
+- [x] **S2 — RD11: missed schedule occurrences vanish without a trace.**
   `go/cmd/agentd/scheduler.go:156-161` evaluates only the current minute
   (`s.now().In(s.loc).Truncate(time.Minute)`, `:160`) — no watermark, no catch-up. An hour of
   downtime means 60 occurrences with **no firing row, no event, no delivery and nothing recording

@@ -180,7 +180,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
 
 **Blockers — fix before any person uses this for real work.**
 
-- [ ] **RD5 — Deleting a session destroys the conversation, irreversibly, from an unguarded
+- [x] **RD5 — Deleting a session destroys the conversation, irreversibly, from an unguarded
   one-click button.** `agent_query_events.session_id REFERENCES agent_sessions(id) ON DELETE
   CASCADE` (`go/agentdb/migrations.go:139`; same for `agent_messages` at `:77` and
   `agent_artifacts` at `:50`), and `DELETE /agent/session/{id}` is a hard row delete
@@ -265,7 +265,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   loop every 3s (`router.go:364`) and the scheduler loop (`scheduler.go:191`). The orphan session
   then emits a spurious `worker.failed{lost}` 15 minutes later.
   **Fix:** conditional update on the pending→running transition; act on `RowsAffected`.
-- [ ] **RD11 — Missed schedule occurrences vanish without a trace.** `scheduler.go:156-161`
+- [x] **RD11 — Missed schedule occurrences vanish without a trace.** `scheduler.go:156-161`
   evaluates only the current minute — no watermark, no catch-up. An hour of downtime means 60
   occurrences with no firing row, no event, no delivery and nothing recording that they were
   missed: indistinguishable from "never scheduled". Worse in a narrow window: a kill between
@@ -536,7 +536,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   the sentence. **The correct pattern is already in-repo**: `TopologyOnboarding.tsx:186` gates its
   empty state on `error === null`.
   **Fix:** gate the three first-run/empty states the same way.
-- [ ] **RD29 — Wire-shape drift has no guard, and the risk runs engine→browser.** No current drift:
+- [x] **RD29 — Wire-shape drift has no guard, and the risk runs engine→browser.** No current drift:
   `ProjectSettings` (11 fields), `Worker` (13), `Subscription` (9) and `Schedule` (10) all match
   their mirrors. But the mechanism is live: `coerceProjectSettings`/`coerceWorker` build a fresh
   object from an **explicit field list**, so an unknown key is dropped on read; the body helper
