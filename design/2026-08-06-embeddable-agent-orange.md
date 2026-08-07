@@ -1058,7 +1058,7 @@ type Schedule struct {
   - Live-stack pass owed to T17 (the stack serves a **built** `examples/web` image, so
     `docker compose up -d --build web` is required first).
 
-### T13: frame-ancestors header + remove tokens from iframe URLs   [Status: IMPLEMENTED — live header check owed | Model: sonnet]
+### T13: frame-ancestors header + remove tokens from iframe URLs   [Status: done | Model: sonnet]
 - **Scope:** Serve the embed page with `Content-Security-Policy: frame-ancestors <origins>` derived
   from the project's `allowed_origins` (no origins configured → `'none'`). Since nginx serves the
   static page, the header must come from a small `agentd` route or an nginx map keyed by project —
@@ -1075,8 +1075,14 @@ type Schedule struct {
   `curl -sI http://localhost:8080/embed/session/hypothesis-a | grep -i content-security-policy`
   must show the configured origins (the npm tests do not exercise the nginx/`agentd` half).
 - **Depends on:** T12
-- [ ] done — **implemented and unit-verified; the ticket's own live `curl` against a running stack is
-  still owed.** Runs in T17's batch.
+- [x] done — live check run by the orchestrator against the e2e stack, 2026-08-07:
+  `curl -sI http://localhost:8080/embed/session/hypothesis-a` →
+  `Content-Security-Policy: frame-ancestors http://localhost:5173 https://wolf.example.test`
+  (exactly the two configured origins, in the boot-computed order); the console page `/` carries
+  **no** CSP header; the embed URL serves the embed entry (`<title>Agent Orange — session</title>`,
+  `src="/assets/embed-*.js"`) rather than the SPA; and agentd's boot log corroborates with
+  `[agentd] embed framing: frame-ancestors http://localhost:5173 https://wolf.example.test`, proving
+  the value came from the parsed project map rather than from nginx.
 - Notes:
   - **The choice the ticket demanded: a small `agentd` route (`go/cmd/agentd/embedcsp.go`), not an
     nginx map.** The nginx-map option is not merely harder, it is *unimplementable*: the embed URL is
@@ -1160,7 +1166,7 @@ type Schedule struct {
     was wrong about `devclaims.NewScoped`, about where `verify-google` mounts, and about the CSP
     being per-project.
 
-### T15: Give HTTP-created sessions the core MCP server   [Status: IMPLEMENTED — stack check owed | Model: sonnet]
+### T15: Give HTTP-created sessions the core MCP server   [Status: done | Model: sonnet]
 - **Scope:** Deliberately narrow. Project prompt, project/worker MCP config and the project
   base image **already reach** sessions created through `POST /agent/session`, via the
   `SessionContextProvider` (see the Architecture table). The single gap is the core tool
@@ -1184,8 +1190,19 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/ ./cmd/agentd/ -count=1 && go test ./... -count=1`
 - **Depends on:** —
-- [ ] done — **implementation complete and verified by unit test; the ticket's own pre-tick stack
-  check is still owed** (see below). Folded into T17, which brings the stack up anyway.
+- [x] done — stack check run by the orchestrator against the e2e stack, 2026-08-07, and it passed
+  on all three legs the implementer specified:
+  (1) a session created through `POST /agent/session` has
+  `mcp_servers = {"core": {"url": "http://172.17.0.1:8099/mcp", "headers": {"Authorization": "${SESSION_TOKEN}"}}}`
+  while `worker` and `composed_prompt` are both **empty** — the rejected alternatives stayed rejected;
+  (2) **the tool answers.** With the mock model scripted to call
+  `mcp__core__memory_create` then `mcp__core__memory_current`, the chat session made both calls and
+  reached the following turn (only possible if a real tool result came back), and the row landed in
+  Postgres with `project=apples-oranges`, `created_by_session=<that chat session>` and
+  `created_by_worker` **empty** — exactly the path the implementer flagged as never previously
+  exercised, since every prior caller of `newSessionTokenAuth` was a dispatched job;
+  (3) the same memory read back over HTTP with the API key returned its full content.
+  No billable model was used: agentd logged `ANTHROPIC_API_KEY unset → SCRIPTED mock model proxy`.
 - Notes:
   - Deliberately tiny, as the corrected premise demands: `Config.CoreMCP` + a `mergeCoreMCPServers`
     helper writing core **last**, mirroring `go/compose.go:436-441`. Because the Runner folds the
