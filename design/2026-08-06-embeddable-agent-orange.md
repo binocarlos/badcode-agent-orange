@@ -947,7 +947,7 @@ type Schedule struct {
     not yet.
   - Validation re-run: `go test ./cmd/agentd/ -run 'Schedul'` ✅, `go test ./agentdb/` ✅ (live PG).
 
-### T10: Embed-token endpoint   [Status: pending | Model: sonnet]
+### T10: Embed-token endpoint   [Status: done | Model: sonnet]
 - **Scope:** `POST /agent/embed-token`, API-key auth only (never JWT — a browser must not mint
   its own embed tokens). Body `{session: "<name>", ttl_seconds?}`; TTL default 900, clamped to
   [60, 3600]. Resolve the name within the key's project (404 if absent/foreign), mint via
@@ -959,6 +959,35 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'EmbedToken' -count=1`
 - **Depends on:** T4, T7
+- [x] done
+- Notes:
+  - **⚠️ The embed token's `sid` claim is deliberately left EMPTY, and this is a security decision,
+    pinned by test.** Passing `sess.ID` as devclaims' `sessionID` argument is the obvious reading and
+    would have been dangerous: agentd signs per-session *container* tokens with the same secret in
+    every real deployment (the T3 discovery), and the core MCP server authenticates its caller by
+    exactly that claim. An embed token carrying a `sid` would have been structurally usable as that
+    session's container token against `/mcp` — i.e. the project's memory tools. The scope claim, not
+    `sid`, is what confines it.
+  - Auth follows T11 exactly: mounted on `apiMux` so the middleware runs first, with
+    `authenticatedByAPIKey` inside the handler. Console JWT → 403, embed token → 403 (a token cannot
+    mint another), no credential → 401, bad key → 401. A refused caller never reaches the store, so
+    the route is not a session-name oracle.
+  - Minted with `main.go`'s `jwtSecret` — the value `apiAuthMiddleware` verifies with.
+    `TestEmbedTokenAuthenticatesAsItsSession` closes the loop: mint through the real middleware, then
+    present the token back to it and assert the principal carries `customer=wolf` and the resolved
+    `embedSession`.
+  - TTL clamped, never rejected: absent/0 → 900, <60 → 60, >3600 → 3600. Explicit 0 is treated as
+    absent, since JSON cannot distinguish them without a pointer and "I did not choose" is a
+    different statement from "I chose 0".
+  - `expires_at` is read back off the token just signed rather than recomputed — devclaims stamps
+    `exp` from its own `time.Now()`, and a second `time.Now()` here lands a second later whenever the
+    call straddles a boundary. A body promising an expiry the token does not have is the kind of
+    off-by-one that surfaces as a rare unreproducible 401 inside somebody else's product.
+  - Two unspecified deployments answer **501** rather than minting a token nothing will accept: no
+    session-name store (names are Postgres-only) and no `AGENTKIT_JWT_SECRET`.
+  - `devclaims.NewScoped` in the ticket's prose does not exist; used T3's
+    `NewWithTTL(secret, ttl).IssueScoped(...)` per T3's Notes.
+  - Verifier: PASS, 5/5 criteria evidenced.
 
 ### T11: verify-google endpoint   [Status: done | Model: sonnet]
 - **Scope:** `POST /auth/verify-google`, API-key auth, body `{credential}`. Reuse the existing
@@ -992,7 +1021,7 @@ type Schedule struct {
     holding a stolen token which part of it Google disliked.
   - Verifier: PASS, 10/10 criteria evidenced.
 
-### T12: The embed page   [Status: pending | Model: sonnet]
+### T12: The embed page   [Status: done | Model: sonnet]
 - **Scope:** New Vite entry (`embed.html` + `embed-main.tsx`) rendering `EmbedSession.tsx`: parse
   the session name from the path, read the token from `location.hash`, `history.replaceState` it
   away, hold it in memory, and mount `AgentChatProvider` + `AgentChat` with
@@ -1009,8 +1038,27 @@ type Schedule struct {
 - **Validation:** `cd examples/web && yarn install --frozen-lockfile && yarn build`
   (use **yarn** here — `examples/web` tracks only `yarn.lock`)
 - **Depends on:** T10
+- [x] done
+- Notes:
+  - Second Vite entry at `examples/web/embed.html` (project root, beside `index.html`), rendering
+    `EmbedSession.tsx`: reads `location.hash`, `history.replaceState`s it away, holds the token in a
+    ref, and mounts `AgentChatProvider` + `AgentChat` with `getAuthToken` returning it. Never
+    `localStorage`, never `sessionStorage`, never a query parameter.
+  - Resolves the name → id through `GET /agent/sessions/by-name/{name}` before mounting, which works
+    on the embed token alone per T7's Notes.
+  - On 401/404 it renders a plain "session unavailable" card and does **not** redirect to login — the
+    page lives inside someone else's iframe, where a login redirect is both useless and a phishing
+    surface.
+  - `yarn build` emits both entries; verified in `dist/` (`dist/index.html` + `dist/embed.html`,
+    `assets/embed-*.js`) rather than asserted.
+  - **The dependency on T10 is only real for the live check** — the page consumes a token it is
+    handed and needs no mint route at build time.
+  - Verifier: PASS, 10/10 criteria evidenced, including a throwaway Playwright harness against the
+    built bundle proving the token leaves neither storage nor the URL.
+  - Live-stack pass owed to T17 (the stack serves a **built** `examples/web` image, so
+    `docker compose up -d --build web` is required first).
 
-### T13: frame-ancestors header + remove tokens from iframe URLs   [Status: pending | Model: sonnet]
+### T13: frame-ancestors header + remove tokens from iframe URLs   [Status: IMPLEMENTED — live header check owed | Model: sonnet]
 - **Scope:** Serve the embed page with `Content-Security-Policy: frame-ancestors <origins>` derived
   from the project's `allowed_origins` (no origins configured → `'none'`). Since nginx serves the
   static page, the header must come from a small `agentd` route or an nginx map keyed by project —
@@ -1027,6 +1075,38 @@ type Schedule struct {
   `curl -sI http://localhost:8080/embed/session/hypothesis-a | grep -i content-security-policy`
   must show the configured origins (the npm tests do not exercise the nginx/`agentd` half).
 - **Depends on:** T12
+- [ ] done — **implemented and unit-verified; the ticket's own live `curl` against a running stack is
+  still owed.** Runs in T17's batch.
+- Notes:
+  - **The choice the ticket demanded: a small `agentd` route (`go/cmd/agentd/embedcsp.go`), not an
+    nginx map.** The nginx-map option is not merely harder, it is *unimplementable*: the embed URL is
+    `/embed/session/{name}` and the only credential is in the URL **fragment**, which a browser never
+    sends — so nginx has nothing to key a per-project map on. nginx now does an `internal;`
+    `auth_request` to agentd and copies the header onto the static page.
+  - **The header carries the UNION of every configured project's origins, because the project is
+    undeterminable server-side.** Three independent blocks: no project segment in the URL, the token
+    is in the fragment, and resolving name → project would need the cross-tenant session-name lookup
+    T6 deliberately does not provide. Recorded here because the ticket's Scope sentence ("the
+    project's allowed_origins") cannot be honoured literally.
+  - No origins configured → `frame-ancestors 'none'`, **emitted** rather than omitted, since an
+    absent CSP means "frame me anywhere". Backed by an nginx `map` turning an empty upstream value
+    into `'none'`, because **nginx silently skips `add_header` when its value is empty** — without
+    the map a missing upstream header would fail *open*.
+  - **T12's `try_files $uri /embed.html;` silently discarded the CSP header** and was changed to
+    `try_files $uri /embed.html =404;`. A URI fallback is an internal redirect that re-matches
+    `location /`, so the response is generated there and this block's `add_header` is dropped. The
+    implementer reproduced exactly that against a real nginx before fixing it.
+  - Header value is computed once at wiring time (deduped, sorted) — the project map is boot config
+    with no reload path — and logged at boot as `[agentd] embed framing: …` so a misconfiguration is
+    visible without a browser.
+  - `GET /embed/csp` is on the unauthenticated `root` mux deliberately: its caller is nginx's
+    internal subrequest, which carries no credential, and it discloses only the origin list that the
+    header itself broadcasts to every framer anyway. It is `internal;` in nginx, so not reachable
+    from outside.
+  - web/: the raw JWT is gone from the webapp iframe path — the token branch was dropped entirely in
+    favour of the existing no-token form, and the now-dead `authHeader` prop threading was removed.
+    The `/webapp/{session}/{token}/{path}` **serving route was NOT built** (explicitly Out of Scope).
+  - Verifier: PASS, 7/7 criteria evidenced, via a verbatim-config nginx rig with a stub upstream.
 
 ### T14: Documentation + hazard log   [Status: pending | Model: sonnet]
 > **Ordering:** despite its number, this ticket runs **after T15, T16 and T18** — it documents
@@ -1357,6 +1437,56 @@ type Schedule struct {
 - **T11 — `apiMux` is no longer purely `httpapi`'s route table.** `registerVerifyGoogle` is the
   second thing `main.go` mounts on it directly (after `POST /agent/attention`), so a reader of
   `httpapi.Handlers.Mux()` no longer sees every authenticated route in one place.
+- **T13 — ⚠️ the CSP is bound to the `/embed/` PATH PREFIX, not to the document.**
+  `curl -D- http://localhost:8080/embed.html` returns 200 with **no** `Content-Security-Policy`
+  header, because that URI falls through to `location /`. The framing protection therefore depends on
+  a third party using the `/embed/session/{name}` form. Direct `/embed.html` renders nothing useful
+  without a name in the path, so the exposure is small — but it belongs in T14's hazard list.
+- **T13 — nginx silently skips `add_header` when the value is empty, which fails OPEN.** Handled here
+  with a `map` that turns an empty upstream value into `'none'`. Worth knowing anywhere else this
+  pattern is used.
+- **T13 — `try_files $uri /file.html;` discards `add_header` from its own location block.** The URI
+  fallback is an internal redirect that re-matches `location /`, generating the response there.
+  `=404` as the final argument is what keeps the response in the original block. This silently broke
+  T12's first nginx form and would break any future header added the same way.
+- **T13 — on the default stack the embed page is not framable at all.** `.env.example` sets no
+  `AGENTKIT_PROJECT_MAP`, so the header is `frame-ancestors 'none'`. T17 as specified is unaffected
+  (it loads the embed page as a top-level navigation, which `frame-ancestors` does not restrict), but
+  **any e2e that puts the embed page in a real `<iframe>` will be blocked** until the test stack's
+  project map names allowed origins.
+- **T13 — `auth_request` couples a static asset's availability to agentd.** If agentd is down the
+  embed page 500s rather than rendering T12's "session unavailable" card. Judged acceptable (the page
+  cannot resolve its session without agentd either) and commented in the nginx file.
+- **T13 — who may frame the product is now boot config.** Changing `allowed_origins` requires an
+  agentd restart, consistent with the rest of the project map having no reload path.
+- **T13 — the `workspace/files` route does not exist either.** `ArtifactPreviewDialog.tsx:104,157`,
+  `InlineArtifactPreview.tsx:54,90,113` and `ArtifactViewer.tsx:168,209` all build
+  `/agent/session/{id}/workspace/files/{path}` URLs and `grep -rn 'workspace/files' go/` finds only a
+  comment describing an *in-image* endpoint. So removing the token from the webapp iframe URL points
+  it at a second non-existent route. Pre-existing, larger than the missing `/webapp/…` route the plan
+  already lists, and untouched.
+- **T12 — a session literally named `session` breaks the embed page's path parsing.**
+  `segments.lastIndexOf("session")` at `EmbedSession.tsx:57` resolves `/embed/session/session` to the
+  empty string. `session` is valid kebab-case, so it is a legal name. Cosmetic, not acted on.
+- **T12 — `examples/web` has no test runner at all** (no `test` script, no vitest), which is why T12's
+  TDD flag is "no". The two security-shaped criteria — token out of storage, token out of the URL —
+  are currently guarded by nothing in CI. T17 is the only thing that will hold them.
+- **T12 — the 2.6 kB embed bundle pulls in the shared 754 kB vendor chunk.** A parent page framing the
+  embed downloads the same MUI/React bundle the console does. No `manualChunks` tuning was in scope.
+- **T10 — the untested-wiring pattern now has four instances.** `registerEmbedToken(apiMux, jwtSecret,
+  sessionNames)` joins T9's `Sessions: runner`, T15's twice-spelled `agentDB != nil` condition and
+  T16's register line: pass the wrong secret or a nil store and every unit test still passes while the
+  route is dead in production. Related: a `ServeMux` pattern conflict is a **runtime panic at boot**,
+  not a compile error, and nothing in `cmd/agentd`'s tests constructs the real httpapi mux (it needs a
+  Runner). T17 is the only net under all of these.
+- **T10/T11/T13 — `main.go` now registers three routes directly on the muxes**, outside `httpapi`'s
+  route table (`/auth/verify-google`, `/agent/embed-token`, `/embed/csp`), and `root` now carries an
+  unauthenticated one that is neither `/health` nor `/auth/`. `httpapi.Handlers.Mux()` is no longer a
+  complete picture of agentd's surface.
+- **T10 — the whole embed flow is unreachable in dev-open mode by construction:** the route demands an
+  API key, and a configured API key is exactly what turns dev-open off. With T7's note that named
+  creates and by-name lookup also need a project credential, T14 must tell integrators not to try the
+  flow against a zero-config demo.
 - **T4 — ⚠️ HIGH: the embed scope confines session-by-ID routes only. An embed token can still
   reach every project-wide route.** The design's credential table says an embed token grants
   "Read/stream/message on **exactly one session**", but the mechanism it specifies —

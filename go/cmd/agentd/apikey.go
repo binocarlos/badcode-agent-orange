@@ -136,6 +136,23 @@ func (p *projectKeyIndex) AllowedOrigins(project string) []string {
 	return p.origins[project]
 }
 
+// allowedOrigins is the union of every project's framing list, with duplicates
+// left in — frameAncestors dedups and sorts. It exists because the embed page's
+// request identifies no project (see embedcsp.go), so the per-project accessor
+// above has nothing to be called with. Kept OFF the projectKeys interface: that
+// interface exists for the auth middleware, and this is the CSP route's
+// business alone.
+func (p *projectKeyIndex) allowedOrigins() []string {
+	if p == nil {
+		return nil
+	}
+	var all []string
+	for _, origins := range p.origins {
+		all = append(all, origins...)
+	}
+	return all
+}
+
 func (p *projectKeyIndex) hasKeys() bool { return p != nil && len(p.entries) > 0 }
 
 // projectConfigsOf is the nil-tolerant accessor for the projects half of the

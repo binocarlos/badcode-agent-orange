@@ -375,7 +375,6 @@ export default function ArtifactViewer({
               content={content}
               sessionId={sessionId}
               apiBaseUrl={apiBaseUrl}
-              authHeader={authHeader}
               onImageClick={setLightboxUrl}
               onDownload={handleDownload}
               renderPlatinumData={renderPlatinumData}
@@ -422,7 +421,6 @@ function ContentRenderer({
   content,
   sessionId,
   apiBaseUrl = '/api/v1',
-  authHeader,
   onImageClick,
   onDownload,
   renderPlatinumData,
@@ -431,7 +429,6 @@ function ContentRenderer({
   content: { text?: string; blobUrl?: string }
   sessionId: string
   apiBaseUrl?: string
-  authHeader?: string
   onImageClick: (url: string) => void
   onDownload: () => void
   renderPlatinumData?: (data: PlatinumArtifactData) => ReactNode
@@ -443,7 +440,7 @@ function ContentRenderer({
 
   // Webapp: iframe with src URL (enables relative imports for JS/CSS)
   if (artifact.artifactType === 'webapp') {
-    return <WebappRenderer artifact={artifact} sessionId={sessionId} apiBaseUrl={apiBaseUrl} authHeader={authHeader} />
+    return <WebappRenderer artifact={artifact} sessionId={sessionId} apiBaseUrl={apiBaseUrl} />
   }
 
   // HTML: sandboxed iframe
@@ -588,22 +585,22 @@ function WebappRenderer({
   artifact,
   sessionId,
   apiBaseUrl = '/api/v1',
-  authHeader,
 }: {
   artifact: ArtifactInfo
   sessionId: string
   apiBaseUrl?: string
-  authHeader?: string
 }) {
   const iframeSrc = useMemo(() => {
     const filePath = webappEntryRelPath(artifact)
-    const token = authHeader?.replace(/^Bearer\s+/, '')
-    // Embed JWT in the URL path so relative sub-resources (JS/CSS) automatically carry the token
-    if (token) {
-      return `${apiBaseUrl}/webapp/${sessionId}/${token}/${filePath}`
-    }
+    // No credential in this URL. It used to be `/webapp/{session}/{JWT}/{path}`,
+    // which put the console's full-project bearer token in the address bar of an
+    // iframe running with `allow-scripts allow-same-origin` — i.e. reachable by
+    // agent-authored JS — and into every access log and Referer along the way.
+    // The route it pointed at does not exist in this repo either, so nothing is
+    // lost by dropping it (design/2026-08-06-embeddable-agent-orange.md, T13 and
+    // its Out of Scope entry: building that route is a separate decision).
     return `${apiBaseUrl}/agent/session/${sessionId}/workspace/files/${filePath}`
-  }, [artifact, sessionId, apiBaseUrl, authHeader])
+  }, [artifact, sessionId, apiBaseUrl])
 
   return (
     <Box sx={{ height: '100%', minHeight: 500 }}>

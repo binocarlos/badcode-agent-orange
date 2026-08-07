@@ -185,10 +185,12 @@ export default function InlineArtifactPreview({
   if (artifact.artifactType === 'webapp') {
     const isReady = artifact.status === 'extracted'
     const filePath = webappEntryRelPath(artifact)
-    const token = authHeader?.replace('Bearer ', '')
-    const iframeSrc = token
-      ? `${apiBaseUrl}/webapp/${sessionId}/${token}/${filePath}`
-      : `${apiBaseUrl}/agent/session/${sessionId}/workspace/files/${filePath}`
+    // No credential in this URL — same removal as ArtifactViewer's
+    // WebappRenderer, and for the same reason: `/webapp/{session}/{JWT}/{path}`
+    // put a full-project bearer token in the address bar of an iframe that runs
+    // agent-authored scripts with `allow-same-origin`, and the route it named
+    // does not exist here (design/2026-08-06-embeddable-agent-orange.md, T13).
+    const iframeSrc = `${apiBaseUrl}/agent/session/${sessionId}/workspace/files/${filePath}`
 
     return (
       <Box sx={{

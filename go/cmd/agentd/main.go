@@ -424,6 +424,23 @@ func main() {
 	// a client id to check the token's audience against.
 	registerVerifyGoogle(apiMux, googleClientID)
 
+	// POST /agent/embed-token — an application's backend names one of ITS
+	// sessions and gets a short-lived JWT confined to that session, which it
+	// drops into an iframe URL fragment. API-key auth only, enforced inside the
+	// handler: the middleware also accepts bearer tokens, and a browser holding
+	// one must never be able to mint a fresh credential for a sibling session.
+	//
+	// Signed with jwtSecret — the secret apiAuthMiddleware verifies with, a few
+	// lines below — because anything else mints tokens the API answers 401 to.
+	// Session names are Postgres-only, so the lookup seam is left nil on the
+	// sqlite fallback and the route answers 501 there. Declared as the interface
+	// so that nil is a genuine nil and not an interface wrapping a nil *Store.
+	var sessionNames embedSessionLookup
+	if agentDB != nil {
+		sessionNames = agentDB
+	}
+	registerEmbedToken(apiMux, jwtSecret, sessionNames)
+
 	// The project map is loaded once, here, whether or not a login mode is on:
 	// its "projects" half carries per-project ops config (API key env var names,
 	// framing origins) that a login-less, embed-only deployment still needs. It
@@ -438,6 +455,12 @@ func main() {
 		log.Printf("[agentd] project map: %d mapped account(s), %d configured project(s)",
 			len(projectCfg.users), len(projectCfg.projects))
 	}
+
+	// GET /embed/csp — the frame-ancestors value nginx copies onto the embed
+	// page it serves statically (deploy/web.nginx.conf). Unauthenticated and one
+	// answer for every project; embedcsp.go explains both.
+	registerEmbedCSP(root, apiKeys.allowedOrigins())
+	log.Printf("[agentd] embed framing: %s", frameAncestors(apiKeys.allowedOrigins()))
 
 	if loginEnabled {
 		if len(jwtSecret) == 0 {
