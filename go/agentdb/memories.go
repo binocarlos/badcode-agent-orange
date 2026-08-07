@@ -49,6 +49,18 @@ const (
 // Failing loudly beats silently pretending to remember things.
 var ErrMemoryRequiresPostgres = errors.New("agentdb: memory requires Postgres (jsonb + tsvector; pgvector for the semantic leg)")
 
+// ErrMemoryEmbeddingUnstorable is returned by CreateMemory when an embedding
+// was supplied but this database has no `memories.content_embedding` column —
+// migration 022 adds it only where the pgvector extension is available, and
+// swallows the failure otherwise (managed Postgres, where the app role often
+// cannot CREATE EXTENSION). Storing the row anyway would be permanent: memories
+// are append-only, so it could never be embedded later and semantic search
+// would degrade forever without saying so.
+var ErrMemoryEmbeddingUnstorable = errors.New(
+	"agentdb: this database has no memories.content_embedding column (pgvector was unavailable when migration 022 ran), " +
+		"so the embedding cannot be stored and the memory was NOT written — memories are append-only and could never be embedded later. " +
+		"Install pgvector and re-run migration 022, or store this memory without an embedding")
+
 // ErrMemoryNotFound is returned by GetMemory for an unknown id — or for an id
 // that exists in another project (no existence leak across projects).
 var ErrMemoryNotFound = errors.New("agentdb: memory not found")
@@ -98,24 +110,51 @@ type MemorySearchResult struct {
 // provider is configured and the row simply has no semantic leg. The stored
 // row is read back and returned (never the caller's struct) so what the caller
 // sees is what the database actually holds.
-func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32) (*Memory, error) {
+//
+// The second return says whether the row LANDED WITH AN EMBEDDING — read back
+// from the database, not inferred from the argument. It is a separate return
+// rather than a field on Memory because it is only knowable at the moment of
+// the write: the other read paths cannot answer it, and a field that is
+// truthful on one path and zero on the others is the same silent lie in a
+// different place.
+//
+// A non-nil embedding that CANNOT be stored is an error
+// (ErrMemoryEmbeddingUnstorable), not a quiet downgrade. Memories are
+// append-only with no update path (§7.1), so a row written without its vector
+// can never gain one: the degradation would be permanent and invisible. This
+// matches the write path's existing fail-hard-on-embedder-error decision — a
+// caller that would rather have a keyword-only memory can pass nil and say so.
+func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32) (*Memory, bool, error) {
 	if err := s.requirePostgres(); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if m == nil {
-		return nil, fmt.Errorf("agentdb: memory is required")
+		return nil, false, fmt.Errorf("agentdb: memory is required")
 	}
 	if m.Project == "" {
-		return nil, fmt.Errorf("agentdb: memory project is required")
+		return nil, false, fmt.Errorf("agentdb: memory project is required")
 	}
 	if strings.TrimSpace(m.Content) == "" {
-		return nil, fmt.Errorf("agentdb: memory content is required")
+		return nil, false, fmt.Errorf("agentdb: memory content is required")
 	}
 	if err := ValidateLabels(m.Labels); err != nil {
-		return nil, fmt.Errorf("agentdb: memory labels: %w", err)
+		return nil, false, fmt.Errorf("agentdb: memory labels: %w", err)
 	}
 	if embedding != nil && len(embedding) != MemoryEmbeddingDim {
-		return nil, fmt.Errorf("agentdb: memory embedding must have %d dimensions, got %d", MemoryEmbeddingDim, len(embedding))
+		return nil, false, fmt.Errorf("agentdb: memory embedding must have %d dimensions, got %d", MemoryEmbeddingDim, len(embedding))
+	}
+
+	// Ask BEFORE the insert, and refuse rather than drop the vector silently.
+	hasVector := false
+	if embedding != nil {
+		ok, err := s.MemoryVectorColumn(ctx)
+		if err != nil {
+			return nil, false, fmt.Errorf("agentdb: create memory: %w", err)
+		}
+		if !ok {
+			return nil, false, ErrMemoryEmbeddingUnstorable
+		}
+		hasVector = true
 	}
 
 	if m.ID == "" {
@@ -128,13 +167,13 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 	}
 	labelsJSON, err := json.Marshal(nonNilLabels(m.Labels))
 	if err != nil {
-		return nil, fmt.Errorf("agentdb: encode memory labels: %w", err)
+		return nil, false, fmt.Errorf("agentdb: encode memory labels: %w", err)
 	}
 
 	cols := "id, project, labels, content, created_by_worker, created_by_session, created_at"
 	vals := "?, ?, ?::jsonb, ?, ?, ?, ?"
 	args := []any{m.ID, m.Project, string(labelsJSON), m.Content, m.CreatedByWorker, m.CreatedBySession, m.CreatedAt}
-	if embedding != nil && s.memoryHasVectorColumn(ctx) {
+	if hasVector {
 		cols += ", content_embedding"
 		vals += ", ?::vector"
 		args = append(args, FormatVector(embedding))
@@ -142,9 +181,28 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 
 	sql := "INSERT INTO memories (" + cols + ") VALUES (" + vals + ")"
 	if err := s.gdb.WithContext(ctx).Exec(sql, args...).Error; err != nil {
-		return nil, fmt.Errorf("agentdb: create memory: %w", err)
+		return nil, false, fmt.Errorf("agentdb: create memory: %w", err)
 	}
-	return s.GetMemory(ctx, m.Project, m.ID)
+
+	// What the store actually WROTE, asked of the store. Not `embedding != nil`:
+	// that was RD3 — the caller was told "embedded" because the *embedder* had
+	// produced a vector, whatever became of it afterwards.
+	embedded := false
+	if hasVector {
+		var n int64
+		if err := s.gdb.WithContext(ctx).Raw(
+			"SELECT COUNT(*) FROM memories WHERE id = ? AND content_embedding IS NOT NULL", m.ID,
+		).Scan(&n).Error; err != nil {
+			return nil, false, fmt.Errorf("agentdb: read back memory embedding: %w", err)
+		}
+		embedded = n > 0
+	}
+
+	stored, err := s.GetMemory(ctx, m.Project, m.ID)
+	if err != nil {
+		return nil, false, err
+	}
+	return stored, embedded, nil
 }
 
 // GetMemory returns one memory in full. The project is a parameter, not a
@@ -273,7 +331,17 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 	}
 
 	// 3. Hybrid retrieval, fused. Both legs run over the same filtered set.
-	semantic := q.QueryEmbedding != nil && s.memoryHasVectorColumn(ctx)
+	// READ path: degrade, never fail (§7.6.5) — but say so. A probe error costs
+	// this query its semantic leg and nothing more; it is not cached, so the
+	// next query asks again rather than inheriting a wrong deployment fact.
+	semantic := false
+	if q.QueryEmbedding != nil {
+		ok, err := s.MemoryVectorColumn(ctx)
+		if err != nil {
+			log.Printf("[agentdb] could not determine whether memories.content_embedding exists (%v) — this search degrades to keyword-only", err)
+		}
+		semantic = ok
+	}
 	if q.QueryEmbedding != nil && len(q.QueryEmbedding) != MemoryEmbeddingDim {
 		return nil, fmt.Errorf("agentdb: query embedding must have %d dimensions, got %d", MemoryEmbeddingDim, len(q.QueryEmbedding))
 	}
@@ -366,23 +434,39 @@ func (s *Store) requirePostgres() error {
 	return nil
 }
 
-// memoryHasVectorColumn reports whether migration 022 was able to add the
-// pgvector column (it only does so where the extension is available). Detected
-// once per Store: a Postgres without pgvector is a deployment fact, not a
-// per-query one.
-func (s *Store) memoryHasVectorColumn(ctx context.Context) bool {
-	s.memVecOnce.Do(func() {
-		var n int64
-		err := s.gdb.WithContext(ctx).Raw(`
+// MemoryVectorColumn reports whether migration 022 was able to add the pgvector
+// column (it only does so where the extension is available, and swallows the
+// failure with a RAISE NOTICE where it is not — the managed-Postgres case where
+// the app role may not CREATE EXTENSION).
+//
+// The answer is cached once ANSWERED, never once ASKED: a probe that errors
+// returns (false, err) and caches nothing, so the next caller asks again. The
+// predecessor was a sync.Once over `err == nil && n > 0`, which turned one
+// transient error into a process-lifetime claim that the column was absent
+// (RD3, second route).
+//
+// Callers must decide what an error means for them: the write path refuses
+// (a memory is append-only — storing it unembedded is permanent), the read path
+// degrades to the keyword leg (§7.6.5).
+func (s *Store) MemoryVectorColumn(ctx context.Context) (bool, error) {
+	s.memVecMu.Lock()
+	defer s.memVecMu.Unlock()
+	if s.memVecKnown {
+		return s.memVecOK, nil
+	}
+	var n int64
+	if err := s.gdb.WithContext(ctx).Raw(`
 			SELECT COUNT(*) FROM information_schema.columns
 			WHERE table_schema = current_schema()
-			  AND table_name = 'memories' AND column_name = 'content_embedding'`).Scan(&n).Error
-		s.memVecOK = err == nil && n > 0
-		if !s.memVecOK {
-			log.Printf("[agentdb] memories.content_embedding absent — memory search degrades to keyword-only")
-		}
-	})
-	return s.memVecOK
+			  AND table_name = 'memories' AND column_name = 'content_embedding'`).Scan(&n).Error; err != nil {
+		return false, fmt.Errorf("agentdb: probe memories.content_embedding: %w", err)
+	}
+	s.memVecKnown = true
+	s.memVecOK = n > 0
+	if !s.memVecOK {
+		log.Printf("[agentdb] memories.content_embedding absent — memory search degrades to keyword-only")
+	}
+	return s.memVecOK, nil
 }
 
 func nonNilLabels(l LabelSet) map[string]string {

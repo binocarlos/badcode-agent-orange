@@ -1,5 +1,13 @@
 import { test, expect } from '@playwright/test'
-import { cleanupOpenedProjects, gotoView, openFreshProject, selectedProject, sendAndSettle } from '../helpers/ui'
+import {
+  cleanupOpenedProjects,
+  composer,
+  gotoView,
+  newSessionInChat,
+  openFreshProject,
+  selectedProject,
+  sendAndSettle,
+} from '../helpers/ui'
 import { projectClient } from '../helpers/api'
 import { configActions, waitForConfigEvents } from '../helpers/configlog'
 
@@ -32,6 +40,10 @@ test.describe('product UI', () => {
     await expect(prompt).toBeVisible({ timeout: 15_000 })
     await prompt.fill('Answer customer email. Be brief.')
     await page.getByLabel('Base image').fill('acme/base:v1')
+    // Every human edit carries a required one-line reason (decision K2): the
+    // Save button stays disabled until "Why?" is non-empty. A test that skips
+    // it does not exercise a stricter product — it never saves at all.
+    await page.getByLabel('Why?').fill('e2e: pinning the prompt and the base image')
 
     await page.getByRole('button', { name: 'Save settings' }).click()
     // The page reports its own saved state — no unsaved changes left.
@@ -61,6 +73,10 @@ test.describe('product UI', () => {
     await page.getByLabel('Name').fill('email-answerer')
     await page.getByLabel('Description').fill('answers inbound email')
     await page.getByLabel('System prompt').fill('You answer customer email.')
+    // K2 again: WorkerEditor's own Save is disabled until "Why?" is filled, and
+    // the field is re-seeded empty every time the editor changes identity — so
+    // each of the three saves below needs its own reason.
+    await page.getByLabel('Why?').fill('e2e: hiring the email answerer')
     await page.getByRole('button', { name: 'Create worker' }).click()
 
     const row = page.getByRole('button', { name: /email-answerer/ })
@@ -68,12 +84,14 @@ test.describe('product UI', () => {
 
     // ── disable: flip the switch, save the row ──────────────────────────────
     await page.getByLabel('Enabled').uncheck()
+    await page.getByLabel('Why?').fill('e2e: standing it down for now')
     await page.getByRole('button', { name: 'Save worker' }).click()
     // The list marks it disabled, which is the human-visible half of the claim.
     await expect(row.getByText('disabled')).toBeVisible({ timeout: 15_000 })
 
     // ── edit the prompt ─────────────────────────────────────────────────────
     await page.getByLabel('System prompt').fill('You answer customer email. Be brief.')
+    await page.getByLabel('Why?').fill('e2e: shorter answers')
     await page.getByRole('button', { name: 'Save worker' }).click()
     await expect(page.getByText('No unsaved changes')).toBeVisible({ timeout: 15_000 })
 
@@ -93,7 +111,7 @@ test.describe('product UI', () => {
     // an assertion about content rather than about a URL echoing itself.
     // Settle before navigating: a turn still streaming has not been persisted,
     // and this test is about the link, not about the model's speed.
-    await page.getByTestId('new-session').click()
+    await newSessionInChat(page)
     const replyText = await sendAndSettle(page, 'tell me a joke')
     expect(replyText).toContain('mock model proxy')
 
@@ -150,9 +168,11 @@ test.describe('product UI — interruption', () => {
 
   test('a turn interrupted by a reload is still persisted', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-ui-mid')
-    await page.getByTestId('new-session').click()
+    // Create the session AND show it: "New session" leaves the shell on the
+    // Desk, where the composer is not mounted at all.
+    await newSessionInChat(page)
 
-    const textarea = page.locator('textarea').first()
+    const textarea = composer(page)
     await expect(textarea).toBeEnabled({ timeout: 120_000 })
     await textarea.fill('tell me a joke')
     await page.locator('button[aria-label="Send"]').click()

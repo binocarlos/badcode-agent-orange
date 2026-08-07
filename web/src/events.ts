@@ -15,7 +15,11 @@
 //      test (L27): given an event, which subscriptions would match, and why not
 //      when they would not.
 //
-// On (3): this is deliberately config-time only and it never posts anything.
+// On (3): the matcher itself is pure and config-time — it posts nothing. The
+// ONE place this package writes an event is EventReplayPanel's "Emit this
+// event" button (readiness F1 / RD17), which POSTs {type, text} to
+// EVENT_ENDPOINTS.events behind an explicit confirm. Deliberate and singular:
+// if a second writer of this route ever appears, one of them is wrong.
 // The matcher is a second implementation of a rule the engine owns, which is a
 // real risk of drift, so it is kept to the two austere predicates §8.3 defines
 // (exact-or-trailing-`*` type, equality on envelope fields) and nothing else —
@@ -30,7 +34,8 @@ import { formatCompactTime } from './timefmt.js'
 
 /** Endpoint paths for the event routes. Overridable per host, like DEFAULT_ENDPOINTS. */
 export const EVENT_ENDPOINTS = {
-  /** GET (list) + POST (ingest) — this UI only ever GETs. */
+  /** GET (list) + POST (ingest). The only POST in this package is the replay
+   *  panel's confirmed "Emit this event" (F1/RD17); everything else GETs. */
   events: '/agent/events',
   /** GET — the delivery/job-history spine. */
   deliveries: '/agent/deliveries',
@@ -97,7 +102,24 @@ export interface EventDelivery {
   event_id: string
   subscription_id: string
   session_id: string
+  /**
+   * Which worker this job ran, denormalised onto the row by the dispatcher
+   * (Go: `EventDelivery.Worker`, migration 024). The browser used to invent
+   * this field by joining through the subscription, which is why a job whose
+   * subscription had since been deleted reported no worker at all — and why a
+   * SCHEDULE firing, which has no subscription to join through, reported none
+   * either. Read the row; fall back to the join only for rows written before
+   * migration 024, which carry ''.
+   */
+  worker: string
   status: string
+  /**
+   * Why this job failed, as the dispatcher recorded it (RD20 — the column the
+   * engine gained in migration 037). '' when nothing failed, and '' on a row
+   * that failed before the column existed: "no reason recorded" and "no reason"
+   * are the same fact, and the UI says so rather than inventing one.
+   */
+  failure_reason: string
   started_at: number
   ended_at: number
   created_at: number
@@ -163,7 +185,9 @@ export function coerceDelivery(raw: unknown): EventDelivery {
     event_id: str(r.event_id),
     subscription_id: str(r.subscription_id),
     session_id: str(r.session_id),
+    worker: str(r.worker),
     status: str(r.status),
+    failure_reason: str(r.failure_reason),
     started_at: num(r.started_at),
     ended_at: num(r.ended_at),
     created_at: num(r.created_at),
@@ -342,7 +366,10 @@ export function buildJobRows(
         delivery,
         event,
         subscription,
-        worker: subscription?.worker ?? '',
+        // The row first, the join second: the delivery has carried its worker
+        // since migration 024, and only the join can go missing (deleted
+        // subscription, or a schedule firing that never had one).
+        worker: delivery.worker || subscription?.worker || '',
         eventType: event?.type ?? '',
         status: delivery.status,
         durationSeconds: deliveryDurationSeconds(delivery, nowSeconds),

@@ -15,7 +15,7 @@
 // a generic failure, because that is the true and actionable statement today.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { looksUnwired, useConfigApi, type ConfigApiOptions } from './configApi.js'
 import {
   buildChangelog,
   changelogQueryParams,
@@ -59,18 +59,6 @@ export interface ConfigLogApi {
   reload: () => Promise<void>
 }
 
-/** Statuses that mean "this route is not mounted", not "this request failed". */
-function looksUnwired(message: string): boolean {
-  const m = message.toLowerCase()
-  return (
-    m.includes('404') ||
-    m.includes('501') ||
-    m.includes('not found') ||
-    m.includes('not configured') ||
-    m.includes('not implemented')
-  )
-}
-
 export default function useConfigLog(options: UseConfigLogOptions = {}): ConfigLogApi {
   const {
     projectId = '',
@@ -106,7 +94,10 @@ export default function useConfigLog(options: UseConfigLogOptions = {}): ConfigL
     } catch (err) {
       const message = err instanceof Error ? err.message : 'failed to load the config log'
       setEvents([])
-      setAvailable(!looksUnwired(message))
+      // The error, not the message: a 500 is a failure whatever its prose says
+      // (B6). A host-supplied `fetchConfigEvents` carries no status, so those
+      // rejections still fall back to the text match.
+      setAvailable(!looksUnwired(err))
       setError(message)
     } finally {
       setLoading(false)

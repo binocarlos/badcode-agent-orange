@@ -63,7 +63,10 @@ func main() {
 	var agentDB *agentdb.Store
 	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
 		pg, err := agentdb.Open(dbURL)
-		must(err)
+		// Not a bare must(): gorm's own text names neither the `postgres`
+		// service nor the once-initialised `pg-data` volume, which is what has
+		// actually gone wrong nearly every time (dbconnect.go).
+		must(databaseConnectError(dbURL, err))
 		agentDB = pg
 		store = pg
 		log.Printf("[agentd] store=postgres")
@@ -94,6 +97,11 @@ func main() {
 	} else {
 		log.Printf("[agentd] embeddings=%s", envOr("AGENTKIT_EMBEDDING_BACKEND", "none"))
 	}
+	// …and whether the database can actually hold a vector. Loud here, at boot,
+	// rather than at the first search that silently came back keyword-only.
+	if agentDB != nil {
+		reportMemoryVectorColumn(ctx, agentDB.MemoryVectorColumn, embedder != nil, log.Printf)
+	}
 	blobs, closeBlobs, err := newBlobs(ctx, blobCfg)
 	must(err)
 	defer closeBlobs() //nolint:errcheck
@@ -121,13 +129,20 @@ func main() {
 	}
 
 	// ── Claims issuer ────────────────────────────────────────────────────────────
-	// Two secrets, deliberately: jwtSecret verifies API callers and may be empty
-	// (dev-open, so the demo UI works with no configuration), while
-	// sessionSecret is what the Runner MINTS per-session tokens with and is
-	// never empty. The core MCP server verifies against sessionSecret — a
-	// session's memories must not be reachable just because the API is open.
+	// Two secrets, and now genuinely two VALUES: jwtSecret verifies API callers
+	// and may be empty (dev-open, so the demo UI works with no configuration),
+	// while sessionSecret is what the Runner MINTS per-session tokens with, is
+	// never empty, and is derived from — never equal to — jwtSecret. Both were
+	// the same string in every real deployment until 2026-08-06, which made a
+	// container's SESSION_TOKEN a valid project credential on every protected
+	// route (doc 22 RD30). See sessionsecret.go for the derivation, the
+	// AGENTKIT_SESSION_JWT_SECRET override and the migration path.
+	//
+	// The core MCP server verifies against sessionSecret — a session's memories
+	// must not be reachable just because the API is open.
 	jwtSecret := []byte(os.Getenv("AGENTKIT_JWT_SECRET")) // empty → dev-open
-	sessionSecret := []byte(envOr("AGENTKIT_JWT_SECRET", "dev-secret"))
+	sessionSecret, sessionSecretExplicit := resolveSessionSecret(os.Getenv)
+	log.Printf("%s", sessionSecretNotice(jwtSecret, sessionSecret, sessionSecretExplicit))
 	claims := devclaims.New(sessionSecret)
 
 	// ── Public base URL (session permalinks) ─────────────────────────────────────
@@ -412,7 +427,7 @@ func main() {
 
 	root := http.NewServeMux()
 	root.HandleFunc("/health", healthHandler)
-	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != ""))
+	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != "", credentialMode(apiKey, oauthToken)))
 
 	// POST /auth/verify-google — Google ID token → {email}, for an application
 	// that embeds Agent Orange and runs its own allowlist. Registered whenever
@@ -488,13 +503,20 @@ func main() {
 		// /dev/token (DEV ONLY): issues a short-lived JWT for the bundled UI. Not
 		// registered when a login mode is on — it would mint valid demo tokens
 		// signed with the real secret.
+		//
+		// It mints with the API secret, not the session secret: this token is
+		// an API credential the browser sends as a bearer, and since the two
+		// classes stopped sharing a key (sessionsecret.go) a session-class
+		// token no longer verifies here. jwtSecret may be empty, which is
+		// exactly the dev-open case where the middleware verifies nothing.
+		devIssuer := devclaims.New(jwtSecret)
 		root.HandleFunc("/dev/token", func(w http.ResponseWriter, r *http.Request) {
 			scope := extension.ContextScope{
 				UserEmail: "demo@example.com",
 				Customer:  "demo",
 				Job:       "demo-job",
 			}
-			tok, err := claims.Issue(r.Context(), scope, "")
+			tok, err := devIssuer.Issue(r.Context(), scope, "")
 			if err != nil {
 				http.Error(w, "token generation failed: "+err.Error(), http.StatusInternalServerError)
 				return

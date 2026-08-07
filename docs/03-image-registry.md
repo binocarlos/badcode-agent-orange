@@ -398,7 +398,11 @@ means never). Each sweep reads the TTL fresh to decide how far back to *look*, a
 between them leaves a resolvable record pointing at missing bytes for one cycle, which the next pass
 fixes, whereas the reverse would orphan bytes forever. The record survives so history, provenance and
 the version high-water mark stay intact, and resolving a tombstone reports `ErrCustomImageReaped`
-instead of failing obscurely. Reaping and the `last_resumed_at` stamp both write **outside** the
+instead of failing obscurely. **Use defers the reap** (RD9): a version whose `last_resumed_at` falls
+inside the project's current TTL window is spared for that pass and reported as `Deferred`, with a
+log line naming it — the stamped `expires_at` is not rewritten, so the row stays honest, but an image
+a worker launches from daily is no longer deleted out from under it. The deferral lapses by itself
+once the launches stop. Reaping and the `last_resumed_at` stamp both write **outside** the
 config-event seam on purpose, so `Deps.Snapshots` must be a store without
 `agentdb.InstallConfigEventGuard` armed.
 

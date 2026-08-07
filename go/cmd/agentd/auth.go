@@ -100,6 +100,23 @@ func apiAuthMiddleware(secret []byte, keys projectKeys, next http.Handler) http.
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// A token carrying a non-empty `sid` is a SESSION token: the credential
+		// agentd injects into a container as SESSION_TOKEN, readable by the
+		// harness and therefore reachable by a prompt-injected model. It is a
+		// different credential class from an API token and must never
+		// authenticate a project route (doc 22, RD30).
+		//
+		// The two classes are signed with different keys (sessionsecret.go), so
+		// a session token cannot reach this line at all. This is the second
+		// lock, for the deployment that sets AGENTKIT_SESSION_JWT_SECRET to the
+		// API secret and for any future issuer that stamps sid by accident.
+		// Every API-class token — login, wildcard-exchange, /dev/token, embed —
+		// is issued with an empty session id; embed tokens confine themselves
+		// with the scope claim below, never with sid.
+		if sid, _ := claims["sid"].(string); sid != "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
 		p := principal{}
 		if v, ok := claims["email"].(string); ok {
 			p.email = v

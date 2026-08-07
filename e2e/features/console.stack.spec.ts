@@ -154,6 +154,65 @@ test.describe('operator console', () => {
     })
   })
 
+  // ── (b2) the first-run path, entirely from the browser (F1 / RD17) ─────────
+  //
+  // Test (b) posts its event through the API helper on purpose — it is asserting
+  // that the CHART reflects the backend. This one asserts the opposite thing:
+  // that a human who has just applied an event-driven topology can make
+  // something happen WITHOUT leaving the console. Until F1 there was no POST to
+  // /agent/events anywhere in the browser at all, so this journey — apply a
+  // topology, wake it, watch the job finish — simply could not be walked, which
+  // is readiness bar #4 and doc 22's blocker.
+  //
+  // UNRUN AT AUTHORING TIME: written by the F1 executor, who was barred from the
+  // compose stack (another agent held it). The orchestrator must run it.
+  test('emitting an event from the console wakes the topology just applied', async ({ page, request }) => {
+    const project = await openFreshProject(page, 'e2e-cx-emit')
+    const api: ProjectClient = await projectClient(request, project)
+
+    await applyActorCriticViaUI(page)
+
+    // The replay tab of the events view — the one place this package writes.
+    await gotoView(page, 'events')
+    await page.getByRole('tab', { name: 'Replay' }).click()
+
+    const editor = page.getByLabel('Event JSON')
+    await expect(editor).toBeVisible({ timeout: 30_000 })
+    await editor.fill(
+      JSON.stringify({ type: `${WRITER}.task`, text: 'Write a blurb about the new apples.' }, null, 2),
+    )
+
+    // The dry run agrees something would happen before we commit to it.
+    await expect(page.getByText(/1 of \d+ subscriptions would match/)).toBeVisible({ timeout: 30_000 })
+
+    // Nothing is written until the confirm is accepted — the footgun guard.
+    await page.getByRole('button', { name: 'Emit this event' }).click()
+    const confirm = page.getByRole('dialog')
+    await expect(confirm).toBeVisible({ timeout: 10_000 })
+    await expect(confirm).toContainText('wake its worker and start a job')
+    expect(
+      await api.listEvents({ type: `${WRITER}.task` }),
+      'the confirm dialog must not have posted anything yet',
+    ).toHaveLength(0)
+
+    await confirm.getByRole('button', { name: 'Emit it' }).click()
+
+    // The event exists, and the id the panel shows is the row the server made.
+    const [event] = await api.waitForEvents((rows) => rows.length > 0, {
+      type: `${WRITER}.task`,
+      timeoutMs: 30_000,
+    })
+    await expect(page.getByText(event!.id)).toBeVisible({ timeout: 30_000 })
+
+    // …and the delivery it produced runs to completion. This is the whole
+    // first-run path: topology → event → job → ok, browser-driven end to end.
+    const delivered = await api.waitForDeliveries(
+      (rows) => rows.some((d) => d.status === 'ok'),
+      { event_id: event!.id, timeoutMs: 240_000 },
+    )
+    expect(delivered.some((d) => d.status === 'ok')).toBe(true)
+  })
+
   // ── (d) wiring two workers together, under a real pointer ──────────────────
   test('wiring two workers from the chart demands a why, and the changelog keeps it', async ({ page, request }) => {
     const project = await openFreshProject(page, 'e2e-cx-wire')

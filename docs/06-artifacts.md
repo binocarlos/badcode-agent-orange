@@ -281,7 +281,10 @@ and the table-level reads `ListArtifactsForCustomer` / `GetArtifactForCustomer` 
 tests are `agentdb.TestArtifactProjectIsolation` (+ the live-Postgres twin),
 `dbartifacts.TestProjectIsolation`, and `httpapi.TestArtifactRoutesAreProjectScoped`.
 
-**Known orphan path, unchanged by this.** `agent_artifacts.session_id` has been
-`REFERENCES agent_sessions(id) ON DELETE CASCADE` since migration 002, so deleting a session drops
-its artifact rows while the bytes stay in the blob store. Pinned by
-`TestLivePG_ArtifactRowsCascadeWithTheSession`. Nothing sweeps those blobs yet.
+**Known orphan path, narrowed by migration 041.** `agent_artifacts.session_id` has been
+`REFERENCES agent_sessions(id) ON DELETE CASCADE` since migration 002. Deleting a session no longer
+fires it: `Store.DeleteSession` stamps `deleted_at` instead of removing the row (doc 22 RD5), so
+the artifact index survives the delete along with the transcript. The cascade is still there and
+still correct — a real `DELETE FROM agent_sessions` (the purge nobody has authorised yet, work plan
+doc 24 G3) would take the rows and leave the bytes. Both halves are pinned by
+`TestLivePG_ArtifactRowsSurviveASessionDelete`. Nothing sweeps those blobs yet.

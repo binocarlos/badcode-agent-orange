@@ -78,6 +78,23 @@ const (
 	// field carries the machine-readable "lost" (§8.2); this is what a human, or
 	// the worker woken by it, reads.
 	leaseLostText = "session lease expired: the job stopped reporting back and was declared lost"
+	// staleDeliveryAge is how long a delivery may sit at `running` before the
+	// sweep declares it wedged (RD7).
+	//
+	// It is deliberately far beyond sessionLeaseTTL. A LIVE job renews its lease
+	// every minute and is never touched by this sweep, whatever its age — the
+	// sweep only closes rows whose session no longer holds a lease, so a long
+	// build inside a container is safe. The age is the second belt: it keeps the
+	// sweep off the few-second window in which a settling turn has stamped its
+	// status and not yet released its lease, and off a claim whose session row
+	// is still being created.
+	staleDeliveryAge = time.Hour
+	// staleDeliveryBatch bounds one sweep pass, like leaseReapBatch.
+	staleDeliveryBatch = 100
+	// staleDeliveryText is what the swept row records. It says what is known —
+	// that nothing ever reported an outcome — and not what is not.
+	staleDeliveryText = "no outcome was ever recorded: agentd stopped before this job could be closed, " +
+		"and its session holds no lease, so the job is not running any more"
 )
 
 // ── Stores ──────────────────────────────────────────────────────────────────
@@ -107,6 +124,10 @@ type reaperStore interface {
 	UpdateSession(ctx context.Context, session *agentdb.Session) (*agentdb.Session, error)
 	ListDeliveries(ctx context.Context, q agentdb.DeliveryQuery) ([]*agentdb.EventDelivery, error)
 	UpdateDeliveryStatus(ctx context.Context, project, id string, u agentdb.DeliveryStatusUpdate) (*agentdb.EventDelivery, error)
+	// The stale-delivery sweep (RD7). GetSession is how it tells a wedged row
+	// from a live job: a live job holds a lease, a wedged one cannot.
+	ListStaleRunningDeliveries(ctx context.Context, startedBefore int64, limit int) ([]*agentdb.EventDelivery, error)
+	GetSession(ctx context.Context, sessionID string) (*agentdb.Session, error)
 }
 
 var _ reaperStore = (*agentdb.Store)(nil)
@@ -233,13 +254,26 @@ func (r *router) routeEvent(ctx context.Context, ev *agentdb.ProjectEvent) error
 	if err != nil {
 		return fmt.Errorf("list subscriptions: %w", err)
 	}
+	matched := 0
 	for _, sub := range subs {
 		if !subscriptionMatches(sub, ev) {
 			continue
 		}
+		matched++
 		if err := r.deliver(ctx, sub, ev); err != nil {
 			return fmt.Errorf("subscription %s: %w", sub.ID, err)
 		}
+	}
+
+	// RD19 — a fan-out to nobody is LEGAL, but it must not be byte-identical to
+	// a healthy one. Without this line "my worker didn't wake up" has no
+	// observable signal anywhere: the event is simply marked delivered and the
+	// three-second poll moves on. Not an error, not a failed event — one line
+	// naming what arrived and how many subscriptions were asked.
+	if matched == 0 {
+		r.logf("[router] event %s (%s %s) matched NO subscription — %d enabled subscription(s) considered; "+
+			"no job will run. If a worker was meant to wake, check the event type against the project's subscriptions.",
+			ev.ID, ev.Project, ev.Type, len(subs))
 	}
 
 	// Only once EVERY match has a row: the delivered watermark is the promise
@@ -493,6 +527,13 @@ func newLeaseReaper(store reaperStore) *leaseReaper {
 // would wake every subscriber twice for one dead job, and a duplicated "your
 // worker died" is worse than a missed one, which nothing downstream can tell
 // apart from the job simply never having run.
+//
+// That argument only works because the release is a COMPARE-AND-SET: it is
+// conditional on the lease still being held and reports ErrSessionLeaseNotHeld
+// otherwise (agentdb/leases.go). It used to be an unconditional UPDATE that
+// also reported a missing row as success, which meant two reapers could both
+// "claim" the same dead session and both emit — the exact duplicate this
+// paragraph claims to prevent.
 func (p *leaseReaper) Reap(ctx context.Context) error {
 	lost, err := p.store.ListExpiredLeaseSessions(ctx, p.now().Unix(), p.batch)
 	if err != nil {
@@ -500,6 +541,53 @@ func (p *leaseReaper) Reap(ctx context.Context) error {
 	}
 	for _, sess := range lost {
 		p.reapOne(ctx, sess)
+	}
+	return p.sweepStaleDeliveries(ctx)
+}
+
+// sweepStaleDeliveries closes deliveries wedged at `running` (RD7).
+//
+// The lease reaper above cannot reach these, and that is not a tuning problem:
+// its input is `lease_expires_at > 0`, so a delivery whose session released its
+// lease and then failed to reach a terminal status is invisible to it for ever
+// — while still counting against `max_instances` and `max_concurrent_jobs`.
+// Before this sweep, nothing in the system swept deliveries by age, so the slot
+// was gone until somebody edited the database by hand.
+//
+// The safety rule is "no lease, no life": a delivery is only closed when its
+// session holds no lease (or has no session at all — a claim that crashed
+// before provisioning). A running job renews its lease every minute, so this
+// sweep can never touch one, however long it takes.
+func (p *leaseReaper) sweepStaleDeliveries(ctx context.Context) error {
+	cutoff := p.now().Add(-staleDeliveryAge).Unix()
+	stale, err := p.store.ListStaleRunningDeliveries(ctx, cutoff, staleDeliveryBatch)
+	if err != nil {
+		return fmt.Errorf("list stale running deliveries: %w", err)
+	}
+	for _, d := range stale {
+		if d.SessionID != "" {
+			sess, err := p.store.GetSession(ctx, d.SessionID)
+			if err != nil {
+				// Could not tell whether the job is alive. Say so and leave the
+				// row for the next pass: closing a live job would be the same
+				// class of lie in the other direction.
+				p.logf("[router] stale delivery %s: could not read session %s: %v", d.ID, d.SessionID, err)
+				continue
+			}
+			if sess != nil && sess.LeaseExpiresAt > agentdb.SessionLeaseUnset {
+				continue // still held: a live job, or one the lease reaper owns.
+			}
+		}
+		if _, err := p.store.UpdateDeliveryStatus(ctx, d.Project, d.ID, agentdb.DeliveryStatusUpdate{
+			Status:        agentdb.DeliveryFailed,
+			FailureReason: staleDeliveryText,
+		}); err != nil {
+			p.logf("[router] stale delivery %s: could not close it: %v", d.ID, err)
+			continue
+		}
+		p.logf("[router] delivery %s (%s/%s, session %q) was stuck at running since %d with no lease — "+
+			"closed as failed and its capacity slot released",
+			d.ID, d.Project, d.Worker, d.SessionID, d.StartedAt)
 	}
 	return nil
 }
@@ -562,6 +650,9 @@ func (p *leaseReaper) failDelivery(ctx context.Context, sess *agentdb.Session) {
 	for _, d := range deliveries {
 		if _, err := p.store.UpdateDeliveryStatus(ctx, d.Project, d.ID, agentdb.DeliveryStatusUpdate{
 			Status: agentdb.DeliveryFailed,
+			// The same sentence the `worker.failed` event carries, so the job
+			// row and the event agree about why (RD20).
+			FailureReason: leaseLostText,
 		}); err != nil {
 			p.logf("[router] lease reap %s: could not fail delivery %s: %v", sess.ID, d.ID, err)
 		}

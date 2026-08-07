@@ -56,7 +56,10 @@ export interface AgentChatConfig {
 export interface AgentChatEndpoints {
   createSession: string;                        // POST
   sendMessage: (sessionId: string) => string;   // POST (SSE)
-  reconnect: (sessionId: string) => string;     // GET (SSE)
+  // GET (SSE). queryId names the turn to reattach to — the id the status probe
+  // reported as active. Without it the server has no turn to look for and the
+  // reconnect drains nothing (doc 24 D5).
+  reconnect: (sessionId: string, queryId?: string) => string;
   status: (sessionId: string) => string;        // GET
   cancel: (sessionId: string) => string;        // POST
   getSession: (sessionId: string) => string;    // GET
@@ -73,7 +76,8 @@ export interface AgentChatEndpoints {
 export const DEFAULT_ENDPOINTS: AgentChatEndpoints = {
   createSession: "/agent/session",
   sendMessage: (id) => `/agent/session/${id}/message`,
-  reconnect: (id) => `/agent/session/${id}/reconnect`,
+  reconnect: (id, queryId) =>
+    `/agent/session/${id}/reconnect${queryId ? `?queryId=${encodeURIComponent(queryId)}` : ""}`,
   status: (id) => `/agent/session/${id}/status`,
   cancel: (id) => `/agent/session/${id}/cancel`,
   getSession: (id) => `/agent/session/${id}`,

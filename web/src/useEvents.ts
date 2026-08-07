@@ -1,9 +1,11 @@
 // useEventsOverview and friends — the data hooks behind the events view.
 //
 // Read-only, all of them: this surface replaces the deleted watchapi cockpit
-// and its whole job is to show what the router already did. Nothing here POSTs,
-// and the subscription test in EventReplayPanel is a pure function over data
-// these hooks already have — a dry run must never touch the firing path.
+// and its whole job is to show what the router already did. Nothing in THIS
+// file POSTs, and the subscription test in EventReplayPanel is a pure function
+// over data these hooks already have — a dry run must never touch the firing
+// path. The panel's separate, confirmed "Emit this event" button (F1/RD17) is
+// the one write on the surface, and it calls `reload` here afterwards.
 //
 // Init is a render-phase ref-guard, not a useEffect, matching
 // useProjectSettings/useWorkers: a host that inlines `getAuthToken` in its
@@ -11,7 +13,7 @@
 // would turn that into an unbounded GET loop.
 
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { configApiStatus, useConfigApi, type ConfigApiOptions } from './configApi.js'
 import { summariseJobProgress, type JobProgress } from './jobprogress.js'
 import {
   buildJobRows,
@@ -202,6 +204,19 @@ export interface SessionTokensApi {
   progress: JobProgress | null
   loading: boolean
   error: string | null
+  /**
+   * The session this job ran in is GONE (RD15): the read came back 404, which
+   * on this route means the row is not there (or is not ours — same answer for
+   * a reader looking at its own project's jobs). `event_deliveries.session_id`
+   * has no foreign key, so job history outlives the session it points at, and
+   * the delivery still renders a confident "open" link into nothing.
+   *
+   * Null when we have not asked, or asked and got an answer that was not a 404
+   * — "the fetch failed" and "the transcript is deleted" are different facts
+   * and only the second one may be shown to a user as deletion. Read from the
+   * HTTP STATUS, never from the body text (see B6 / looksUnwired).
+   */
+  missing: boolean | null
   /** Fetch now. Safe to call repeatedly; the second call is a no-op in flight. */
   load: () => Promise<void>
 }
@@ -231,6 +246,7 @@ export function useSessionTokens(
   const [progress, setProgress] = useState<JobProgress | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [missing, setMissing] = useState<boolean | null>(null)
   const inFlight = useRef(false)
 
   const load = useCallback(async () => {
@@ -242,8 +258,10 @@ export function useSessionTokens(
       const data = await request<unknown>(queryEventsEndpoint(sessionId))
       setTotals(sumTokens(data))
       setProgress(summariseJobProgress(data))
+      setMissing(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed to load token usage')
+      setMissing(configApiStatus(err) === 404)
     } finally {
       inFlight.current = false
       setLoading(false)
@@ -261,5 +279,5 @@ export function useSessionTokens(
     void load()
   }
 
-  return { totals, progress, loading, error, load }
+  return { totals, progress, loading, error, missing, load }
 }

@@ -30,6 +30,19 @@ export interface Schedule {
   id: string
   project: string
   worker: string
+  /**
+   * The NAME of a long-lived session each firing sends `input` to, instead of
+   * starting a fresh job for a worker (engine: `Schedule.TargetSession`,
+   * migration 036). Exactly one of `worker` and `target_session` is set — the
+   * engine enforces the XOR — so a row with this set has a blank `worker`.
+   *
+   * Read-only here: no editor in this package writes it, and the PUT route
+   * patches named fields over a freshly-read row, so omitting it from
+   * `scheduleBody` cannot clear it. It is mirrored so a session-mode schedule
+   * is *legible* rather than rendering as a schedule with no target — and so
+   * the wire-shape guard (wire-shapes.json) has something to match.
+   */
+  target_session?: string
   /** Standard 5-field cron expression, in agentd's local time zone. */
   cron: string
   /** The instruction this trigger delivers — it becomes the event text. */
@@ -46,6 +59,12 @@ export interface Schedule {
   provision_failures?: number
   /** Why the most recent start failed, kept so an operator can recover. */
   last_provision_error?: string
+  /**
+   * The last occurrence the scheduler evaluated (RD11's watermark). Runtime
+   * state, read-only here — no editor writes it. Mirrored so the wire-shape
+   * guard stays satisfied and so this side can never silently drop it.
+   */
+  last_evaluated?: string
 }
 
 /** A schedule being edited. Same shape; the alias makes props read honestly. */
@@ -63,6 +82,7 @@ export function newScheduleDraft(project = ''): ScheduleDraft {
     id: '',
     project,
     worker: '',
+    target_session: '',
     cron: '',
     input: '',
     enabled: true,
@@ -70,6 +90,7 @@ export function newScheduleDraft(project = ''): ScheduleDraft {
     updated_at: 0,
     provision_failures: 0,
     last_provision_error: '',
+    last_evaluated: '',
   }
 }
 
@@ -81,6 +102,7 @@ export function coerceSchedule(raw: unknown, project = ''): Schedule {
     id: str(r.id),
     project: str(r.project, project),
     worker: str(r.worker),
+    target_session: str(r.target_session),
     cron: str(r.cron),
     input: str(r.input),
     enabled: bool(r.enabled, true),
@@ -88,6 +110,7 @@ export function coerceSchedule(raw: unknown, project = ''): Schedule {
     updated_at: num(r.updated_at),
     provision_failures: num(r.provision_failures),
     last_provision_error: str(r.last_provision_error),
+    last_evaluated: str(r.last_evaluated),
   }
 }
 

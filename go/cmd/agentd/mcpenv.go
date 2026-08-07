@@ -59,15 +59,16 @@ var envNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 // The allowlist is an operator-facing knob, so a bad entry is answered with a
 // boot-time error naming the variable, not a silent drop.
 var reservedSessionEnv = map[string]string{
-	"AGENTKIT_JWT_SECRET":     "agentd's JWT signing secret",
-	"ANTHROPIC_API_KEY":       "the host model credential (the Runner injects a per-session token under this name)",
-	"CLAUDE_CODE_OAUTH_TOKEN": "the subscription model credential",
-	"ANTHROPIC_BASE_URL":      "model-provider wiring owned by agentd",
-	"DATABASE_URL":            "the store connection string",
-	"SESSION_ID":              "per-session plumbing set by the Runner",
-	"SESSION_TOKEN":           "per-session plumbing set by the Runner",
-	"HOST_API_URL":            "the sandbox's callback URL, set by agentd",
-	"AGENTKIT_MCP_ENV":        "the allowlist itself",
+	"AGENTKIT_JWT_SECRET":         "agentd's API JWT signing secret",
+	"AGENTKIT_SESSION_JWT_SECRET": "agentd's session-token signing key — forwarding it would let a session mint tokens for any other session",
+	"ANTHROPIC_API_KEY":           "the host model credential (the Runner injects a per-session token under this name)",
+	"CLAUDE_CODE_OAUTH_TOKEN":     "the subscription model credential",
+	"ANTHROPIC_BASE_URL":          "model-provider wiring owned by agentd",
+	"DATABASE_URL":                "the store connection string",
+	"SESSION_ID":                  "per-session plumbing set by the Runner",
+	"SESSION_TOKEN":               "per-session plumbing set by the Runner",
+	"HOST_API_URL":                "the sandbox's callback URL, set by agentd",
+	"AGENTKIT_MCP_ENV":            "the allowlist itself",
 }
 
 // resolveMCPEnv reads AGENTKIT_MCP_ENV and returns the variables to forward into

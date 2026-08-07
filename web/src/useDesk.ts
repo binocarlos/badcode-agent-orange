@@ -121,8 +121,18 @@ export interface DeskApi {
   loading: boolean
   /** The first failure across the loads, as the server phrased it. */
   error: string | null
-  /** False when the attention route is not mounted — asks carry no message. */
+  /**
+   * False when the attention list did not load — the route is not mounted here,
+   * or it failed. Either way the asks are rebuilt from the parked deliveries
+   * and carry no message.
+   */
   asksHaveMessages: boolean
+  /**
+   * False only when the route is not mounted here. Separates "this deployment
+   * does not serve it" from "it did not answer this time", which read the same
+   * in `asksHaveMessages` but are different sentences to an operator.
+   */
+  asksRouteAvailable: boolean
   /** The project's workers, for the first-run state. */
   workerCount: number
   /** Unix MILLISECONDS; 0 means "never looked". */
@@ -217,7 +227,10 @@ export default function useDesk(options: UseDeskOptions = {}): DeskApi {
         events: overview.events,
         subscriptions: overview.subscriptions,
         configEvents: log.events,
-        attentionRequests: attention.available
+        // Off "did this load succeed", not off "is the route mounted": a
+        // mounted route that failed leaves an empty list, and the fallback
+        // exists for exactly the case where we do not have the real one.
+        attentionRequests: attention.ok
           ? attention.requests
           : deliveriesAsRequests(overview.deliveries),
         schedules: schedules.schedules,
@@ -228,7 +241,7 @@ export default function useDesk(options: UseDeskOptions = {}): DeskApi {
       }),
     [
       earlierChangesLimit,
-      attention.available,
+      attention.ok,
       attention.requests,
       lastSeenMs,
       log.events,
@@ -247,8 +260,14 @@ export default function useDesk(options: UseDeskOptions = {}): DeskApi {
       overview.loading || attention.loading || log.loading || schedules.loading || workers.loading,
     // The changelog and the attention route each report "not mounted here"
     // through their own flag; only real failures belong in `error`.
-    error: overview.error ?? (log.available ? log.error : null) ?? schedules.error ?? workers.error,
-    asksHaveMessages: attention.available,
+    error:
+      overview.error ??
+      (attention.available ? attention.error : null) ??
+      (log.available ? log.error : null) ??
+      schedules.error ??
+      workers.error,
+    asksHaveMessages: attention.ok,
+    asksRouteAvailable: attention.available,
     workerCount: workers.workers.length,
     lastSeenMs,
     markSeen,

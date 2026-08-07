@@ -55,6 +55,10 @@ type dispatchStore interface {
 	CountActiveDeliveriesForWorker(ctx context.Context, project, worker string) (int64, error)
 	ListPendingDeliveries(ctx context.Context, project, worker string, limit int) ([]*agentdb.EventDelivery, error)
 	UpdateDeliveryStatus(ctx context.Context, project, id string, u agentdb.DeliveryStatusUpdate) (*agentdb.EventDelivery, error)
+	// ClaimDelivery is the atomic pending→running transition. It is what makes
+	// "one delivery starts one job" true when two goroutines drain at once
+	// (RD10); UpdateDeliveryStatus cannot, being a read-then-write.
+	ClaimDelivery(ctx context.Context, project, id string) (*agentdb.EventDelivery, error)
 	// SessionAwaitsHuman answers §8.4's `awaiting_human`: did this job end its
 	// turn with a `request_human_attention` still open?
 	SessionAwaitsHuman(ctx context.Context, project, sessionID string) (bool, error)
@@ -88,9 +92,14 @@ type startJobInput struct {
 	// Optional: a starter with no hook simply does not call it.
 	OnSessionCreated func(ctx context.Context, sessionID string) error
 	// OnSessionEnded is called once the turn has settled, with whatever
-	// SendMessage returned. It is where the delivery reaches a terminal status
-	// and the session lease is released.
-	OnSessionEnded func(ctx context.Context, sessionID string, err error)
+	// SendMessage returned. It is where the delivery reaches a terminal status.
+	//
+	// It returns whether that terminal status was actually WRITTEN, and the
+	// caller releases the session lease only if it was (RD7). A delivery whose
+	// close failed must keep its lease: the lease is the only thing that can
+	// still lead anybody back to it, and dropping it is what made such a row
+	// permanently invisible and permanently in the way.
+	OnSessionEnded func(ctx context.Context, sessionID string, err error) error
 }
 
 // sessionStarter turns a composed job into a running session and returns its id.
@@ -319,6 +328,24 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 	if d.starter == nil {
 		return dispatchSkipped, "", fmt.Errorf("dispatch: no session starter configured")
 	}
+
+	// §8.4 — CLAIM the delivery before anything that would double if it ran
+	// twice (RD10). Every check above this line can leave the row `pending` for
+	// the next drain; nothing below it may, because from here on this pass owns
+	// the row. The in-memory `delivery.Status != pending` guard at the top of
+	// this function is a cheap early exit and nothing more: both racers read
+	// the same `pending` snapshot, so only the database can break the tie.
+	//
+	// Losing the race is not a failure and must not be reported as one — a
+	// `failed` write here would stamp the WINNER's row, turning a job that is
+	// about to run fine into job history that says it did not.
+	if _, err := d.store.ClaimDelivery(ctx, delivery.Project, delivery.ID); err != nil {
+		if errors.Is(err, agentdb.ErrDeliveryNotPending) {
+			return dispatchSkipped, "", nil
+		}
+		return dispatchSkipped, "", fmt.Errorf("dispatch: claim delivery %s: %w", delivery.ID, err)
+	}
+
 	project, deliveryID := delivery.Project, delivery.ID
 	stamped := false
 	sessionID, err := d.starter.StartJob(ctx, startJobInput{
@@ -327,6 +354,9 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 		Event:   event,
 		Job:     job,
 		OnSessionCreated: func(ctx context.Context, sessionID string) error {
+			// The row is already `running` (the claim above); this write is what
+			// gives it its session id, which the depth walk and the transcript
+			// link both need.
 			stamped = true
 			_, err := d.store.UpdateDeliveryStatus(ctx, project, deliveryID, agentdb.DeliveryStatusUpdate{
 				Status:    agentdb.DeliveryRunning,
@@ -334,10 +364,14 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 			})
 			return err
 		},
-		OnSessionEnded: func(ctx context.Context, sessionID string, runErr error) {
+		OnSessionEnded: func(ctx context.Context, sessionID string, runErr error) error {
 			status := agentdb.DeliveryOK
+			// Why it ended badly, for the row as well as the log (RD20). The
+			// other failure path is d.fail (the job never started at all).
+			reason := ""
 			if runErr != nil {
 				status = agentdb.DeliveryFailed
+				reason = fmt.Sprintf("session ended: %v", runErr)
 				d.logf("[dispatch] delivery %s (%s/%s) session %s ended badly: %v",
 					deliveryID, project, worker.Name, sessionID, runErr)
 			} else if awaits, err := d.store.SessionAwaitsHuman(ctx, project, sessionID); err != nil {
@@ -359,13 +393,20 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 					deliveryID, project, worker.Name, sessionID)
 			}
 			if _, err := d.store.UpdateDeliveryStatus(ctx, project, deliveryID, agentdb.DeliveryStatusUpdate{
-				Status:    status,
-				SessionID: sessionID,
+				Status:        status,
+				SessionID:     sessionID,
+				FailureReason: reason,
 			}); err != nil {
 				// A delivery stuck at `running` holds a max_instances slot for
-				// ever, so this is loud: the lease reaper is the backstop.
+				// ever, so this is loud AND it is reported: returning the error
+				// keeps the session's lease held, which is the only handle
+				// anything still has on this job (RD7). The lease reaper collects
+				// it fifteen minutes later; the stale-delivery sweep in router.go
+				// is the backstop behind that.
 				d.logf("[dispatch] delivery %s: could not close as %s: %v", deliveryID, status, err)
+				return fmt.Errorf("close delivery %s as %s: %w", deliveryID, status, err)
 			}
+			return nil
 		},
 	})
 	if err != nil {
@@ -443,15 +484,18 @@ func (d *dispatcher) projectAtCapacity(ctx context.Context, project string) (boo
 	return active >= int64(settings.MaxConcurrentJobs), nil
 }
 
-// fail marks a delivery failed and logs why. §8.4's delivery tuple records no
-// reason column (an E1 finding), so the log is where the reason lives until one
-// is added.
+// fail marks a delivery failed, records why on the row, and logs the same text.
+// The reason column arrived with migration 037 (RD20): before it, the log was
+// the only copy, which made `docker compose logs agentd` the honest answer to
+// "why did my worker fail?" — for a user who may not have a terminal open on
+// the host at all.
 // It echoes the reason back so DispatchWithReason can hand it to a caller that
 // has to record it (the scheduler) without a second formatting of the same text.
 func (d *dispatcher) fail(ctx context.Context, delivery *agentdb.EventDelivery, reason string) string {
 	d.logf("[dispatch] delivery %s (%s/%s) failed: %s", delivery.ID, delivery.Project, delivery.Worker, reason)
 	if _, err := d.store.UpdateDeliveryStatus(ctx, delivery.Project, delivery.ID, agentdb.DeliveryStatusUpdate{
-		Status: agentdb.DeliveryFailed,
+		Status:        agentdb.DeliveryFailed,
+		FailureReason: reason,
 	}); err != nil {
 		d.logf("[dispatch] delivery %s: could not mark failed: %v", delivery.ID, err)
 	}
@@ -625,15 +669,36 @@ func (r *runnerSessionStarter) spawn(fn func()) {
 	go fn()
 }
 
-// settle closes out a turn: the lease goes first, so the reaper can never
-// double-report a job whose outcome is already known, and a turn a human
-// cancelled (which emits no event at all, by E2's decision) is simply a job
-// that released its lease without failing.
-func (r *runnerSessionStarter) settle(ctx context.Context, sessionID string, err error, onEnded func(context.Context, string, error)) {
-	r.releaseLease(ctx, sessionID)
+// settle closes out a turn: the delivery's TERMINAL STATUS is stamped first and
+// the lease is released second. A turn a human cancelled (which emits no event
+// at all, by E2's decision) is simply a job that settles without failing.
+//
+// The order used to be the other way round, justified as "the reaper can never
+// double-report a job whose outcome is already known". It bought that at a
+// price nothing could pay back (RD7): a crash — or merely a failed status write,
+// whose error is only logged — in the window between the two left a delivery at
+// `running` with `lease_expires_at = 0`, which `ListExpiredLeaseSessions`
+// filters out by construction. The reaper could then NEVER see it, and the row
+// ate a `max_instances` and a `max_concurrent_jobs` slot for the life of the
+// project. A wedge nothing can clear is strictly worse than a duplicate report
+// that arrives late.
+//
+// This order inverts the residual risk into a recoverable one: a crash between
+// the two lines now leaves a terminal delivery with a lease still held, which
+// the lease reaper collects fifteen minutes later. It may emit a `worker.failed`
+// for a job that in fact finished — visible, wrong, and fixable — rather than
+// leaving a slot silently consumed forever, which is neither.
+func (r *runnerSessionStarter) settle(ctx context.Context, sessionID string, err error, onEnded func(context.Context, string, error) error) {
 	if onEnded != nil {
-		onEnded(ctx, sessionID, err)
+		if closeErr := onEnded(ctx, sessionID, err); closeErr != nil {
+			// The outcome is NOT recorded. Keep the lease: it is now the only
+			// thread leading back to this job, and the reaper will follow it.
+			r.logf("[dispatch] session %s: keeping the lease — the job's outcome was not recorded: %v",
+				sessionID, closeErr)
+			return
+		}
 	}
+	r.releaseLease(ctx, sessionID)
 }
 
 // abandon undoes a half-started job: the lease is dropped so the reaper does not
@@ -652,6 +717,13 @@ func (r *runnerSessionStarter) releaseLease(ctx context.Context, sessionID strin
 		return
 	}
 	if err := r.leases.ReleaseSessionLease(ctx, sessionID); err != nil {
+		if errors.Is(err, agentdb.ErrSessionLeaseNotHeld) {
+			// Somebody else already declared this turn over — in practice the
+			// lease reaper, having decided the job was lost. Not an error here:
+			// the state we wanted is true, and the reaper owns the story.
+			r.logf("[dispatch] session %s: lease was already released", sessionID)
+			return
+		}
 		r.logf("[dispatch] session %s: could not release lease: %v", sessionID, err)
 	}
 }

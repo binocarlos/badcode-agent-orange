@@ -9,10 +9,19 @@ package main
 //
 // The four rules that make it boring, in the order they bite:
 //
-//  1. SKIP MISSED. A tick evaluates the CURRENT minute only. If agentd was down
-//     for an hour, those sixty minutes are never evaluated — a tweet-writer must
-//     not wake to a backlog of stale mornings (§8.6). There is no catch-up
-//     window, no replay, and the "Deferred" list says there never will be.
+//  1. SKIP MISSED, BUT SAY SO. A tick evaluates the CURRENT minute only. If
+//     agentd was down for an hour, those sixty minutes are never RUN — a
+//     tweet-writer must not wake to a backlog of stale mornings (§8.6). There is
+//     no replay and there is deliberately no bounded catch-up either: see
+//     "What the catch-up does and does not do" below.
+//
+//     What changed with RD11 is that the sixty minutes are no longer INVISIBLE.
+//     Each schedule carries a watermark (`last_evaluated`, migration 041), and a
+//     tick that finds a gap records the occurrences it did not evaluate as
+//     `missed` firings and emits ONE `schedule.missed` event per gap. Before
+//     that, an outage left no firing row, no event, no delivery and nothing at
+//     all — "my 9am job never ran" was indistinguishable from "you never
+//     scheduled a 9am job", and the difference is the entire user question.
 //  2. IDEMPOTENT. Each firing claims `(schedule_id, scheduled_for)` before it
 //     does anything. A crash/retry, a duplicated tick, or a second agentd
 //     re-claims the same occurrence and loses.
@@ -44,6 +53,44 @@ package main
 // Timezone: the whole stack evaluates in one location (TZ on agentd, default
 // UTC — §8.6). DST needs no special case because occurrences are keyed on the
 // wall clock: see agentdb.ScheduleFiring.
+//
+// # What the catch-up does and does not do (RD11 — the decision, on the record)
+//
+// It does NOT run anything. An agentd that has been down for an hour comes back
+// and starts zero backlog jobs; sixty stale instructions arriving at once is
+// worse than sixty that did not arrive, and it is worse in a way the operator
+// cannot undo — outbound actions (post the tweet, send the mail) do not have an
+// undo. §8.6 settled that and this change does not reopen it.
+//
+// A BOUNDED catch-up ("run the most recent missed occurrence") was considered
+// and deliberately rejected, because "most recent" is not a property of the
+// clock, it is a property of the work: re-running last night's backup is
+// obviously right, re-sending last night's "good morning" is obviously wrong,
+// and the schedule row does not say which kind it is. Choosing for the user
+// would silently be wrong half the time; the honest move is to tell them what
+// they missed and let a human — or a worker subscribed to `schedule.missed` —
+// decide. If a future version wants replay, it wants a per-schedule policy
+// field, not a global guess.
+//
+// What it does instead, per schedule, per tick:
+//
+//   - reads the watermark (`last_evaluated`), the last wall-clock minute any
+//     tick evaluated this row;
+//   - walks the minutes strictly between the watermark and now, matching the
+//     cron, to find occurrences NOBODY evaluated;
+//   - claims each one as a `missed` firing (the same UNIQUE index that makes a
+//     real firing exactly-once, so two agentds recovering together cannot both
+//     report the same minute);
+//   - emits ONE `schedule.missed` event naming the count and the range — one,
+//     not sixty, because a feed with sixty notices in it is a second outage;
+//   - advances the watermark, whether or not anything matched. A tick that
+//     found nothing due is evidence too: it is what makes the NEXT gap
+//     measurable.
+//
+// An empty watermark (a schedule created while agentd was down, or one that
+// predates migration 041) reports nothing: we do not know what happened before
+// we were first looking, and inventing a missed-occurrence report for a
+// schedule created five minutes ago would be its own false claim.
 
 import (
 	"context"
@@ -51,6 +98,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"time"
 
 	agentkit "github.com/binocarlos/badcode-agent-orange"
@@ -68,9 +116,16 @@ type schedulerStore interface {
 	NoteScheduleProvisionFailure(ctx context.Context, project, id, reason string) (int, error)
 	ClearScheduleProvisionFailures(ctx context.Context, project, id string) error
 	ClaimFiring(ctx context.Context, f *agentdb.ScheduleFiring) (*agentdb.ScheduleFiring, bool, error)
-	StampFiringEvent(ctx context.Context, firingID, eventID string) error
 	CreateProjectEvent(ctx context.Context, ev *agentdb.ProjectEvent) (*agentdb.ProjectEvent, error)
-	EnsureDelivery(ctx context.Context, d *agentdb.EventDelivery) (*agentdb.EventDelivery, bool, error)
+	// RecordFiringJob writes the event, its delivery and the firing's event
+	// stamp in ONE transaction (RD11): a kill between the event and the
+	// delivery used to leave a `schedule.fired` notice in the feed for a job
+	// that never ran, with the occurrence permanently consumed.
+	RecordFiringJob(ctx context.Context, firingID string, ev *agentdb.ProjectEvent, d *agentdb.EventDelivery) (*agentdb.ProjectEvent, *agentdb.EventDelivery, error)
+	// MarkFiringMissed flips a claimed occurrence that produced nothing.
+	MarkFiringMissed(ctx context.Context, firingID string) error
+	// NoteScheduleEvaluated advances the per-schedule watermark (RD11).
+	NoteScheduleEvaluated(ctx context.Context, project, id, occurrence string) error
 	// Session-mode schedules resolve their target by NAME (T9). The name is the
 	// only handle the schedule holds, which is the point: an embedding
 	// application never has to store a uuid.
@@ -233,11 +288,23 @@ func (s *scheduler) Tick(ctx context.Context) error {
 			s.disable(ctx, sch, "cron expression is unparseable: "+err.Error())
 			continue
 		}
-		if !expr.Matches(minute) {
-			continue
+		// Before this minute, and always — the gap is chronologically earlier
+		// than the firing, and a schedule that does NOT match this minute still
+		// has to report the ones it missed while nobody was looking.
+		s.catchUp(ctx, sch, expr, minute)
+		if expr.Matches(minute) {
+			if err := s.fire(ctx, sch, minute); err != nil {
+				s.logf("[scheduler] schedule %s/%s: %v", sch.Project, sch.ID, err)
+			}
 		}
-		if err := s.fire(ctx, sch, minute); err != nil {
-			s.logf("[scheduler] schedule %s/%s: %v", sch.Project, sch.ID, err)
+		// Unconditional, and after the firing: this minute has now been
+		// evaluated whatever came of it. A tick that errored is not retried
+		// (nothing ever retried a minute), so leaving the watermark behind would
+		// only make the NEXT tick report this minute as missed — a false report
+		// about a minute we did look at.
+		if err := s.store.NoteScheduleEvaluated(ctx, sch.Project, sch.ID, key); err != nil {
+			s.logf("[scheduler] schedule %s/%s: could not advance the watermark to %s: %v",
+				sch.Project, sch.ID, key, err)
 		}
 	}
 
@@ -299,36 +366,43 @@ func (s *scheduler) fire(ctx context.Context, sch *agentdb.Schedule, minute time
 
 	// The instruction the trigger delivers becomes the event text (§8.6). The
 	// envelope is core's: {source: "schedule", depth: 0}.
-	event, err := s.store.CreateProjectEvent(ctx, &agentdb.ProjectEvent{
-		Project:    sch.Project,
-		Type:       agentdb.EventTypeScheduleFired,
-		Text:       sch.Input,
-		OccurredAt: minute.Unix(),
-		Envelope: agentdb.EventEnvelope{
-			Source: agentdb.EventSourceSchedule,
-			Depth:  0,
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if err := s.store.StampFiringEvent(ctx, firing.ID, event.ID); err != nil {
-		s.logf("[scheduler] firing %s: could not stamp event id: %v", firing.ID, err)
-	}
-
+	//
+	// The event, the delivery and the firing's event stamp land in ONE
+	// transaction (RD11). They used to be three sequential writes, and a kill in
+	// between left a `schedule.fired` event in the user's feed for a job that
+	// never ran and never would — the occurrence was already spent, so no later
+	// tick would try again. Now the occurrence either produced all of it or none
+	// of it, and "none of it" is a state with a name: the firing row is claimed
+	// with no event id, which is exactly what noteFiringProducedNothing below
+	// and the catch-up sweep report as missed.
+	//
 	// A firing is an ordinary delivery. It carries the schedule id in BOTH
 	// subscription_id and schedule_id: the former keeps the existing
 	// (event_id, subscription_id) idempotency index working for schedule-fired
 	// rows too, the latter says the id names a schedule and not a subscription.
-	delivery, _, err := s.store.EnsureDelivery(ctx, &agentdb.EventDelivery{
-		Project:        sch.Project,
-		EventID:        event.ID,
-		SubscriptionID: sch.ID,
-		ScheduleID:     sch.ID,
-		Worker:         worker.Name,
-		Status:         agentdb.DeliveryPending,
-	})
+	_, delivery, err := s.store.RecordFiringJob(ctx, firing.ID,
+		&agentdb.ProjectEvent{
+			Project:    sch.Project,
+			Type:       agentdb.EventTypeScheduleFired,
+			Text:       sch.Input,
+			OccurredAt: minute.Unix(),
+			Envelope: agentdb.EventEnvelope{
+				Source: agentdb.EventSourceSchedule,
+				Depth:  0,
+			},
+		},
+		&agentdb.EventDelivery{
+			Project:        sch.Project,
+			SubscriptionID: sch.ID,
+			ScheduleID:     sch.ID,
+			Worker:         worker.Name,
+			Status:         agentdb.DeliveryPending,
+		})
 	if err != nil {
+		// The occurrence is spent and produced nothing. Say so now, while the
+		// process is alive to say it — the catch-up sweep would only find this
+		// row if a later gap happened to span it.
+		s.noteFiringProducedNothing(ctx, sch, firing, minute, err)
 		return err
 	}
 
@@ -485,6 +559,187 @@ func (s *scheduler) fireSession(ctx context.Context, sch *agentdb.Schedule, minu
 		s.clearProvisionFailures(turnCtx, sch)
 	})
 	return nil
+}
+
+// ── The catch-up (RD11) ─────────────────────────────────────────────────────
+
+const (
+	// scheduleCatchUpWindow bounds how far back ONE catch-up looks. A week is
+	// well past the point where a missed occurrence is still actionable, and the
+	// bound is what stops a schedule that has been enabled-but-unevaluated for a
+	// year from walking half a million minutes on the first tick after an
+	// upgrade. Beyond it the report says so rather than pretending the older
+	// occurrences did not exist.
+	scheduleCatchUpWindow = 7 * 24 * time.Hour
+	// scheduleMaxMissedRecorded caps the firing rows a single gap may write, so
+	// a `* * * * *` schedule and a long outage cannot turn one tick into ten
+	// thousand INSERTs. The MOST RECENT occurrences are the ones kept — they are
+	// the ones an operator might still act on — and the event always names the
+	// true total, so the cap shortens the evidence and never the count.
+	scheduleMaxMissedRecorded = 60
+)
+
+// catchUp reports the occurrences of one schedule that nobody evaluated, and
+// runs none of them. See the header note for why running them was rejected.
+func (s *scheduler) catchUp(ctx context.Context, sch *agentdb.Schedule, expr *agentdb.CronExpr, minute time.Time) {
+	watermark := strings.TrimSpace(sch.LastEvaluated)
+	if watermark == "" {
+		// Never evaluated: a schedule created while agentd was down, or one that
+		// predates migration 041. We have no evidence about the past and must
+		// not invent any — this tick becomes the first watermark.
+		return
+	}
+	last, err := agentdb.ParseOccurrence(watermark, s.loc)
+	if err != nil {
+		s.logf("[scheduler] schedule %s/%s: unreadable watermark %q (%v) — treating this tick as the first",
+			sch.Project, sch.ID, watermark, err)
+		return
+	}
+	start := last.Add(time.Minute)
+	if !start.Before(minute) {
+		// The usual case by far: the previous tick was a minute ago.
+		return
+	}
+	truncated := false
+	if minute.Sub(start) > scheduleCatchUpWindow {
+		start = minute.Add(-scheduleCatchUpWindow)
+		truncated = true
+	}
+
+	// Walk the gap. `recent` keeps at most scheduleMaxMissedRecorded of them
+	// while `total` counts them all: the difference between what we can afford
+	// to write down and what actually happened.
+	total := 0
+	recent := make([]time.Time, 0, scheduleMaxMissedRecorded)
+	for t := start; t.Before(minute); t = t.Add(time.Minute) {
+		if !expr.Matches(t) {
+			continue
+		}
+		total++
+		if len(recent) == scheduleMaxMissedRecorded {
+			recent = recent[1:]
+		}
+		recent = append(recent, t)
+	}
+	if total == 0 {
+		s.logf("[scheduler] schedule %s/%s: %s..%s went unevaluated but nothing was due in it",
+			sch.Project, sch.ID, watermark, agentdb.OccurrenceKey(minute))
+		return
+	}
+
+	// Claiming is what makes the REPORT exactly-once, exactly as it makes a
+	// firing exactly-once: two agentds coming back from the same outage cannot
+	// both announce the same missed minute.
+	newly := make([]string, 0, len(recent))
+	for _, t := range recent {
+		key := agentdb.OccurrenceKey(t)
+		row, claimed, err := s.store.ClaimFiring(ctx, &agentdb.ScheduleFiring{
+			ScheduleID:   sch.ID,
+			Project:      sch.Project,
+			ScheduledFor: key,
+			Missed:       true,
+		})
+		if err != nil {
+			s.logf("[scheduler] schedule %s/%s: could not record missed occurrence %s: %v",
+				sch.Project, sch.ID, key, err)
+			continue
+		}
+		if claimed {
+			newly = append(newly, key)
+			continue
+		}
+		// Somebody already owns this occurrence. Three ways that happens, and
+		// only one of them is news:
+		//   - it is already recorded as missed (a peer got there first);
+		//   - it fired properly (worker mode: it has an event id; session mode:
+		//     the row itself is the record, because that mode writes no event);
+		//   - worker mode, claimed, NO event id — the process died between
+		//     claiming the occurrence and writing the job. That is RD11's narrow
+		//     window, and it is the one remnant that was invisible before.
+		if row.Missed || sch.TargetSession != "" || row.EventID != "" {
+			continue
+		}
+		if err := s.store.MarkFiringMissed(ctx, row.ID); err != nil {
+			s.logf("[scheduler] schedule %s/%s: could not mark occurrence %s missed: %v",
+				sch.Project, sch.ID, key, err)
+			continue
+		}
+		newly = append(newly, key)
+	}
+	if len(newly) == 0 {
+		// Every occurrence in the gap was already accounted for. Staying silent
+		// here is what stops a second agentd double-announcing an outage.
+		return
+	}
+	s.reportMissed(ctx, sch, newly, total, minute, s.missedNote(watermark, total, len(newly), truncated))
+}
+
+// missedNote is the human sentence that says how complete the report is. It is
+// separate because the honest answer differs: usually "all of them", sometimes
+// "the most recent N of M", and after a very long outage "and older ones we did
+// not enumerate".
+func (s *scheduler) missedNote(watermark string, total, recorded int, truncated bool) string {
+	note := ""
+	if recorded < total {
+		note = fmt.Sprintf(" The %d most recent are recorded individually; the rest are counted but not listed.", recorded)
+	}
+	if truncated {
+		note += fmt.Sprintf(" This schedule was last evaluated at %s, which is more than %d days ago —"+
+			" occurrences older than that window are not included in the count.",
+			watermark, int(scheduleCatchUpWindow/(24*time.Hour)))
+	}
+	return note
+}
+
+// reportMissed appends ONE `schedule.missed` event for a run of occurrences that
+// did not happen. One event and not one per occurrence: sixty notices in a feed
+// is a second outage, and the count is the part a person acts on.
+func (s *scheduler) reportMissed(ctx context.Context, sch *agentdb.Schedule, keys []string, total int, minute time.Time, note string) {
+	target := "worker " + sch.Worker
+	if sch.TargetSession != "" {
+		target = "session " + sch.TargetSession
+	}
+	span := keys[0]
+	if len(keys) > 1 {
+		span = keys[0] + " … " + keys[len(keys)-1]
+	}
+	text := fmt.Sprintf(
+		"%d scheduled occurrence(s) of schedule %s (cron `%s`, %s) were missed: %s. "+
+			"Nothing ran for them — a missed occurrence is recorded, never replayed, so no backlog of "+
+			"stale work starts at once.%s The instruction they would have delivered was: %s",
+		total, sch.ID, sch.Cron, target, span, note, strings.TrimSpace(sch.Input))
+	if _, err := s.store.CreateProjectEvent(ctx, &agentdb.ProjectEvent{
+		Project:    sch.Project,
+		Type:       agentdb.EventTypeScheduleMissed,
+		Text:       text,
+		OccurredAt: minute.Unix(),
+		Envelope: agentdb.EventEnvelope{
+			Source: agentdb.EventSourceSchedule,
+			Depth:  0,
+		},
+	}); err != nil {
+		// The log is the fallback record. Not a provision failure: nothing about
+		// this says the schedule cannot start a job.
+		s.logf("[scheduler] schedule %s/%s: MISSED %d occurrence(s) (%s) and could not append the "+
+			"schedule.missed event: %v", sch.Project, sch.ID, total, span, err)
+		return
+	}
+	s.logf("[scheduler] schedule %s/%s: MISSED %d occurrence(s) (%s) — recorded, not replayed",
+		sch.Project, sch.ID, total, span)
+}
+
+// noteFiringProducedNothing is the online half of the same honesty: the
+// occurrence was claimed, the transactional job write failed, and the occurrence
+// is now spent with nothing to show for it. Reported here rather than left for a
+// future gap, because a gap only covers minutes nobody evaluated and this one
+// was evaluated — by us, badly.
+func (s *scheduler) noteFiringProducedNothing(ctx context.Context, sch *agentdb.Schedule, firing *agentdb.ScheduleFiring, minute time.Time, cause error) {
+	if err := s.store.MarkFiringMissed(ctx, firing.ID); err != nil {
+		s.logf("[scheduler] schedule %s/%s: could not mark firing %s missed: %v",
+			sch.Project, sch.ID, firing.ID, err)
+	}
+	s.reportMissed(ctx, sch, []string{agentdb.OccurrenceKey(minute)}, 1, minute,
+		fmt.Sprintf(" The occurrence was claimed but the job could not be written: %v.", cause))
 }
 
 // noteProvisionFailure grows the streak and, at the ceiling, retires the

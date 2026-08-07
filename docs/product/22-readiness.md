@@ -133,7 +133,7 @@ in each case.
   that goes unmetered.
   *Validation:* sandbox typecheck + tests, go suite + live-Postgres, and the budget-gate e2e
   proven non-vacuous by reverting (TOK1's discipline).
-- [ ] **RD3 — `memory_create` reports `"embedded": true` while storing a row with no embedding,
+- [x] **RD3 — `memory_create` reports `"embedded": true` while storing a row with no embedding,
   permanently.** `go/agentdb/memories.go:137` drops the vector from the INSERT when the
   `content_embedding` column is absent; `go/cmd/agentd/mcp_memory.go:288` reports
   `Embedded: vec != nil` — true whenever the *embedder* returned a vector, regardless of what was
@@ -180,7 +180,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
 
 **Blockers — fix before any person uses this for real work.**
 
-- [ ] **RD5 — Deleting a session destroys the conversation, irreversibly, from an unguarded
+- [x] **RD5 — Deleting a session destroys the conversation, irreversibly, from an unguarded
   one-click button.** `agent_query_events.session_id REFERENCES agent_sessions(id) ON DELETE
   CASCADE` (`go/agentdb/migrations.go:139`; same for `agent_messages` at `:77` and
   `agent_artifacts` at `:50`), and `DELETE /agent/session/{id}` is a hard row delete
@@ -195,7 +195,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   **Fix:** `deleted_at` on `agent_sessions`, listings filtered on it, cascade retained for a
   separate operator purge; a confirmation step in the UI; and stop discarding the error.
   *Validation:* go suite + live-Postgres + web tests.
-- [ ] **RD6 — A crash mid-turn loses the model's entire response.** *Amended 2026-07-29 after the
+- [x] **RD6 — A crash mid-turn loses the model's entire response.** *Amended 2026-07-29 after the
   sandbox-buffering question was settled by reading; the open question is now closed.* The user's
   **prompt survives** — `seedUserMessage` writes it to `agent_query_events` before the sandbox is
   called, under `context.WithoutCancel` (`go/runner.go:2338-2353`, called at `:892`). What is lost
@@ -221,7 +221,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   *One stack confirmation remains, now a check rather than an unknown:* start a long turn,
   `docker kill` the **agentd** container, restart, hit `/reconnect`, and observe that the events
   render while `agent_query_events` gains no row.
-- [ ] **RD24 — After an agentd restart, the model remembers a turn the user cannot see.**
+- [x] **RD24 — After an agentd restart, the model remembers a turn the user cannot see.**
   Rehydration from the database runs **only** on the snapshot-restore path; the orphan-recover path
   deliberately skips it because it re-adopts a still-running container that already holds its
   in-memory history (the code says so at `go/runner.go:1396-1402`, verified). Combined with RD6,
@@ -233,7 +233,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   out, and the divergence heals invisibly.
   **Fix:** falls out of RD6(b) — if reconnect drains the buffer into Postgres, the two views
   reconverge. Worth an explicit test either way.
-- [ ] **RD7 — A job can wedge in `running` forever, permanently consuming two capacity slots.**
+- [x] **RD7 — A job can wedge in `running` forever, permanently consuming two capacity slots.**
   `settle` releases the session lease *before* stamping the delivery's terminal status
   (`go/cmd/agentd/dispatch.go:619` then `:621`). A crash in that window — or a failed status write,
   whose error is only logged — leaves `status='running'` with `lease_expires_at=0`, and
@@ -243,7 +243,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   lease reaper "the backstop" — by that line the lease is already released, so it cannot be.
   **Fix:** stamp terminal status first, release the lease second; add an age-based sweep over
   `running` deliveries.
-- [ ] **RD8 — A container whose session row is gone leaks a host port permanently.** `Recover`
+- [x] **RD8 — A container whose session row is gone leaks a host port permanently.** `Recover`
   re-adopts any container labelled with a session id (`go/execenv/docker/dind.go:484`), but with no
   session row `r.Snapshot` fails and the archive loop logs "snapshot failed, keeping the container"
   and `continue`s — every minute, forever (`go/runner.go:1101-1104`). One port from the pool of 100
@@ -252,27 +252,27 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
 
 **Before sustained use — these degrade a working deployment over days.**
 
-- [ ] **RD9 — A snapshot in daily use is reaped out from under the user.** `snapshotExpired` tests
+- [x] **RD9 — A snapshot in daily use is reaped out from under the user.** `snapshotExpired` tests
   only `ci.ExpiresAt` (`go/cmd/agentd/snapshot_reaper.go:196`); `last_resumed_at` is stamped on
   every launch (`imageresolver.go:122-125`) but does not extend expiry, despite the reaper's own
   header implying it bears on it. A worker pinned to a named image gets a hard
   `ErrCustomImageUnmaterialisable` 30 days after burn regardless of use.
   **Fix:** extend expiry on resume, or warn before reaping anything recently resumed.
-- [ ] **RD10 — Two concurrent drains can double-dispatch one delivery**, so a user's job runs
+- [x] **RD10 — Two concurrent drains can double-dispatch one delivery**, so a user's job runs
   twice. `UpdateDeliveryStatus` is a read-then-`Save` with no compare-and-set on
   `status='pending'` (`go/agentdb/events.go:733-757`); the only guard is against an in-memory
   snapshot (`dispatch.go:209`). `DrainPending` runs from two goroutines in one process — the router
   loop every 3s (`router.go:364`) and the scheduler loop (`scheduler.go:191`). The orphan session
   then emits a spurious `worker.failed{lost}` 15 minutes later.
   **Fix:** conditional update on the pending→running transition; act on `RowsAffected`.
-- [ ] **RD11 — Missed schedule occurrences vanish without a trace.** `scheduler.go:156-161`
+- [x] **RD11 — Missed schedule occurrences vanish without a trace.** `scheduler.go:156-161`
   evaluates only the current minute — no watermark, no catch-up. An hour of downtime means 60
   occurrences with no firing row, no event, no delivery and nothing recording that they were
   missed: indistinguishable from "never scheduled". Worse in a narrow window: a kill between
   `CreateProjectEvent` (`:227`) and `EnsureDelivery` (`:248`) leaves a `schedule.fired` event in
   the user's feed for a job that never ran, with the occurrence permanently consumed.
   **Fix:** per-schedule watermark; emit `schedule.missed` on restart for unevaluated occurrences.
-- [ ] **RD12 — Archiving for idleness permanently mislabels artifacts as lost.**
+- [x] **RD12 — Archiving for idleness permanently mislabels artifacts as lost.**
   `teardownInstance` is shared by `Destroy` and the archive loop and unconditionally calls
   `Artifacts.MarkLost` (`go/runner.go:694`), stamping un-uploaded `live` artifacts as `lost`
   (`agentdb/artifacts.go:141-143`). For the archive path that is false — the snapshot is taken
@@ -282,7 +282,7 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
 
 **Integrity, cost and polish — real, not urgent.**
 
-- [ ] **RD13 — The config log's append-only guarantee is enforced only in tests, and the fold has
+- [x] **RD13 — The config log's append-only guarantee is enforced only in tests, and the fold has
   no production caller.** `InstallConfigEventGuard` is opt-in and every caller is a test
   (`agentdb/config_events.go:844`); `cmd/agentd/main.go:259-266` states agentd never arms it;
   `config_events` is not in the guarded-table set; migration 026 adds no trigger or `REVOKE`; and
@@ -303,13 +303,13 @@ before filing. Ordered by *when* they must be fixed, not by cleverness.
   the *bytes* stay on the bill forever (`artifacts.ArtifactStore` has no Delete method at all).
   **Fix:** remove the previous blob after a successful `SetSnapshotHandle`, and the current one on
   session delete.
-- [ ] **RD15 — "This ran" without "what it said".** `event_deliveries.session_id` is a plain
+- [x] **RD15 — "This ran" without "what it said".** `event_deliveries.session_id` is a plain
   VARCHAR with no foreign key (`migrations.go:352`), so job history outlives the session it points
   at: after a delete the user sees a green `ok` delivery with a dead transcript link. And a
   delivery that fails to start persists no reason — no reason column (admitted at
   `dispatch.go:432-435`), no `worker.failed` emitted.
   **Fix:** a `failure_reason` column; render a "transcript deleted" state rather than a broken link.
-- [ ] **RD16 — Transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
+- [x] **RD16 — Transcript ordering is a coin toss within a second.** `ListQueryEvents` orders by
   `created_at ASC` (`agentdb/messages.go:188`) where `created_at` is `time.Now().Unix()` —
   **seconds** (`:167`) — and the id is a random uuid. Two queries in the same second replay in
   arbitrary order. This is the identical hazard migration 028 added `revision` to fix for skills;
@@ -373,7 +373,7 @@ to a mock model the UI never labels. Together those two mean the likeliest first
 user who has built an org chart, seen no output, and cannot tell whether nothing fired or the model
 was never real.
 
-- [ ] **RD17 — There is no way to trigger the first job from the UI.** *The blocker.* Verified
+- [x] **RD17 — There is no way to trigger the first job from the UI.** *The blocker.* Verified
   directly: **no `POST` to `/agent/events` exists anywhere in `web/src` or `examples/web/src`** —
   every POST is session create/message/cancel/restore, voice, attachments, topology preview/apply,
   or auth. 11 of the 14 built-in topologies are event-driven only; the three with a schedule fire
@@ -389,7 +389,7 @@ was never real.
   exercises the chat path, not the delivery pipeline just configured.
   **Fix:** build that one button — "Emit this event" on the replay panel, posting the draft it
   already composes, behind a confirm that says it writes a real event.
-- [ ] **RD18 — Mock mode is invisible, and it is the default.** Both credential lines ship blank
+- [x] **RD18 — Mock mode is invisible, and it is the default.** Both credential lines ship blank
   in `.env.example:9-10`, so a user following the README exactly gets the mock model. agentd logs
   it to stdout (`go/cmd/agentd/modelproxy.go:49`); the browser is told nothing — verified that
   `/auth/config` returns only `{modes, google_client_id}` (`googleauth.go:317-334`) and
@@ -401,7 +401,7 @@ was never real.
   was ever called.
   **Fix:** add credential mode (`mock`|`api-key`|`subscription`) to `/auth/config` and render a
   persistent badge. One field, one component.
-- [ ] **RD19 — An event matching no subscription vanishes silently.** `go/cmd/agentd/router.go:235-247`
+- [x] **RD19 — An event matching no subscription vanishes silently.** `go/cmd/agentd/router.go:235-247`
   loops subscriptions, skips non-matches, and marks the event delivered — zero matches is
   byte-identical to a healthy no-op: no log, no row, no annotation. Write-time validation does not
   help: `go/agentdb/events.go:477-498` checks the event type's *shape* but never that the worker
@@ -412,7 +412,7 @@ was never real.
   didn't wake up" has no observable signal at all.
   **Fix:** one log line at `router.go:247` on zero matches (project, type, subscriptions
   considered) and at `compose.go:224`; validate worker existence and filter keys at write time.
-- [ ] **RD20 — Failure reasons never reach the user.** Two audits found this independently, from
+- [x] **RD20 — Failure reasons never reach the user.** Two audits found this independently, from
   opposite directions (see also RD15). `dispatch.go:437-438` logs the reason and
   `UpdateDeliveryStatus` writes status only; the code admits it at `:195-197` and the UI carries
   the limitation honestly (`web/src/desk.ts:277-279`). So the newcomer's answer to "why did my
@@ -432,7 +432,7 @@ was never real.
   **Fix:** an opt-in checkbox on topology apply ("seed the project prompt with operations doctrine
   v1"), or say in `docs/18` that operators should paste it and where it lives. Either way, stop it
   being invisible.
-- [ ] **RD22 — Postgres credentials are undocumented and the volume initialises once.**
+- [x] **RD22 — Postgres credentials are undocumented and the volume initialises once.**
   `docker-compose.yml:69` builds `DATABASE_URL` from `POSTGRES_USER`/`PASSWORD`/`DB`, defaulting to
   the literal `agentorange`; `.env.example` has **zero** `POSTGRES` hits. The trap: `pg-data`
   initialises on first `up`, so setting a password afterwards re-renders `DATABASE_URL` but not the
@@ -440,7 +440,7 @@ was never real.
   volume.
   **Fix:** document the three in `.env.example`, noting a change needs `docker compose down -v`;
   wrap the connect error with what to check.
-- [ ] **RD23 — Documentation that asserts missing capabilities that exist.** Cheap, and it misleads
+- [x] **RD23 — Documentation that asserts missing capabilities that exist.** Cheap, and it misleads
   every newcomer *and* every agent. `docs/18` carries four stale claims, all in the direction of
   "this doesn't exist" when it does: `snapshot_ttl_days` called inert though `main.go:269,288,296`
   wires the reaper; "no `GET /agent/images` route" though `httpapi.go:305` registers it and the
@@ -484,7 +484,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
 
 ### From the browser sweep (2026-07-29)
 
-- [ ] **RD25 — Five UI source files are invisible to `grep`, and three of them are invisible to
+- [x] **RD25 — Five UI source files are invisible to `grep`, and three of them are invisible to
   `git diff`.** *Filed first because it undermines the reliability of every other search anyone has
   run over `web/src`, including our own audits.* A NUL used as a composite-key separator was
   written as a **literal byte** rather than an escape, in `components/WorkerEditor.tsx` (offset
@@ -506,7 +506,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   become text again. Add a CI guard failing the build if any tracked source file contains a raw NUL.
   *Caution while fixing: this is precisely the kind of edit whose diff is invisible — verify by
   byte count, not by eye.*
-- [ ] **RD26 — A dropped SSE stream reports the turn as finished, so a truncated answer reads as a
+- [x] **RD26 — A dropped SSE stream reports the turn as finished, so a truncated answer reads as a
   complete one.** `checkSessionStatus` returns `null` on *any* failure — network error, timeout,
   non-2xx — with an empty catch (`web/src/useAgentSession.ts:460-471`), so "the probe failed" and
   "there is no active query" are the same value. A `null` status falls through to a branch that
@@ -517,7 +517,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   in its container producing output nobody will see.
   **Fix:** make `checkSessionStatus` distinguish unreachable from idle, and set the connection-lost
   error on any stream ending without `query_complete` that cannot be positively confirmed complete.
-- [ ] **RD27 — When the attention route fails, the Desk says "Nothing is waiting on you" and the
+- [x] **RD27 — When the attention route fails, the Desk says "Nothing is waiting on you" and the
   badge reads 0, with no error shown.** `useAttentionRequests.ts:81-85` sets an empty list on
   failure but leaves `available` true (only 404/501 count as "unwired"), and `attention.error` is
   **absent from the error chain** in `useDesk.ts:250` and `useAsksCount.ts:77`. Because `available`
@@ -527,7 +527,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   the tab; the approvals sit until they time out.
   **Fix:** add `attention.error` to both chains, and drive the fallback off "did this load succeed"
   rather than off `available`.
-- [ ] **RD28 — A failed load renders the first-run onboarding screen over an established project.**
+- [x] **RD28 — A failed load renders the first-run onboarding screen over an established project.**
   `useWorkers.ts:56-58` leaves the initial `[]` on failure, and `DeskPage.tsx:113` computes
   `firstRun = !loading && workerCount === 0`, replacing the entire Desk (`:137`). Same at
   `WorkersPage.tsx:123` and `WorkerList.tsx:59` (which has no error path at all). An operator with
@@ -536,7 +536,7 @@ override is gitignored and untracked, so a fresh clone is unaffected — **Kai's
   the sentence. **The correct pattern is already in-repo**: `TopologyOnboarding.tsx:186` gates its
   empty state on `error === null`.
   **Fix:** gate the three first-run/empty states the same way.
-- [ ] **RD29 — Wire-shape drift has no guard, and the risk runs engine→browser.** No current drift:
+- [x] **RD29 — Wire-shape drift has no guard, and the risk runs engine→browser.** No current drift:
   `ProjectSettings` (11 fields), `Worker` (13), `Subscription` (9) and `Schedule` (10) all match
   their mirrors. But the mechanism is live: `coerceProjectSettings`/`coerceWorker` build a fresh
   object from an **explicit field list**, so an unknown key is dropped on read; the body helper
@@ -567,6 +567,30 @@ dead route cannot blank the others *and* reports the failure; `useConfigLog` cor
 "not wired" from "failed" (the distinction RD27 and RD28 are missing, already implemented there);
 topology apply is gated behind a preview with its error rendered; and polling is opt-in, single-
 reload, and cannot restart its own timer.
+
+### From the embeddable-singleton thread (2026-08-06)
+
+*Filed here rather than in that thread's plan because it is a production-readiness defect that
+predates embeddability and outlives it. Discovered by the parallel session while building the
+project-API-key seam; owned by this workstream.*
+
+- [x] **RD30 — A container's per-session token is already a full-project credential.**
+  `AGENTKIT_JWT_SECRET` and the "session secret" are the **same value in every real deployment**
+  (`go/cmd/agentd/main.go:129-131`), despite the comment there claiming they are distinct. So the
+  token handed to a session container — a token the model's own harness can read — verifies as a
+  project-scoped JWT against every route the middleware protects. **This is the injection boundary's
+  blast radius**: §6.2.4's boundary stops event text from redirecting a worker's *reasoning*, but a
+  worker that is talked into reading its own environment holds a credential for the whole project's
+  workers, settings, schedules and events. Nothing detects the use, because the token is valid.
+  It becomes materially worse the moment a second credential kind exists (project API keys landed
+  2026-08-06; embed tokens are pending), since the same secret then signs credentials with
+  deliberately different reach.
+  **Fix:** separate signing keys for the two credential classes, with the session key unable to
+  mint or verify a project credential. **The fix changes deployment configuration** (a new secret
+  to set and roll) — state the migration path and a compatible default; do not ship a breaking boot
+  requirement without Kai's nod.
+  *Validation:* go suite + live-Postgres, including a test pinning that a session token is
+  **rejected** by the project routes — proven non-vacuous by reverting.
 
 ## 6. The durability table
 

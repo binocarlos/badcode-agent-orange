@@ -14,7 +14,7 @@
 //     operator cannot act on.
 
 import { useCallback, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { looksUnwired, useConfigApi, type ConfigApiOptions } from './configApi.js'
 import { coerceMemory, MEMORY_ENDPOINTS, type MemoryRow } from './memories.js'
 
 export interface UseMemoriesOptions extends ConfigApiOptions {
@@ -45,19 +45,6 @@ export interface MemoriesApi {
   /** False when the route answered 404/501 — not mounted, or no Postgres. */
   available: boolean
   reload: () => Promise<void>
-}
-
-/** Statuses that mean "memory is not served here", not "this search failed".
- *  Mirrors useAttentionRequests' looksUnwired, minus 400. */
-function looksUnwired(message: string): boolean {
-  const m = message.toLowerCase()
-  return (
-    m.includes('404') ||
-    m.includes('501') ||
-    m.includes('not found') ||
-    m.includes('not configured') ||
-    m.includes('not implemented')
-  )
 }
 
 /** A 400 is the selector parser talking. The message is the parser's and is
@@ -103,7 +90,8 @@ export default function useMemories(options: UseMemoriesOptions = {}): MemoriesA
       } catch (err) {
         const message = err instanceof Error ? err.message : 'failed to load memories'
         setMemories([])
-        if (looksUnwired(message)) {
+        // The error, not the message — the status decides "unmounted" (B6).
+        if (looksUnwired(err)) {
           setAvailable(false)
           setError(message)
         } else if (looksLikeSelectorError(message)) {

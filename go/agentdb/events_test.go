@@ -20,7 +20,10 @@ func newEventStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(&ProjectEvent{}, &Subscription{}, &EventDelivery{}, &ConfigEvent{}); err != nil {
+	// &Worker{} joined the set when RD19 made a subscription's worker a
+	// write-time precondition: without the table every CreateSubscription in
+	// this file would fail on the existence check rather than on what it tests.
+	if err := db.AutoMigrate(&ProjectEvent{}, &Subscription{}, &EventDelivery{}, &ConfigEvent{}, &Worker{}); err != nil {
 		t.Fatalf("automigrate event tables: %v", err)
 	}
 	return &Store{gdb: db}
@@ -42,9 +45,23 @@ func seedEvent(t *testing.T, s *Store, project, typ, text string) *ProjectEvent 
 	return ev
 }
 
+// seedWorkerRow inserts a worker row directly — no config event, so a test that
+// counts config events is not perturbed by satisfying RD19's write-time
+// "the worker must exist" precondition. Idempotent.
+func seedWorkerRow(t *testing.T, s *Store, project, name string) {
+	t.Helper()
+	if _, err := s.GetWorker(context.Background(), project, name); err == nil {
+		return
+	}
+	if err := s.gdb.Create(NewWorker(project, name)).Error; err != nil {
+		t.Fatalf("seed worker %s/%s: %v", project, name, err)
+	}
+}
+
 // seedSubscription creates an enabled subscription, failing the test on error.
 func seedSubscription(t *testing.T, s *Store, project, eventType, worker string) *Subscription {
 	t.Helper()
+	seedWorkerRow(t, s, project, worker)
 	sub, err := s.CreateSubscription(context.Background(), &Subscription{
 		Project: project, EventType: eventType, Worker: worker, Enabled: true,
 	}, ConfigWrite{})
@@ -271,6 +288,7 @@ func TestSubscriptionsValidation(t *testing.T) {
 	}
 
 	// The two legal patterns are exact and trailing-`*`.
+	seedWorkerRow(t, s, "acme", "w")
 	for _, ok := range []string{"email.received", "email.*", "worker.finished"} {
 		if _, err := s.CreateSubscription(ctx, &Subscription{
 			Project: "acme", EventType: ok, Worker: "w", Enabled: true,
@@ -286,6 +304,7 @@ func TestSubscriptionsCRUD(t *testing.T) {
 	s := newEventStore(t)
 	ctx := context.Background()
 
+	seedWorkerRow(t, s, "acme", "email-reviewer")
 	sub, err := s.CreateSubscription(ctx, &Subscription{
 		Project:   "acme",
 		EventType: "worker.finished",
@@ -546,6 +565,64 @@ func TestDeliveriesLifecycleTimestamps(t *testing.T) {
 	}
 	if _, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID, DeliveryStatusUpdate{Status: "dropped"}); err == nil {
 		t.Fatalf("`dropped` must be refused — it is not in the vocabulary")
+	}
+}
+
+// TestDeliveryFailureReason pins RD20's column: the reason dispatch already
+// knows must survive the write and come back out of the store, an omitted
+// reason must not erase a recorded one, and a delivery that stops being failed
+// must not keep carrying a red explanation on a green row.
+func TestDeliveryFailureReason(t *testing.T) {
+	s := newEventStore(t)
+	ctx := context.Background()
+	ev := seedEvent(t, s, "acme", "email.received", "hello")
+	sub := seedSubscription(t, s, "acme", "email.received", "answerer")
+	d, _, err := s.EnsureDelivery(ctx, &EventDelivery{
+		Project: "acme", EventID: ev.ID, SubscriptionID: sub.ID,
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if d.FailureReason != "" {
+		t.Fatalf("a pending delivery must carry no reason: %+v", d)
+	}
+
+	const reason = "start job: host port pool is exhausted"
+	failed, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID,
+		DeliveryStatusUpdate{Status: DeliveryFailed, FailureReason: reason})
+	if err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if failed.FailureReason != reason {
+		t.Fatalf("failure_reason = %q, want %q", failed.FailureReason, reason)
+	}
+
+	// Read back through the list surface the API serves — a reason that only
+	// exists on the returned struct would never reach a browser.
+	rows, err := s.ListDeliveries(ctx, DeliveryQuery{Project: "acme", Status: DeliveryFailed})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 || rows[0].FailureReason != reason {
+		t.Fatalf("listed rows lost the reason: %+v", rows)
+	}
+
+	// A later failed transition that carries no reason keeps the one recorded.
+	again, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID, DeliveryStatusUpdate{Status: DeliveryFailed})
+	if err != nil {
+		t.Fatalf("re-fail: %v", err)
+	}
+	if again.FailureReason != reason {
+		t.Fatalf("an omitted reason must not erase one: %q", again.FailureReason)
+	}
+
+	// Not failed any more ⇒ no reason.
+	ok, err := s.UpdateDeliveryStatus(ctx, "acme", d.ID, DeliveryStatusUpdate{Status: DeliveryOK})
+	if err != nil {
+		t.Fatalf("ok: %v", err)
+	}
+	if ok.FailureReason != "" {
+		t.Fatalf("a non-failed delivery must carry no reason: %q", ok.FailureReason)
 	}
 }
 

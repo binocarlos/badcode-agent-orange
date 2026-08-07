@@ -73,6 +73,38 @@ func TestConfigEvents_DualWriteInOneTransaction(t *testing.T) {
 	}
 }
 
+// PurgeConfigEvents adds raw SQL to a store method, and agentdb is not
+// Postgres-only in test: this package's own fixtures build their schema with
+// gorm AutoMigrate against SQLITE, which has no triggers from migration 039, no
+// `set_config`, and would fail on Postgres-only syntax. So the dialect gate is
+// asserted here rather than assumed. The append-only behaviour it escapes is
+// asserted where it exists — config_events_appendonly_live_test.go.
+func TestPurgeConfigEvents_WorksOnSqliteToo(t *testing.T) {
+	s := newConfigLogTestStore(t)
+	ctx := context.Background()
+
+	if _, err := s.UpsertSkill(ctx, &Skill{
+		Name: "graph-gen", Visibility: "organizational", Customer: "acme",
+		OwnerEmail: "u@acme.com", ContentHash: "hash1",
+	}, ConfigWrite{Worker: "curator", Session: "s-1", Rationale: "publish"}); err != nil {
+		t.Fatalf("upsert skill: %v", err)
+	}
+	if err := s.PurgeConfigEvents(ctx, "acme"); err != nil {
+		t.Fatalf("purge on sqlite: %v", err)
+	}
+	evs, err := s.ListConfigEvents(ctx, ConfigEventQuery{Project: "acme"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(evs) != 0 {
+		t.Fatalf("purge left %d rows", len(evs))
+	}
+	// P5: the namespace is never inferred, so a blank project cannot mean "all".
+	if err := s.PurgeConfigEvents(ctx, "  "); err == nil {
+		t.Fatal("a blank project must be refused, not treated as every project")
+	}
+}
+
 func TestConfigEvents_PayloadIsFullStateOnUpdateToo(t *testing.T) {
 	s := newConfigLogTestStore(t)
 	ctx := context.Background()
@@ -421,12 +453,21 @@ var configMutationProbes = map[string]func(ctx context.Context, s *Store) error{
 		return err
 	},
 	"CreateSubscription": func(ctx context.Context, s *Store) error {
+		// RD19 made the named worker a write-time precondition. Seeded through
+		// raw SQL like every other precondition here, so the probe still writes
+		// exactly one config event.
+		if err := seedProbeWorker(ctx, s); err != nil {
+			return err
+		}
 		_, err := s.CreateSubscription(ctx, &Subscription{
 			Project: probeProject, EventType: "email.received", Worker: "probe", Enabled: true,
 		}, ConfigWrite{Worker: "prober", Session: "s-probe"})
 		return err
 	},
 	"UpdateSubscription": func(ctx context.Context, s *Store) error {
+		if err := seedProbeWorker(ctx, s); err != nil {
+			return err
+		}
 		if err := seedProbeSubscription(ctx, s); err != nil {
 			return err
 		}
@@ -616,7 +657,18 @@ func TestMutationsAreLogged(t *testing.T) {
 			"MarkCustomImageReaped",
 			"MarkCustomImageResumed",
 			"MarkProjectEventDelivered",
+			// Grown once more on 2026-08-06 by RD11's watermark (migration 041):
+			// `last_evaluated` is the scheduler's progress marker, written every
+			// minute per schedule so that "nothing was due" and "nobody was
+			// running" stop looking identical. Runtime state, exactly like the
+			// router's `delivered` watermark two entries up.
+			"NoteScheduleEvaluated",
 			"NoteScheduleProvisionFailure",
+			// Grown once more on 2026-08-06 by RD13's append-only trigger
+			// (migration 039): PurgeConfigEvents is the one sanctioned way to
+			// remove config-log rows, and a config event recording a purge
+			// would be a row in the table being purged.
+			"PurgeConfigEvents",
 			"SetConfigEventHook",
 			"SetSkillVisibility",
 			"SetWorkerBinding",

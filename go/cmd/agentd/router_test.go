@@ -41,12 +41,16 @@ type fakeRouterStore struct {
 }
 
 func newFakeRouterStore() *fakeRouterStore {
-	return &fakeRouterStore{
+	f := &fakeRouterStore{
 		fakeDispatchStore: newFakeDispatchStore(),
 		clock:             time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC),
 		sessions:          map[string]*agentdb.Session{},
 		tokens:            map[string]int64{},
 	}
+	// A claim stamps started_at from the test clock, exactly as the real store
+	// stamps it from the database clock — that is what the stale sweep ages.
+	f.claimAt = func() int64 { return f.clock.Unix() }
+	return f
 }
 
 // The fake must satisfy every seam the production wiring binds, or the tests
@@ -256,11 +260,34 @@ func (f *fakeRouterStore) RenewSessionLease(_ context.Context, sessionID string,
 	return nil
 }
 
+// ReleaseSessionLease mirrors the real store's compare-and-set: only a caller
+// that finds the lease HELD may release it, and everyone else is told so. The
+// reaper's at-most-once claim rests on exactly this (agentdb/leases.go).
 func (f *fakeRouterStore) ReleaseSessionLease(_ context.Context, sessionID string) error {
-	if s, ok := f.sessions[sessionID]; ok {
-		s.LeaseExpiresAt = agentdb.SessionLeaseUnset
+	s, ok := f.sessions[sessionID]
+	if !ok || s.LeaseExpiresAt <= agentdb.SessionLeaseUnset {
+		return agentdb.ErrSessionLeaseNotHeld
 	}
+	s.LeaseExpiresAt = agentdb.SessionLeaseUnset
 	return nil
+}
+
+// ListStaleRunningDeliveries is the stale-delivery sweep's input (RD7).
+func (f *fakeRouterStore) ListStaleRunningDeliveries(_ context.Context, startedBefore int64, limit int) ([]*agentdb.EventDelivery, error) {
+	out := []*agentdb.EventDelivery{}
+	for _, d := range f.deliveries {
+		// Mirrors the real query exactly, including its refusal to touch a
+		// running row with no started_at — a shape the sweep does not
+		// understand must not be closed by it.
+		if d.Status != agentdb.DeliveryRunning || d.StartedAt <= 0 || d.StartedAt >= startedBefore {
+			continue
+		}
+		out = append(out, d)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // ── budget ledger ───────────────────────────────────────────────────────────
@@ -346,7 +373,7 @@ func (s *fakeJobStarter) StartJob(ctx context.Context, in startJobInput) (string
 	}
 	s.store.sessions[id].LeaseExpiresAt = agentdb.SessionLeaseUnset
 	if in.OnSessionEnded != nil {
-		in.OnSessionEnded(ctx, id, s.endErr)
+		_ = in.OnSessionEnded(ctx, id, s.endErr)
 	}
 	return id, nil
 }
@@ -1443,5 +1470,67 @@ func TestRouterFailsDeliveryForARetiredWorker(t *testing.T) {
 	}
 	if got := len(statusesFor(store, agentdb.DeliveryFailed)); got != 1 {
 		t.Fatalf("expected the delivery to be failed, got %d failed rows", got)
+	}
+}
+
+// TestRouterLogsWhenNothingMatched pins RD19's router half: an event that wakes
+// nobody is still delivered (fanning out to nothing is legal) but it must not be
+// byte-identical to a healthy fan-out. Without the log line, "my worker didn't
+// wake up" has no observable signal anywhere in the system.
+func TestRouterLogsWhenNothingMatched(t *testing.T) {
+	store := newFakeRouterStore()
+	seedWorker(store, "acme", "answerer", 4)
+	store.addSubscription(&agentdb.Subscription{
+		Project: "acme", EventType: "email.received", Worker: "answerer", Enabled: true,
+	})
+	// A typo in the event type: nothing subscribes to `email.recieved`.
+	orphan := postEvent(t, store, "acme", "email.recieved", "hello?", agentdb.EventEnvelope{})
+
+	var lines []string
+	starter := &fakeJobStarter{store: store}
+	gate := newDispatcher(dispatcherConfig{
+		Store: store, Starter: starter, DefaultImage: "agentkit-example:dev", Logf: quietf,
+	})
+	rt := newRouter(routerConfig{
+		Store: store, Dispatcher: gate, Now: store.now,
+		Logf: func(format string, v ...any) { lines = append(lines, fmt.Sprintf(format, v...)) },
+	})
+	if err := rt.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	if len(starter.jobs) != 0 || len(store.deliveries) != 0 {
+		t.Fatalf("a zero-match event must start nothing: %d jobs, %d deliveries",
+			len(starter.jobs), len(store.deliveries))
+	}
+	if !store.events[orphan.ID].Delivered {
+		t.Fatalf("a zero-match event must still be marked delivered — it is legal, not an error")
+	}
+	var found string
+	for _, l := range lines {
+		if strings.Contains(l, "matched NO subscription") {
+			found = l
+		}
+	}
+	if found == "" {
+		t.Fatalf("a zero-match fan-out must log: got %q", lines)
+	}
+	for _, want := range []string{orphan.ID, "acme", "email.recieved", "1 enabled subscription"} {
+		if !strings.Contains(found, want) {
+			t.Fatalf("the zero-match line must name %q — an operator has to know what arrived and how "+
+				"many subscriptions were asked. got %q", want, found)
+		}
+	}
+
+	// The mirror image: a matching event logs nothing of the sort.
+	lines = nil
+	postEvent(t, store, "acme", "email.received", "real one", agentdb.EventEnvelope{})
+	if err := rt.Tick(context.Background()); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	for _, l := range lines {
+		if strings.Contains(l, "matched NO subscription") {
+			t.Fatalf("a healthy fan-out must not claim it matched nothing: %q", l)
+		}
 	}
 }

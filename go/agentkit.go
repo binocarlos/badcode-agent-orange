@@ -50,6 +50,34 @@ const (
 
 // RunnerStore is the minimal DB surface the Runner and Fleet require. Both
 // *agentdb.Store and agentkittest.MemStore satisfy this interface.
+//
+// Two OPTIONAL capabilities are probed for by type assertion rather than
+// required here, because RunnerStore is host-implemented and adding a method to
+// it breaks every host:
+//
+//	ListQueryEventsFlatForQuery(ctx, sessionID, queryID) ([]events.Envelope, error)
+//
+// A store that implements it lets Runner.Stream persist what a reconnect drains
+// out of the in-image replay buffer (merged onto what the turn already has — see
+// events.Splice). A store that does not keeps the previous behaviour: the
+// reconnect relays bytes to the browser and persists nothing.
+//
+//	SetActiveQuery(ctx, sessionID, queryID, sandboxQueryID string) error
+//	GetActiveQuery(ctx, sessionID string) (queryID, sandboxQueryID string, err error)
+//	ClearActiveQuery(ctx, sessionID, queryID string) error
+//
+// A store that implements these lets an in-flight turn outlive the process
+// running it: Status can still name the turn after a restart, and Stream can
+// still translate that name into the id the in-image agent's replay buffer is
+// keyed by. Without them a turn is only reconnectable from the process that
+// dispatched it — which is not the process a crash leaves you with.
+//
+//	SessionExists(ctx, sessionID) (bool, error)   — see SessionExistenceChecker
+//
+// A store that implements it lets the archive loop tell an ORPHANED container
+// (one whose session row is gone) from a session whose snapshot merely failed.
+// A store that does not keeps the previous behaviour: an orphan is skipped for
+// ever, which is the port leak that capability exists to stop.
 type RunnerStore interface {
 	GetSession(ctx context.Context, id string) (*agentdb.Session, error)
 	UpdateSession(ctx context.Context, session *agentdb.Session) (*agentdb.Session, error)
@@ -60,6 +88,28 @@ type RunnerStore interface {
 	GetWorkerBinding(ctx context.Context, sessionID string) (string, bool, error)
 	SetWorkerBinding(ctx context.Context, sessionID, workerID string) error
 	ClearWorkerBinding(ctx context.Context, sessionID string) error
+}
+
+// SessionExistenceChecker is the OPTIONAL RunnerStore capability the archive
+// loop uses to distinguish an orphaned container from a session whose snapshot
+// failed for an ordinary reason (registry down, disk full, engine hiccup).
+//
+// The distinction is not cosmetic and it is not inferrable from the snapshot
+// error: `Recover` re-adopts any container labelled with a session id, so a
+// container can outlive its row. With no row `Snapshot` fails at
+// SetSnapshotHandle, the archive loop keeps the container, and it does so again
+// every minute for ever — one host port from a pool of 100 gone until the
+// process restarts. Keeping the container is the RIGHT answer for a genuine
+// failure (the session is resumable and its filesystem is the only copy) and
+// the WRONG answer for an orphan, so the loop must ask.
+//
+// The contract is deliberately three-valued in effect: (true, nil) and
+// (false, err) both mean "do not destroy". Only a definite (false, nil) — the
+// store answered, and the row is not there — authorises teardown. A store that
+// cannot answer, or is momentarily unreachable, must never cause a live
+// session's container to be destroyed.
+type SessionExistenceChecker interface {
+	SessionExists(ctx context.Context, sessionID string) (bool, error)
 }
 
 // Deps holds one implementation of every dependency the Runner needs. Engine and
@@ -164,6 +214,14 @@ type Policy struct {
 	// container, not the host). Deliberately excluded from user-image throwaway
 	// builds so dev binds never alter snapshotted images.
 	Mounts []execenv.Mount
+
+	// EventFlushCadence is how often an in-flight turn's collected events are
+	// flushed to the store, so a crash mid-turn does not lose everything the model
+	// said. 0 selects the default (DefaultEventFlushCadence); a NEGATIVE value
+	// disables periodic flushing, restoring the persist-once-at-query_complete
+	// behaviour. Tests use a tiny value; production wants seconds, not
+	// milliseconds — every flush is a full re-write of the turn's row.
+	EventFlushCadence time.Duration
 
 	// TrustedWorkload declares that the workloads run in this Runner are trusted
 	// (e.g. an internal dev box or a known-safe CI job). When true, shared-tenancy

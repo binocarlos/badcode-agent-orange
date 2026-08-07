@@ -45,7 +45,7 @@ import (
 // is NOT in it: there is no update and no delete to inject, so the append-only
 // invariant survives the seam (§7.1).
 type memoryStore interface {
-	CreateMemory(ctx context.Context, m *agentdb.Memory, embedding []float32) (*agentdb.Memory, error)
+	CreateMemory(ctx context.Context, m *agentdb.Memory, embedding []float32) (*agentdb.Memory, bool, error)
 	GetMemory(ctx context.Context, project, id string) (*agentdb.Memory, error)
 	SearchMemories(ctx context.Context, q *agentdb.MemorySearchQuery) ([]*agentdb.MemorySearchResult, error)
 	NewestMemory(ctx context.Context, project, selector string) (*agentdb.Memory, error)
@@ -269,7 +269,7 @@ func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.Raw
 		return nil, fmt.Errorf("could not embed this memory, so it was NOT stored (retry rather than continue): %w", err)
 	}
 
-	stored, err := m.store.CreateMemory(ctx, &agentdb.Memory{
+	stored, embedded, err := m.store.CreateMemory(ctx, &agentdb.Memory{
 		Project:          caller.Project,
 		Labels:           agentdb.LabelSet(args.Labels),
 		Content:          args.Content,
@@ -280,12 +280,15 @@ func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.Raw
 		return nil, err
 	}
 	// §9 read-back: CreateMemory returns the row as the database holds it, and
-	// that — not the caller's struct — is what is echoed.
+	// that — not the caller's struct — is what is echoed. `embedded` obeys the
+	// same rule and comes from the same place: it used to be `vec != nil`,
+	// which reported the EMBEDDER's success and would say true over a row the
+	// store had written without a vector (RD3).
 	rec := m.record(caller.Project, stored)
 	return struct {
 		memoryRecord
 		Embedded bool `json:"embedded"`
-	}{memoryRecord: rec, Embedded: vec != nil}, nil
+	}{memoryRecord: rec, Embedded: embedded}, nil
 }
 
 type memorySearchArgs struct {

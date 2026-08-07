@@ -162,15 +162,19 @@ func TestLivePG_ArtifactProjectIsolation(t *testing.T) {
 	}
 }
 
-// TestLivePG_ArtifactRowsCascadeWithTheSession documents a consequence of
-// putting the index in this table: `session_id` has REFERENCES
-// agent_sessions(id) ON DELETE CASCADE since migration 002, so deleting a
-// session deletes its artifact ROWS while the BYTES stay in the blob store.
-// That is the pre-existing design of the table, not something this change
-// introduced — the in-process index lost the same rows on the same delete —
-// but it is the remaining orphan path and it is pinned here so it is a known
-// fact rather than a surprise.
-func TestLivePG_ArtifactRowsCascadeWithTheSession(t *testing.T) {
+// TestLivePG_ArtifactRowsSurviveASessionDelete is the inversion of a test that
+// used to be called TestLivePG_ArtifactRowsCascadeWithTheSession.
+//
+// `agent_artifacts.session_id` still has REFERENCES agent_sessions(id) ON
+// DELETE CASCADE (migration 002) and that has not changed. What changed is that
+// nothing DELETEs the session row any more: Store.DeleteSession stamps
+// `deleted_at` (migration 041, doc 22 RD5), so the cascade never fires and the
+// artifact index — like the transcript — survives. The old assertion pinned the
+// defect: it asserted that a user tidying their session list destroyed the
+// index to their own files. It is kept, inverted, because the cascade is one
+// `DELETE FROM agent_sessions` away from firing again and someone should hear
+// about it if it does.
+func TestLivePG_ArtifactRowsSurviveASessionDelete(t *testing.T) {
 	s := openLivePG(t)
 	ctx := context.Background()
 	customer := "cascade-" + uuid.New().String()[:8]
@@ -188,8 +192,21 @@ func TestLivePG_ArtifactRowsCascadeWithTheSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
+	if len(rows) != 1 {
+		t.Fatalf("a soft delete must not take the artifact index with it, got %d rows", len(rows))
+	}
+
+	// And the cascade itself is intact, which is what the purge (work plan G3)
+	// would eventually rely on: remove the row for real and the children go.
+	if err := s.DB().Exec("DELETE FROM agent_sessions WHERE id = ?", sess.ID).Error; err != nil {
+		t.Fatalf("hard delete: %v", err)
+	}
+	rows, err = s.ListArtifacts(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("list after hard delete: %v", err)
+	}
 	if len(rows) != 0 {
-		t.Fatalf("expected the FK cascade to remove artifact rows, got %d", len(rows))
+		t.Fatalf("the FK cascade must still remove artifact rows on a real DELETE, got %d", len(rows))
 	}
 }
 

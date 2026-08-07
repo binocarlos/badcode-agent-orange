@@ -38,15 +38,30 @@ type fakeMemoryStore struct {
 	hits     []*agentdb.MemorySearchResult
 	newestBy map[string]*agentdb.Memory
 	err      error
+
+	// noVectorColumn mirrors a Postgres where migration 022 could not create
+	// the pgvector extension: an embedded create is REFUSED, never downgraded.
+	noVectorColumn bool
+	// reportsEmbedded, when non-nil, is what the fake claims it stored,
+	// independent of the vector it was handed. RD3 is precisely the gap
+	// between those two numbers, so the test needs to be able to open it.
+	reportsEmbedded *bool
 }
 
 func newFakeMemoryStore() *fakeMemoryStore {
 	return &fakeMemoryStore{byID: map[string]*agentdb.Memory{}, newestBy: map[string]*agentdb.Memory{}}
 }
 
-func (f *fakeMemoryStore) CreateMemory(_ context.Context, m *agentdb.Memory, emb []float32) (*agentdb.Memory, error) {
+func (f *fakeMemoryStore) CreateMemory(_ context.Context, m *agentdb.Memory, emb []float32) (*agentdb.Memory, bool, error) {
 	if f.err != nil {
-		return nil, f.err
+		return nil, false, f.err
+	}
+	if emb != nil && f.noVectorColumn {
+		return nil, false, agentdb.ErrMemoryEmbeddingUnstorable
+	}
+	embedded := emb != nil
+	if f.reportsEmbedded != nil {
+		embedded = *f.reportsEmbedded
 	}
 	stored := *m
 	if stored.ID == "" {
@@ -56,7 +71,7 @@ func (f *fakeMemoryStore) CreateMemory(_ context.Context, m *agentdb.Memory, emb
 	f.created = append(f.created, &stored)
 	f.createdV = append(f.createdV, emb)
 	f.byID[stored.Project+"|"+stored.ID] = &stored
-	return &stored, nil
+	return &stored, embedded, nil
 }
 
 func (f *fakeMemoryStore) GetMemory(_ context.Context, project, id string) (*agentdb.Memory, error) {
@@ -245,6 +260,57 @@ func TestMemoryToolsCreate(t *testing.T) {
 			t.Fatalf("a typo'd argument must fail loudly, got %v", err)
 		}
 	})
+}
+
+// TestMemoryToolsCreateReportsTheStoresAnswer is RD3 at the tool seam.
+//
+// `embedded` used to be `vec != nil` — the EMBEDDER's success, echoed as if it
+// were the row's state, two lines below a comment stating the opposite rule
+// ("CreateMemory returns the row as the database holds it… that is what is
+// echoed"). The two only differ when the store did something other than what
+// the caller assumed, which is exactly the case the field exists to report.
+func TestMemoryToolsCreateReportsTheStoresAnswer(t *testing.T) {
+	no := false
+	store := newFakeMemoryStore()
+	store.reportsEmbedded = &no // the embedder produced a vector; the row has none
+	tools := testMemoryTools(store, embedding.NewMock())
+
+	res, err := callTool(t, tools, "memory_create", testCaller(), map[string]any{
+		"content": "The refund window is 30 days.",
+	})
+	if err != nil {
+		t.Fatalf("memory_create: %v", err)
+	}
+	if store.createdV[0] == nil {
+		t.Fatalf("the test is vacuous unless a vector actually reached the store")
+	}
+	if res["embedded"] != false {
+		t.Fatalf("embedded = %v, want false: the tool must report what the STORE wrote, "+
+			"not that the embedder returned a vector", res["embedded"])
+	}
+}
+
+// TestMemoryToolsCreateRefusesWhenTheVectorCannotBeStored: on a Postgres
+// without pgvector the store refuses (memories are append-only, so a row
+// written without its vector is unembeddable forever) and the model must be
+// told, in a message it can act on.
+func TestMemoryToolsCreateRefusesWhenTheVectorCannotBeStored(t *testing.T) {
+	store := newFakeMemoryStore()
+	store.noVectorColumn = true
+	tools := testMemoryTools(store, embedding.NewMock())
+
+	res, err := callTool(t, tools, "memory_create", testCaller(), map[string]any{
+		"content": "The refund window is 30 days.",
+	})
+	if err == nil {
+		t.Fatalf("want a refusal, got a result: %v", res)
+	}
+	if !strings.Contains(err.Error(), "content_embedding") {
+		t.Fatalf("the refusal must name what is missing, got %v", err)
+	}
+	if len(store.created) != 0 {
+		t.Fatalf("a refused create must write nothing, wrote %d", len(store.created))
+	}
 }
 
 // TestMemoryToolsCreateEmbedFailureIsFatal is the D2 asymmetry on the write

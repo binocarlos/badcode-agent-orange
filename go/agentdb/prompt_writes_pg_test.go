@@ -21,7 +21,7 @@ func TestPromptWrites_LivePG(t *testing.T) {
 	t.Cleanup(func() {
 		_ = s.DB().Exec("DELETE FROM workers WHERE project = ?", project).Error
 		_ = s.DB().Exec("DELETE FROM project_settings WHERE project = ?", project).Error
-		_ = s.DB().Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = s.PurgeConfigEvents(context.Background(), project)
 	})
 
 	w := NewWorker(project, "email-answerer")

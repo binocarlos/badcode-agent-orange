@@ -567,7 +567,13 @@ func authProjectTokenHandler(secret []byte, issuer *devclaims.Issuer) http.Handl
 
 // authConfigHandler serves GET /auth/config — the runtime config channel the
 // web UI reads to decide which login UI to render (no build-time Vite env).
-func authConfigHandler(googleClientID string, passwordLogin bool) http.HandlerFunc {
+// credMode is the model credential agentd booted with (mock | api-key |
+// subscription, from credentialMode in modelproxy.go). It rides this payload
+// because it is the same kind of fact as the login modes — runtime truth the
+// browser cannot infer — and because the mock is the DEFAULT: a stack whose
+// credential lines are blank produces plausible canned output everywhere, and
+// the UI has to be able to say so (RD18).
+func authConfigHandler(googleClientID string, passwordLogin bool, credMode string) http.HandlerFunc {
 	modes := []string{}
 	if googleClientID != "" {
 		modes = append(modes, "google")
@@ -583,6 +589,7 @@ func authConfigHandler(googleClientID string, passwordLogin bool) http.HandlerFu
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"modes":            modes,
 			"google_client_id": googleClientID,
+			"credential_mode":  credMode,
 		})
 	}
 }

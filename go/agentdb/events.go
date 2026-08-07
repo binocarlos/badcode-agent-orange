@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -264,11 +266,17 @@ type EventDelivery struct {
 	// (event_id, subscription_id) idempotency index covers both paths unchanged.
 	ScheduleID string `json:"schedule_id" gorm:"type:varchar(36)"`
 	// Status is one of DeliveryStatuses.
-	Status    string `json:"status" gorm:"type:varchar(30);not null"`
-	StartedAt int64  `json:"started_at"`
-	EndedAt   int64  `json:"ended_at"`
-	CreatedAt int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	Status string `json:"status" gorm:"type:varchar(30);not null"`
+	// FailureReason is why this job could not start or did not finish — the
+	// string dispatch already formats and used only to log (RD20/RD15). Empty
+	// whenever nothing failed, and empty on an older row that failed before
+	// migration 037; "" and "no reason recorded" are the same fact and the UI
+	// says so rather than inventing one. Added by migration 037.
+	FailureReason string `json:"failure_reason" gorm:"column:failure_reason;type:text"`
+	StartedAt     int64  `json:"started_at"`
+	EndedAt       int64  `json:"ended_at"`
+	CreatedAt     int64  `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt     int64  `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 func (EventDelivery) TableName() string { return "event_deliveries" }
@@ -315,24 +323,8 @@ func clampLimit(n int) int {
 // CreateProjectEvent appends an event. The caller (ingestion handler or an
 // internal emitter) owns the envelope — the store only checks it is coherent.
 func (s *Store) CreateProjectEvent(ctx context.Context, ev *ProjectEvent) (*ProjectEvent, error) {
-	if ev == nil {
-		return nil, fmt.Errorf("project event is required")
-	}
-	if strings.TrimSpace(ev.Project) == "" {
-		return nil, fmt.Errorf("project is required")
-	}
-	if strings.TrimSpace(ev.Type) == "" {
-		return nil, fmt.Errorf("event type is required")
-	}
-	if ev.Envelope.Source == "" {
-		return nil, fmt.Errorf("envelope source is required (one of %s)", strings.Join(EventSources, "|"))
-	}
-	if !validEventSource(ev.Envelope.Source) {
-		return nil, fmt.Errorf("invalid envelope source %q (want one of %s)",
-			ev.Envelope.Source, strings.Join(EventSources, "|"))
-	}
-	if ev.Envelope.Depth < 0 {
-		return nil, fmt.Errorf("envelope depth must not be negative")
+	if err := validateProjectEvent(ev); err != nil {
+		return nil, err
 	}
 	if ev.ID == "" {
 		ev.ID = uuid.New().String()
@@ -344,6 +336,33 @@ func (s *Store) CreateProjectEvent(ctx context.Context, ev *ProjectEvent) (*Proj
 		return nil, fmt.Errorf("failed to create project event: %w", err)
 	}
 	return ev, nil
+}
+
+// validateProjectEvent is CreateProjectEvent's shape check, extracted so the
+// scheduler's transactional write (RecordFiringJob) applies exactly the same
+// rules. Two write paths that validated differently would be a way for a row to
+// exist that no reader expects.
+func validateProjectEvent(ev *ProjectEvent) error {
+	if ev == nil {
+		return fmt.Errorf("project event is required")
+	}
+	if strings.TrimSpace(ev.Project) == "" {
+		return fmt.Errorf("project is required")
+	}
+	if strings.TrimSpace(ev.Type) == "" {
+		return fmt.Errorf("event type is required")
+	}
+	if ev.Envelope.Source == "" {
+		return fmt.Errorf("envelope source is required (one of %s)", strings.Join(EventSources, "|"))
+	}
+	if !validEventSource(ev.Envelope.Source) {
+		return fmt.Errorf("invalid envelope source %q (want one of %s)",
+			ev.Envelope.Source, strings.Join(EventSources, "|"))
+	}
+	if ev.Envelope.Depth < 0 {
+		return fmt.Errorf("envelope depth must not be negative")
+	}
+	return nil
 }
 
 func validEventSource(src string) bool {
@@ -497,6 +516,88 @@ func validateSubscription(sub *Subscription) error {
 	if sub.MaxFiringsPerHour < 0 {
 		return fmt.Errorf("max_firings_per_hour must not be negative (0 = unlimited)")
 	}
+	if err := validateEnvelopeFilter(sub.Filter); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateEnvelopeFilter refuses a filter key the envelope schema cannot carry.
+//
+// RD19: `envelopeFilterMatches` returns false for any key the envelope lacks,
+// so a mistyped key does not fail — it silently matches nothing, for ever. The
+// legal set is the envelope's own wire keys, so the answer is knowable at write
+// time, which is where the user is looking. Diagnostics follow the cron
+// validator: name the offending field, give the legal set, show a worked
+// example.
+func validateEnvelopeFilter(filter JSONMap) error {
+	if len(filter) == 0 {
+		return nil
+	}
+	legal := EnvelopeFilterKeys()
+	allowed := make(map[string]bool, len(legal))
+	for _, k := range legal {
+		allowed[k] = true
+	}
+	// Sorted so the message a user sees does not depend on map iteration order.
+	keys := make([]string, 0, len(filter))
+	for k := range filter {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !allowed[k] {
+			return fmt.Errorf("filter key %q is not an event envelope field: a filter may only name %s "+
+				"(example: {\"source\": \"worker\", \"worker\": \"researcher\"}). "+
+				"A key the envelope does not carry would never match, so no job would ever run",
+				k, strings.Join(legal, ", "))
+		}
+	}
+	return nil
+}
+
+// EnvelopeFilterKeys is the set of jsonb keys a subscription filter may name,
+// sorted. It is derived from EventEnvelope's own struct tags — the same tags
+// the router filters against (`envelopeFields`) — so the legal set cannot drift
+// from what is actually stored.
+func EnvelopeFilterKeys() []string {
+	t := reflect.TypeOf(EventEnvelope{})
+	keys := make([]string, 0, t.NumField())
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("json")
+		name, _, _ := strings.Cut(tag, ",")
+		if name == "" || name == "-" {
+			continue
+		}
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// requireWorkerForSubscription refuses a subscription pointing at a worker that
+// does not exist (RD19). A subscription naming `reasearcher` is accepted today
+// and then never produces a job — the router happily creates a delivery for a
+// worker the dispatcher cannot compose. Rejecting here puts the error in front
+// of whoever typed it.
+func (s *Store) requireWorkerForSubscription(ctx context.Context, project, worker string) error {
+	if _, err := s.GetWorker(ctx, project, worker); err != nil {
+		if errors.Is(err, ErrWorkerNotFound) {
+			existing, listErr := s.ListWorkers(ctx, project)
+			have := "the project has no workers yet"
+			if listErr == nil && len(existing) > 0 {
+				names := make([]string, 0, len(existing))
+				for _, w := range existing {
+					names = append(names, w.Name)
+				}
+				have = "workers in this project: " + strings.Join(names, ", ")
+			}
+			return fmt.Errorf("worker %q does not exist in project %s — a subscription naming a worker that "+
+				"does not exist would deliver to nobody (%s). Create the worker first, or fix the name",
+				worker, project, have)
+		}
+		return err
+	}
 	return nil
 }
 
@@ -509,6 +610,9 @@ func validateSubscription(sub *Subscription) error {
 // who/why; a human/API edit passes the zero value.
 func (s *Store) CreateSubscription(ctx context.Context, sub *Subscription, cw ConfigWrite) (*Subscription, error) {
 	if err := validateSubscription(sub); err != nil {
+		return nil, err
+	}
+	if err := s.requireWorkerForSubscription(ctx, sub.Project, strings.TrimSpace(sub.Worker)); err != nil {
 		return nil, err
 	}
 	if sub.ID == "" {
@@ -584,6 +688,9 @@ func (s *Store) UpdateSubscription(ctx context.Context, sub *Subscription, cw Co
 		return nil, fmt.Errorf("subscription id is required")
 	}
 	if err := validateSubscription(sub); err != nil {
+		return nil, err
+	}
+	if err := s.requireWorkerForSubscription(ctx, sub.Project, strings.TrimSpace(sub.Worker)); err != nil {
 		return nil, err
 	}
 	existing, err := s.GetSubscription(ctx, sub.Project, sub.ID)
@@ -662,24 +769,8 @@ func (s *Store) DeleteSubscription(ctx context.Context, project, id string, cw C
 // returns created=true; every later call returns the stored row untouched with
 // created=false. A crashed router that retries therefore cannot double-deliver.
 func (s *Store) EnsureDelivery(ctx context.Context, d *EventDelivery) (*EventDelivery, bool, error) {
-	if d == nil {
-		return nil, false, fmt.Errorf("delivery is required")
-	}
-	if strings.TrimSpace(d.Project) == "" {
-		return nil, false, fmt.Errorf("project is required")
-	}
-	if d.EventID == "" {
-		return nil, false, fmt.Errorf("event_id is required")
-	}
-	if d.SubscriptionID == "" {
-		return nil, false, fmt.Errorf("subscription_id is required")
-	}
-	if d.Status == "" {
-		d.Status = DeliveryPending
-	}
-	if !ValidDeliveryStatus(d.Status) {
-		return nil, false, fmt.Errorf("invalid delivery status %q (want one of %s)",
-			d.Status, strings.Join(DeliveryStatuses, "|"))
+	if err := validateDelivery(d); err != nil {
+		return nil, false, err
 	}
 	if existing, err := s.findDeliveryPair(ctx, d.EventID, d.SubscriptionID); err == nil {
 		return existing, false, nil
@@ -700,6 +791,34 @@ func (s *Store) EnsureDelivery(ctx context.Context, d *EventDelivery) (*EventDel
 	return d, true, nil
 }
 
+// validateDelivery is EnsureDelivery's shape check (and its one defaulting
+// step), extracted for the same reason validateProjectEvent is: the scheduler's
+// transactional write creates a delivery without going through EnsureDelivery —
+// it has just created the event, so there is nothing to be idempotent against —
+// and it must not be allowed to write a shape EnsureDelivery would refuse.
+func validateDelivery(d *EventDelivery) error {
+	if d == nil {
+		return fmt.Errorf("delivery is required")
+	}
+	if strings.TrimSpace(d.Project) == "" {
+		return fmt.Errorf("project is required")
+	}
+	if d.EventID == "" {
+		return fmt.Errorf("event_id is required")
+	}
+	if d.SubscriptionID == "" {
+		return fmt.Errorf("subscription_id is required")
+	}
+	if d.Status == "" {
+		d.Status = DeliveryPending
+	}
+	if !ValidDeliveryStatus(d.Status) {
+		return fmt.Errorf("invalid delivery status %q (want one of %s)",
+			d.Status, strings.Join(DeliveryStatuses, "|"))
+	}
+	return nil
+}
+
 func (s *Store) findDeliveryPair(ctx context.Context, eventID, subscriptionID string) (*EventDelivery, error) {
 	var d EventDelivery
 	err := s.gdb.WithContext(ctx).
@@ -716,6 +835,88 @@ func (s *Store) findDeliveryPair(ctx context.Context, eventID, subscriptionID st
 type DeliveryStatusUpdate struct {
 	Status    string
 	SessionID string
+	// FailureReason is written when non-empty, exactly like SessionID: a caller
+	// that has no reason must not erase one an earlier transition recorded. The
+	// only way to clear it is a transition to a NON-failed status, which does so
+	// deliberately — a delivery that succeeded on a later attempt must not still
+	// show why an earlier one did not (RD20).
+	FailureReason string
+}
+
+// ErrDeliveryNotPending is returned by ClaimDelivery when the row was not
+// `pending` at the moment of the write — i.e. somebody else claimed it first.
+// It is not a failure: the loser must drop the delivery and do nothing.
+var ErrDeliveryNotPending = errors.New("delivery is not pending")
+
+// ClaimDelivery is the atomic pending→running transition (RD10).
+//
+// UpdateDeliveryStatus is a read-then-Save: two goroutines that both read a
+// `pending` row both write `running`, and BOTH then start a job — the same
+// worker runs twice, which for an outbound action (send the email, post the
+// message) means the user's action happens twice. `DrainPending` really does
+// run from two goroutines in one process (the router poll and the scheduler
+// poll), so this is not a distributed-systems hypothetical.
+//
+// The guard is a single conditional UPDATE with `status = 'pending'` in the
+// WHERE clause. Exactly one writer can see RowsAffected == 1, whatever the
+// interleaving, because the database serialises the row write; every other
+// caller gets ErrDeliveryNotPending and stops. That is the whole mechanism —
+// no in-memory snapshot can substitute for it, because the snapshot is what
+// both racers already agree on.
+//
+// It stamps started_at like the running transition it replaces, and leaves
+// session_id alone: the id does not exist yet at claim time and is written by
+// the caller's OnSessionCreated hook a moment later.
+func (s *Store) ClaimDelivery(ctx context.Context, project, id string) (*EventDelivery, error) {
+	if project == "" || id == "" {
+		return nil, fmt.Errorf("project and id are required")
+	}
+	now := eventsNow()
+	res := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("project = ? AND id = ? AND status = ?", project, id, DeliveryPending).
+		Updates(map[string]any{
+			"status":     DeliveryRunning,
+			"started_at": now,
+			"updated_at": now,
+		})
+	if res.Error != nil {
+		return nil, fmt.Errorf("failed to claim delivery: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		// Either the row is gone or another claimer won. Both mean the same
+		// thing to the caller, and neither is an error worth waking anyone.
+		return nil, ErrDeliveryNotPending
+	}
+	var d EventDelivery
+	if err := s.gdb.WithContext(ctx).Where("project = ? AND id = ?", project, id).First(&d).Error; err != nil {
+		return nil, fmt.Errorf("failed to read the claimed delivery: %w", err)
+	}
+	return &d, nil
+}
+
+// ListStaleRunningDeliveries returns deliveries stuck at `running` since before
+// `startedBefore` (unix seconds), across every project, oldest first.
+//
+// It exists because the lease reaper cannot see a wedged delivery (RD7): the
+// reaper's input is `lease_expires_at > 0`, so a job that released its lease
+// and then failed to stamp its terminal status is invisible to it FOREVER,
+// holding one `max_instances` and one `max_concurrent_jobs` slot for the life
+// of the project. Nothing else swept deliveries by age.
+//
+// A row with started_at unset is NOT returned. Every path to `running` stamps
+// it (ClaimDelivery, and UpdateDeliveryStatus before it), so an unstamped
+// running row is a shape this code does not understand — and a sweep that
+// closes rows it does not understand is how a live job gets reported failed.
+func (s *Store) ListStaleRunningDeliveries(ctx context.Context, startedBefore int64, limit int) ([]*EventDelivery, error) {
+	out := []*EventDelivery{}
+	if err := s.gdb.WithContext(ctx).Model(&EventDelivery{}).
+		Where("status = ?", DeliveryRunning).
+		Where("started_at > 0 AND started_at < ?", startedBefore).
+		Order("started_at ASC, id ASC").
+		Limit(clampLimit(limit)).Find(&out).Error; err != nil {
+		return nil, fmt.Errorf("failed to list stale running deliveries: %w", err)
+	}
+	return out, nil
 }
 
 // UpdateDeliveryStatus moves a delivery through the vocabulary and stamps the
@@ -741,6 +942,13 @@ func (s *Store) UpdateDeliveryStatus(ctx context.Context, project, id string, u 
 	d.Status = u.Status
 	if u.SessionID != "" {
 		d.SessionID = u.SessionID
+	}
+	if u.FailureReason != "" {
+		d.FailureReason = u.FailureReason
+	} else if u.Status != DeliveryFailed {
+		// Not failed ⇒ no reason. Leaving a stale one behind would make a green
+		// row carry a red explanation, which is a worse lie than saying nothing.
+		d.FailureReason = ""
 	}
 	now := eventsNow()
 	if u.Status == DeliveryRunning && d.StartedAt == 0 {

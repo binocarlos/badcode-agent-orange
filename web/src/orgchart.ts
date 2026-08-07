@@ -807,8 +807,14 @@ export function inferConventions(workers: readonly Worker[]): OrgChartConvention
 // Graph helpers
 // ---------------------------------------------------------------------------
 
+// Purely ephemeral: this key never leaves the layout computation below (it is
+// the back-edge set's membership token) and is never persisted or rendered.
+// The separator only has to be a character no worker name, event type or id
+// can contain. It was a raw NUL, which made this file grep as binary; U+001F
+// holds the same collision guarantee and is written as an escape, so the file
+// carries no control byte at all.
 const edgeKey = (w: RawWire): string =>
-  `${w.from ?? ''} ${w.to} ${w.subscription.event_type} ${w.subscription.id}`
+  `${w.from ?? ''}\u001f${w.to}\u001f${w.subscription.event_type}\u001f${w.subscription.id}`
 
 const mean = (values: number[]): number => values.reduce((a, b) => a + b, 0) / values.length
 

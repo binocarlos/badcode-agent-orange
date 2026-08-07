@@ -273,9 +273,14 @@ export interface DeskTrouble {
   sessionId: string
 }
 
-/** Said once per failed-delivery group, because the column does not exist. */
+/**
+ * Said once per failed-delivery group when the group has nothing to say.
+ * The column exists since engine migration 037 (RD20); a row can still be blank
+ * — it failed before that migration, or the failure path recorded nothing — and
+ * a fabricated reason would be worse than this sentence.
+ */
 export const DESK_NO_DELIVERY_REASON =
-  'No reason is recorded on a delivery row — the delivery table has no reason column. ' +
+  'No reason is recorded on a delivery row for this group. ' +
   'The agentd log and the last job are where the reason is.'
 
 /** Why a refusal is on this screen at all (playbook C8). */
@@ -430,7 +435,8 @@ function buildDeskAsks(input: BuildDeskInput): DeskAsk[] {
     const waitingSeconds =
       deliveryDurationSeconds(delivery, nowSeconds) ??
       Math.max(0, nowSeconds - (request.created_at || nowSeconds))
-    const worker = request.worker || workerBySubscription.get(delivery.subscription_id) || ''
+    const worker =
+      request.worker || delivery.worker || workerBySubscription.get(delivery.subscription_id) || ''
     const expiresInSeconds = request.expires_at > 0 ? request.expires_at - nowSeconds : null
 
     asks.push({
@@ -513,11 +519,18 @@ function buildDeskTrouble(input: BuildDeskInput): DeskTrouble[] {
 
   // ── failed deliveries, grouped by worker ─────────────────────────────────
   const workerBySubscription = new Map(subscriptions.map((s) => [s.id, s.worker]))
-  const failures = new Map<string, { count: number; since: number; sessionId: string; last: number }>()
+  const failures = new Map<
+    string,
+    { count: number; since: number; sessionId: string; last: number; reason: string }
+  >()
   for (const delivery of deliveries) {
     if (delivery.status !== 'failed') continue
-    const worker = workerBySubscription.get(delivery.subscription_id) ?? ''
+    // The delivery row names its own worker (migration 024); the subscription
+    // join is the fallback for pre-024 rows, and it is the leg that goes blank
+    // when the subscription has since been deleted.
+    const worker = delivery.worker || workerBySubscription.get(delivery.subscription_id) || ''
     const at = delivery.created_at || delivery.started_at || 0
+    const reason = (delivery.failure_reason ?? '').trim()
     const held = failures.get(worker)
     if (!held) {
       failures.set(worker, {
@@ -525,6 +538,7 @@ function buildDeskTrouble(input: BuildDeskInput): DeskTrouble[] {
         since: at,
         sessionId: delivery.session_id,
         last: at,
+        reason,
       })
       continue
     }
@@ -533,6 +547,11 @@ function buildDeskTrouble(input: BuildDeskInput): DeskTrouble[] {
     if (at >= held.last) {
       held.last = at
       if (delivery.session_id !== '') held.sessionId = delivery.session_id
+      // The freshest reason wins — a group is read to answer "what is wrong
+      // NOW" — but a blank never overwrites one that says something.
+      if (reason !== '') held.reason = reason
+    } else if (held.reason === '') {
+      held.reason = reason
     }
   }
   for (const [worker, group] of [...failures.entries()].sort(
@@ -546,7 +565,10 @@ function buildDeskTrouble(input: BuildDeskInput): DeskTrouble[] {
         worker === ''
           ? `${group.count} ${group.count === 1 ? 'delivery' : 'deliveries'} failed · the subscription that started them is gone`
           : `${group.count} ${group.count === 1 ? 'delivery' : 'deliveries'} failed · worker ${worker}`,
-      detail: DESK_NO_DELIVERY_REASON,
+      // The engine's own words when it has any (RD20); the honest fallback when
+      // it has none. The count is in the headline, so this line is only ever
+      // "why".
+      detail: group.reason === '' ? DESK_NO_DELIVERY_REASON : group.reason,
       worker,
       count: group.count,
       sinceSeconds: group.since,

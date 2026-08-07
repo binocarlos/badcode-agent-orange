@@ -82,14 +82,14 @@ func TestMemorySqlite(t *testing.T) {
 		call func(s *Store) error
 	}{
 		{"create", func(s *Store) error {
-			_, err := s.CreateMemory(ctx, &Memory{
+			_, _, err := s.CreateMemory(ctx, &Memory{
 				Project: "p", Content: "the refund window is 30 days",
 				Labels: LabelSet{"kind": "fact"},
 			}, nil)
 			return err
 		}},
 		{"create with embedding", func(s *Store) error {
-			_, err := s.CreateMemory(ctx, &Memory{Project: "p", Content: "x"}, make([]float32, MemoryEmbeddingDim))
+			_, _, err := s.CreateMemory(ctx, &Memory{Project: "p", Content: "x"}, make([]float32, MemoryEmbeddingDim))
 			return err
 		}},
 		{"get", func(s *Store) error {

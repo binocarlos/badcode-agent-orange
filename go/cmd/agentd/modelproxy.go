@@ -57,6 +57,37 @@ func newModelProxyHandler() http.Handler {
 	return modelproxy.Handler(modelProvider{endpoint: endpoint, apiKey: key})
 }
 
+// The credential modes reported to the browser by GET /auth/config (RD18).
+// agentd has always logged which model path it booted with; nothing told the
+// UI, so a stack running the offline mock — which is what a user following the
+// README verbatim gets, both credential lines shipping blank — writes plausible
+// canned output into Desk, Events and Jobs with no marker anywhere.
+const (
+	credentialModeMock         = "mock"
+	credentialModeAPIKey       = "api-key"
+	credentialModeSubscription = "subscription"
+)
+
+// credentialMode names the model credential agentd booted with. It is the ONE
+// place that precedence is expressed for reporting, and it deliberately mirrors
+// the two places that act on it: newModelProxyHandler (key set → real proxy,
+// else mock) and main's subscriptionMode (`apiKey == "" && oauthToken != ""`).
+// Mirrored rather than shared because those two decide different things; a test
+// pins the three answers so the mirror cannot drift silently.
+// The comparisons are raw (not trimmed) on purpose: both of those callers test
+// the raw value, and a badge that disagreed with the proxy would be worse than
+// no badge at all.
+func credentialMode(apiKey, oauthToken string) string {
+	switch {
+	case apiKey != "":
+		return credentialModeAPIKey
+	case oauthToken != "":
+		return credentialModeSubscription
+	default:
+		return credentialModeMock
+	}
+}
+
 // mockScriptEnv / mockScriptFileEnv name the two ways a stack supplies a mock
 // model script. Inline wins when both are set (a `.env` override beating a
 // baked-in file is the least surprising precedence).

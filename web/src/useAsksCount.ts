@@ -45,7 +45,10 @@ export interface AsksCountApi {
   loading: boolean
   /** The first failure across the two loads, as the server phrased it. */
   error: string | null
-  /** False when `GET /agent/attention-requests` is not mounted here. */
+  /**
+   * False when the attention list did not load — not mounted here, or it
+   * failed. The count then comes from the parked deliveries alone.
+   */
   asksHaveMessages: boolean
   reload: () => Promise<void>
 }
@@ -61,9 +64,12 @@ export default function useAsksCount(options: UseAsksCountOptions = {}): AsksCou
     () =>
       countAsks(
         overview.deliveries,
-        attention.available ? attention.requests : deliveriesAsRequests(overview.deliveries),
+        // "Did this load succeed", not "is it mounted" — a failed fetch leaves
+        // an empty list, and a badge reading 0 over three parked approvals is
+        // the failure this branch exists to prevent (RD27).
+        attention.ok ? attention.requests : deliveriesAsRequests(overview.deliveries),
       ),
-    [attention.available, attention.requests, overview.deliveries],
+    [attention.ok, attention.requests, overview.deliveries],
   )
 
   const reload = async (): Promise<void> => {
@@ -73,9 +79,10 @@ export default function useAsksCount(options: UseAsksCountOptions = {}): AsksCou
   return {
     count,
     loading: overview.loading || attention.loading,
-    // "Not mounted here" is reported by `asksHaveMessages`, not as an error.
-    error: overview.error,
-    asksHaveMessages: attention.available,
+    // "Not mounted here" is reported by `asksHaveMessages`, not as an error —
+    // but a mounted route that failed is a real failure and belongs here.
+    error: overview.error ?? (attention.available ? attention.error : null),
+    asksHaveMessages: attention.ok,
     reload,
   }
 }

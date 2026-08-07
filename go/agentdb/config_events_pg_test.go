@@ -14,7 +14,7 @@ func liveConfigLogProject(t *testing.T, s *Store) string {
 	t.Helper()
 	project := "proj-" + uuid.New().String()
 	t.Cleanup(func() {
-		_ = s.DB().Exec("DELETE FROM config_events WHERE project = ?", project).Error
+		_ = s.PurgeConfigEvents(context.Background(), project)
 	})
 	return project
 }

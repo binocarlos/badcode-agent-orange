@@ -419,10 +419,14 @@ type mcpSessionLookup interface {
 // sessionTokenAuth verifies the per-session JWT and resolves the caller.
 //
 // secret is the secret the Runner's claims issuer MINTS with, which in agentd is
-// AGENTKIT_JWT_SECRET-or-"dev-secret" — deliberately not the (possibly empty)
-// API-auth secret. The API's dev-open mode exists so a human can open the demo
-// UI without a token; it must not become a way for anything that can reach
-// agentd to read a project's memories.
+// the session-class key resolved by resolveSessionSecret (sessionsecret.go) —
+// deliberately not the (possibly empty) API-auth secret, and since 2026-08-06
+// not even the same VALUE as it: it is derived from AGENTKIT_JWT_SECRET, or set
+// outright by AGENTKIT_SESSION_JWT_SECRET. The API's dev-open mode exists so a
+// human can open the demo UI without a token; it must not become a way for
+// anything that can reach agentd to read a project's memories. The separation
+// runs the other way too: a token verified HERE must not verify at the API
+// middleware (doc 22, RD30).
 type sessionTokenAuth struct {
 	secret   []byte
 	sessions mcpSessionLookup

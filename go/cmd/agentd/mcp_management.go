@@ -109,7 +109,7 @@ type managementStore interface {
 	// worker target is (T9).
 	GetSessionByName(ctx context.Context, customer, name string) (*agentdb.Session, error)
 	// the prompt-revision memory (§9)
-	CreateMemory(ctx context.Context, m *agentdb.Memory, embedding []float32) (*agentdb.Memory, error)
+	CreateMemory(ctx context.Context, m *agentdb.Memory, embedding []float32) (*agentdb.Memory, bool, error)
 	// the worker.freeze_refused signal (F1): a refused write against a frozen
 	// worker is recorded on the event spine, because an agent trying to edit
 	// the thing that scores it is a research finding, not just an error string.
@@ -1330,7 +1330,11 @@ func (m *managementTools) storePromptRevision(ctx context.Context, caller mcpCal
 		return out
 	}
 
-	stored, err := m.store.CreateMemory(ctx, &agentdb.Memory{
+	// The `embedded` return is discarded here only because CreateMemory now
+	// REFUSES rather than storing an unembeddable row: reaching the next line
+	// with a non-nil vec means it landed. Before RD3 this path could store a
+	// permanently unfindable revision and report `stored: true`.
+	stored, _, err := m.store.CreateMemory(ctx, &agentdb.Memory{
 		Project:          caller.Project,
 		Labels:           agentdb.LabelSet(in.Labels),
 		Content:          content,

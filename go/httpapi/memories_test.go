@@ -311,7 +311,7 @@ func TestListMemories_LivePG(t *testing.T) {
 
 	seed := func(project, content string, labels agentdb.LabelSet) {
 		t.Helper()
-		if _, err := store.CreateMemory(context.Background(), &agentdb.Memory{
+		if _, _, err := store.CreateMemory(context.Background(), &agentdb.Memory{
 			Project: project, Labels: labels, Content: content,
 			CreatedByWorker: "email-answerer", CreatedBySession: "sess-1",
 		}, nil); err != nil {
@@ -613,7 +613,11 @@ func TestMemoryReadRoutes_LivePG(t *testing.T) {
 	long := strings.Repeat("the AI bubble bursts and liquidity floods in. ", 40)
 	seed := func(project, content string, labels agentdb.LabelSet) *agentdb.Memory {
 		t.Helper()
-		m, err := store.CreateMemory(ctx, &agentdb.Memory{
+		// The second return is "did the store actually persist an embedding"
+		// (readiness S3/RD3). These fixtures pass a nil vector deliberately —
+		// these tests are about full-content reads, not search — so it is
+		// always false here and nothing turns on it.
+		m, _, err := store.CreateMemory(ctx, &agentdb.Memory{
 			Project: project, Labels: labels, Content: content,
 			CreatedByWorker: "reviewer-a", CreatedBySession: "sess-1",
 		}, nil)

@@ -169,10 +169,44 @@ describe('buildJobRows', () => {
   })
 
   it('keeps a job whose subscription has since been deleted', () => {
+    // A pre-migration-024 row (no `worker` of its own) is the only case with
+    // nothing left to say: the join is the sole source and the join is gone.
     const rows = buildJobRows([delivery()], [event()], [], 2000)
     expect(rows).toHaveLength(1)
     expect(rows[0]!.subscription).toBeNull()
     expect(rows[0]!.worker).toBe('')
+  })
+
+  // RD15/I1: the delivery row has named its own worker since migration 024.
+  // The browser used to derive it by joining through the subscription, which
+  // reported NO worker for a job whose subscription had been deleted and for
+  // every schedule firing (which never had one).
+  it('names the worker from the delivery row when the subscription is gone', () => {
+    const rows = buildJobRows(
+      [delivery({ worker: 'nightly-summariser' })],
+      [event()],
+      [],
+      2000,
+    )
+    expect(rows[0]!.subscription).toBeNull()
+    expect(rows[0]!.worker).toBe('nightly-summariser')
+  })
+
+  it('prefers the delivery row over the join — it is what actually ran', () => {
+    // The subscription has since been repointed at another worker; the job
+    // that ran, ran the one on its own row.
+    const rows = buildJobRows(
+      [delivery({ worker: 'ran-this-one' })],
+      [event()],
+      [sub({ worker: 'repointed-since' })],
+      2000,
+    )
+    expect(rows[0]!.worker).toBe('ran-this-one')
+  })
+
+  it('falls back to the join for a row written before migration 024', () => {
+    const rows = buildJobRows([delivery({ worker: '' })], [event()], [sub()], 2000)
+    expect(rows[0]!.worker).toBe('email-answerer')
   })
 
   it('keeps a job whose event fell outside the fetched page', () => {

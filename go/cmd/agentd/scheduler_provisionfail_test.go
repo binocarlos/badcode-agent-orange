@@ -149,7 +149,7 @@ func (f *failingJobStarter) StartJob(ctx context.Context, in startJobInput) (str
 		}
 	}
 	if in.OnSessionEnded != nil {
-		in.OnSessionEnded(ctx, sid, fmt.Errorf("the model refused"))
+		_ = in.OnSessionEnded(ctx, sid, fmt.Errorf("the model refused"))
 	}
 	return sid, nil
 }

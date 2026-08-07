@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/binocarlos/badcode-agent-orange/events"
 	"github.com/google/uuid"
 )
 
@@ -375,5 +376,48 @@ func TestLivePG_SearchMessages(t *testing.T) {
 	res, err = s.SearchMessages(ctx, &MessageSearchQuery{Customer: customer, Query: "xylophonectomy"})
 	if err != nil || res == nil || len(res) != 0 {
 		t.Fatalf("no-hit search: %#v err=%v", res, err)
+	}
+}
+
+// TestLivePG_ListQueryEventsFlatForQuery: the read half of the reconnect merge
+// (D2 / doc 22 RD6). A reconnect that re-attaches to a turn nobody in the
+// process owns any more has to APPEND to that turn's row, so it must first read
+// exactly that turn back — not the whole session, which would splice one turn's
+// tail onto another turn's words.
+func TestLivePG_ListQueryEventsFlatForQuery(t *testing.T) {
+	s := openLivePG(t)
+	ctx := context.Background()
+	sess := newLiveSession(t, s, "cust-"+uuid.New().String(), "u@x.com")
+
+	first := []events.Envelope{
+		{Type: events.UserMessage, Data: map[string]any{"content": "first question"}},
+		{Type: events.ContentDelta, Data: map[string]any{"delta": "first answer"}},
+	}
+	second := []events.Envelope{
+		{Type: events.UserMessage, Data: map[string]any{"content": "second question"}},
+	}
+	if err := s.PersistQueryEventsFlat(ctx, sess.ID, "q1", first, "first"); err != nil {
+		t.Fatalf("persist q1: %v", err)
+	}
+	if err := s.PersistQueryEventsFlat(ctx, sess.ID, "q2", second, "second"); err != nil {
+		t.Fatalf("persist q2: %v", err)
+	}
+
+	got, err := s.ListQueryEventsFlatForQuery(ctx, sess.ID, "q1")
+	if err != nil {
+		t.Fatalf("read q1: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("q1 read back %d events, want 2 (a read that leaks q2 would splice two turns together): %+v", len(got), got)
+	}
+	if c, _ := got[0].Data["content"].(string); c != "first question" {
+		t.Fatalf("q1[0] = %+v, want the first question", got[0])
+	}
+
+	// A turn nothing has written yet is empty, not an error — the ordinary case
+	// on the FIRST reconnect to a turn.
+	got, err = s.ListQueryEventsFlatForQuery(ctx, sess.ID, "q-never-written")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("unwritten turn: got %d events, err %v — want (0, nil)", len(got), err)
 	}
 }

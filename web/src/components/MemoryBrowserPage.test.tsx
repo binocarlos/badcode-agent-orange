@@ -171,4 +171,27 @@ describe('failures are told apart', () => {
     renderBrowser()
     expect(await screen.findByText(/Nothing has been remembered in this project yet/)).toBeInTheDocument()
   })
+
+  // RD27/RD28's class: the route IS served (500, not 501), so the empty list is
+  // the failure's residue, not an answer about the project.
+  it('a failed search never claims the project has remembered nothing', async () => {
+    status = 500
+    body = 'memory search: database is down'
+    renderBrowser()
+    expect(await screen.findByText(/database is down/)).toBeInTheDocument()
+    expect(screen.queryByText(/Nothing has been remembered in this project yet/)).toBeNull()
+    expect(screen.queryByText(/No memory matches/)).toBeNull()
+  })
+
+  // B6: the status decides, not the prose. A 500 whose body happens to carry
+  // the words the old classifier keyed on is still a failure — otherwise a
+  // broken memory store is reported as "this host does not have one", and the
+  // operator stops looking.
+  it('a 500 saying "not found" is still a failure, not an absent feature', async () => {
+    status = 500
+    body = 'memory search: relation "memories" not found'
+    renderBrowser()
+    expect(await screen.findByText(/relation "memories" not found/)).toBeInTheDocument()
+    expect(screen.queryByText(/Memory is not available on this host/)).toBeNull()
+  })
 })

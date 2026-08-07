@@ -14,6 +14,16 @@
 //
 // Session links use buildSessionPath (F3), so a job is shareable, and a host
 // with its own router intercepts the click with onOpenSession.
+//
+// A third honesty note (RD15): a delivery's `session_id` has no foreign key, so
+// a job outlives its session and the "open" link can point at nothing. The row
+// already reads that session (for tokens and the step line), so a 404 from that
+// same read is what turns the link into "transcript deleted" — no extra
+// request, and read from the HTTP status rather than the message text.
+// What this deliberately does NOT do is probe every row: past `tokenAutoLoad`
+// no request is made at all, so those rows still offer the link and find out on
+// click. Fetching a hundred sessions to grey out a link would be a worse trade
+// than the one the token cell already refused.
 
 import React, { useRef } from 'react'
 import {
@@ -203,7 +213,10 @@ function JobHistoryRow({
       <TableCell sx={{ fontFamily: 'monospace' }}>
         {job.eventType || <Muted>outside this page</Muted>}
       </TableCell>
-      <TableCell>{job.worker || <Muted>subscription deleted</Muted>}</TableCell>
+      {/* "subscription deleted" until RD15/I1: the row itself names its worker
+          (migration 024), so a missing name no longer means a missing
+          subscription — it means a row written before that column existed. */}
+      <TableCell>{job.worker || <Muted>not recorded</Muted>}</TableCell>
       <TableCell>
         {formatTimestamp(job.delivery.started_at) || <Muted>not started</Muted>}
       </TableCell>
@@ -246,6 +259,19 @@ function JobHistoryRow({
       </TableCell>
       <TableCell>
         <DeliveryStatusChip status={job.status} />
+        {/* Why it failed, from the delivery row itself (RD20). Before the
+            engine recorded it, the only copy was agentd's stdout — which is not
+            an answer you can give a user looking at this table. */}
+        {job.delivery.failure_reason ? (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            component="div"
+            data-testid="job-failure-reason"
+          >
+            {job.delivery.failure_reason}
+          </Typography>
+        ) : null}
       </TableCell>
       <TableCell align="right">
         <JobTokensCell sessionId={job.sessionId} session={session} />
@@ -253,6 +279,17 @@ function JobHistoryRow({
       <TableCell>
         {job.sessionId === '' ? (
           <Muted>none</Muted>
+        ) : session.missing === true ? (
+          // RD15: `event_deliveries.session_id` has no foreign key, so the job
+          // history outlives the session it points at. The row stays — "this
+          // ran" is true and is history — but the link does not, because a
+          // green `ok` beside an "open" that leads nowhere reads as our bug
+          // rather than as their deletion.
+          <Tooltip title="The session this job ran in has been deleted, so there is no transcript to open. The job itself is still recorded.">
+            <Box component="span" data-testid="job-transcript-deleted">
+              <Muted>transcript deleted</Muted>
+            </Box>
+          </Tooltip>
         ) : onOpenSession ? (
           <Link
             component="button"
@@ -290,6 +327,10 @@ function JobTokensCell({ sessionId, session }: JobTokensCellProps) {
   const { totals, loading, error, load } = session
 
   if (sessionId === '') return <Muted>—</Muted>
+  // A deleted session has no tokens to report and it is not an error — the
+  // Session cell says what happened, and a red "error" here would be a second,
+  // wronger account of the same fact.
+  if (session.missing === true) return <Muted>—</Muted>
   if (error !== null) {
     return (
       <Tooltip title={error}>

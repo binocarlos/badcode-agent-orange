@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react'
-import { render, screen } from '@testing-library/react'
-import { test, expect } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
+import { test, expect, vi } from 'vitest'
 import { AgentChatProvider } from '../AgentChatProvider.js'
 import AgentChat from './AgentChat.js'
 import type { AgentMessage } from '../types.js'
@@ -130,6 +130,90 @@ test('AgentChat shows Send button in empty state', () => {
     </AgentChatProvider>
   )
   expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument()
+})
+
+// ---------------------------------------------------------------------------
+// stuck detection reaches a pixel (item B5)
+//
+// B1 left the stuck detector armed when a stream ends without query_complete
+// and the status probe cannot confirm the turn finished. On that path
+// isStreaming is false — it must be, or the composer is disabled forever
+// (item P2) — so the two isStreaming-gated banners can never render it.
+// ---------------------------------------------------------------------------
+
+test('AgentChat warns when a turn ended unconfirmed (detector armed, not streaming)', () => {
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat isStreaming={false} stuckStatus="likely_stuck" />
+    </AgentChatProvider>
+  )
+  expect(screen.getByTestId('unconfirmed-end-banner')).toBeInTheDocument()
+  expect(screen.getByText(/never confirmed/i)).toBeInTheDocument()
+  // The composer must stay usable — this is the whole reason isStreaming is
+  // false on this path, and re-disabling it would reintroduce P2.
+  expect(screen.getByPlaceholderText(/type a message/i)).not.toBeDisabled()
+})
+
+test('AgentChat warns on possibly_stuck after an unconfirmed end too', () => {
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat isStreaming={false} stuckStatus="possibly_stuck" />
+    </AgentChatProvider>
+  )
+  expect(screen.getByTestId('unconfirmed-end-banner')).toBeInTheDocument()
+})
+
+test('AgentChat offers Stop and Resume on an unconfirmed end', () => {
+  const onCancel = vi.fn()
+  const onNudge = vi.fn()
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat isStreaming={false} stuckStatus="likely_stuck" onCancel={onCancel} onNudge={onNudge} />
+    </AgentChatProvider>
+  )
+  fireEvent.click(screen.getByRole('button', { name: /resume/i }))
+  expect(onNudge).toHaveBeenCalled()
+  fireEvent.click(screen.getByRole('button', { name: /^stop$/i }))
+  expect(onCancel).toHaveBeenCalled()
+})
+
+test('AgentChat shows no unconfirmed-end banner when the detector is disarmed', () => {
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat isStreaming={false} stuckStatus="ok" />
+    </AgentChatProvider>
+  )
+  expect(screen.queryByTestId('unconfirmed-end-banner')).toBeNull()
+})
+
+test('AgentChat shows no unconfirmed-end banner when stuckStatus is absent', () => {
+  // Guards the undefined case: `stuckStatus !== "ok"` would render the banner
+  // on every prop-only mount that never wires the detector.
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat isStreaming={false} />
+    </AgentChatProvider>
+  )
+  expect(screen.queryByTestId('unconfirmed-end-banner')).toBeNull()
+})
+
+test('AgentChat shows the streaming stuck banner, not the unconfirmed-end one, while streaming', () => {
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat isStreaming={true} stuckStatus="likely_stuck" />
+    </AgentChatProvider>
+  )
+  expect(screen.getByText(/appears to be stuck/i)).toBeInTheDocument()
+  expect(screen.queryByTestId('unconfirmed-end-banner')).toBeNull()
+})
+
+test('AgentChat hides the unconfirmed-end banner in readOnly replay', () => {
+  render(
+    <AgentChatProvider config={{ apiBaseUrl: '', models: [{ id: 'm', label: 'M' }] }}>
+      <AgentChat readOnly={true} isStreaming={false} stuckStatus="likely_stuck" />
+    </AgentChatProvider>
+  )
+  expect(screen.queryByTestId('unconfirmed-end-banner')).toBeNull()
 })
 
 // ---------------------------------------------------------------------------

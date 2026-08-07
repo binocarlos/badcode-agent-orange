@@ -98,6 +98,34 @@ export async function selectedProject(page: Page): Promise<string> {
 }
 
 /**
+ * The chat composer — scoped by its placeholder, never by tag.
+ *
+ * `page.locator('textarea')` used to be safe when chat was the whole app. The
+ * shell now has eight views and the composer is only mounted in one of them
+ * (`view === 'chat'` in App.tsx), while other views mount textareas of their
+ * own (worker prompts, memory content). A bare tag locator therefore either
+ * finds nothing or finds the wrong box, and "not found" reads exactly like
+ * "still disabled" in the failure message.
+ */
+export function composer(page: Page) {
+  return page.getByPlaceholder('Type a message...')
+}
+
+/**
+ * Starts a session and shows it.
+ *
+ * Clicking "New session" creates the session but does NOT change the view, and
+ * the landing view is the Desk (decision K1) — so the composer is not mounted
+ * until something switches to chat. Every spec that talks to a new session
+ * needs both halves; doing only the first is how this suite spent weeks
+ * timing out on an element that was never going to exist.
+ */
+export async function newSessionInChat(page: Page): Promise<void> {
+  await page.getByTestId('new-session').click()
+  await gotoView(page, 'chat')
+}
+
+/**
  * Sends a prompt and waits until the assistant's reply has stopped growing.
  *
  * The settling matters: a turn is only fully persisted once it ends, and a
@@ -106,7 +134,7 @@ export async function selectedProject(page: Page): Promise<string> {
  * here first, or it is racing the model rather than testing the feature.
  */
 export async function sendAndSettle(page: Page, prompt: string, timeoutMs = 120_000): Promise<string> {
-  const textarea = page.locator('textarea').first()
+  const textarea = composer(page)
   await expect(textarea).toBeEnabled({ timeout: timeoutMs })
   await textarea.fill(prompt)
   await page.locator('button[aria-label="Send"]').click()

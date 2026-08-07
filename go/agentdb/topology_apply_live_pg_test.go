@@ -27,10 +27,12 @@ func TestApplyTopology_LivePG(t *testing.T) {
 			"DELETE FROM memories WHERE project = ?",
 			"DELETE FROM agent_custom_images WHERE customer = ?",
 			"DELETE FROM agent_skills WHERE customer = ?",
-			"DELETE FROM config_events WHERE project = ?",
 		} {
 			_ = s.DB().Exec(stmt, project).Error
 		}
+		// config_events is append-only in the database (migration 039), so its
+		// rows come out through the one sanctioned purge, not a raw DELETE.
+		_ = s.PurgeConfigEvents(context.Background(), project)
 	})
 
 	// Teach the project the required assets first (D2: apply never creates them).

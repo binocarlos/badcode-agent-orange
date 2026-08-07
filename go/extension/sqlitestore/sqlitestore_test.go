@@ -193,6 +193,20 @@ func TestPersistQueryEventsAndList(t *testing.T) {
 	if all[2].Type != events.Type("tool_use") {
 		t.Errorf("all[2].Type = %q, want tool_use", all[2].Type)
 	}
+
+	// The per-turn read (D2's reconnect merge) must return ONE turn: a read that
+	// leaked the session would splice q2's events onto q1's transcript.
+	one, err := st.ListQueryEventsFlatForQuery(ctx, sessionID, "q2")
+	if err != nil {
+		t.Fatalf("ListQueryEventsFlatForQuery: %v", err)
+	}
+	if len(one) != 2 || one[0].Type != events.Type("assistant") {
+		t.Fatalf("q2 read back %d events (%+v), want q2's 2", len(one), one)
+	}
+	none, err := st.ListQueryEventsFlatForQuery(ctx, sessionID, "q-never-written")
+	if err != nil || len(none) != 0 {
+		t.Fatalf("unwritten turn: got %d events, err %v — want (0, nil)", len(none), err)
+	}
 }
 
 // TestPersistQueryEventsUpdateInPlace verifies that re-persisting the same

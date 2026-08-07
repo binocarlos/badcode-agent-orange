@@ -9,9 +9,13 @@
 // error worth shouting about: `available` goes false, the list stays empty, and
 // the Desk falls back to showing the parked deliveries without their messages —
 // which is most of the value lost, and still better than a blank screen.
+//
+// A route that IS mounted and simply did not answer takes the same fallback,
+// which is what `ok` is for: an empty list from a failed fetch would otherwise
+// render as "nothing is waiting on you" over three parked approvals (RD27).
 
 import { useCallback, useRef, useState } from 'react'
-import { useConfigApi, type ConfigApiOptions } from './configApi.js'
+import { looksUnwired, useConfigApi, type ConfigApiOptions } from './configApi.js'
 import {
   ATTENTION_ENDPOINTS,
   coerceAttentionRequest,
@@ -40,19 +44,16 @@ export interface AttentionRequestsApi {
   error: string | null
   /** False when the route answered 404/501 — not mounted here. */
   available: boolean
+  /**
+   * Did the last completed load succeed? False after ANY failure — a network
+   * error, a 500, a timeout — as well as after the 404/501 that clears
+   * `available`. Callers choosing between these requests and a degraded
+   * fallback must branch on this, not on `available`: a route that is mounted
+   * but did not answer leaves the list empty, and an empty list is
+   * indistinguishable from "nothing is waiting on you" (RD27).
+   */
+  ok: boolean
   reload: () => Promise<void>
-}
-
-/** Statuses that mean "this route is not mounted", not "this request failed". */
-function looksUnwired(message: string): boolean {
-  const m = message.toLowerCase()
-  return (
-    m.includes('404') ||
-    m.includes('501') ||
-    m.includes('not found') ||
-    m.includes('not configured') ||
-    m.includes('not implemented')
-  )
 }
 
 export default function useAttentionRequests(
@@ -65,6 +66,9 @@ export default function useAttentionRequests(
   const [loading, setLoading] = useState(enabled)
   const [error, setError] = useState<string | null>(null)
   const [available, setAvailable] = useState(true)
+  // Starts true so a hook that never fetches (`enabled: false`) is not read as
+  // a failed load; the catch below is the only thing that clears it.
+  const [ok, setOk] = useState(true)
 
   const reload = useCallback(async () => {
     setLoading(true)
@@ -78,10 +82,15 @@ export default function useAttentionRequests(
       const raw = Array.isArray(data?.attention_requests) ? data!.attention_requests! : []
       setRequests(raw.map((r) => coerceAttentionRequest(r)))
       setAvailable(true)
+      setOk(true)
     } catch (err) {
       const message = err instanceof Error ? err.message : 'failed to load attention requests'
       setRequests([])
-      setAvailable(!looksUnwired(message))
+      // Classify off the error itself, not off `message`: the HTTP status is
+      // what says "this host does not serve the route", and a 500 whose prose
+      // mentions "not found" is a failure (B6).
+      setAvailable(!looksUnwired(err))
+      setOk(false)
       setError(message)
     } finally {
       setLoading(false)
@@ -97,5 +106,5 @@ export default function useAttentionRequests(
     void reload()
   }
 
-  return { requests, loading, error, available, reload }
+  return { requests, loading, error, available, ok, reload }
 }

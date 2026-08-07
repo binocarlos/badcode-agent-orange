@@ -773,6 +773,234 @@ var agentMigrations = []migration{
 			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS target_session TEXT NOT NULL DEFAULT '';
 		`,
 	},
+	{
+		// Why a job failed (RD18/RD20, and the same column RD15 asks for — there
+		// is exactly one). dispatch.go has always known the reason ("host port
+		// pool is exhausted", "worker not found") and only ever logged it, so
+		// the honest answer to "why did my worker fail?" was `docker compose
+		// logs agentd`. The delivery row now carries it out to the UI.
+		//
+		// NOT NULL DEFAULT '' in the DDL rather than a gorm `default:` tag, per
+		// the store convention: '' is meaningful (no reason recorded) and a
+		// gorm default would make it unwritable.
+		Name: "037_event_deliveries_failure_reason",
+		SQL: `
+			ALTER TABLE event_deliveries ADD COLUMN IF NOT EXISTS failure_reason TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// A total order for the transcript (RD16). `created_at` is
+		// `time.Now().Unix()` — SECONDS — and the id is a random uuid, so two
+		// queries written inside one second replayed in whatever order Postgres
+		// happened to return: a transcript could render out of order, and a
+		// replay could disagree with what the user watched live. This is the
+		// hazard migration 028 fixed for skills with `revision`; the transcript
+		// never got the same treatment.
+		//
+		// The ordinal comes from a SEQUENCE rather than
+		// `MAX(ordinal)+1 WHERE session_id = ...` because the latter is a
+		// read-then-write: two concurrent inserts read the same maximum and tie,
+		// which is the defect again in a narrower window. nextval is atomic, and
+		// a global (not per-session) counter is still a correct per-session
+		// order — a subsequence of a monotonic sequence is monotonic. Gaps and
+		// values shared across sessions are meaningless here; only "later insert
+		// ⇒ larger ordinal, within a session" is claimed.
+		//
+		// # Backfill
+		//
+		// Existing rows keep their second-resolution `created_at` and are
+		// numbered from it, globally, ordered by (created_at, id). Two legacy
+		// rows written inside one second therefore get *some* order — the same
+		// arbitrary tie-break the reader used to make afresh on every query,
+		// except now it is decided once and frozen in a column. That is strictly
+		// better than today: legacy same-second ties become STABLE (a replay
+		// always agrees with the previous replay) even though they may not be
+		// the true write order, which is information the database never had and
+		// cannot recover. Rows written after this migration are exact.
+		//
+		// Mixed pre/post rows sort correctly by construction: setval leaves the
+		// sequence above every backfilled value, so any new row in a session
+		// outranks all of that session's legacy rows — which is right, it was
+		// written later.
+		//
+		// NOT NULL DEFAULT 0 in the DDL, never a gorm `default:` tag: the insert
+		// supplies the value explicitly and a gorm default would fight it.
+		Name: "038_agent_query_events_ordinal",
+		SQL: `
+			ALTER TABLE agent_query_events ADD COLUMN IF NOT EXISTS ordinal BIGINT NOT NULL DEFAULT 0;
+			CREATE SEQUENCE IF NOT EXISTS agent_query_events_ordinal_seq AS BIGINT START WITH 1;
+			WITH ranked AS (
+				SELECT id, ROW_NUMBER() OVER (ORDER BY created_at ASC, id ASC) AS rn
+				FROM agent_query_events
+			)
+			UPDATE agent_query_events AS q
+				SET ordinal = ranked.rn
+				FROM ranked
+				WHERE q.id = ranked.id AND q.ordinal = 0;
+			SELECT setval('agent_query_events_ordinal_seq',
+				GREATEST((SELECT COALESCE(MAX(ordinal), 0) FROM agent_query_events), 1));
+			CREATE INDEX IF NOT EXISTS idx_agent_query_events_session_ordinal
+				ON agent_query_events(session_id, ordinal);
+		`,
+	},
+	{
+		// D5 — the in-flight turn, written down so a RESTARTED agentd can still
+		// answer "is a turn running, and under what id?".
+		//
+		// Two ids, because there are two id spaces and both are needed:
+		//   active_query_id         — the runner's `q-<session>-<n>`, the key
+		//                             agent_query_events rows are written under
+		//                             and the id a client reconnects WITH.
+		//   active_sandbox_query_id — the uuid the in-image agent minted for the
+		//                             same turn, which is the key its in-RAM
+		//                             replay buffer is stored under and therefore
+		//                             the only id that can ATTACH to it.
+		// Held in process memory as well; the columns exist for exactly the case
+		// that erases memory (RD6's crash), so they are runtime state on the
+		// session row like lease_expires_at — no config event (§15.3 rule 3).
+		Name: "039_agent_sessions_active_query",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_query_id TEXT NOT NULL DEFAULT '';
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS active_sandbox_query_id TEXT NOT NULL DEFAULT '';
+		`,
+	},
+	{
+		// The config log becomes append-only IN THE DATABASE (RD13).
+		//
+		// Until now the guarantee was enforced only in tests:
+		// InstallConfigEventGuard is opt-in, every caller is a test, agentd
+		// states in main.go that it never arms it, `config_events` is not even
+		// in the guarded-table set, and `Store.DB()` is exported. So the record
+		// the doctrine work treats as the truth about what changed was
+		// protected by convention and code review — and a convention is not a
+		// promise you can make to a user about an audit log.
+		//
+		// # Why to_jsonb(row) minus the mutable key, not a column list
+		//
+		// Comparing named columns would silently stop covering any column added
+		// later: migration 040 adds a field, nobody remembers the trigger, and
+		// the new column is quietly mutable forever — the exact silent-success
+		// shape this work exists to kill. Diffing the whole row as jsonb with
+		// `emitted_at` removed inverts the default: everything is immutable
+		// unless the trigger is deliberately taught otherwise.
+		//
+		// `emitted_at` is the one legal mutation (migration 030): it is not part
+		// of the record, it is the watermark saying the record's
+		// `config.changed` event has been appended.
+		//
+		// # What this does NOT stop
+		//
+		// A superuser can ALTER TABLE ... DISABLE TRIGGER, and TRUNCATE does not
+		// fire row triggers. This is a guardrail against the application (and
+		// its tests, and a hand-typed UPDATE at a psql prompt), not a defence
+		// against someone who owns the database. The deliberate escape hatch is
+		// the `agentdb.allow_config_events_purge` setting, which
+		// Store.PurgeConfigEvents sets for the length of one transaction — one
+		// greppable place, rather than a trigger nobody can work with. A future
+		// migration that must rewrite this table has to set it too, which is the
+		// intended amount of friction.
+		Name: "040_config_events_append_only",
+		SQL: `
+			CREATE OR REPLACE FUNCTION agentdb_config_events_append_only()
+			RETURNS trigger AS $$
+			BEGIN
+				IF current_setting('agentdb.allow_config_events_purge', true) = 'on' THEN
+					IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+					RETURN NEW;
+				END IF;
+				IF TG_OP = 'DELETE' THEN
+					RAISE EXCEPTION
+						'config_events is append-only: DELETE of % is refused (agentdb migration 039)', OLD.id
+						USING ERRCODE = 'restrict_violation';
+				END IF;
+				IF (to_jsonb(NEW) - 'emitted_at') IS DISTINCT FROM (to_jsonb(OLD) - 'emitted_at') THEN
+					RAISE EXCEPTION
+						'config_events is append-only: only emitted_at may change on % (agentdb migration 039)', OLD.id
+						USING ERRCODE = 'restrict_violation';
+				END IF;
+				RETURN NEW;
+			END;
+			$$ LANGUAGE plpgsql;
+
+			DROP TRIGGER IF EXISTS trg_config_events_append_only ON config_events;
+			CREATE TRIGGER trg_config_events_append_only
+				BEFORE UPDATE OR DELETE ON config_events
+				FOR EACH ROW EXECUTE FUNCTION agentdb_config_events_append_only();
+		`,
+	},
+	{
+		// Sessions are SOFT-deleted from here on (doc 22 RD5, work-plan D1).
+		//
+		// `agent_query_events.session_id` cascades (migration 013, and the same
+		// for agent_messages and agent_artifacts), and DELETE /agent/session/{id}
+		// was a hard row delete fired from an unguarded icon button. One click
+		// destroyed the whole conversation, irreversibly, with no tombstone and
+		// no export — which is why the 2026-07-28 calibration run found
+		// `agent_query_events` empty for every session. `deleted_at` breaks that:
+		// the row survives, so the cascade never fires and the transcript stays.
+		//
+		// SECONDS since the epoch (every other timestamp on this table is
+		// `time.Now().Unix()`), 0 while the session is live. NOT NULL DEFAULT 0
+		// in the DDL rather than a gorm `default:` tag, per the store convention
+		// — 0 is a meaningful value here and a declared gorm default would make
+		// GORM omit it on write.
+		//
+		// # Why the name index is narrowed rather than left alone
+		//
+		// Migration 035 made (customer, name) unique for every named row. With a
+		// tombstone that never goes away — the purge is deliberately not built,
+		// see the work plan's G3 — an un-narrowed index would let a deleted
+		// session hold its name FOREVER, against a row nothing lists and nobody
+		// can see. The embedding application that named it (`hypothesis-a`) would
+		// get "name already taken" from an invisible ghost, with no recovery
+		// short of SQL. Adding `deleted_at = 0` frees the name at delete time.
+		//
+		// The cost is stated rather than hidden: a stale URL for a deleted
+		// session's name, once that name is reused, resolves to the NEW session
+		// instead of 404ing. That takes two deliberate human acts (delete, then
+		// re-create under the same name) inside one project, and Session.Name's
+		// immutability promise — that a name never moves while its session lives
+		// — is untouched.
+		//
+		// The tombstone KEEPS its `name` value: an operator reading the row later
+		// (or the purge G3 may authorise) can still see what it was called.
+		Name: "041_agent_sessions_deleted_at",
+		SQL: `
+			ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS deleted_at BIGINT NOT NULL DEFAULT 0;
+			CREATE INDEX IF NOT EXISTS idx_agent_sessions_deleted_at ON agent_sessions(deleted_at);
+			DROP INDEX IF EXISTS idx_agent_sessions_name;
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_name
+				ON agent_sessions(customer, name)
+				WHERE name IS NOT NULL AND name <> '' AND deleted_at = 0;
+		`,
+	},
+	{
+		// A missed schedule occurrence stops being indistinguishable from one
+		// that was never scheduled (RD11).
+		//
+		// `schedules.last_evaluated` is the per-schedule WATERMARK: the
+		// wall-clock minute a tick last looked at this row. It is what lets the
+		// scheduler tell "nothing was due" from "nobody was running", which is
+		// the whole finding — before it, an hour of downtime left no firing row,
+		// no event, no delivery and nothing saying sixty occurrences went by.
+		//
+		// `schedule_firings.missed` marks an occurrence RECORDED AFTER THE FACT:
+		// a row that exists to say "this minute came and went unevaluated", not
+		// to say a job ran. The catch-up never starts a job — §8.6's skip-missed
+		// posture is unchanged and deliberate (see scheduler.go) — so the row and
+		// the `schedule.missed` event are the entire remedy.
+		//
+		// Both are runtime state, not configuration: no config event, exactly
+		// like `provision_failures` (migration 031) and the router's `delivered`
+		// watermark. Both are NOT NULL with a DDL default and NO gorm `default:`
+		// tag, per the convention on agentdb.Schedule — '' and false are the
+		// meaningful zero values here (never evaluated; a real firing).
+		Name: "042_schedule_watermark",
+		SQL: `
+			ALTER TABLE schedules ADD COLUMN IF NOT EXISTS last_evaluated TEXT NOT NULL DEFAULT '';
+			ALTER TABLE schedule_firings ADD COLUMN IF NOT EXISTS missed BOOLEAN NOT NULL DEFAULT FALSE;
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration

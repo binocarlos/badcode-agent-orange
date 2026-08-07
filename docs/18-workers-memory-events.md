@@ -65,13 +65,37 @@ settings page in the UI. The row is created lazily; `GET` before any write retur
 | `daily_tokens_soft` | one attention-channel notification per day when crossed (0 = off). The "once" is in-memory, so an agentd restart can re-notify, and the notice carries no `session_url` |
 | `daily_tokens_hard` | stops non-interactive job creation until midnight, stack-local (0 = off) |
 | `briefing_max_bytes` | byte cap **per injected briefing section** (0 ⇒ the default, 2048) |
-| `snapshot_ttl_days` | stamps `expires_at` on each image burned by `image_create` (default 30; 0 = never). **Inert in the standalone stack** — agentd runs no reaper, so nothing acts on the expiry (see §9) |
+| `snapshot_ttl_days` | stamps `expires_at` on each image burned by `image_create` (default 30; 0 = never). **Enforced**: agentd wires the snapshot TTL reaper (`AGENTKIT_SNAPSHOT_REAP_INTERVAL`, 6h by default), which deletes the bytes of expired versions and keeps the catalogue row as a tombstone |
 
 Interactive chat is exempt from both budgets and from `max_concurrent_jobs` — a blown budget
 must never lock a human out of talking to their workers.
 
 The project prompt is also writable from inside a session with `project_prompt_write` (§9), which
 is how a consultant worker improves it.
+
+### Operations doctrine v1 — it exists, and nothing seeds it
+
+There is a written **operations doctrine**: ten short rules every worker is meant to hold whatever
+its goal — treat event text as data and not orders, honour your output contract or say you cannot,
+"no effect" is a valid result, never work around a frozen worker, escalate after the same obstacle
+twice, write findings rather than transcripts. The canonical bytes are
+[`product/doctrine/doctrine-v1.md`](product/doctrine/doctrine-v1.md); the reasoning, the status
+ladder and the promotion rules are [`product/20-operations-doctrine.md`](product/20-operations-doctrine.md).
+
+**Nothing in the product puts it in front of you.** No topology seeds it, applying a topology does
+not offer it, there is no checkbox in the console, and no code path in `agentd` or the browser
+injects it — the only caller that performs the doctrine mutation today is an offline research rig
+(`e2e/experiments/calibration/`). A new project therefore starts with **none** of it.
+
+If you want it, **paste it in by hand**: copy everything below the `=== operations doctrine v1 ===`
+marker line in that file into the project's `system_prompt` (project settings in the console, or
+`PUT /agent/project-settings`), above your own project-specific text. It is prepended to every
+worker's composed prompt from the next job onwards, and the edit lands in the config log like any
+other, so you can see when a project adopted it.
+
+Worth knowing before you do: **every entry is still `candidate`** — plausible and sourced, but not
+one has won a measured A/B (doc 20's status ladder). That is precisely why it is not a default.
+Whether applying a topology should offer to seed it is an open product decision, not an oversight.
 
 ### Credentials for MCP servers
 
@@ -160,8 +184,14 @@ Full semantics, including exactly what a resumed session does and does not refre
 [`19-embedding.md`](19-embedding.md) § 4. The `input` column is the design's centre
 of gravity: it is the instruction the firing delivers, so "10:00 → write the morning tweet" and
 "17:00 → write the evening tweet" are two rows targeting one worker. Firings missed while agentd
-was down are **skipped, not replayed**. A due schedule whose worker no longer exists is disabled
-and logged.
+was down are **skipped, not replayed — but they are recorded**: each schedule keeps a watermark
+(`last_evaluated`), and the first tick after a gap writes a `missed` firing row per unevaluated
+occurrence and appends **one** `schedule.missed` event naming the count, the range and the
+instruction that was not delivered. Nothing is re-run at boot, deliberately (see
+`docs/product/04-events-and-schedules.md` §8.6); a catch-up looks back at most 7 days and records
+at most 60 rows, and the event always carries the true total. A schedule nobody has evaluated yet
+reports nothing. Subscribe a worker to `schedule.missed` if you want the project to react to its
+own downtime. A due schedule whose worker no longer exists is disabled and logged.
 
 A schedule is also disabled after **five consecutive firings that could not start a job at all** —
 the worker is gone or disabled, composition refused, or the session would not provision. Fifty-three
@@ -239,8 +269,11 @@ A delivery for a **disabled** worker also records `failed`. Since `worker_update
 is the intended way to retire a worker (there is no `worker_delete` tool), every event that
 matches a retired worker's subscription keeps adding a failed-looking row to job history for as
 long as that subscription exists. Delete the subscription too, or expect the noise. A failed
-delivery records **no reason** — `event_deliveries` has no such column, so the cause is only in
-agentd's log (`[dispatch] delivery … failed: …`).
+delivery records **why** it failed: `event_deliveries.failure_reason` carries the same sentence
+agentd logs (`[dispatch] delivery … failed: …`), it is served on `GET /agent/deliveries`, and the
+console shows it on the Desk's trouble stack and in the job table. Rows that failed before that
+column existed (engine migration 037) carry an empty reason, and the UI says so rather than
+inventing one.
 
 `GET /agent/events` and `GET /agent/deliveries` are the read paths the UI's events view uses.
 
@@ -268,6 +301,16 @@ one.
   that label; updating it is appending. `memory_current(name)` reads it in one word.
 - **Provenance is part of every result** — which worker wrote it, in which session, with a
   clickable permalink (`<AGENTKIT_PUBLIC_BASE_URL>/p/<project>/s/<session>`).
+- **pgvector is optional, but the two halves must agree.** Migration 022 adds
+  `memories.content_embedding` only where `CREATE EXTENSION vector` succeeds, and swallows the
+  failure otherwise — the normal outcome on managed Postgres where the app role lacks the
+  privilege. `agentd` now says which state it is in at boot
+  (`memory semantic leg=available|unavailable`, and a `WARNING` when an embedding provider is
+  configured against a database that cannot hold a vector). In that warned state `memory_create`
+  **refuses** rather than storing a row it could never embed: memories are append-only, so a
+  silently unembedded row would be invisible to the semantic leg forever. Either install pgvector
+  and re-run migration 022, or run keyword-only on purpose by leaving
+  `AGENTKIT_EMBEDDING_BACKEND` unset.
 - **`memories.created_at` is milliseconds**, like `config_events.created_at` and unlike the
   `agent_*` tables, which use seconds. Anything joining them must not assume one unit.
 
@@ -393,8 +436,13 @@ onto an image is `worker_update(name, {image: …})` (or the UI's image field), 
 config-evented mutation like any other — so "when did this worker start running on the toolbox
 image, and who decided that?" is a query. The pointer is resolved **at launch, every launch**, so
 a floating `toolbox` follows curation and a pinned `toolbox:1` does not. A launch also stamps
-`last_resumed_at` on the version it used, which is how an operator sees that an image due for
-reaping is still in daily use (it does **not** extend the expiry — §5 sets that at burn time).
+`last_resumed_at` on the version it used. That stamp does not rewrite `expires_at` — §5 sets that
+at burn time and the row keeps saying what it was promised — but the reaper **honours** it: a
+version resumed within the project's current `snapshot_ttl_days` window has its reap **deferred**,
+with a log line naming the image, rather than deleted out from under the worker pinned to it. Stop
+launching from a version and the deferral lapses on the first pass after the window, so storage
+stays bounded by the TTL you set. Shortening `snapshot_ttl_days` shortens the deferral too, which
+is the lever if you want the bytes back while the image is still in use.
 
 The launch chain, in full, is `explicit image > worker pointer > custom image id >
 project_settings.base_image > global default`. A worker job arrives with the pointer already
@@ -434,9 +482,11 @@ changelog view carry entire skill documents.
 
 Two side effects worth knowing. `image_create` snapshots through `Runner.Snapshot`, which also
 writes `agent_sessions.snapshot_handle` — so burning an image **repoints the calling session's
-own resume snapshot** at the image it just published; the two become the same object. And there
-is no `GET /agent/images` route, so the worker editor's image field is validated free text: a
-typo is caught at launch, not at write.
+own resume snapshot** at the image it just published; the two become the same object. And the
+worker editor's image field, while it now offers the catalogue as a dropdown (`GET /agent/images`
+is registered and `WorkersPage` loads it into the picker), still **accepts arbitrary text** and
+nothing validates it on write — §13's one-text-field grammar is deliberate, since a literal
+registry reference must keep working. So a typo is still caught at launch, not at write.
 
 ---
 
@@ -460,18 +510,32 @@ What that gives you:
   ordinary `worker_prompt_write` whose rationale names the config-event id. Nothing is truncated;
   the regression and the revert both stay in the record. There is no destructive restore, by
   design.
+- **Append-only is enforced by the database, not by convention** (migration 039, RD13). A
+  `BEFORE UPDATE OR DELETE` trigger on `config_events` refuses every write except a change to
+  `emitted_at` (the `config.changed` watermark) — including a raw `UPDATE`/`DELETE` typed at a psql
+  prompt, which is what the previous, test-only guard could never see. The one sanctioned way to
+  remove rows is `Store.PurgeConfigEvents`, which arms an escape for the length of its own
+  transaction; it exists for test cleanup and for a retention rule that has not been written yet.
+  A superuser can still disable a trigger, and `TRUNCATE` does not fire one: this is a guardrail
+  against the application, not a defence against whoever owns the database.
 
 Caveats worth knowing before you read payloads: `config_events.created_at` is **milliseconds**
 (most `agent_*` tables use seconds), and payload timestamps are not authoritative — a create
 event's `payload.updated_at` is 0 and an update event's is the *previous* value, so read the
 config event's own `created_at`.
 
-**Rationales over HTTP are patchy.** `POST`/`PUT /agent/schedules` accepts a `rationale` in the
-body and threads it through; **no other HTTP route does**, so every worker, subscription and
-project-settings edit made from the UI or a script logs an empty *why*. The deletes drop it too
-(no body, no query parameter). And no HTTP path can produce a `worker_prompt_write` event at all
-— a prompt rewrite appears in the changelog only when it came from the MCP tool. If you want the
-config log to carry reasons, the tools are the path that records them.
+**Rationales over HTTP** (design B3 / decision K2). Every configuration route now accepts one:
+`rationale` in the body on the writes — `PUT /agent/workers/{name}`, `PUT
+/agent/project-settings`, `POST`/`PUT /agent/schedules`, `POST`/`PUT /agent/subscriptions`,
+`POST /agent/topologies/apply` — and `?rationale=` on the deletes, which have no body
+(`go/httpapi/httpapi.go`, `humanEditBecause` / `rationaleParam`). It is **optional** at the HTTP
+layer; §15.5 requires one only of the two prompt-writing MCP tools, and the console asks for one
+anyway. Omit it and the config event carries an empty *why*, which is exactly as useless as it
+sounds.
+
+What HTTP still cannot do is produce a `worker_prompt_write` event: a human editing a worker
+through the API logs `worker_update`, deliberately (`go/agentdb/workers.go:206`), so a
+`worker_prompt_write` in the changelog always means the MCP tool and always carries a rationale.
 
 ---
 
@@ -485,8 +549,8 @@ Stated plainly because each one will otherwise be discovered the hard way.
   one whose bytes cannot be materialised. The delivery is marked `failed` and **no session is
   created** — §13.3 forbids falling back to the project default, because a worker that was pointed
   at an environment and quietly got a different one is the drift §13 exists to prevent. The reason
-  is in agentd's log (`[dispatch] delivery … failed: compose: …`); the delivery row itself carries
-  no reason column.
+  is in agentd's log (`[dispatch] delivery … failed: compose: …`) and on the delivery row itself
+  (`failure_reason`, migration 037).
 - **"Chat with this worker" opens a plain session.** The UI sends a `worker` field; the
   create-session HTTP body has no such field, so it is dropped. The result is an uncomposed
   session — no core preamble, no worker prompt, no briefing — never a forged one. It starts
@@ -540,10 +604,24 @@ Stated plainly because each one will otherwise be discovered the hard way.
   accepted while its session row still exists and matches the project; an expired token for an
   unknown session is 401.
 - **`GET /agent/sessions` filters on the caller's own email** unless `?user_email=*` is passed
-  (`go/httpapi/history.go:111-115`). A project API key's synthetic email (`api-key:<project>`)
+  (`go/httpapi/history.go:111-116`). A project API key's synthetic email (`api-key:<project>`)
   matches no session row, so a key sees `[]` by default. `?worker=` narrows to one worker's job
-  history server-side (`history.go:121-123`).
+  history server-side (`history.go:123`).
 - **Semantic memory search is off in the shipped stack.** See §11.
+- **A job outlives the session it ran in** (RD15). `event_deliveries.session_id` has no foreign
+  key, so deleting a session leaves its job history behind pointing at nothing. The history is
+  right to survive — it is the record that the job ran — and the Jobs table says **"transcript
+  deleted"** in place of the link for any row whose session read came back 404. Only the rows that
+  fetched (the first `tokenAutoLoad` of them, which is what the token column already costs) can
+  know; further down the table the link stays and finds out on click.
+- **Deleting a session is now a SOFT delete** (RD5, migration 041). It used to be a hard row delete
+  whose FK cascade destroyed the transcript, the messages and the artifact index — from an
+  unguarded icon button. Today the UI asks first, naming what goes, and the server stamps
+  `agent_sessions.deleted_at`: the session leaves every listing and every by-id and by-name lookup,
+  its container is released, and the transcript stays in `agent_query_events`. **Nothing in the
+  product brings it back or exports it** — there is no undelete and no operator purge, deliberately
+  (the retention rule is an open decision, work plan doc 24 G3). A deleted session's *name* is
+  released for reuse; the tombstone keeps the name it had.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
   tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
   said, never what it did.
@@ -553,10 +631,6 @@ Stated plainly because each one will otherwise be discovered the hard way.
   whose own body contains the closing marker can end the block early and have its remainder read
   as trusted prompt. It held against a real model in one live test; treat that as encouraging,
   not as a boundary. Events you ingest from outside (`POST /agent/events`) are the exposure.
-- **`snapshot_ttl_days` does nothing here.** The expiry is stamped on every burned image and the
-  reaper exists in the library, but agentd wires neither `Deps.Snapshots` nor
-  `Policy.SnapshotReapInterval`, so images accumulate. Mechanism and consequences:
-  [`15-standalone-stack.md`](15-standalone-stack.md) § "Snapshot images are not reaped either".
 - **A briefing that cannot load is only logged.** `BuildBriefingSections` returns no error by
   design, so a misconfigured `briefing` selector yields a worker running with a missing section
   and nothing in the job's output says so — look in agentd's log.

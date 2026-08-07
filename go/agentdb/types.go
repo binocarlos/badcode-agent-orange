@@ -145,6 +145,31 @@ type Session struct {
 	// spellings of "no name": rows written before 035 hold NULL, rows written
 	// since hold ''.
 	Name string `json:"name,omitempty" gorm:"type:text;<-:create"`
+	// DeletedAt is the soft-delete tombstone (migration 041, doc 22 RD5): unix
+	// SECONDS at which someone deleted this session, 0 while it is live.
+	//
+	// It exists because a hard DELETE of this row cascades to
+	// agent_query_events, agent_messages and agent_artifacts — the whole
+	// conversation. Store.DeleteSession stamps this instead, and every LISTING
+	// (ListSessions, GetSessionByName, SearchMessages, ListSessionUsers,
+	// SessionExists, GetSession) filters on `deleted_at = 0`, so a deleted
+	// session is gone from every surface while the transcript stays on disk.
+	//
+	// Deliberately NOT filtered: CountSessionsBySnapshotState /
+	// GetSessionArchiveStats (the archive bytes are still on the storage bill —
+	// hiding them would understate it; see the work plan's G1) and
+	// CountProjectTokensSince (spent tokens stay spent — filtering would let a
+	// project reset its own budget by deleting sessions).
+	//
+	// NO gorm `default:` tag: 0 is meaningful, and a declared default makes GORM
+	// omit the zero value on write. The DEFAULT lives in migration 041's SQL.
+	//
+	// The field is `int64`, not `gorm.DeletedAt`, on purpose: GORM's automatic
+	// soft-delete machinery keys off the field's TYPE (gorm/soft_delete.go —
+	// gorm.DeletedAt implements QueryClauses/UpdateClauses/DeleteClauses), not
+	// off the name, so this is an ordinary column and every filter above is
+	// written out where it can be read.
+	DeletedAt int64 `json:"deleted_at,omitempty"`
 	// CreateError is WHY this session failed to start, recorded by the Runner
 	// when a create fails and cleared when one succeeds.
 	//
@@ -165,11 +190,21 @@ type Session struct {
 	// and migration 031's columns have none: a declared default makes GORM omit
 	// the zero value on write, so the field could never be cleared. The DEFAULT
 	// lives in migration 032's SQL.
-	CreateError    string `json:"create_error,omitempty"`
-	ArtifactCount  int    `json:"artifact_count" gorm:"->;<-:false"`
-	MessageCount   int    `json:"message_count" gorm:"->;<-:false"`
-	ToolCallCount  int    `json:"tool_call_count" gorm:"->;<-:false"`
-	ContainerState string `json:"container_state" gorm:"-"`
+	CreateError string `json:"create_error,omitempty"`
+	// ActiveQueryID / ActiveSandboxQueryID are the in-flight turn's two ids —
+	// the runner's persistence key and the in-image agent's stream key. Written
+	// by agentdb/activequery.go, read after an agentd restart to answer "is a
+	// turn still running, and how do I attach to it?" (D5, doc 22 RD6/RD24).
+	//
+	// NO gorm `default:` tags, for the same reason CreateError has none: a
+	// declared default makes GORM omit the zero value on write, so the columns
+	// could never be cleared. The DEFAULTs live in migration 039's SQL.
+	ActiveQueryID        string `json:"active_query_id,omitempty"`
+	ActiveSandboxQueryID string `json:"active_sandbox_query_id,omitempty"`
+	ArtifactCount        int    `json:"artifact_count" gorm:"->;<-:false"`
+	MessageCount         int    `json:"message_count" gorm:"->;<-:false"`
+	ToolCallCount        int    `json:"tool_call_count" gorm:"->;<-:false"`
+	ContainerState       string `json:"container_state" gorm:"-"`
 }
 
 func (Session) TableName() string { return "agent_sessions" }
@@ -199,6 +234,12 @@ type QueryEvents struct {
 	Events     JSONArray `json:"events" gorm:"type:jsonb;default:'[]'"`
 	SearchText string    `json:"search_text" gorm:"type:text;default:''"`
 	CreatedAt  int64     `json:"created_at" gorm:"autoCreateTime"`
+	// Ordinal is the transcript's total order (migration 038). It is assigned
+	// by a Postgres sequence on insert — never by the caller, never by gorm —
+	// so two queries written inside the same second cannot tie. 0 means "a row
+	// that predates migration 038 and was not backfilled", which the reader
+	// tolerates; see ListQueryEvents.
+	Ordinal int64 `json:"ordinal" gorm:"type:bigint;not null"`
 }
 
 func (QueryEvents) TableName() string { return "agent_query_events" }
@@ -375,9 +416,12 @@ type CustomImage struct {
 	// which carry no promise and are therefore kept.
 	ExpiresAt int64 `json:"expires_at,omitempty"`
 	// LastResumedAt is the last time a session launched from this version.
-	// Informational: §5 sets the expiry at snapshot time, so resuming does NOT
-	// extend it — this is what tells an operator whether a soon-to-expire image
-	// is still in use.
+	// §5 sets ExpiresAt at snapshot time and resuming does not rewrite it, but
+	// the reaper reads this field: a version resumed within the project's
+	// current snapshot_ttl_days window has its reap DEFERRED rather than
+	// executed (RD9, agentkit.SnapshotReaper), so an image in daily use is not
+	// deleted out from under the worker pinned to it. The deferral lapses by
+	// itself once the launches stop.
 	LastResumedAt int64 `json:"last_resumed_at,omitempty"`
 }
 
