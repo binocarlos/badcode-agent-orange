@@ -295,7 +295,15 @@ describe('the read-route contract', () => {
     // Compared against timefmt directly, so the assertion does not depend on how
     // far from that instant the suite happens to run (doc 21, X8).
     expect(formatConfigTimestamp(1_789_000_000_123)).toBe(formatCompactTime(1_789_000_000_123))
-    expect(formatCompactTime(1_789_000_000_123, 1_789_600_000_000)).toMatch(/^\d+ Sep 2026$/)
+    // A month later, so the "older than this week" branch — the one that prints
+    // the year, and so the one that can tell 2026 from 58,000 — is chosen in
+    // EVERY timezone. This previously read `now` as 1_789_600_000_000, which is
+    // 6.94 days later: `formatCompactTime` counts local CALENDAR days, so that
+    // gap is 7 days in BST (date form, passes) and 6 in UTC (weekday form,
+    // fails). It passed on a London laptop and failed in CI for that reason
+    // alone.
+    const monthLater = 1_789_000_000_123 + 30 * 24 * 60 * 60 * 1000
+    expect(formatCompactTime(1_789_000_000_123, monthLater)).toMatch(/^\d+ Sep 2026$/)
     expect(formatConfigTimestamp(0)).toBe('')
   })
 })

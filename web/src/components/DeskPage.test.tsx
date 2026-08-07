@@ -206,7 +206,13 @@ describe('the three stacks', () => {
   it('asks first, with the sentence the worker wrote and how long it has waited', async () => {
     renderDesk()
     const asks = await screen.findByRole('region', { name: 'Asks' })
-    expect(within(asks).getByText('email-answerer · awaiting_human · 2h 40m')).toBeInTheDocument()
+    // The section mounts before its rows do — awaiting the region only proves
+    // the heading is there, and its count still reads 0. Every first assertion
+    // inside a region has to be a findBy for that reason; the ones after it can
+    // be synchronous.
+    expect(
+      await within(asks).findByText('email-answerer · awaiting_human · 2h 40m'),
+    ).toBeInTheDocument()
     expect(within(asks).getByText(/Ridley invoice query/)).toBeInTheDocument()
     expect(within(asks).getByText(/stays parked at awaiting_human/)).toBeInTheDocument()
   })
@@ -251,7 +257,7 @@ describe('the three stacks', () => {
     const onOpenSession = vi.fn()
     renderDesk({ onOpenSession })
     const asks = await screen.findByRole('region', { name: 'Asks' })
-    await userEvent.click(within(asks).getByRole('button', { name: 'open thread' }))
+    await userEvent.click(await within(asks).findByRole('button', { name: 'open thread' }))
     expect(onOpenSession).toHaveBeenCalledWith('sess-1')
   })
 })
