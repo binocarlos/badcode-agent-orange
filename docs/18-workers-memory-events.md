@@ -127,8 +127,14 @@ prompt never affects a running session; it addresses the successor.
 
 Four triggers. **Three of them compose a job; the fourth does not.** Subscriptions, schedules
 and external events all reach a worker through the router → dispatch gate → `ComposeJob`, so
-they get the core preamble, the briefing, the core tools and the event as a first message. A
-human chatting starts an ordinary session, which gets none of those — see §9.
+they get the core preamble, the briefing and the event as a first message. A human chatting starts
+an ordinary session, which gets none of those — see §9. (Since the embedding work it *does* get the
+**core tools**; that was the one gap, and it is closed. See §6.)
+
+**Schedules now have a second mode.** A schedule row targets **either** a worker — each firing
+dispatches a fresh job into a fresh session — **or** a named session (`target_session`), where each
+firing sends `input` to that existing session as its next message. See the `target_session` rows in
+the schedules paragraph below.
 
 **Subscriptions** — `/agent/subscriptions` CRUD, the UI editor, or `subscription_create` /
 `subscription_list` / `subscription_delete`. There is deliberately no `subscription_update` tool;
@@ -144,7 +150,14 @@ rewiring is delete + create.
 
 **Schedules** — `/agent/schedules` CRUD, the UI editor, or `schedule_create` / `schedule_update` /
 `schedule_delete`. Five-field cron in stack-local time (`TZ` on agentd, default UTC); cron
-nicknames like `@daily` are **refused**, not expanded. The `input` column is the design's centre
+nicknames like `@daily` are **refused**, not expanded. A row carries **either** `worker` **or**
+`target_session` (the NAME of an existing session), never both and never neither — the store
+enforces the XOR (`go/agentdb/schedules.go:207-220`). A session-mode firing restores the session if
+it was archived, and **skips rather than queues** if a turn is already in flight. The web console
+cannot yet author one (`web/src/schedules.ts:321` hard-requires a worker), so session schedules are
+API/MCP-only; `schedule_create` accepts `target_session`, `schedule_update` deliberately does not.
+Full semantics, including exactly what a resumed session does and does not refresh:
+[`19-embedding.md`](19-embedding.md) § 4. The `input` column is the design's centre
 of gravity: it is the instruction the firing delivers, so "10:00 → write the morning tweet" and
 "17:00 → write the evening tweet" are two rows targeting one worker. Firings missed while agentd
 was down are **skipped, not replayed**. A due schedule whose worker no longer exists is disabled
@@ -293,15 +306,30 @@ agentd serves one MCP server named `core` at `/mcp`, authenticated by the sessio
 (the project scope comes from the token, so a session physically cannot cross projects). Tools
 reach the model as `mcp__core__<name>`.
 
-**Only composed worker jobs get these tools.** The `core` server is attached by `ComposeJob`, so
-a routed job is told about it automatically and you never configure it — but a session you start
-by chatting in the UI has **no core tools at all**: no `memory_search`, no `worker_create`,
-nothing. If you want to drive the management tools by hand, do it over HTTP, or trigger a worker
-whose prompt does it. This surprises people who open a chat expecting to poke at memory.
+**Every session gets these tools now — this changed.** It used to be true that only composed
+worker jobs got them: the `core` server was attached by `ComposeJob` alone, so a session started by
+chatting in the UI had no `memory_search`, no `worker_create`, nothing. That gap is closed. The
+core server is now merged into **every** session created through `POST /agent/session` as well
+(`go/httpapi/session.go:177,244-256`, wired in `go/cmd/agentd/main.go:313-316,323`), with core
+winning any name collision against project or worker MCP config. A chat session can call
+`memory_current`.
+
+Two caveats, both sharp:
+
+- **Only when `DATABASE_URL` is set.** On the sqlite fallback `/mcp` is not mounted at all, so
+  `CoreMCP` is left empty rather than pointing containers at an endpoint that 404s.
+- ⚠️ **No backfill.** MCP config is fixed when a container is provisioned and re-supplied from the
+  persisted `agent_sessions.mcp_servers` column on restore, so a session created **before** this
+  shipped restores with its old, empty set forever. A long-lived session that needs core tools has
+  to be recreated.
+
+What a chat session still does **not** get: the core preamble, a briefing, and a `worker` column
+(so `session_list` with no argument correctly returns an empty list — see below).
 
 | Group | Tools |
 | --- | --- |
 | Memory (§7.3) | `memory_create` `memory_search` `memory_get` `memory_current` |
+| Sessions | `session_list` |
 | Workers & prompts (§9) | `worker_list` `worker_create` `worker_update` `worker_prompt_read` `worker_prompt_write` `project_prompt_read` `project_prompt_write` |
 | Wiring (§8) | `subscription_list` `subscription_create` `subscription_delete` `schedule_list` `schedule_create` `schedule_update` `schedule_delete` |
 | Images (§13) | `image_create` `image_list` |
@@ -316,6 +344,19 @@ is `worker_update(name, {enabled:false})`; hard delete stays HTTP/UI-only), no
 Every mutation tool validates, writes, then **reads the row back and echoes it** — malformed input
 fails loudly and nothing is half-written. `rationale` is **required** on `worker_prompt_write` and
 `project_prompt_write`, optional elsewhere.
+
+`session_list(worker?, limit?)` is **provenance, not history**: it returns a worker's recent runs
+newest-first — id, name, status, `created_at`/`updated_at` (unix **seconds**, unlike the config
+log's milliseconds), `session_url`, `artifact_count`, `message_count`, `attention_requested`,
+`create_error`. Default limit 10, maximum 50 (the cap is not decoration — `ListSessions` runs three
+unconditional `COUNT(*)` subqueries per row). There is **no transcript-reading tool** and there is
+not going to be one: what a previous run concluded belongs in memory. It lists **job** sessions
+only, because the `worker` column is written only for dispatched jobs — a chat session carries its
+worker name in `persona`, and the tool deliberately does not fall back to it. So calling it with no
+argument from a chat session returns `[]` plus a note explaining that is not the same as "I have
+never run"; name the worker explicitly instead. Note that new core tools do **not** appear in the
+core preamble a worker reads at job start (that prose is pinned byte-for-byte by test), so
+`session_list` is discoverable only through `tools/list`.
 
 `request_human_attention(message, expires_in?)` posts `{message, session_url}` to the project's
 `attention_channel`, stamps the session and the `worker.finished` envelope, echoes the permalink,
@@ -448,12 +489,16 @@ Stated plainly because each one will otherwise be discovered the hard way.
   no reason column.
 - **"Chat with this worker" opens a plain session.** The UI sends a `worker` field; the
   create-session HTTP body has no such field, so it is dropped. The result is an uncomposed
-  session — no core preamble, no worker prompt, no briefing, **and no core MCP tools** — never a
-  forged one. It starts working the moment the create path composes. There *is* a working
-  half-measure the UI does not use: a session created with `persona: <worker name>` resolves that
-  worker's prompt (project prompt + worker prompt), its `image` pointer and its MCP config
-  through the session-context provider. It still gets no briefing, no core preamble and no core
-  tools, so it is not the same thing as a job.
+  session — no core preamble, no worker prompt, no briefing — never a forged one. It starts
+  working the moment the create path composes. There *is* a working half-measure the UI does not
+  use: a session created with `persona: <worker name>` resolves that worker's prompt (project
+  prompt + worker prompt), its `image` pointer and its MCP config through the session-context
+  provider. **Core MCP tools are no longer on this list** — since the embedding work every
+  HTTP-created session gets them (§6) — but a briefing and the core preamble still are, so it is
+  not the same thing as a job. Routing the create path through `ComposeJob` was considered and
+  rejected: it refuses vanilla sessions by design, its preamble hard-codes *"You are the worker
+  %q"* plus autonomous-agent instructions that are wrong for interactive chat, and a worker-named
+  chat session would emit `worker.finished` with its whole transcript onto the event spine.
 - **`POST /agent/session` accepts a `systemPrompt` and does nothing with it.** The field is
   decoded and forwarded, but for a session with no worker it is never persisted or used. Nothing
   in-tree sends one; do not build on it.
@@ -484,12 +529,20 @@ Stated plainly because each one will otherwise be discovered the hard way.
   because a stored capacity error would go stale; conversely a capacity failure never overwrites a
   recorded configuration reason. Details and the exact strings: `docs/15-standalone-stack.md`.
 - **`POST /agent/project-token` returns 501** in the standalone stack (the issuer seam is not
-  wired), so a headless event poster needs an ordinary JWT for now.
+  wired). A headless poster now has a better option: a **project API key** named by the project
+  map, sent as `X-API-Key` — see [`19-embedding.md`](19-embedding.md) § 2.
+- **Session names, session-mode schedules and the whole embed flow are Postgres-only and
+  unavailable in dev-open mode.** They also carry hazards worth reading before you expose the
+  stack to another application — in particular an embed token's scope is enforced only on
+  session-by-id routes, so it can reach every project-wide route for its lifetime. All of it is
+  in [`19-embedding.md`](19-embedding.md) § "Known hazards".
 - **Session tokens expire after an hour, jobs do not.** An expired-but-signature-valid token is
   accepted while its session row still exists and matches the project; an expired token for an
   unknown session is 401.
-- **`GET /agent/sessions` has no server-side worker filter**, so the UI's per-worker job history
-  filters one 200-row page client-side and says so.
+- **`GET /agent/sessions` filters on the caller's own email** unless `?user_email=*` is passed
+  (`go/httpapi/history.go:111-115`). A project API key's synthetic email (`api-key:<project>`)
+  matches no session row, so a key sees `[]` by default. `?worker=` narrows to one worker's job
+  history server-side (`history.go:121-123`).
 - **Semantic memory search is off in the shipped stack.** See §11.
 - **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
   tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
@@ -562,6 +615,10 @@ commentary; this is the product-layer subset.
 Each variable listed in `AGENTKIT_MCP_ENV` must also *reach* agentd: compose cannot forward a
 dynamic set of names, so add one `environment:` line per credential in `docker-compose.yml`
 alongside the allowlist entry.
+
+The embedding variables — `AGENTKIT_PROJECT_MAP` / `_FILE` (which now carries per-project API-key
+env-var names and framing origins) and the key variables it names — are in
+[`19-embedding.md`](19-embedding.md) § 2 and § 10.
 
 The stack-level variables — `DATABASE_URL`, `BASE_IMAGE` (→ `AGENTKIT_IMAGE`),
 `AGENTKIT_JWT_SECRET`, the login variables, `AGENTKIT_SELF_URL`, the model credentials, the two

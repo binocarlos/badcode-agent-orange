@@ -57,6 +57,22 @@ Agent Orange. Three pieces:
 > §4a/§4b; that record is two dated commits and nothing re-runnable, so treat it as testimony, not
 > as a green test — the caveat is stated in MIGRATION.md.
 > The plan and current state live in **`MIGRATION.md`** — read it before doing migration work.
+>
+> **Embeddable Orange** (`design/2026-08-06-embeddable-agent-orange.md`, in progress on this
+> branch) makes Agent Orange a singleton service other applications embed. Built so far: project
+> **API keys** (`X-API-Key`, resolved at boot from env vars named by the project map's new object
+> form — no table, no UI); **embed tokens** (`POST /agent/embed-token`, ≤1h, session-scoped) and an
+> **embed page** (`GET /embed/session/{name}#token=…`) served with CSP `frame-ancestors`;
+> **session names** (`name` on `POST /agent/session`, `GET /agent/sessions/by-name/{name}`);
+> **session-mode schedules** (`schedules.target_session`); the **artifact download route**
+> (`GET /agent/artifacts/{id}/download` and two by-name twins) that three console components had
+> been calling into a 404; **full-content memory reads** over HTTP (`GET /agent/memories/{id}`,
+> `…/current?name=`); tenancy enforced on every session-by-ID route; and the **core MCP server now
+> reaching HTTP-created sessions**, so a chat session can call `memory_current`. Migrations
+> `035_session_names` + `036_schedule_target_session`. **Postgres-only, and unavailable in dev-open
+> mode.** The integration guide, and a hazard list you should read before exposing the stack to
+> another application, is **`docs/19-embedding.md`**. Still open at the time of writing: the live
+> stack checks for T13/T15 and the end-to-end spec (T17).
 
 ## Reading path
 
@@ -67,6 +83,7 @@ If you need to understand the system rather than patch one file, read in this or
 3. `docs/product/00-overview.md` (the map) → `docs/product/17-product-spec.md` (goal, atoms,
    binding principles P1–P8, non-goals) → the component designs `docs/product/01`–`09`.
 4. `docs/18-workers-memory-events.md` — the product layer from an operator's seat.
+   Then `docs/19-embedding.md` if another application will be embedding this one.
 5. `docs/product/06-work-plan.md`'s **Discovered Issues Log** — ~100 entries recording what was
    actually built and what surprised us. When a design doc and this log disagree, the log is
    closer to the code; when the log and the code disagree, the code wins.
@@ -82,7 +99,7 @@ If you need to understand the system rather than patch one file, read in this or
 | `sandbox/` | In-image agent (TS). The HTTP/SSE control server + harness adapter that runs inside a session container. `sandbox/Dockerfile` builds the harness image. |
 | `web/` | React component library: chat (one event reducer drives live + replay identically) plus the product-layer pages — project settings, workers, events/jobs, subscriptions + schedules editors, changelog. No router; the app shell is `examples/web/`. |
 | `installations/` | **Example** base images (`core`, `example`) — see `installations/README.md`. Real per-project images live in their own project repos. |
-| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`, `18-workers-memory-events` (the product layer, from an operator's seat — read it before touching workers/memory/events code). Order: see **Reading path** above. The authoritative product spec is `docs/product/17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/product/00`–`09` (`00-overview` = quick map; component designs; original § numbers preserved). The research trail and executed plan records live beside the spec as dated files in the same folder. |
+| `docs/` | Numbered architecture docs, consolidated 2026-07-22 (numbering has deliberate gaps): `01-architecture`, `02-execution-environment`, `03-image-registry`, `05-event-streaming`, `06-artifacts`, `07-in-image-agent`, `13-fleet-placement`, `14-host-adapters`, `15-standalone-stack`, `18-workers-memory-events` (the product layer, from an operator's seat — read it before touching workers/memory/events code), `19-embedding` (integration guide + hazard log for an application embedding Orange: the three credentials, the project map's object form, named sessions, session schedules, embed tokens/iframe, artifact + memory reads). Order: see **Reading path** above. The authoritative product spec is `docs/product/17-product-spec.md` (entry point: goal, atoms, principles, § map) + `docs/product/00`–`09` (`00-overview` = quick map; component designs; original § numbers preserved). The research trail and executed plan records live beside the spec as dated files in the same folder. |
 | `migration-reference/` | **Reference only — do NOT build or import.** Platinum host-side image pipeline + the original Platinum installations, kept to port from. May contain host-app coupling. |
 | `deploy/`, `docker-compose*.yml`, `README-stack.md` | The standalone stack (run it with one command — below). `deploy/gcp/setup.sh` provisions the GCP side (idempotent, safe to re-run). |
 | `mock-server/`, `e2e/`, `examples/` | Mock model server; end-to-end tests (**`e2e/features/` + `playwright.stack.config.ts` is the current rig, run against the compose stack — `e2e/tests/` is the older Vite+mock-server one**); example host + `examples/web/` (the app shell the stack actually serves — `web/` is a component library with no router). |
@@ -212,6 +229,12 @@ Product layer (all Postgres-only, all in `go/agentdb/` + `go/cmd/agentd/`):
 - `docs/18-workers-memory-events.md` — operating the product layer: project settings, workers,
   triggers, memory and briefings, the core tools, images/skills, the config log, the env vars,
   and the current known limitations.
+- `docs/19-embedding.md` — embedding Orange in another application: the three credentials, the
+  project map's object form, named sessions, session-mode schedules, embed tokens and the iframe,
+  the artifact-proxy pattern, full-content memory reads, the two-bot pattern — and a **Known
+  hazards** section (embed-token authority, the CSP path binding, the unauthenticated
+  `/agent-proxy/`, the missing `/webapp/…` and `workspace/files` routes) that should be read before
+  any third party is pointed at the stack.
 - `installations/README.md` — installations / image layering (derived-image tree, overlay model, `imagetree`).
 - `docs/product/17-product-spec.md` — the authoritative product spec entry point (goal, atoms,
   principles, non-goals); component designs incl. the work-plan checklist in `docs/product/`.

@@ -1108,7 +1108,7 @@ type Schedule struct {
     The `/webapp/{session}/{token}/{path}` **serving route was NOT built** (explicitly Out of Scope).
   - Verifier: PASS, 7/7 criteria evidenced, via a verbatim-config nginx rig with a stub upstream.
 
-### T14: Documentation + hazard log   [Status: pending | Model: sonnet]
+### T14: Documentation + hazard log   [Status: done | Model: sonnet]
 > **Ordering:** despite its number, this ticket runs **after T15, T16 and T18** — it documents
 > them. Take it second-to-last, before the e2e.
 - **Scope:** Write `docs/19-embedding.md`: the three credentials, the project map object form,
@@ -1127,6 +1127,38 @@ type Schedule struct {
 - **TDD:** no (docs)
 - **Validation:** Manual read-through against the implemented routes.
 - **Depends on:** T8, T10, T11, T12, T15, T16, T18
+- [x] done
+- Notes:
+  - `docs/19-embedding.md` written; `CLAUDE.md`, `docs/06-artifacts.md` and
+    `docs/18-workers-memory-events.md` updated. T9's carry-forward is discharged: the
+    "what a resumed session does and does NOT refresh" table now exists in §4, matching
+    `schedule_create`'s tool description.
+  - **Fact-checked twice, and it earned it.** The checker opened ~70 distinct `path:line` citations.
+    Round 1 found a `web/src/schedules.ts` off-by-one (320 vs 321, in two files) and a JSON sample
+    printing three `omitempty` fields as empty strings. Round 2 found two more, both fixed by the
+    orchestrator:
+    - a hazard paragraph describing a failure mode **that does not exist** (see the retraction in the
+      log — T8's implementer had mis-read `InlineArtifactPreview.tsx`, and I had copied it into the
+      log unverified);
+    - a `created_at` example printed in seconds for a **milliseconds** field, which would have made
+      any "how stale is this state?" calculation wrong by 1000×.
+  - Also corrected by the orchestrator after the second pass: `docs/19-embedding.md` §2 now warns that
+    `docker-compose.yml` forwards only `AGENTKIT_PROJECT_MAP`/`_FILE`, so a per-project key variable
+    in `.env` never reaches `agentd` on the standalone stack.
+  - Hazards documented as **H1–H13**, each with `path:line`: embed-token project authority (the HIGH
+    entry), the CSP path-prefix binding plus the two nginx traps, the artifact-iframe sandbox, the
+    missing `/webapp/…` route, the missing `workspace/files` route, the unauthenticated
+    `/agent-proxy/`, no core-tool backfill for pre-T15 sessions, the empty `GET /agent/sessions`
+    without `?user_email=*`, Postgres-only/dev-open, the console's inability to author session
+    schedules, a session named `session`, the shared JWT/session secret, and `current` being reserved
+    in the memory id path space.
+  - Two counts in this plan's own inventory were **low**, and the doc records the real numbers: the
+    `workspace/files` route is referenced by **nine** web/ call sites (not five or seven), and the
+    artifact-iframe sandbox lines are `ArtifactViewer.tsx:609` / `InlineArtifactPreview.tsx:315`
+    (not 612/313).
+  - The doc was written from the **code**, not from this plan — deliberately, since the plan's prose
+    was wrong about `devclaims.NewScoped`, about where `verify-google` mounts, and about the CSP
+    being per-project.
 
 ### T15: Give HTTP-created sessions the core MCP server   [Status: IMPLEMENTED — stack check owed | Model: sonnet]
 - **Scope:** Deliberately narrow. Project prompt, project/worker MCP config and the project
@@ -1362,13 +1394,17 @@ type Schedule struct {
   schema with no `name` column and no `GetSessionByName`. T7 answers 501 there rather than degrading
   silently, but it means the whole embedding feature is Postgres-only — consistent with the rest of
   the product layer, and worth saying plainly in T14.
-- **T8 — ⚠️ one console call site will STILL fail after this fix.**
-  `web/src/components/InlineArtifactPreview.tsx:52` (`getArtifactImageUrl`) puts
-  `/agent/artifacts/{id}/download` straight into an `<img src>` with no Authorization header, and
-  browsers do not attach bearer tokens to subresource loads — so it 401s in any JWT-authenticated
-  deployment even though the route now exists. The other six call sites use `fetch` with headers and
-  are fixed. Not in T8's scope; needs either a cookie, a signed URL (explicitly designed out), or a
-  blob-URL fetch in the component.
+- **~~T8 — one console call site will STILL fail after this fix.~~ RETRACTED — this was false.**
+  T8's implementer reported that `InlineArtifactPreview.tsx:52` (`getArtifactImageUrl`) puts
+  `/agent/artifacts/{id}/download` straight into an `<img src>` with no Authorization header and
+  would therefore 401. T14's fact-checker disputed it and the code agrees with the fact-checker: the
+  URL is `fetch`ed **with** an `Authorization` header (`:256-259`) into an object URL, and the
+  `<img>` renders that (`:265,:273`). The blob-URL indirection is precisely what makes authenticated
+  images work. The original entry was written from reading line 52 in isolation; it was carried into
+  this log unverified by the orchestrator, and `docs/19-embedding.md` now documents the mechanism so
+  nobody "simplifies" it away. **Standing lesson: an implementer's incidental observation about code
+  it did not change is the weakest evidence in this whole process — two agents disagreeing is worth
+  more than either.**
 - **T8 — an EIGHTH console call site to a non-existent route.** `ArtifactPreviewDialog.tsx:113` calls
   `GET /agent/artifacts/{id}/preview-url`, which the plan's inventory of "seven call sites" misses.
   It degrades gracefully (falls through to download), so it is cosmetic.
@@ -1437,6 +1473,18 @@ type Schedule struct {
 - **T11 — `apiMux` is no longer purely `httpapi`'s route table.** `registerVerifyGoogle` is the
   second thing `main.go` mounts on it directly (after `POST /agent/attention`), so a reader of
   `httpapi.Handlers.Mux()` no longer sees every authenticated route in one place.
+- **T14 — ⚠️ compose does not forward per-project API key env vars.** `docker-compose.yml:102-103`
+  passes only `AGENTKIT_PROJECT_MAP` / `_FILE` to `agentd`, so a `WOLF_API_KEY` set in `.env` never
+  reaches the process and the project boots keyless (logged once). Documented in `docs/19-embedding.md`
+  §2. **This also bites T17**: the e2e stack must add the variable to the `agentd` service's
+  `environment:` block before any API-key flow can be exercised.
+- **T14 — memory `created_at` is unix MILLISECONDS** (`go/agentdb/memories.go:127` writes
+  `UnixMilli()`), while `session_list`'s session timestamps are SECONDS (the T16 entry above). Two
+  units on one product surface. The doc now states the unit at each site; nothing enforces it.
+- **T14 — `schedule_create`'s MCP tool description names a tool that does not exist.**
+  `go/cmd/agentd/mcp_management.go:453` says "write what you learned with `memory_write`"; the real
+  tool is `memory_create` (`mcp_memory.go:188`). A model following the description would call a
+  nonexistent tool. Not acted on — outside T14's file list — but it is a one-word fix worth making.
 - **T13 — ⚠️ the CSP is bound to the `/embed/` PATH PREFIX, not to the document.**
   `curl -D- http://localhost:8080/embed.html` returns 200 with **no** `Content-Security-Policy`
   header, because that URI falls through to `location /`. The framing protection therefore depends on

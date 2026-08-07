@@ -137,9 +137,52 @@ the workspace is an `ExecutionEnvironment`/sandbox-contract concern; the *storin
 - a genuine backend failure → a wrapped error.
 
 There is **no self-heal**: a `live` artifact whose blob happens to exist is not promoted to
-`extracted` by `Load`. (`MarkLost` is what performs that promotion, on destroy.) And the shipped
-`httpapi` handlers do **not** map these to 202/410 — that mapping is a host decision nobody has
-made in this repo.
+`extracted` by `Load`. (`MarkLost` is what performs that promotion, on destroy.)
+
+### The download route (it exists now)
+
+This section used to say the shipped `httpapi` handlers did **not** map the nil-reader cases and
+that "nobody has made that decision in this repo". **That is no longer true.**
+`go/httpapi/artifacts_download.go` is exactly that decision, and it ships three routes:
+
+```
+GET /agent/artifacts/{id}/download
+GET /agent/sessions/by-name/{name}/artifacts
+GET /agent/sessions/by-name/{name}/artifacts/file?path=…
+```
+
+`serveArtifactBytes` (`artifacts_download.go:165`) is the single place artifact bytes leave the
+package. The nil-reader mapping is `artifactUnavailable` (`artifacts_download.go:237-259`),
+evaluated in this order — the order is load-bearing:
+
+| Condition | Status | Why |
+| --- | --- | --- |
+| `status = lost` | **410 Gone** | the container was destroyed before extraction; no retry helps |
+| `status = extraction_failed` | **409 Conflict** | there are no bytes to serve |
+| `IsDir` | **409 Conflict** | checked *before* the live case, because retrying a directory will never produce one byte stream, so 202 would be a lie. The message points at the list route |
+| `status = live` | **202 Accepted** | registered but not yet extracted — the one case where the client should come back |
+| otherwise | **410 Gone** | extracted, but the blob is not in the store: the bytes existed and no longer do |
+
+Other decisions worth knowing before you build on it:
+
+- **A `Load` error maps to 404, not 500.** Both shipped backends report an unknown id as a wrapped
+  error with no sentinel distinguishing it from a backend fault, and 404 is the required answer for
+  a foreign id anyway. The 404 body is `ownsSession`'s string **byte for byte** (`not found`) — a
+  distinguishable "artifact not found" would let a session-scoped embed token tell "exists but
+  belongs elsewhere" from "no such id".
+- **`Content-Disposition: attachment`**, plus `X-Content-Type-Options: nosniff` and
+  `application/octet-stream` when `MimeType` is empty. Security, not UX: an agent can write an
+  artifact containing HTML, and serving it inline would be scripting on the console's own origin.
+  Every console call site fetches into a blob URL, so nothing is lost. The filename comes from
+  `path.Base(FilePath)` — the portable `artifacts.Artifact` has no `FileName` field.
+- **No `Content-Length`.** `FileSize` is metadata written by a different call than the bytes, and a
+  stale value would truncate the response.
+- The by-name routes' tenancy rides entirely on the name resolver
+  (`go/httpapi/sessions_byname.go:102`): `GetArtifactByPath` takes a session **id** with no
+  customer parameter, so no handler in the package may pass a session id that came from a request.
+  A session id in the query string is ignored. `?path` is tried with and without a leading slash.
+
+Integration guide for callers outside the console: [`19-embedding.md`](19-embedding.md) § 6.
 
 ## Webapp artifacts
 
