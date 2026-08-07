@@ -168,6 +168,13 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		CustomImageID: body.CustomImageID,
 		Image:         resolvedImage,
 	}
+	// There is one kind of session: a chat session launches with the same core
+	// tools a dispatched job gets. The project's system prompt, the project ∪
+	// worker MCP config and the project base image already reach this create
+	// through the Runner's SessionContextProvider (runner.go:366,484-495); the
+	// host's core tool server is the one thing that never did, because the host
+	// mounts it and the provider knows nothing about it.
+	createReq.MCPServers = mergeCoreMCPServers(createReq.MCPServers, h.cfg.CoreMCP)
 
 	// Detach from the request context: it is cancelled when this handler returns,
 	// which would abort provisioning the instant we respond.
@@ -212,6 +219,40 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 	// The library has no separate workflow concept, so WorkflowID echoes the
 	// session id (the frontend's useAgentSession expects a workflowId field).
 	writeJSON(w, createSessionResp{ID: sid, Status: "creating", WorkflowID: sid})
+}
+
+// mergeCoreMCPServers layers the host's core tool servers over whatever MCP
+// config the create request already carries. Core is written LAST, so it cannot
+// be shadowed — the same ordering composition uses for dispatched jobs
+// (go/compose.go:436-441, project → worker → core).
+//
+// The project's and worker's own servers are deliberately NOT merged here. They
+// reach the session further down, inside the Runner, from the host's
+// SessionContextProvider, and that merge lets the request win a name collision
+// (mergeSessionMCPServers, go/runner.go:484-495). Putting core on the request is
+// therefore precisely what makes it non-overridable: a project cannot reroute
+// memory_search by writing its own `agentkit-core` entry into
+// project_settings.mcp_config.
+//
+// No core servers configured returns req untouched — nil, for every caller
+// today — which keeps the sqlite fallback on exactly the old path: the Runner
+// treats an empty map as "no MCP config" and never persists one.
+//
+// The result is always a fresh map: Config.CoreMCP is built once at boot and
+// shared by every create, and the Runner is free to hand what it gets to a
+// store.
+func mergeCoreMCPServers(req, core agentdb.MCPServers) agentdb.MCPServers {
+	if len(core) == 0 {
+		return req
+	}
+	merged := make(agentdb.MCPServers, len(req)+len(core))
+	for name, cfg := range req {
+		merged[name] = cfg
+	}
+	for name, cfg := range core {
+		merged[name] = cfg
+	}
+	return merged
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

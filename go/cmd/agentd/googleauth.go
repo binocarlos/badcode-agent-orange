@@ -418,6 +418,85 @@ func authGoogleHandler(v *googleVerifier, pm projectMap, issuer *devclaims.Issue
 	}
 }
 
+// verifyResponse is everything POST /auth/verify-google returns. Two fields, on
+// purpose: Agent Orange verifies an identity for an embedding application and
+// stops there. It mints no token, grants no project and creates no user row —
+// the embedding app owns its own allowlist and its own sessions (see the design
+// doc's rejected alternative "Wolf runs its own Google OAuth").
+type verifyResponse struct {
+	Email string `json:"email"`
+	// EmailVerified is always true on a 200: googleVerifier.Verify refuses an
+	// unverified address outright (see the email_verified check in Verify), so
+	// the only other answer this route gives is 401. The field is here so the
+	// caller reads the fact rather than having to know that rule.
+	EmailVerified bool `json:"email_verified"`
+}
+
+// authVerifyGoogleHandler serves POST /auth/verify-google {credential} →
+// {email, email_verified}. It is the identity seam for an application that
+// embeds Agent Orange: the app's backend hands over the Google ID token its
+// user signed in with, Orange says whose it is, and the app decides — from its
+// own allowlist — whether that person may do anything. Orange deliberately does
+// not become an identity provider.
+//
+// API-key auth only (see authenticatedByAPIKey): this is a token-verification
+// oracle, and it answers only to a project's backend.
+func authVerifyGoogleHandler(v *googleVerifier) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !authenticatedByAPIKey(r) {
+			http.Error(w, "project api key required", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			Credential string `json:"credential"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Credential == "" {
+			http.Error(w, "missing credential", http.StatusBadRequest)
+			return
+		}
+		email, err := v.Verify(r, body.Credential)
+		if err != nil {
+			// One status for every rejection — bad signature, wrong audience,
+			// unverified address. Distinguishing them would tell a caller
+			// holding a stolen token which part of it Google disliked.
+			http.Error(w, "invalid credential", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(verifyResponse{Email: email, EmailVerified: true})
+	}
+}
+
+// authenticatedByAPIKey reports whether the request in hand authenticated with a
+// project API key rather than a bearer JWT.
+//
+// It reads the header rather than the principal because apiAuthMiddleware tries
+// X-API-Key first and refuses a bad one outright — it never falls through to the
+// bearer path or to dev-open (auth.go:65-78). So a request that reached a
+// handler carrying that header carried a *valid* key; nothing here re-checks the
+// value, and a principal minted by any other path has no header to show.
+func authenticatedByAPIKey(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get(apiKeyHeader)) != ""
+}
+
+// registerVerifyGoogle mounts POST /auth/verify-google — and mounts nothing at
+// all when GOOGLE_CLIENT_ID is unset, so a deployment without Google login
+// answers 404 rather than exposing a verifier with no audience to check tokens
+// against.
+//
+// The mux it takes is the AUTHENTICATED one, which is the difference between
+// this route and /auth/google: the login routes sit on the root mux, outside
+// apiAuthMiddleware, because a browser has no credential yet when it logs in.
+// This route's caller is a project backend that does have one, and must present
+// it (main.go registers root.Handle("/", apiAuthMiddleware(…, apiMux)) last, so
+// anything on apiMux is authenticated).
+func registerVerifyGoogle(mux *http.ServeMux, googleClientID string) {
+	if googleClientID == "" {
+		return
+	}
+	mux.Handle("POST /auth/verify-google", authVerifyGoogleHandler(&googleVerifier{clientID: googleClientID}))
+}
+
 // authPasswordHandler serves POST /auth/password {email, password} against the
 // fixed AGENTKIT_TEST_LOGIN pair ("email:password"). TEST/DEV ONLY — it exists
 // so browser e2e can exercise the full login → project → session flow without

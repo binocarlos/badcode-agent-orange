@@ -79,8 +79,9 @@ type Config struct {
 	// 501 without one. Read-only by design — see attention.go.
 	Attention AttentionStore
 
-	// Memories backs GET /agent/memories, the §7.6 memory read path. Same
-	// defaulting rule as Workers: auto-filled from AgentDB, 501 without one.
+	// Memories backs the §7.6 memory read paths — the snippet search at
+	// GET /agent/memories and the two full-content reads beside it (memories.go).
+	// Same defaulting rule as Workers: auto-filled from AgentDB, 501 without one.
 	// Read-only by design — memories are appended by workers, never by the UI.
 	Memories MemoryStore
 
@@ -109,6 +110,25 @@ type Config struct {
 	// from AgentDB, 501 without one — the sqlite fallback's artifact index is
 	// an in-process map with nothing to query by path.
 	ArtifactPaths ArtifactPathStore
+
+	// CoreMCP is the host's own core tool server — memory_*, worker_*, image_*,
+	// config_* — merged into every session created through POST /agent/session
+	// (session.go). It goes on LAST and is therefore not overridable by project
+	// or worker config, the same rule composition applies to dispatched jobs
+	// (agentkit.ComposeJobInput.CoreMCP, go/compose.go:436-441).
+	//
+	// It exists because a chat session is composed by a different mechanism than
+	// a job: the project ∪ worker MCP config, the project system prompt and the
+	// project base image all reach a create through the Runner's
+	// SessionContextProvider, which knows nothing about the host's tool server.
+	// Without this field the core tools reached dispatched jobs alone, and a
+	// long-lived chat session could not call memory_current at all.
+	//
+	// Nil is a supported deployment and an explicit no-op, not an error: the
+	// shipped host mounts its core MCP server only on the Postgres store, and a
+	// session told to reach an endpoint that answers 404 is worse off than one
+	// with no core tools.
+	CoreMCP agentdb.MCPServers
 
 	// Catalogue backs GET /agent/images and GET /agent/skills (design B4) —
 	// read-only, the browser-side mirror of the image/skill MCP tools. Same
@@ -297,8 +317,12 @@ type Endpoints struct {
 	ConfigEvents string // "GET /agent/config-events"
 	// Attention requests (design B1) — read-only; the project comes from the JWT.
 	AttentionRequests string // "GET /agent/attention-requests"
-	// Memory (§7.6) — read-only; the project comes from the JWT.
-	ListMemories string // "GET /agent/memories"
+	// Memory (§7.6) — read-only; the project comes from the JWT. ListMemories
+	// answers 500-byte snippets; the other two answer one memory in full (T18),
+	// which is what an embedding application renders its state from.
+	ListMemories  string // "GET /agent/memories"
+	GetMemory     string // "GET /agent/memories/{id}"
+	CurrentMemory string // "GET /agent/memories/current"
 	// Topologies (T2). The catalogue is read-only; preview computes and writes
 	// nothing; apply is the one write, atomic in the store.
 	ListTopologies  string // "GET /agent/topologies"
@@ -359,11 +383,15 @@ var DefaultEndpoints = Endpoints{
 	ConfigEvents:       "GET /agent/config-events",
 	AttentionRequests:  "GET /agent/attention-requests",
 	ListMemories:       "GET /agent/memories",
-	ListTopologies:     "GET /agent/topologies",
-	PreviewTopology:    "POST /agent/topologies/preview",
-	ApplyTopology:      "POST /agent/topologies/apply",
-	ListImages:         "GET /agent/images",
-	ListSkills:         "GET /agent/skills",
+	// The literal segment beats the {id} wildcard in ServeMux precedence, so
+	// these two coexist without an ordering rule to remember.
+	GetMemory:       "GET /agent/memories/{id}",
+	CurrentMemory:   "GET /agent/memories/current",
+	ListTopologies:  "GET /agent/topologies",
+	PreviewTopology: "POST /agent/topologies/preview",
+	ApplyTopology:   "POST /agent/topologies/apply",
+	ListImages:      "GET /agent/images",
+	ListSkills:      "GET /agent/skills",
 }
 
 // Mux registers every handler on a fresh *http.ServeMux. Mount it under your
@@ -433,6 +461,8 @@ func (h *Handlers) Mux() *http.ServeMux {
 		e.ConfigEvents:      h.ListConfigEvents,
 		e.AttentionRequests: h.ListAttentionRequests,
 		e.ListMemories:      h.ListMemories,
+		e.GetMemory:         h.GetMemory,
+		e.CurrentMemory:     h.CurrentMemory,
 		e.ListTopologies:    h.ListTopologies,
 		e.PreviewTopology:   h.PreviewTopology,
 		e.ApplyTopology:     h.ApplyTopologyHandler,

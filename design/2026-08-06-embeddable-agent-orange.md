@@ -960,7 +960,7 @@ type Schedule struct {
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'EmbedToken' -count=1`
 - **Depends on:** T4, T7
 
-### T11: verify-google endpoint   [Status: pending | Model: sonnet]
+### T11: verify-google endpoint   [Status: done | Model: sonnet]
 - **Scope:** `POST /auth/verify-google`, API-key auth, body `{credential}`. Reuse the existing
   `googleVerifier` (`go/cmd/agentd/googleauth.go:113-161`) and return only
   `{email, email_verified}`. Mint nothing; grant nothing; do not consult the project map's user
@@ -973,6 +973,24 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'Google' -count=1`
 - **Depends on:** T2
+- [x] done
+- Notes:
+  - **The wiring question the ticket left open, resolved:** the route is registered on **`apiMux`**,
+    not on `root` beside `/auth/google`. The plan's own pointer (`main.go:406-410`) would have put it
+    on the unauthenticated mux — `root.Handle("/", apiAuthMiddleware(...))` is registered last and
+    only wraps `apiMux` — which would have shipped an **unauthenticated Google-token verification
+    oracle**. The design's route table says "Auth: API key", and that wins over the prose pointer.
+  - API-key-*only* is enforced in the handler (`authenticatedByAPIKey`), because the middleware
+    accepts either credential and a browser JWT must not be able to use this route. It tests for the
+    `X-API-Key` header's presence, which is sound only because `apiAuthMiddleware` tries the key
+    first and 401s a bad one outright — noted so the coupling is visible.
+  - `registerVerifyGoogle(mux, googleClientID)` guards its own registration and is called
+    unconditionally, so the condition protecting production is the same one the test exercises
+    rather than a duplicated `if`. 404 when `GOOGLE_CLIENT_ID` is unset.
+  - Every verification failure — bad signature, wrong audience, unverified address — maps to one 401
+    "invalid credential", matching `authGoogleHandler`. Distinguishing them would tell a caller
+    holding a stolen token which part of it Google disliked.
+  - Verifier: PASS, 10/10 criteria evidenced.
 
 ### T12: The embed page   [Status: pending | Model: sonnet]
 - **Scope:** New Vite entry (`embed.html` + `embed-main.tsx`) rendering `EmbedSession.tsx`: parse
@@ -1030,7 +1048,7 @@ type Schedule struct {
 - **Validation:** Manual read-through against the implemented routes.
 - **Depends on:** T8, T10, T11, T12, T15, T16, T18
 
-### T15: Give HTTP-created sessions the core MCP server   [Status: pending | Model: sonnet]
+### T15: Give HTTP-created sessions the core MCP server   [Status: IMPLEMENTED — stack check owed | Model: sonnet]
 - **Scope:** Deliberately narrow. Project prompt, project/worker MCP config and the project
   base image **already reach** sessions created through `POST /agent/session`, via the
   `SessionContextProvider` (see the Architecture table). The single gap is the core tool
@@ -1054,12 +1072,47 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/ ./cmd/agentd/ -count=1 && go test ./... -count=1`
 - **Depends on:** —
+- [ ] done — **implementation complete and verified by unit test; the ticket's own pre-tick stack
+  check is still owed** (see below). Folded into T17, which brings the stack up anyway.
+- Notes:
+  - Deliberately tiny, as the corrected premise demands: `Config.CoreMCP` + a `mergeCoreMCPServers`
+    helper writing core **last**, mirroring `go/compose.go:436-441`. Because the Runner folds the
+    provider's project ∪ worker servers *under* the request (`runner.go:484-495`), putting core on
+    the request is exactly what makes it non-overridable.
+  - The merge always returns a **fresh map** when core is non-empty. `Config.CoreMCP` is built once
+    at boot and shared by every create, so handing the map itself to the Runner would let one
+    session's config mutation leak into every later session. Pinned by
+    `TestCreateSessionDoesNotHandOutTheHostsCoreMCPMap`.
+  - `main.go` sets `coreMCP` only when `agentDB != nil` — the same condition that mounts `/mcp`.
+    Advertising an endpoint that answers 404 would be strictly worse than having no core tools. The
+    sqlite fallback is an explicit no-op table case, never a 500.
+  - The dispatcher now reads the **same `coreMCP` variable** instead of calling
+    `coreMCPServers(selfURL)` a second time, so the chat path and the job path cannot drift onto
+    different endpoints.
+  - **The regression risk was the point, and it is covered twice.** `go/runner_coremcp_test.go` runs
+    a real `runnerImpl` with a provider supplying a project prompt, a §13 catalogue pointer as the
+    project base image, and project MCP servers including one that tries to shadow `agentkit-core` —
+    asserting core wins the collision, the project's server survives, the turn's system prompt is
+    still the provider's (per-turn resolution intact), the launch image is still the catalogue's
+    resolution (the I4 fix intact), and the row gains **no worker and no composed_prompt**. The
+    httpapi test asserts the entire captured `CreateSessionRequest` with `reflect.DeepEqual`, so a
+    future attempt to stamp `Worker` shows up as a failing diff rather than passing silently.
+  - **What the stack check must observe** (from the implementer, and what T17 will do): (1) a session
+    created through `POST /agent/session` has an `agentkit-core` entry in its `agent_sessions.mcp_servers`
+    column; (2) from inside that session the model actually **calls** `memory_current` and gets a real
+    answer — the only thing that proves the three links unit tests cannot reach: the sandbox resolving
+    `${SESSION_TOKEN}` for a *chat* session's container, `/mcp` accepting that token, and
+    `newSessionTokenAuth` mapping its `sid` to a session row with **no worker** (every prior caller of
+    that path was a dispatched job); (3) negative control: no `DATABASE_URL` → create still 200s with
+    no mcp_servers.
+  - Verifier: PASS, 6/6 criteria evidenced — and it independently flagged the same outstanding
+    stack requirement.
 - **Note:** Load-bearing for the Wolf model — the long-lived `hypothesis-a` session can only
   read memory if it has the core tools. Before ticking, verify against a running stack that
   `memory_current` is actually callable from a chat session; the unit tests can only prove the
   config was merged, not that the tool answers.
 
-### T16: `session_list` core MCP tool   [Status: pending | Model: sonnet]
+### T16: `session_list` core MCP tool   [Status: done | Model: sonnet]
 - **Scope:** One new tool letting an agent enumerate its own worker's recent sessions —
   provenance only. Args: `worker?` (default: the caller's own worker), `limit?` (default 10,
   max 50). Returns metadata: session id, name, created/updated, status, and the
@@ -1089,8 +1142,29 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/ -run 'SessionList|MCP' -count=1`
 - **Depends on:** —
+- [x] done
+- Notes:
+  - **The decision the ticket demanded, recorded: NO fallback to `Session.Persona`.** `mcpCaller.Worker`
+    is the one auth-established answer to "who am I", resolved in `sessionTokenAuth.authenticate` and
+    shared by every core tool; `Persona` is caller-supplied. The tool description says so explicitly,
+    so a model does not read an empty list as "I have no history".
+  - A workerless caller gets an **empty list and the store is never called**. `SessionQuery.Worker == ""`
+    means *every session in the project*, so falling through would have handed a chat session the whole
+    console's history — a different question from the one asked.
+  - Limit is clamped (≤0 → 10, >50 → 50), not rejected. The cap stays at 50 and the reason — three
+    unconditional `COUNT(*)` subqueries per row — is now a comment on the constant so nobody raises it
+    casually.
+  - Four fields beyond the ticket's list (`artifact_count`, `message_count`, `attention_requested`,
+    `create_error`). The verifier judged this within scope and I agree: the binding exclusion is
+    *transcripts and message bodies*, none of these is content, and the first two are free because
+    `ListSessions` computes them regardless.
+  - A full page carries a `note` that older runs may exist, rather than fetching limit+1 rows to
+    measure it — that extra row would pay for another set of COUNT(*) subqueries on every call.
+  - Timestamps are documented as unix **seconds**, with a pointer that config_history's are
+    milliseconds. That discrepancy was undocumented anywhere a model would read it.
+  - Verifier: PASS, 10/10 criteria evidenced.
 
-### T18: Full-content memory read over HTTP   [Status: pending | Model: sonnet]
+### T18: Full-content memory read over HTTP   [Status: done | Model: sonnet]
 - **Scope:** `GET /agent/memories` returns `MemorySearchResult`, which has a `Snippet` and
   **no `Content`** (`go/agentdb/memories.go:87-95`), truncated at 500 bytes (`:35,259-262`) —
   and there is no by-id route. Full content is currently reachable only from inside a container
@@ -1110,6 +1184,27 @@ type Schedule struct {
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/ -count=1`
 - **Depends on:** —
+- [x] done
+- Notes:
+  - Store seam: extended the existing `MemoryStore` interface with `GetMemory` and `NewestMemory`
+    rather than adding a second Config field — one field means a host cannot point the search path
+    and the read path at different stores.
+  - **`current` with an unknown name answers 404**, not the MCP tool's `{found:false}` 200. The
+    ticket allowed either; 404 is what every other "not there" answer in `httpapi` is, and a 200
+    with a found flag makes a fetch-based client treat absence as success unless it remembers to
+    branch. The MCP shape exists because a *model* reads it.
+  - Non-`ErrMemoryNotFound` store failures map to **500**, not 404 — a database refusing connections
+    is not a missing memory, and answering 404 sends an operator hunting for a row that is sitting
+    right there.
+  - Body is the record itself (not wrapped), mirroring `GET /agent/sessions/by-name/{name}`, and is
+    the MCP `memoryRecord` key-for-key minus `session_url`.
+  - The shared 501/403 preamble was hoisted into `memoryReadable` and `ListMemories` routed through
+    it, so all three routes state the same rule once. `ListMemories`' check order is preserved and
+    its existing tests passed unmodified.
+  - Read-only, as required: no write or delete route was added. Untruncated content is asserted
+    against a memory larger than 500 bytes, and `TestMemoryReadRoutes_LivePG` exercises it against
+    real Postgres.
+  - Verifier: PASS, 7/7 criteria evidenced.
 - **Note:** This is what makes "Wolf renders the hypothesis from memory" true. Without it the
   product must fall back to artifacts (T8) for anything longer than a snippet.
 
@@ -1218,6 +1313,50 @@ type Schedule struct {
 - **gofmt is not checked by CI** (`.github/workflows/ci.yml` runs build/test/vet only). Two files
   were left unformatted by T9 and fixed by the orchestrator; `go/httpapi/sessions_worker_filter_test.go`
   and `go/triagelab/content.go` are pre-existing offenders on this branch and were left alone.
+- **Batch 2 — ⚠️ the throwaway Postgres died mid-run and the agents did not notice.** The container
+  exited during the T15–T11 batch, and a live-PG test whose `AGENTKIT_TEST_POSTGRES_URL` is set but
+  *unreachable* **FAILS rather than skipping** (correct behaviour). Some agents therefore reported a
+  green full gate that was not green. The orchestrator's independent re-run caught it; after
+  restarting the container (now with `--restart unless-stopped`) the gate is genuinely green:
+  0 failures, 30 live agentdb cases, 10 live httpapi cases. **Lesson for later batches: an agent's
+  "fullGatePassed" is a claim, not evidence — always re-run, and always grep for `^FAIL` rather
+  than eyeballing a head-truncated log, because GORM's "record not found" noise fills the first
+  screen.**
+- **T15 — sessions created BEFORE this change never gain the core tools.** MCP config is fixed when
+  the container is provisioned and re-supplied on restore from the persisted
+  `agent_sessions.mcp_servers` column (§4.5), so an existing long-lived chat session restores with
+  its old, empty set forever. There is no backfill and no route that rewrites a session's MCP
+  config. **Consequence for the Wolf model: `hypothesis-a` must be created after this ships**, and
+  T14 must say so. Any pre-existing session needing core tools has to be recreated.
+- **T15 — the "is the core MCP server mounted?" condition is now spelled twice in `main.go`** (once
+  for the `coreMCP` variable at ~:313, once for the mount at ~:487), because the `httpapi.Config` is
+  built ~40 lines before the `if agentDB != nil` block. Two conditions that must stay in agreement.
+  Same untested-wiring shape as T9's `Sessions: runner` — only the stack check catches a drift.
+- **T15 — unlike `ComposeJob`, the httpapi path does not call `CoreMCP.Validate()`.** An invalid
+  host-supplied value would surface as a background create failure inside `persistMCPServers` rather
+  than at boot. Low risk (the value is a host constant), but the asymmetry is real.
+- **T16 — `go/compose.go:544`'s core preamble names specific core tools in hand-written prose that is
+  pinned byte-for-byte by test.** Newly registered core tools therefore never appear in the preamble
+  a worker reads at job start — `session_list` is discoverable only through `tools/list`. Not acted
+  on; worth knowing before adding more tools.
+- **T16 — session timestamps are unix SECONDS while config-log timestamps are MILLISECONDS**, and
+  nothing in the codebase said so anywhere a model would read. Now stated in `session_list`'s
+  description; the rest of the surface still doesn't say it.
+- **T18 — `GET /agent/memories/current` reserves the name `current` in the id path space.** Harmless
+  today because ids are uuids, but `CreateMemory` accepts a caller-supplied `m.ID`, so a memory
+  created with the literal id `current` would be unreachable by id. Nothing in-repo supplies one.
+- **T18 — the two new memory routes inherit the T4 embed-scope hole verbatim.** They take no session
+  id, so `ownsSession` never runs and a session-scoped embed token can read the whole project's
+  memory. This is the third ticket to widen that hole; see the T4 entry below.
+- **T11 — the design's Architecture diagram and its route table disagree.** The diagram draws
+  `POST /auth/verify-google` as an arrow from the Wolf backend with no credential shown, and T11's
+  prose says register it beside `/auth/google` (which is on the **unauthenticated** `root` mux),
+  while the route table says "Auth: API key". Implemented per the route table, on `apiMux`. Had the
+  prose been followed literally it would have shipped an unauthenticated Google-token verification
+  oracle.
+- **T11 — `apiMux` is no longer purely `httpapi`'s route table.** `registerVerifyGoogle` is the
+  second thing `main.go` mounts on it directly (after `POST /agent/attention`), so a reader of
+  `httpapi.Handlers.Mux()` no longer sees every authenticated route in one place.
 - **T4 — ⚠️ HIGH: the embed scope confines session-by-ID routes only. An embed token can still
   reach every project-wide route.** The design's credential table says an embed token grants
   "Read/stream/message on **exactly one session**", but the mechanism it specifies —

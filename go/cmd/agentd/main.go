@@ -303,12 +303,24 @@ func main() {
 	defer runner.Close() //nolint:errcheck
 
 	// ── HTTP API ─────────────────────────────────────────────────────────────────
+	// The core tool server a session created over HTTP is told about — the same
+	// value the dispatcher hands every composed job below, so a chat session and
+	// a worker job reach memory_*, worker_*, image_* through one identical
+	// config. Set ONLY when the server is actually mounted (the `agentDB != nil`
+	// blocks further down): on the SQLite fallback the /mcp endpoint does not
+	// exist, and pointing a container at it would trade "no core tools" for "core
+	// tools that 404".
+	var coreMCP agentdb.MCPServers
+	if agentDB != nil {
+		coreMCP = coreMCPServers(selfURL)
+	}
 	api, err := httpapi.New(httpapi.Config{
 		Runner:    runner,
 		Store:     store,
 		Artifacts: artStore,
 		Identity:  identityFromRequest,
 		AgentDB:   agentDB, // nil on the SQLite fallback → legacy read paths
+		CoreMCP:   coreMCP,
 		// GET /agent/memories borrows the same embedder the memory tools use,
 		// on the same READ-path terms: EmbedOrDegrade swallows a provider
 		// outage, so one query loses its semantic leg rather than its answer.
@@ -351,7 +363,9 @@ func main() {
 			// The core tool servers every job is told about (§6.2 step 3). This is
 			// what makes memory_search & co. reachable from inside a worker job;
 			// E4/I2 add their tools to the same server, so this line does not grow.
-			CoreMCP:      coreMCPServers(selfURL),
+			// The same value httpapi.Config.CoreMCP got above — one spelling, so a
+			// chat session and a job can never be told about different endpoints.
+			CoreMCP:      coreMCP,
 			DefaultImage: baseImage,
 			// The briefing read seam (§6.2 step 2.4, §7.4) — the rolling summary
 			// and each of the worker's own selectors.
@@ -399,6 +413,16 @@ func main() {
 	root := http.NewServeMux()
 	root.HandleFunc("/health", healthHandler)
 	root.HandleFunc("GET /auth/config", authConfigHandler(googleClientID, testLogin != ""))
+
+	// POST /auth/verify-google — Google ID token → {email}, for an application
+	// that embeds Agent Orange and runs its own allowlist. Registered whenever
+	// GOOGLE_CLIENT_ID is set, and on the AUTHENTICATED mux, not beside
+	// /auth/google on root: it verifies identities for a project's backend, which
+	// holds a project API key, and an unauthenticated verification oracle would
+	// answer anyone. It is mounted here rather than inside the login block below
+	// because it needs no JWT secret, no project users and no login mode — only
+	// a client id to check the token's audience against.
+	registerVerifyGoogle(apiMux, googleClientID)
 
 	// The project map is loaded once, here, whether or not a login mode is on:
 	// its "projects" half carries per-project ops config (API key env var names,
@@ -477,6 +501,7 @@ func main() {
 		mcpSrv.register(newSkillTools(agentDB, runner, permalinks).tools()...)
 		mcpSrv.register(newManagementTools(agentDB, embedder, attention, permalinks).tools()...)
 		mcpSrv.register(newConfigLogTools(agentDB, permalinks).tools()...)
+		mcpSrv.register(newSessionTools(agentDB, permalinks).tools()...)
 		root.Handle(coreMCPPath, mcpSrv)
 		// Some MCP clients normalise the endpoint with a trailing slash; both
 		// spellings must reach the same server or the tools simply vanish.
