@@ -87,7 +87,11 @@ If you need to understand the system rather than patch one file, read in this or
 5. `docs/product/06-work-plan.md`'s **Discovered Issues Log** — ~100 entries recording what was
    actually built and what surprised us. When a design doc and this log disagree, the log is
    closer to the code; when the log and the code disagree, the code wins.
-6. The engine reference docs (`02`, `03`, `05`, `06`, `07`, `13`, `14`, `15`) by seam, as needed.
+6. `docs/product/25-cooperative-patterns.md` — 38 cooperative workflow patterns from the wider
+   world, each judged against *this* code by an adversarial fit pass (9 expressible, 25 partial,
+   4 blocked). Its §5 is the sharpest existing statement of what the substrate cannot do;
+   `26-work-plan-cooperative-tests.md` is the unbuilt test plan and gap list that follows from it.
+7. The engine reference docs (`02`, `03`, `05`, `06`, `07`, `13`, `14`, `15`) by seam, as needed.
 
 `README-stack.md` at any point: running the thing is cheap and answers a lot.
 
@@ -103,7 +107,7 @@ If you need to understand the system rather than patch one file, read in this or
 | `migration-reference/` | **Reference only — do NOT build or import.** Platinum host-side image pipeline + the original Platinum installations, kept to port from. May contain host-app coupling. |
 | `deploy/`, `docker-compose*.yml`, `README-stack.md` | The standalone stack (run it with one command — below). `deploy/gcp/setup.sh` provisions the GCP side (idempotent, safe to re-run). |
 | `e2e/`, `examples/` | End-to-end tests — **`e2e/features/` + `playwright.stack.config.ts` is the only rig**, run against the compose stack (the legacy Vite rig under `e2e/tests/` was deleted 2026-08-08). `e2e/experiments/` is the offline comparison rig, run with `./e2e/experiments/run.sh test`. Example host + `examples/web/` (the app shell the stack actually serves — `web/` is a component library with no router). |
-| `mock-server/` | **Orphaned.** The model server for the deleted legacy rig; nothing imports it and the stack's mock mode is `go/mockmodel` + `go/modelproxy`. Kept pending a decision to delete — don't build on it. |
+| ~~`mock-server/`~~ | **Deleted 2026-08-08** along with its `docker-compose.test.yml` service block (that file stays — `go/systemtest/` needs its `dind` + `registry`). The stack's mock mode is `go/mockmodel` + `go/modelproxy`. |
 | `MIGRATION.md` | The standalone-ification + registry-agnostic + GCP roadmap and live status. |
 
 ## Run it (standalone stack)

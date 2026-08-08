@@ -24,6 +24,9 @@ lives in this one folder, `docs/product/`:
 | [`2026-07-22-landscape-learnings.md`](2026-07-22-landscape-learnings.md) | The research trail: the landscape verdict (nobody has built this shape) and the 33 mechanisms mined from other projects, with final dispositions. |
 | [`2026-07-25-fold-landscape-learnings.md`](2026-07-25-fold-landscape-learnings.md) | The executed record of how those learnings were interviewed, decided, and folded into this spec. |
 | [`2026-07-25-fold-walkthrough-amendments.md`](2026-07-25-fold-walkthrough-amendments.md) | The design-walkthrough amendments (images, skills, the config log, named memories) and their execution record. |
+| [`25-cooperative-patterns.md`](25-cooperative-patterns.md) | 38 cooperative workflow patterns drawn from what people outside this project actually run, each judged against the code (expressible / partial / blocked) by an adversarial fit pass. Read §5 first. |
+| [`26-work-plan-cooperative-tests.md`](26-work-plan-cooperative-tests.md) | The executable half of `25`: 24 test tickets, 20 engine gaps, 6 pieces of test infrastructure. Three gaps now closed; G1/G2 withdrawn. |
+| [`27-simplification-inventory.md`](27-simplification-inventory.md) | **The KISS decision.** What it makes dead (less than you would think), what stays and why, and the correction that there is no "event system" to delete — the spine is what the simple design runs on. |
 
 The engine the product layer builds on (architecture, containers, images, events, harness,
 stack) is documented in `../01`–`../15` — reference, not work.
