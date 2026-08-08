@@ -1568,6 +1568,14 @@ func (r *runnerImpl) archiveIdleOnce(ctx context.Context) {
 		}
 		log.Printf("agentkit: archived session %s — idle for over %s; container and host port released, the session resumes from its snapshot on the next message",
 			sid, timeout)
+
+		// Going quiet is how a conversation ends, so this is where an interactive
+		// session's worker.finished is emitted (§8.2). It runs AFTER the archive
+		// succeeded, so the event means "this conversation concluded", never "we
+		// tried to reclaim it and could not". The transcript is read from the
+		// store, not the container, so releasing the container first costs
+		// nothing.
+		r.emitIdleFinish(ctx, sid)
 	}
 }
 
@@ -1968,16 +1976,71 @@ type conversationMessage struct {
 	Content string `json:"content"`
 }
 
+// Caps on the tool activity rendered into a transcript. A tool line is evidence,
+// not a log: the point is that a reader can tell WHAT was done, and neither a
+// 40KB file write nor a 2MB command output may be allowed to become the text of
+// a worker.finished event (which is read verbatim as the next worker's first
+// message, §8.1).
+const (
+	maxToolArgsChars   = 200
+	maxToolOutputChars = 200
+)
+
 // reconstructConversation rebuilds an ordered user/assistant message list from a
-// session's persisted query events. It is the inverse of how the live stream is
-// captured: user_message envelopes become user turns, and consecutive
-// content_delta envelopes are accumulated into a single assistant turn that is
-// flushed at each turn boundary (when the next user_message arrives, or at end).
-// All other event types (thinking, tool, status, lifecycle) are irrelevant to the
-// conversation and are skipped. Empty messages are dropped. Pure function.
+// session's persisted query events, for REHYDRATION — the shape posted to the
+// sandbox's /load-conversation endpoint. user_message envelopes become user
+// turns, and consecutive content_delta envelopes are accumulated into a single
+// assistant turn flushed at each turn boundary. Everything else is skipped.
+// Empty messages are dropped. Pure function.
+//
+// It carries no tool activity on purpose: /load-conversation is a contract with
+// the harness, and telling a resumed model it "said" a synthesised tool line
+// would put words in its mouth. reconstructTranscript is the variant that adds
+// them, for the human- and worker-facing transcript.
 func reconstructConversation(evs []events.Envelope) []conversationMessage {
+	return reconstruct(evs, false)
+}
+
+// reconstructTranscript is reconstructConversation plus a compact record of what
+// the session actually DID — one `[tool] name(args) → outcome` line per tool
+// call, inline in the assistant turn that made it.
+//
+// This exists because a transcript without tool activity is a record of what a
+// worker SAID, and every reviewing, critiquing and archiving worker downstream
+// would be reasoning about narration. Model narration is frequently unfaithful
+// to the actions that produced an outcome, so the omission was not an
+// incompleteness — it was an unsound evidence base.
+//
+// It shares reconstruct() with the rehydration path rather than walking the
+// events a second time, so the two can never disagree about what was said.
+func reconstructTranscript(evs []events.Envelope) []conversationMessage {
+	return reconstruct(evs, true)
+}
+
+// reconstruct is the single walk over a session's persisted events. See the two
+// wrappers above for the two shapes it produces.
+func reconstruct(evs []events.Envelope, includeTools bool) []conversationMessage {
 	var msgs []conversationMessage
 	var assistant strings.Builder
+
+	// Tool calls are rendered when they END, because that is the first moment
+	// the outcome is known, and at the position the outcome arrived — which is
+	// what makes the ordering faithful when several tools run concurrently.
+	type pendingTool struct{ name, args string }
+	pending := map[string]pendingTool{}
+	var openOrder []string
+
+	writeToolLine := func(t pendingTool, outcome string) {
+		if assistant.Len() > 0 {
+			assistant.WriteString("\n")
+		}
+		assistant.WriteString("[tool] ")
+		assistant.WriteString(t.name)
+		assistant.WriteString("(")
+		assistant.WriteString(t.args)
+		assistant.WriteString(") → ")
+		assistant.WriteString(outcome)
+	}
 
 	flushAssistant := func() {
 		text := strings.TrimSpace(assistant.String())
@@ -1987,10 +2050,24 @@ func reconstructConversation(evs []events.Envelope) []conversationMessage {
 		assistant.Reset()
 	}
 
+	// drainPending renders any tool that started and never reported back — a
+	// crashed turn, a lost session — so a transcript never silently omits an
+	// action just because nothing closed it.
+	drainPending := func() {
+		for _, id := range openOrder {
+			if t, ok := pending[id]; ok {
+				writeToolLine(t, "(no result)")
+				delete(pending, id)
+			}
+		}
+		openOrder = openOrder[:0]
+	}
+
 	for _, ev := range evs {
 		switch ev.Type {
 		case events.UserMessage:
 			// A new user turn closes the previous assistant turn.
+			drainPending()
 			flushAssistant()
 			if content, ok := ev.Data["content"].(string); ok {
 				if c := strings.TrimSpace(content); c != "" {
@@ -1999,13 +2076,93 @@ func reconstructConversation(evs []events.Envelope) []conversationMessage {
 			}
 		case events.ContentDelta:
 			assistant.WriteString(deltaText(ev.Data["delta"]))
+		case events.ToolUseStart:
+			if !includeTools {
+				continue
+			}
+			id, _ := ev.Data["toolCallId"].(string)
+			name, _ := ev.Data["toolName"].(string)
+			if name == "" {
+				name = "(unnamed tool)"
+			}
+			pending[id] = pendingTool{name: name, args: toolArgsDigest(ev.Data["input"])}
+			openOrder = append(openOrder, id)
+		case events.ToolUseEnd:
+			if !includeTools {
+				continue
+			}
+			id, _ := ev.Data["toolCallId"].(string)
+			t, ok := pending[id]
+			if !ok {
+				// An end with no start: render what we can rather than drop it.
+				t = pendingTool{name: "(unknown tool)"}
+			}
+			writeToolLine(t, toolOutcome(ev.Data))
+			delete(pending, id)
 		default:
-			// thinking_delta, tool_*, table_rendered, message_start/end,
-			// query_complete, session_info, etc. — not part of the conversation.
+			// thinking_delta, table_rendered, message_start/end, query_complete,
+			// session_info, etc. — not part of the conversation.
 		}
 	}
+	drainPending()
 	flushAssistant()
 	return msgs
+}
+
+// toolArgsDigest renders a tool's input compactly and boundedly. The input is
+// whatever the harness sent (usually an object, sometimes a partially streamed
+// string), so it is JSON-marshalled and truncated rather than interpreted.
+func toolArgsDigest(input any) string {
+	if input == nil {
+		return ""
+	}
+	var s string
+	switch v := input.(type) {
+	case string:
+		s = v
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		s = string(b)
+	}
+	return truncateDigest(collapseWhitespace(s), maxToolArgsChars)
+}
+
+// toolOutcome renders the result half of a tool line: "ok", or the error text,
+// or a short digest of the output when there is one worth carrying.
+func toolOutcome(data map[string]any) string {
+	isErr, _ := data["isError"].(bool)
+	out, _ := data["output"].(string)
+	out = truncateDigest(collapseWhitespace(out), maxToolOutputChars)
+	switch {
+	case isErr && out != "":
+		return "error: " + out
+	case isErr:
+		return "error"
+	case out != "":
+		return "ok: " + out
+	default:
+		return "ok"
+	}
+}
+
+// collapseWhitespace flattens a value onto one line, because a tool line must
+// stay a line — a multi-line command or output would otherwise be
+// indistinguishable from the conversation around it.
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// truncateDigest cuts s to at most n characters (runes, so a cut never splits a
+// multi-byte character) and marks that it did.
+func truncateDigest(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // deltaText extracts assistant text from a content_delta's "delta" field, which
@@ -2279,7 +2436,14 @@ func (r *runnerImpl) emitJobOutcome(ctx context.Context, sessionID, queryID stri
 	// `worker.finished` claiming a turn asked for a human when it did not.
 	// A cancelled turn returns above and keeps its stamp: nothing settled, and
 	// the human who pressed stop is by definition already in the thread.
-	if job.AttentionRequested {
+	// …but only for a DISPATCHED job, where the turn IS the unit of work. In an
+	// interactive session the unit is the conversation, and its worker.finished
+	// is not emitted until the chat goes quiet (see below) — so clearing here
+	// would consume the stamp before anything had reported it, and a human who
+	// was asked for something would never be told. For a chat the stamp is
+	// consumed by emitIdleFinish instead, and its meaning widens accordingly:
+	// "somewhere in this conversation, a human was asked for something".
+	if job.AttentionRequested && !job.Interactive {
 		if err := r.deps.WorkerEvents.SetSessionAttentionRequested(ctx, sessionID, false); err != nil {
 			log.Printf("agentkit: clear attention_requested %s: %v", sessionID, err)
 		}
@@ -2298,8 +2462,66 @@ func (r *runnerImpl) emitJobOutcome(ctx context.Context, sessionID, queryID stri
 		}
 		return
 	}
+	// An INTERACTIVE session does not finish when a turn does. A dispatched job
+	// is one turn, so "the turn settled" and "the job is done" are the same
+	// moment — but a human chat is a conversation, and emitting here would fire
+	// once per message, each time carrying the whole transcript so far. A
+	// subscriber (an archivist, say) would then re-read the same conversation on
+	// every message, at growing cost, and could never tell which event was the
+	// conclusion.
+	//
+	// The conclusion of a chat is when it goes quiet, so the archive sweep emits
+	// it instead — see emitIdleFinish. NOTE the coupling this creates: with
+	// Policy.ArchiveTimeout at 0 the sweep never runs and an interactive session
+	// therefore never emits worker.finished at all.
+	if job.Interactive {
+		return
+	}
+
 	if _, err := EmitWorkerFinished(ctx, r.deps.WorkerEvents, job, r.renderTranscript(ctx, sessionID), job.AttentionRequested); err != nil {
 		log.Printf("agentkit: emit worker.finished %s: %v", sessionID, err)
+	}
+}
+
+// emitIdleFinish emits worker.finished for an interactive session that has gone
+// quiet, and is called by the archive sweep at the moment it reclaims the
+// container. It is the conversational counterpart of the per-turn emission in
+// emitJobOutcome: a chat concludes by falling silent, not by settling a turn.
+//
+// It is deliberately the SAME event type, so a project needs exactly one
+// subscription to hear "a piece of work finished, here is what was said and
+// done" whether that work was a dispatched job or a human conversation.
+//
+// A session may idle, resume on a new message, and idle again; each idle emits,
+// each time carrying the whole conversation to that point. That is intended —
+// the alternative is losing the tail of any chat that is picked back up — but it
+// does mean a subscriber must be idempotent about what it has already seen.
+func (r *runnerImpl) emitIdleFinish(ctx context.Context, sessionID string) {
+	if r.deps.WorkerEvents == nil {
+		return
+	}
+	job, ok, err := ResolveWorkerJob(ctx, r.deps.WorkerEvents, sessionID)
+	if err != nil {
+		log.Printf("agentkit: idle finish %s: %v", sessionID, err)
+		return
+	}
+	// !ok is a vanilla session with no worker (§8.2 fires only for worker jobs).
+	// !job.Interactive is a dispatched job, which already emitted when its turn
+	// settled; emitting again here would double-count every job in the project.
+	if !ok || !job.Interactive {
+		return
+	}
+	if _, err := EmitWorkerFinished(ctx, r.deps.WorkerEvents, job, r.renderTranscript(ctx, sessionID), job.AttentionRequested); err != nil {
+		log.Printf("agentkit: emit worker.finished (idle) %s: %v", sessionID, err)
+		return
+	}
+	// The stamp is consumed here, exactly as a dispatched job consumes it at the
+	// end of its turn — this is just the conversational unit of the same rule.
+	// If the chat is picked back up and asks again, it is stamped again.
+	if job.AttentionRequested {
+		if err := r.deps.WorkerEvents.SetSessionAttentionRequested(ctx, sessionID, false); err != nil {
+			log.Printf("agentkit: clear attention_requested (idle) %s: %v", sessionID, err)
+		}
 	}
 }
 
@@ -2313,7 +2535,7 @@ func (r *runnerImpl) renderTranscript(ctx context.Context, sessionID string) str
 		log.Printf("agentkit: transcript %s: list events: %v", sessionID, err)
 		return ""
 	}
-	return renderConversation(reconstructConversation(evs))
+	return renderConversation(reconstructTranscript(evs))
 }
 
 // renderConversation serialises a reconstructed conversation as plain text —

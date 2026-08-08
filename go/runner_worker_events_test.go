@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 	"github.com/binocarlos/badcode-agent-orange/agentkittest"
@@ -121,6 +122,10 @@ func TestWorkerFinishedEvent(t *testing.T) {
 		wantEvent       bool
 		wantDepth       int
 		wantInteractive bool
+		// emitsAtIdle marks the interactive case: a conversation does not finish
+		// when a turn does, so nothing is emitted per message and the event
+		// arrives when the archive sweep finds the session gone quiet.
+		emitsAtIdle bool
 	}{
 		{
 			name:      "vanilla session emits nothing",
@@ -128,11 +133,12 @@ func TestWorkerFinishedEvent(t *testing.T) {
 			wantEvent: false,
 		},
 		{
-			name:            "human-started worker job is depth 0 and interactive",
+			name:            "human-started worker chat is depth 0, interactive, and emits only at idle",
 			session:         agentdb.Session{ID: "s1", Customer: "acme", Worker: "email-answerer"},
 			wantEvent:       true,
 			wantDepth:       0,
 			wantInteractive: true,
+			emitsAtIdle:     true,
 		},
 		{
 			name:    "event-triggered job sits one level deeper",
@@ -173,6 +179,16 @@ func TestWorkerFinishedEvent(t *testing.T) {
 					t.Fatalf("a session with no worker emitted %d events: %#v", len(got), got)
 				}
 				return
+			}
+			if tt.emitsAtIdle {
+				// The load-bearing half: a chat that has had one message is not
+				// a chat that has finished. Emitting here would fire once per
+				// message, each time carrying the whole transcript so far.
+				if len(got) != 0 {
+					t.Fatalf("an interactive session emitted %d events when a turn settled; a conversation concludes when it goes quiet, not per message: %#v", len(got), got)
+				}
+				r.emitIdleFinish(ctx, "s1")
+				got = worker.events()
 			}
 			if len(got) != 1 {
 				t.Fatalf("appended %d events, want 1: %#v", len(got), got)
@@ -345,4 +361,99 @@ func TestWorkerFailedEvent(t *testing.T) {
 			t.Error("a session with an empty worker column must report ok=false")
 		}
 	})
+}
+
+// TestArchiveSweepEmitsTheChatFinish is the other half of the interactive
+// contract: the archive sweep is what turns "this conversation went quiet" into
+// a worker.finished event, so a project needs exactly ONE subscription to hear
+// about both dispatched jobs and human conversations.
+//
+// It also pins the two things that would otherwise double-count or over-fire:
+// a chat emits once per idle period however many messages it contained, and a
+// second sweep over an already-archived session emits nothing new.
+func TestArchiveSweepEmitsTheChatFinish(t *testing.T) {
+	ctx := context.Background()
+	r, store, worker := newWorkerEventRunner(t, "s1", completeTurn)
+	store.Seed(&agentdb.Session{ID: "s1", Customer: "acme", Worker: "marketing-manager"})
+
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{
+		SessionID: "s1", Customer: "acme", Worker: "marketing-manager",
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Three messages in one conversation. Under the old per-turn emission this
+	// alone produced three events, each carrying the whole transcript so far.
+	for i := 0; i < 3; i++ {
+		var buf bytes.Buffer
+		if err := r.SendMessage(ctx, SessionRef{SessionID: "s1"}, SendMessageRequest{Content: "hi"}, &buf); err != nil {
+			t.Fatalf("SendMessage %d: %v", i, err)
+		}
+	}
+	if got := worker.events(); len(got) != 0 {
+		t.Fatalf("a 3-message chat emitted %d events before going idle, want 0", len(got))
+	}
+
+	r.deps.Policy.ArchiveTimeout = time.Millisecond
+	r.setIdle("s1", time.Hour)
+	r.archiveIdleOnce(ctx)
+
+	got := worker.events()
+	if len(got) != 1 {
+		t.Fatalf("the archive sweep appended %d events, want exactly 1: %#v", len(got), got)
+	}
+	if got[0].Type != agentdb.EventTypeWorkerFinished {
+		t.Errorf("type = %q, want %q", got[0].Type, agentdb.EventTypeWorkerFinished)
+	}
+	if !got[0].Envelope.Interactive {
+		t.Error("a chat's finish must be stamped interactive — it is how a subscription tells a conversation from a job")
+	}
+	if got[0].Envelope.Worker != "marketing-manager" {
+		t.Errorf("worker = %q, want marketing-manager", got[0].Envelope.Worker)
+	}
+	// The event carries the whole conversation, not just the last turn.
+	if n := strings.Count(got[0].Text, "user:\nhi"); n != 3 {
+		t.Errorf("transcript carries %d user turns, want all 3", n)
+	}
+
+	// A second sweep finds nothing left to archive, so nothing is re-emitted.
+	r.archiveIdleOnce(ctx)
+	if got := worker.events(); len(got) != 1 {
+		t.Errorf("a second sweep emitted again: %d events total, want 1", len(got))
+	}
+}
+
+// TestDispatchedJobDoesNotEmitTwice guards the seam between the two emission
+// points. A dispatched job (one triggered by an event, so Interactive=false)
+// emits when its turn settles; if it were ALSO emitted when its container is
+// later reclaimed, every job in the project would be counted twice and every
+// downstream subscription would fire twice.
+func TestDispatchedJobDoesNotEmitTwice(t *testing.T) {
+	ctx := context.Background()
+	r, store, worker := newWorkerEventRunner(t, "s1", completeTurn)
+	store.Seed(&agentdb.Session{ID: "s1", Customer: "acme", Worker: "poster"})
+	worker.triggers["s1"] = &agentdb.ProjectEvent{
+		ID: "e1", Project: "acme", Type: "post.due",
+		Envelope: agentdb.EventEnvelope{Depth: 0, Source: agentdb.EventSourceSchedule},
+	}
+
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{
+		SessionID: "s1", Customer: "acme", Worker: "poster",
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	var buf bytes.Buffer
+	if err := r.SendMessage(ctx, SessionRef{SessionID: "s1"}, SendMessageRequest{Content: "go"}, &buf); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if got := worker.events(); len(got) != 1 {
+		t.Fatalf("a dispatched job emitted %d events when its turn settled, want 1", len(got))
+	}
+
+	r.deps.Policy.ArchiveTimeout = time.Millisecond
+	r.setIdle("s1", time.Hour)
+	r.archiveIdleOnce(ctx)
+
+	if got := worker.events(); len(got) != 1 {
+		t.Errorf("archiving a dispatched job's session emitted a second event: %d total, want 1", len(got))
+	}
 }
