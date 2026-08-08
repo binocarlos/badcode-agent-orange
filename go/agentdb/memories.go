@@ -205,8 +205,41 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 	return stored, embedded, nil
 }
 
+// RetractionLabel is the label a memory carries to withdraw another one. Its
+// value is the retracted memory's id (§7.1).
+//
+// Retraction is how an append-only store takes something back. The wrong fact's
+// row is never touched — it stays attributed, timestamped and auditable — but it
+// stops being SELECTED: it can no longer reach a briefing or a search result,
+// and so can no longer influence a job. The withdrawal is itself an ordinary
+// memory, which means it has an author, a time and a body explaining why, and it
+// appears in the config-log-like history of the project's knowledge.
+//
+// Without this, a project had no way to correct itself. A memory written from a
+// bad source, a hallucinated fact, or text injected through an event stayed
+// selectable for ever, and the only remedies were to write a louder contradiction
+// beside it or to abandon the label.
+const RetractionLabel = "retracts"
+
+// notRetractedSQL is the clause that hides retracted memories, for a query whose
+// `memories` table is called alias. It is a correlated NOT EXISTS rather than a
+// join so it cannot duplicate rows or disturb ordering, and it binds no extra
+// arguments — the project is taken from the row being tested, which keeps
+// retraction strictly project-local (P5) without the caller having to remember.
+//
+// Deliberately NOT applied to GetMemory: fetching a specific id is an explicit
+// request for that row, and being able to read what was withdrawn — and the
+// retraction that withdrew it — is the point of not deleting anything.
+func notRetractedSQL(alias string) string {
+	return fmt.Sprintf(
+		"NOT EXISTS (SELECT 1 FROM memories r WHERE r.project = %[1]s.project AND r.labels->>'%[2]s' = %[1]s.id)",
+		alias, RetractionLabel)
+}
+
 // GetMemory returns one memory in full. The project is a parameter, not a
 // filter the caller may forget: a memory from another project is not found.
+//
+// A retracted memory IS returned here — see notRetractedSQL.
 func (s *Store) GetMemory(ctx context.Context, project, id string) (*Memory, error) {
 	if err := s.requirePostgres(); err != nil {
 		return nil, err
@@ -264,6 +297,9 @@ func (s *Store) NewestMemory(ctx context.Context, project, selector string) (*Me
 		where += " AND " + labelSQL
 		args = append(args, labelArgs...)
 	}
+	// A retracted memory is not the current value of anything — which matters
+	// most precisely here, because this is the query that fills briefings.
+	where += " AND " + notRetractedSQL("memories")
 
 	var mem Memory
 	err = s.gdb.WithContext(ctx).Model(&Memory{}).
@@ -314,6 +350,10 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 		where += " AND " + labelSQL
 		whereArgs = append(whereArgs, labelArgs...)
 	}
+	// Retraction is part of the hard filter, so it applies identically to the
+	// recency leg and to both relevance legs below — a withdrawn memory cannot
+	// come back by scoring well.
+	where += " AND " + notRetractedSQL("f")
 
 	snippet := fmt.Sprintf(
 		"CASE WHEN length(%[1]s.content) > %[2]d THEN substring(%[1]s.content, 1, %[2]d) ELSE %[1]s.content END AS snippet",
@@ -355,7 +395,7 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 		b.WriteString(`, content_embedding`)
 	}
 	b.WriteString(`
-			FROM memories WHERE ` + where + `
+			FROM memories f WHERE ` + where + `
 		), kw AS (
 			SELECT id, ROW_NUMBER() OVER (ORDER BY kscore DESC, created_at DESC, id DESC) AS rnk
 			FROM (

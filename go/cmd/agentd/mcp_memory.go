@@ -138,7 +138,15 @@ Labels are how memories are found again. They are identifiers, not prose: keys `
 
 Conventions worth knowing: kind=<something> says what sort of memory this is, ` +
 	`worker=<name> says who it is about, and name=<x> means "this is the current ` +
-	`value of x" (write a new one to change it, read it back with memory_current).`
+	`value of x" (write a new one to change it, read it back with memory_current).
+
+To WITHDRAW something the project got wrong, write a memory labelled ` +
+	`retracts=<memory-id> whose content says why. The retracted memory stops ` +
+	`reaching briefings and searches from that moment on, and whatever it was ` +
+	`covering up becomes current again — but nothing is deleted: both it and your ` +
+	`retraction stay readable by id, so the correction is part of the record ` +
+	`rather than a gap in it. Use this for a fact that turned out to be false, ` +
+	`not for one that has merely changed (for that, write the new value).`
 
 const memorySearchDescription = `Search this project's memory store. Search before ` +
 	`making decisions that earlier work might inform — that is what it is for.

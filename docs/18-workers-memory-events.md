@@ -299,6 +299,15 @@ one.
   always returns up to `limit` rows: a low fused score means "nothing good", not "no match".
 - **`name=` is the KV convention.** The current value of `name=x` is the newest memory carrying
   that label; updating it is appending. `memory_current(name)` reads it in one word.
+- **`retracts=<id>` is how the project takes something back** (added 2026-08-08; migration 043).
+  Appending a memory labelled `retracts=<memory-id>` withdraws that memory from every *selection*
+  path — briefings (`NewestMemory`) and both legs of search — from that moment on, and uncovers
+  whatever it was hiding, so a mis-learned value reverts to the last good one. Nothing is deleted:
+  the retracted row and the retraction stay readable by id, so a correction is part of the record
+  rather than a gap in it, and the retraction carries an author, a time and a reason. Retraction is
+  project-local (the filter correlates on the row's own project), and retracting an id that does
+  not exist is inert. Use it for a fact that was *wrong*; for one that has merely *changed*, append
+  the new value as usual. Live coverage: `go/agentdb/memories_retraction_live_test.go`.
 - **Provenance is part of every result** — which worker wrote it, in which session, with a
   clickable permalink (`<AGENTKIT_PUBLIC_BASE_URL>/p/<project>/s/<session>`).
 - **pgvector is optional, but the two halves must agree.** Migration 022 adds

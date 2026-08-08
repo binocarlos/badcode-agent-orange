@@ -1001,6 +1001,24 @@ var agentMigrations = []migration{
 			ALTER TABLE schedule_firings ADD COLUMN IF NOT EXISTS missed BOOLEAN NOT NULL DEFAULT FALSE;
 		`,
 	},
+	{
+		// Retraction (§7.1). A memory labelled `retracts=<id>` withdraws the
+		// memory with that id from every SELECTION path — briefings and search —
+		// without deleting a row. Append-only survives intact, and the
+		// withdrawal is itself an auditable, attributed memory rather than a
+		// gap where a row used to be.
+		//
+		// The index is partial and small: only retraction rows carry the label,
+		// and there are few of them beside the memories they withdraw. Without
+		// it every memory read would scan the table for something that is
+		// almost never there.
+		Name: "043_memory_retraction",
+		SQL: `
+			CREATE INDEX IF NOT EXISTS idx_memories_retracts
+				ON memories(project, (labels->>'retracts'))
+				WHERE labels ? 'retracts';
+		`,
+	},
 }
 
 // migrationLockKey is the Postgres advisory-lock key that serialises migration
