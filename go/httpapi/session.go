@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/binocarlos/badcode-agent-orange"
@@ -28,6 +29,20 @@ type createSessionBody struct {
 	// by afterwards (T7). Set once, here, and never again: there is no rename
 	// route and no rename store method — see agentdb.Session.Name.
 	Name string `json:"name"`
+	// Worker names the worker this chat runs AS: "talk to the architect".
+	//
+	// The console has sent this field since WorkerChatPanel was written and the
+	// server dropped it on the floor until 2026-08-08 — there was no such field,
+	// and the decoder is not strict, so "Chat with <worker>" produced a bare
+	// session with none of the worker's prompt, tools or briefing, silently.
+	//
+	// It is NOT a synonym for Persona, though it sets it (see CreateSession):
+	// Persona resolves the prompt layer, and Session.Worker is the identity
+	// `worker.finished` is stamped with. Without the latter, `emitIdleFinish`
+	// treats the chat as a vanilla session and emits NOTHING when it goes idle,
+	// so nothing downstream — the archivist above all — can ever be woken by a
+	// conversation.
+	Worker string `json:"worker"`
 }
 
 type createSessionResp struct {
@@ -88,6 +103,35 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A chat that names a worker must name a REAL one. Refusing is the whole
+	// point of this block: the previous behaviour — ignore the field, hand back
+	// a session that looks fine and has none of the worker's prompt — is how a
+	// broken console button survived unnoticed, and a typo'd name would
+	// reproduce it exactly. Checked here, with the other rejections, so a
+	// refused worker leaves no progress op and no row behind.
+	worker := strings.TrimSpace(body.Worker)
+	if worker != "" {
+		if h.cfg.Workers == nil {
+			http.Error(w, "worker-attached sessions are not configured on this host", http.StatusNotImplemented)
+			return
+		}
+		if id.Customer == "" {
+			http.Error(w, "no project in token", http.StatusForbidden)
+			return
+		}
+		row, err := h.cfg.Workers.GetWorker(r.Context(), id.Customer, worker)
+		if err != nil || row == nil {
+			http.Error(w, "no worker "+strconv.Quote(worker)+" in this project", http.StatusNotFound)
+			return
+		}
+		if !row.Enabled {
+			// A disabled worker takes no dispatched jobs, so letting a human chat
+			// as one would make "disabled" mean two different things depending on
+			// who is asking.
+			http.Error(w, "worker "+strconv.Quote(worker)+" is disabled", http.StatusConflict)
+			return
+		}
+	}
 	// Resolve installation → image reference when the host has wired an ImageResolver,
 	// but only when no explicit CustomImageID is present. When both arrive (the frontend
 	// always auto-sends an installation), the caller's custom image must win: leave
@@ -121,13 +165,35 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 		mc.MarkCreating(sid)
 	}
 
+	// A worker-attached chat carries the name in BOTH fields, and they are not
+	// redundant:
+	//
+	//	Persona → the prompt. sessioncontext.go maps scope.Persona to a worker
+	//	          row and returns project prompt + worker prompt; runner's
+	//	          turnSystemPrompt falls back to it whenever composed_prompt is
+	//	          empty, which for a chat it always is.
+	//	Worker  → the identity. What `worker.finished` is stamped with, what the
+	//	          core MCP server attributes config writes to, and what
+	//	          emitIdleFinish requires before it will emit at all.
+	//
+	// dispatch.go deliberately sets Worker and leaves Persona EMPTY, because a
+	// dispatched job pins its prompt in composed_prompt and a live re-resolution
+	// could disagree with it. A chat pins nothing, so there is nothing to
+	// disagree with: re-resolution IS the prompt, and editing the worker
+	// mid-conversation showing up on the next turn is the behaviour you want
+	// from a chat.
+	persona := body.Persona
+	if worker != "" && persona == "" {
+		persona = worker
+	}
 	// Persist the row before provisioning (Runner contract).
 	row := &agentdb.Session{
 		ID: sid, Customer: id.Customer, Job: body.Job,
-		UserEmail: id.UserEmail, Persona: body.Persona, Status: "creating",
+		UserEmail: id.UserEmail, Persona: persona, Status: "creating",
 		WorkflowID: "agent", Installation: body.Installation,
 		CustomImageID: body.CustomImageID,
 		Name:          name,
+		Worker:        worker,
 	}
 	if name == "" {
 		// The unchanged path every existing caller takes: an upsert, which is
@@ -158,7 +224,8 @@ func (h *Handlers) CreateSession(w http.ResponseWriter, r *http.Request) {
 
 	createReq := agentkit.CreateSessionRequest{
 		SessionID:     sid,
-		Persona:       body.Persona,
+		Persona:       persona,
+		Worker:        worker,
 		Customer:      id.Customer,
 		Job:           body.Job,
 		UserEmail:     id.UserEmail,
