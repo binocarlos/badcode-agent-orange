@@ -283,6 +283,23 @@ jobs:
         if: (success() || failure()) && steps.up.outcome == 'success'
         run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/learning-stories.json -- e2e/features/learning-stories.stack.spec.ts
 
+      # architect-archivist@v1, the recommended shape — and the only shape that
+      # had no e2e at all until 2026-08-08, which mattered because the loop it
+      # describes could not run: `POST /agent/session` dropped the `worker` the
+      # console had been sending for months, so a chat carried no worker
+      # identity, so it never emitted worker.finished, so the archivist could
+      # never be woken by a conversation. Two silent defects holding each other
+      # up. This step is what stops them coming back.
+      #
+      # The only step needing TWO overrides, which is why they had to become
+      # combinable: the script makes the model call tools, and --idle-timeout
+      # turns "a conversation goes quiet" from a 30-minute wait into a 1-minute
+      # one (agentd's floor — the archive sweep runs once a minute). It is
+      # therefore the slowest step per test in this job, and worth it.
+      - name: The architect-archivist loop
+        if: (success() || failure()) && steps.up.outcome == 'success'
+        run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/architect-archivist.json --idle-timeout 1m -- e2e/features/architect-archivist.stack.spec.ts
+
       # A three-port pool instead of a hundred: the exhaustion path is
       # unreachable at the default size.
       - name: Port-pool exhaustion

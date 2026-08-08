@@ -119,6 +119,17 @@ export interface EventDelivery {
   event_id: string
   subscription_id: string
   session_id: string
+  /**
+   * The worker this delivery woke. The route has always returned it; the type
+   * simply never named it, so every spec asserting "who woke?" had to go via
+   * subscription_id. Assert on this when the question is which worker ran —
+   * above all when the answer should be "nobody, again" (self-delivery).
+   */
+  worker: string
+  /** Set when status is `failed`; the dispatch gate's own words. */
+  failure_reason?: string
+  /** Set when the delivery came from a schedule rather than a subscription. */
+  schedule_id?: string
   status: 'pending' | 'running' | 'ok' | 'failed' | 'awaiting_human' | 'rate_limited'
   started_at: number
   ended_at: number
@@ -588,7 +599,9 @@ export class ProjectClient {
   private readonly created: string[] = []
 
   /** Creates a session and returns its id. */
-  async createSession(body: { job?: string; persona?: string; systemPrompt?: string } = {}): Promise<string> {
+  async createSession(
+    body: { job?: string; persona?: string; systemPrompt?: string; worker?: string } = {},
+  ): Promise<string> {
     const { id } = await this.json<{ id: string }>('POST', '/agent/session', body)
     this.created.push(id)
     return id

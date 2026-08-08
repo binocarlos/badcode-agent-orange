@@ -81,11 +81,11 @@ const (
 // their own. It is deliberately a POLICY, not a schema the engine enforces: three
 // labels, a rule about what not to keep, and a reason. Change this sentence and
 // the project's whole memory changes shape — which is the point.
-const defaultMemoryPolicy = `From each conversation, write at most three memories:
+const defaultMemoryPolicy = `From each finished piece of work — a conversation that went quiet, or a job that completed — write at most three memories:
 - one kind=summary, name=<a stable slug for the thread> — what was decided or done, in a few sentences;
 - one kind=lesson per thing that would change how this project acts next time (skip if there are none);
 - one kind=fact, name=<x> for any durable fact about the world the project should carry forward (an account name, a deadline, a rate) — and only when it is stated plainly, never inferred.
-Write nothing for a conversation that decided nothing. A memory nobody will read is worse than no memory: it costs a briefing slot and dilutes search.`
+Write nothing for work that decided nothing. A memory nobody will read is worse than no memory: it costs a briefing slot and dilutes search.`
 
 func init() {
 	Register(&Topology{
@@ -93,7 +93,8 @@ func init() {
 		Version: "v1",
 		Description: "The KISS starting shape: an architect you talk to that designs and builds the rest " +
 			"of the org with its own management tools, and an optional frozen archivist woken by every " +
-			"conversation that goes quiet, whose prompt IS the project's memory policy. Two workers and " +
+			"piece of work that finishes — a conversation that goes quiet or a job that completes — and whose " +
+			"prompt decides what that finished work BECOMES. Two workers and " +
 			"one subscription — coordination happens through shared memory, not through wiring.",
 		Questions: []Question{
 			{
@@ -111,7 +112,7 @@ func init() {
 			},
 			{
 				ID:      ArchitectQuestionArchivist,
-				Prompt:  "Archive every conversation into memory? Without an archivist you get no automatic history — workers can still write their own memories.",
+				Prompt:  "Archive finished work into memory — conversations that go quiet and jobs that complete? Without an archivist you get no automatic history; workers can still write their own memories.",
 				Type:    QuestionBool,
 				Default: true,
 			},
@@ -124,7 +125,7 @@ func init() {
 			},
 			{
 				ID:      ArchitectQuestionMemoryPolicy,
-				Prompt:  "What should be extracted from every conversation, and under what labels? This becomes the archivist's prompt — it is how you own the project's memory schema.",
+				Prompt:  "What should be extracted from each finished piece of work, and under what labels? This becomes the archivist's prompt — one of the three places the project's memory schema lives.",
 				Type:    QuestionString,
 				Default: defaultMemoryPolicy,
 			},
@@ -158,7 +159,7 @@ func architectPrompt(goal, name, archivist string, hasArchivist bool) string {
 	if hasArchivist {
 		lines = append(lines,
 			"",
-			"This project already has "+archivist+", which is woken by every conversation that goes quiet and turns it into memory according to a policy the humans own. Do not duplicate it, and do not tell other workers to write their own conversation summaries — that is its job. Do not attempt to change it: it is frozen, and refusing you is the point.")
+			"This project already has "+archivist+", which is woken every time work finishes — a conversation that goes quiet or a job that completes — and turns it into memory according to a policy the humans own. Do not duplicate it, and do not tell the workers you create to write their own summaries of their own work — that is its job. Do not attempt to change it: it is frozen, and refusing you is the point.")
 	}
 	lines = append(lines,
 		"",
@@ -174,7 +175,7 @@ func archivistPrompt(policy, name string) string {
 	return strings.Join([]string{
 		stageIdentity(name) + " this project's memory.",
 		"",
-		"You are woken every time a conversation in this project goes quiet. The event that woke you contains that whole conversation — what was said, and, on the `[tool]` lines, what was actually DONE. Your job is to decide what of it is worth remembering, and to write those memories.",
+		"You are woken every time work in this project finishes: a conversation that goes quiet, or a job that completes. The event that woke you contains that whole transcript — what was said, and, on the `[tool]` lines, what was actually DONE. Your job is to decide what of it is worth remembering, and to write those memories.",
 		"",
 		"THE POLICY — this is what the humans running this project have decided memory is for. Follow it exactly:",
 		policy,
@@ -244,7 +245,7 @@ func renderArchitectArchivist(a Answers) (*Bundle, error) {
 	if hasArchivist {
 		workers = append(workers, agentdb.Worker{
 			Name:         archivist,
-			Description:  "Woken by every conversation that goes quiet; turns it into memory according to the project's policy. Frozen: the humans own the memory schema.",
+			Description:  "Woken every time work finishes — a conversation that goes quiet or a job that completes — and turns it into memory according to the project's policy. Frozen: the humans own the memory schema.",
 			SystemPrompt: archivistPrompt(policy, archivist),
 			Briefing:     agentdb.SelectorList{"name=label-registry"},
 			MaxInstances: agentdb.DefaultMaxInstances,
