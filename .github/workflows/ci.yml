@@ -184,6 +184,31 @@ jobs:
       - run: yarn typecheck
       - run: yarn build
 
+  # The comparison rig's offline unit layer: 223 tests over the arithmetic
+  # behind every topology comparison — ranking, variance, report determinism,
+  # and the Tier B grader's blind shuffle (one test builds a deliberately rigged
+  # grader that ranks by shuffle position, to prove the scoring notices). No
+  # stack, no docker, no network; the tests themselves take ~0.2s.
+  #
+  # This tests the MEASURING INSTRUMENT, not the product. A regression here
+  # breaks nothing a user touches — it makes a research number quietly wrong,
+  # which is worse in its own way, because nothing else in this file would
+  # catch it.
+  #
+  # node 22, not 20 like its neighbours: the Tier B half runs from source under
+  # --experimental-strip-types, which needs >= 22.6. That is how it is written
+  # to be run, deliberately (e2e/experiments/tierb/README.md), and run.sh fails
+  # rather than skips on an older runtime.
+  experiments:
+    name: Experiments rig (offline unit layer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: ./e2e/experiments/run.sh test
+
   # The stack end-to-end suite: the real docker-compose stack — same binaries,
   # same Postgres, same container runtime a user gets — driven through a browser.
   # Until 2026-08-08 no CI job ran ANY of it, so ~90 browser tests covering the
@@ -203,7 +228,10 @@ jobs:
           node-version: '20'
       - run: npx playwright install --with-deps chromium
 
+      # `id` so the test steps below can require the stack specifically, rather
+      # than requiring that nothing at all has failed yet. See their condition.
       - name: Bring up the stack (mock model — no credentials, no spend)
+        id: up
         run: ./e2e/run-stack-e2e.sh up mock
 
       # Six runs, not one. `--mock-script` and `--port-pool` are agentd-wide and
@@ -214,25 +242,51 @@ jobs:
       - name: Baseline specs
         run: ./e2e/run-stack-e2e.sh test mock
 
+      # THE CONDITION ON EVERY STEP BELOW IS LOAD-BEARING. Read before editing.
+      #
+      # A step's default condition is `success()`: it runs only if everything
+      # before it passed. So on 2026-08-08 one racy assertion in the baseline
+      # marked all five steps below as `skipped` and five whole suites never
+      # executed — and the topology specs were invisible TWICE, since they also
+      # skip themselves in the baseline for want of their script. One broken
+      # spec cost the run its entire remaining signal.
+      #
+      # `success() || failure()` alone would over-correct: if the STACK fails to
+      # come up, all five would still run and spend five timeouts discovering
+      # there is nothing to talk to. Hence `steps.up.outcome == 'success'` —
+      # these steps depend on the stack, not on each other.
+      #
+      # Net: stack up → every test step reports its own verdict, and the job
+      # still fails if any of them do. Stack down → none of them run.
+      #
+      # NOT `if: always()`, which also runs after a cancel — nobody wants five
+      # more test steps grinding through a run they just stopped. Teardown does
+      # use always(), because that is exactly when it must run.
+      #
       # Scoped to its own spec, like every other scripted step. A script is
       # agentd-wide, so an unscoped run applies THIS script to specs that need a
       # different one and fails them for no reason — which is exactly what an
       # unscoped version of this step did when it was first written.
       - name: The §8.7 acceptance loop (a worker rewrites another's prompt)
+        if: (success() || failure()) && steps.up.outcome == 'success'
         run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/g1-acceptance.json -- e2e/features/acceptance-loop.spec.ts
 
       - name: Topologies
+        if: (success() || failure()) && steps.up.outcome == 'success'
         run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/topologies.json -- e2e/features/topologies.stack.spec.ts
 
       - name: Embedding / named sessions / session schedules
+        if: (success() || failure()) && steps.up.outcome == 'success'
         run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/embedding.json -- e2e/features/embedding.stack.spec.ts
 
       - name: Learning stories
+        if: (success() || failure()) && steps.up.outcome == 'success'
         run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/learning-stories.json -- e2e/features/learning-stories.stack.spec.ts
 
       # A three-port pool instead of a hundred: the exhaustion path is
       # unreachable at the default size.
       - name: Port-pool exhaustion
+        if: (success() || failure()) && steps.up.outcome == 'success'
         run: ./e2e/run-stack-e2e.sh test mock --port-pool 3 -- e2e/features/port-pool.stack.spec.ts
 
       - name: Playwright report

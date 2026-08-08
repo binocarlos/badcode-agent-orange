@@ -124,8 +124,9 @@ namespacing) and the product layer — session MCP config, workers and settings,
 images and skills, image curation, the schedule and port-pool failure paths, and
 `acceptance-loop.spec.ts`, in which one worker rewrites another worker's system
 prompt with no human and no deploy, offline (the spec's definition of done —
-§8.7). Specs live in `e2e/features/` and run via `playwright.stack.config.ts`;
-`e2e/tests/` is the older Vite + mock-server rig. The fast loop is:
+§8.7). Specs live in `e2e/features/` and run via `playwright.stack.config.ts`. (The
+older Vite + `mock-server` rig under `e2e/tests/` was deleted on 2026-08-08 —
+see `e2e/README.md`.) The fast loop is:
 
     ./e2e/run-stack-e2e.sh up            # build + start (mock mode), ~minutes once
     ./e2e/run-stack-e2e.sh test          # seconds per iteration — repeat at will

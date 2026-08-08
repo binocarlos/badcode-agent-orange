@@ -657,8 +657,8 @@ the new prompt.
 
 It runs offline. `AGENTKIT_MOCK_MODEL_SCRIPT` (§11) is what lets the mock model emit a `tool_use`,
 which is what makes an offline test able to prove a worker rewrote a worker. The e2e lives under
-`e2e/features/` and runs against the compose stack via `e2e/playwright.stack.config.ts` — not the
-legacy `e2e/tests/` rig. The whole run is
+`e2e/features/` and runs against the compose stack via `e2e/playwright.stack.config.ts`. The whole
+run is
 `./e2e/run-stack-e2e.sh up mock && ./e2e/run-stack-e2e.sh test --mock-script
 e2e/mock-scripts/g1-acceptance.json`.
 

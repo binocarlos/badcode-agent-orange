@@ -42,6 +42,13 @@ ensure_deps() {
 build() {
   ensure_deps
   echo "── experiments: typecheck + compile ──"
+  # Clean first. dist/ is not in git and tsc never deletes anything, so output
+  # from an earlier source layout survives every later build. tierb/ was
+  # compiled here before the tsconfig excluded it (2026-07-28), and its output
+  # sat in dist/ for ten days afterwards still requiring './rng.ts' — a file
+  # tsc had long stopped emitting. Anything walking dist/ then "finds" tests
+  # that no longer exist in source and reports failures against deleted code.
+  rm -rf "$HERE/dist"
   "$E2E/node_modules/.bin/tsc" -p "$HERE/tsconfig.json"
   # dist/ is CommonJS while e2e/ as a whole is ESM — see tsconfig.json's note.
   printf '{"type":"commonjs"}\n' >"$HERE/dist/package.json"
@@ -98,10 +105,49 @@ cmd_compare() {
   return "$status"
 }
 
+# The offline unit layer, in its two halves. They need different runners, and
+# that is deliberate rather than an oversight:
+#
+#   dist/**/*.test.js  the rig proper — typechecked and compiled to CommonJS by
+#                      tsc, run from dist/.
+#   tierb/*.test.ts    the Tier B harness — run from SOURCE under node's
+#                      strip-types runner. Its mandatory `.ts` import extensions
+#                      are exactly what this CommonJS compile refuses, so the
+#                      tsconfig excludes it on purpose. See tierb/README.md.
+#
+# `find`, not a glob. `dist/experiments/*.test.js` matches the top level only,
+# and 10 of the 11 compiled test files live in subdirectories — so that glob ran
+# 21 of 223 tests and reported a cheerful green over the rest. It was here from
+# C1 until 2026-08-08.
+#
+# Both halves always run and the worst status wins: a failure in the first must
+# not hide the second from whoever is reading the output.
 cmd_test() {
   build
-  echo "── experiments: offline unit layer ──"
-  node --test "$HERE"/dist/experiments/*.test.js
+  local status=0
+
+  local compiled=()
+  while IFS= read -r f; do compiled+=("$f"); done < <(find "$HERE/dist" -name '*.test.js' | sort)
+  if [ "${#compiled[@]}" -eq 0 ]; then
+    echo "no compiled tests under $HERE/dist — the build emitted nothing" >&2
+    return 1
+  fi
+  echo "── experiments: offline unit layer — the rig (${#compiled[@]} files) ──"
+  node --test "${compiled[@]}" || status=$?
+
+  echo "── experiments: offline unit layer — tier B (strip-types) ──"
+  # Fail rather than skip on an old runtime. A skip here would restore precisely
+  # the silence this function was rewritten to end.
+  if node -e 'const [a,b] = process.versions.node.split(".").map(Number)
+              process.exit(a > 22 || (a === 22 && b >= 6) ? 0 : 1)'; then
+    node --experimental-strip-types --test "$HERE"/tierb/*.test.ts || status=$?
+  else
+    echo "NOT RUN: tier B needs node >= 22.6 for --experimental-strip-types; this is $(node -v)." >&2
+    echo "         Treat this run as incomplete, not as a pass." >&2
+    status=1
+  fi
+
+  return "$status"
 }
 
 cmd_list() {
