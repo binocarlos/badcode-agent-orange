@@ -1,0 +1,266 @@
+#!/usr/bin/env bash
+#
+# ./stack — the local development stack for Agent Orange.
+#
+# Deliberately small. Everything here exists because running the stack by hand
+# has two traps that bite before you see anything (README-stack.md), and because
+# `docker compose logs -f` across five services is unreadable in one pane.
+#
+#   ./stack build          build the images
+#   ./stack start          bring it up with a REAL model + tmux panes  (BILLABLE)
+#   ./stack start mock     bring it up with the deterministic mock model (free)
+#   ./stack stop           tear it down and kill the tmux session
+#   ./stack restart [svc]  restart one service (or all)
+#   ./stack logs [svc...]  follow logs
+#   ./stack psql [args]    psql shell into postgres
+#   ./stack sql "SELECT …" run one statement
+#   ./stack status         model mode, services, session/port usage
+#   ./stack sessions       list live sessions
+#   ./stack clean          delete every session (frees containers + host ports)
+#   ./stack testdb [up|down]  throwaway Postgres for the live-PG Go suite
+#   ./stack test-go [args]    go test with live Postgres wired up correctly
+#
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR"
+
+TMUX_SESSION="${TMUX_SESSION:-agent-orange}"
+WEB_PORT="${WEB_PORT:-8080}"
+
+# ── The compose invocation ───────────────────────────────────────────────────
+# `-f docker-compose.yml` is LOAD-BEARING, not tidiness. Plain `docker compose`
+# also picks up docker-compose.override.yml, which is gitignored, local-only,
+# and bind-mounts ./secrets/gcp-key.json into agentd. With no such file on the
+# host Docker helpfully creates it as a DIRECTORY and agentd dies with
+# "gcsblob: new client: dialing: read /gcp/key.json: is a directory". Naming the
+# file explicitly opts out of the override, which is what local dev wants.
+compose() { docker compose -f docker-compose.yml "$@"; }
+
+# ── Neutralising the .env traps ──────────────────────────────────────────────
+# A real .env carries this project's GCP settings, which do not work locally.
+# Shell environment beats .env in compose, so exporting these overrides them
+# without editing a real credential file. See README-stack.md.
+local_backends() {
+  export GOOGLE_APPLICATION_CREDENTIALS=
+  export AGENTKIT_BLOB_BACKEND=fs
+  export AGENTKIT_REGISTRY_BACKEND=blobarchive
+}
+
+# Blank BOTH model credentials. Mock mode needs both — the subscription token
+# alone is enough to make a session bill.
+mock_model() {
+  export ANTHROPIC_API_KEY=
+  export CLAUDE_CODE_OAUTH_TOKEN=
+}
+
+have_key() {
+  # Is a real model credential going to reach agentd? Consults the shell first,
+  # then .env, because that is the order compose resolves them in.
+  local k="${ANTHROPIC_API_KEY:-}" t="${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  if [[ -z "$k$t" && -f .env ]]; then
+    k=$(grep -E '^ANTHROPIC_API_KEY=.' .env 2>/dev/null | head -1 | cut -d= -f2- || true)
+    t=$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=.' .env 2>/dev/null | head -1 | cut -d= -f2- || true)
+  fi
+  [[ -n "$k$t" ]]
+}
+
+# ── Commands ─────────────────────────────────────────────────────────────────
+
+build() {
+  local_backends
+  compose build "$@"
+  echo
+  echo ">> Built. The web image is a BUILT bundle of examples/web — UI edits are"
+  echo ">> invisible until you rebuild it:  ./stack build web && ./stack restart web"
+}
+
+start() {
+  local mode="${1:-real}"
+
+  if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
+    echo "Session $TMUX_SESSION already exists. Attaching…"
+    exec tmux -2 attach -t "$TMUX_SESSION"
+  fi
+
+  local_backends
+
+  case "$mode" in
+    mock)
+      mock_model
+      echo "── mock model: deterministic, offline, free ──"
+      ;;
+    real)
+      if ! have_key; then
+        echo "No ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN found in the shell or .env." >&2
+        echo "Either set one, or run:  ./stack start mock" >&2
+        exit 1
+      fi
+      echo "── REAL MODEL — this stack will BILL. Use './stack start mock' if you"
+      echo "   only meant to click around. ──"
+      ;;
+    *)
+      echo "usage: ./stack start [real|mock]" >&2; exit 1 ;;
+  esac
+
+  compose up -d
+
+  echo "Creating tmux session $TMUX_SESSION…"
+  local size w h
+  size=$(stty size 2>/dev/null || echo "50 200")
+  h=$(echo -n "$size" | awk '{print $1}'); w=$(echo -n "$size" | awk '{print $2}')
+  tmux -2 new-session -d -s "$TMUX_SESSION" -x "${w:-200}" -y "$(( ${h:-50} - 1 ))"
+  for _ in 1 2 3; do
+    tmux split-window -v -t "$TMUX_SESSION"
+    tmux select-layout -t "$TMUX_SESSION" even-vertical
+  done
+
+  tmux send-keys -t 0 './stack logs agentd' C-m
+  tmux send-keys -t 1 './stack logs dind init-sandbox' C-m
+  tmux send-keys -t 2 './stack logs web postgres' C-m
+  # The status pane answers the question you actually have on attach: which
+  # model am I talking to, and how many ports have I burned?
+  tmux send-keys -t 3 'clear; ./stack status' C-m
+  tmux resize-pane -t 3 -y 14 2>/dev/null || true
+  tmux select-pane -t 3 2>/dev/null || true
+
+  tmux -2 attach-session -t "$TMUX_SESSION"
+}
+
+stop() {
+  compose down --remove-orphans
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  echo "Stopped."
+}
+
+restart() {
+  local svc="${1:-all}"
+  local_backends
+  if [[ "$svc" == "all" ]]; then
+    compose down && compose up -d
+  else
+    # stop+up rather than `restart`, so compose-file and env changes are picked up.
+    compose stop "$svc" && compose up -d "$svc"
+  fi
+}
+
+logs() {
+  # Follow only on a terminal. The tmux panes want -f; a pipe or a `timeout`
+  # wrapper wants the log to end, or the output never flushes.
+  if [[ -t 1 ]]; then compose logs -f --tail=100 "$@"
+  else compose logs --tail=100 "$@"; fi
+}
+
+psql() {
+  local user="${POSTGRES_USER:-agentorange}" db="${POSTGRES_DB:-agentorange}"
+  compose exec postgres psql --user "$user" --dbname "$db" "$@"
+}
+
+sql() {
+  local user="${POSTGRES_USER:-agentorange}" db="${POSTGRES_DB:-agentorange}"
+  compose exec -T postgres psql --user "$user" --dbname "$db" -c "$*"
+}
+
+status() {
+  echo "── services ───────────────────────────────────────────────"
+  compose ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null || echo "(not running)"
+  echo
+  echo "── model ──────────────────────────────────────────────────"
+  # agentd states its choice at boot. That log line, not the env, is the truth:
+  # it is what the process actually resolved.
+  compose logs agentd 2>/dev/null | grep -i 'model proxy' | tail -2 || echo "(agentd not up)"
+  echo
+  echo "── sessions / host ports ──────────────────────────────────"
+  # A session holds one container and one host port until deleted or reclaimed
+  # for idleness; the pool is the ceiling on CONCURRENT sessions.
+  compose logs agentd 2>/dev/null | grep -i 'port pool' | tail -1 || true
+  local n
+  n=$(sql "select count(*) from agent_sessions where deleted_at = 0;" 2>/dev/null | sed -n '3p' | tr -d ' ' || echo '?')
+  echo "live sessions: ${n:-?}   ( ./stack sessions | ./stack clean )"
+  echo
+  echo "UI: http://localhost:${WEB_PORT}"
+}
+
+sessions() {
+  sql "select id, coalesce(name,'-') as name, customer as project, status,
+              to_timestamp(created_at/1000)::timestamp(0) as created
+       from agent_sessions where deleted_at = 0 order by created_at desc limit 50;"
+}
+
+clean() {
+  # Sessions are the scarce resource here: each holds a container and one of the
+  # 100 host ports. This deletes through the API so containers are released,
+  # rather than truncating the table and orphaning them.
+  echo "Deleting all sessions via the API…"
+  local base="http://localhost:${WEB_PORT}"
+  local tok; tok=$(curl -fsS "$base/dev/token" 2>/dev/null | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' || true)
+  if [[ -z "$tok" ]]; then
+    echo "Could not get a /dev/token (login mode on, or stack down)." >&2
+    echo "Delete from the UI instead, or './stack stop' to release everything." >&2
+    exit 1
+  fi
+  local ids
+  ids=$(curl -fsS -H "Authorization: Bearer $tok" "$base/agent/sessions?user_email=*" \
+        | grep -o '"id":"[^"]*"' | cut -d'"' -f4 || true)
+  local count=0
+  for id in $ids; do
+    curl -fsS -X DELETE -H "Authorization: Bearer $tok" "$base/agent/sessions/$id" >/dev/null && count=$((count+1))
+  done
+  echo "Deleted $count session(s)."
+}
+
+# ── The throwaway Postgres for the live-PG test suite ────────────────────────
+# ~500 Go tests only run against a real Postgres, and they are the ONLY proof of
+# the jsonb selectors, the tsvector/pgvector hybrid search and every migration.
+# Two traps this exists to remove:
+#   1. Unset AGENTKIT_TEST_POSTGRES_URL and they SKIP — a green run proves nothing.
+#   2. Set but UNREACHABLE and they FAIL — a red run that looks like a regression
+#      and is not. (Every such failure takes 0.00s; that is the tell.)
+# It must be a throwaway, never a shared database: an unmerged migration on a
+# sibling branch has broken other people's runs from a shared one before.
+TESTDB_NAME=ao-test-pg
+TESTDB_PORT="${TESTDB_PORT:-5433}"
+TESTDB_URL="postgres://postgres:test@localhost:${TESTDB_PORT}/postgres?sslmode=disable"
+
+testdb() {
+  case "${1:-up}" in
+    up)
+      if ! docker ps --format '{{.Names}}' | grep -qx "$TESTDB_NAME"; then
+        docker rm -f "$TESTDB_NAME" >/dev/null 2>&1 || true
+        docker run -d --name "$TESTDB_NAME" --restart unless-stopped \
+          -e POSTGRES_PASSWORD=test -p "${TESTDB_PORT}:5432" \
+          pgvector/pgvector:pg16 >/dev/null
+        printf 'waiting for %s' "$TESTDB_NAME"
+        until docker exec "$TESTDB_NAME" pg_isready -U postgres >/dev/null 2>&1; do
+          printf '.'; sleep 1
+        done
+        echo
+      fi
+      echo "$TESTDB_URL"
+      ;;
+    down) docker rm -f "$TESTDB_NAME" >/dev/null 2>&1 && echo "removed $TESTDB_NAME" || echo "not running" ;;
+    *) echo "usage: ./stack testdb [up|down]" >&2; exit 1 ;;
+  esac
+}
+
+# Run the Go suite the way that actually proves something. -p 1 is required:
+# parallel packages against one throwaway Postgres produce false failures and
+# leak a connection pool per test.
+test_go() {
+  testdb up >/dev/null
+  ( cd go && AGENTKIT_TEST_POSTGRES_URL="$TESTDB_URL" go test -p 1 -count=1 "$@" ./... )
+}
+
+help() {
+  sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ── Dispatch ─────────────────────────────────────────────────────────────────
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  build|start|stop|restart|logs|psql|sql|status|sessions|clean|testdb|help) "$cmd" "$@" ;;
+  test-go|test_go) test_go "$@" ;;
+  db) psql "$@" ;;
+  *) echo "unknown command: $cmd" >&2; help; exit 1 ;;
+esac

@@ -120,11 +120,15 @@ func EmbedOrDegrade(ctx context.Context, p Provider, text string) []float32 {
 //
 //	none (default) — no provider; memory search is keyword+recency (§7.6.5)
 //	mock           — the deterministic offline embedder (mock mode, e2e)
+//	openai         — OpenAI /v1/embeddings (openai.go); reads OPENAI_API_KEY,
+//	                 and optionally AGENTKIT_EMBEDDING_MODEL and
+//	                 AGENTKIT_EMBEDDING_BASE_URL
 //
 // "none" returns (nil, nil): a nil Provider is a success, and callers hand it
 // straight to Embed. An unrecognised value is an error rather than a silent
 // fall back to "none" — a typo must not quietly cost a deployment its semantic
-// leg. Real hosted providers are host code: construct one and pass it in.
+// leg. A host with its own provider still constructs it and passes it in;
+// this function is the convenience path, not the only one.
 func NewFromEnv(env func(string) string) (Provider, error) {
 	backend := strings.TrimSpace(env("AGENTKIT_EMBEDDING_BACKEND"))
 	switch backend {
@@ -132,7 +136,16 @@ func NewFromEnv(env func(string) string) (Provider, error) {
 		return nil, nil
 	case "mock":
 		return NewMock(), nil
+	case "openai":
+		// A missing key is a boot error, not a degrade-to-keyword: asking for
+		// "openai" and silently getting no semantic leg is the failure this
+		// whole package exists to prevent.
+		return NewOpenAI(OpenAIConfig{
+			APIKey:  env("OPENAI_API_KEY"),
+			Model:   env("AGENTKIT_EMBEDDING_MODEL"),
+			BaseURL: env("AGENTKIT_EMBEDDING_BASE_URL"),
+		})
 	default:
-		return nil, fmt.Errorf("unknown AGENTKIT_EMBEDDING_BACKEND %q (want none|mock)", backend)
+		return nil, fmt.Errorf("unknown AGENTKIT_EMBEDDING_BACKEND %q (want none|mock|openai)", backend)
 	}
 }

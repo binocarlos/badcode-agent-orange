@@ -35,8 +35,26 @@ import { configEvents } from '../helpers/configlog'
 // firings, a firing is one wall-clock minute, and there is no catch-up, so five
 // minutes is a floor set by the product and not by the polling.
 
-/** How many consecutive failures retire a schedule (agentdb.ScheduleMaxProvisionFailures). */
-const MAX_PROVISION_FAILURES = 5
+/**
+ * How many consecutive failures retire a schedule.
+ *
+ * The product default is 5 (`agentdb.ScheduleMaxProvisionFailures`), and the
+ * streak is counted in FIRINGS — so on the finest cron granularity, one minute,
+ * proving the default costs five minutes of wall clock in this one test. That
+ * was over a fifth of the entire stack suite.
+ *
+ * The e2e stack therefore boots agentd with
+ * `AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES=2` (docker-compose.stack-e2e.yml).
+ * The behaviour under test — a streak builds, is visible while it builds, and
+ * retires the schedule at the ceiling with the count in its rationale — is
+ * identical at 2 and at 5; only the waiting differs. Same trade as
+ * `--port-pool`, which shrinks a 100-port pool to 3 because the exhaustion path
+ * is otherwise unreachable.
+ *
+ * Read from the environment rather than hardcoded, so this spec still passes
+ * against a stack running the product default.
+ */
+const MAX_PROVISION_FAILURES = Number(process.env.STACK_SCHEDULE_MAX_PROVISION_FAILURES) || 5
 
 /**
  * Waits for a schedule to satisfy a predicate, reading every `intervalMs`.

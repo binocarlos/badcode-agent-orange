@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,16 +86,24 @@ func main() {
 	must(err)
 
 	// ── Embedding provider (memory semantic leg, §7.5) ───────────────────────────
-	// AGENTKIT_EMBEDDING_BACKEND: none (default) | mock. A nil provider is a
-	// supported deployment, not a failure — memories store a NULL embedding and
-	// search degrades to keyword+recency with the same result shape (§7.6.5). A
-	// typo in the variable IS a failure, so it is a boot error rather than a
-	// silent fall back to "none".
+	// AGENTKIT_EMBEDDING_BACKEND: none (default) | mock | openai. A nil provider
+	// is a supported deployment, not a failure — memories store a NULL embedding
+	// and search degrades to keyword+recency with the same result shape
+	// (§7.6.5). A typo in the variable IS a failure, so it is a boot error
+	// rather than a silent fall back to "none".
 	embedder, err := embedding.NewFromEnv(os.Getenv)
 	must(err)
-	if embedder == nil {
+	switch e := embedder.(type) {
+	case nil:
 		log.Printf("[agentd] embeddings=none — memory search is keyword+recency")
-	} else {
+	case *embedding.OpenAI:
+		// Name the MODEL, not just the backend. Vectors from two models are not
+		// comparable and memories are embedded once, at create — so the model a
+		// deployment ran with is a fact about its stored rows, and the boot log
+		// is where someone will look for it later.
+		log.Printf("[agentd] embeddings=openai model=%s dim=%d — memory search is hybrid (keyword + semantic)",
+			e.Model(), embedding.Dim)
+	default:
 		log.Printf("[agentd] embeddings=%s", envOr("AGENTKIT_EMBEDDING_BACKEND", "none"))
 	}
 	// …and whether the database can actually hold a vector. Loud here, at boot,
@@ -406,7 +415,23 @@ func main() {
 		// (sessionMessenger): a session-mode schedule wakes an EXISTING named
 		// session instead of dispatching a job, and that is the whole extra
 		// capability it gets. Deliberately not the whole *Runner — see the seam.
-		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate, Sessions: runner})
+		// AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES: TEST RIGS ONLY. Proving the
+		// §8.6 retirement streak costs one cron MINUTE per firing, so the
+		// product default of five costs five minutes in a single e2e test.
+		// Unset or unparseable → the default; a deployment should never set it.
+		maxFail := 0
+		if v := strings.TrimSpace(os.Getenv("AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES")); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				log.Fatalf("[agentd] AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES=%q is not a positive integer", v)
+			}
+			maxFail = n
+			log.Printf("[agentd] WARNING: schedule retirement streak overridden to %d (default %d) — test rigs only",
+				n, agentdb.ScheduleMaxProvisionFailures)
+		}
+		sched := newScheduler(schedulerConfig{
+			Store: agentDB, Dispatcher: gate, Sessions: runner, MaxProvisionFailures: maxFail,
+		})
 		go sched.Run(ctx)
 
 		attention = newAttentionService(agentDB, permalinks)

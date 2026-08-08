@@ -22,8 +22,27 @@ export default defineConfig({
   testMatch: ['stack.spec.ts', 'features/*.spec.ts'],
   timeout: 240_000,
   expect: { timeout: 30_000 },
+  // Parallel across FILES, serial within one. `fullyParallel: false` is what
+  // makes that distinction: with it, workers > 1 hands each worker a whole
+  // spec file, and the `describe.configure({ mode: 'serial' })` blocks several
+  // specs rely on keep working untouched. `fullyParallel: true` would break
+  // them, so the two settings are a pair — do not raise one without the other
+  // in mind.
+  //
+  // Why it is safe at this granularity: every test takes a fresh, run-scoped
+  // project of its own (`newProjectClient`), so there is no shared product
+  // state to race over. The shared resources are the host port pool (100, and
+  // three workers touch a handful) and DinD.
+  //
+  // Why it is worth it: almost all of this suite's wall clock is WAITING — for
+  // a container to boot, for a cron minute to arrive, for a snapshot to commit —
+  // not computing. Serial execution left three of four cores idle.
+  //
+  // The port-pool spec is the one thing that must not share a host, since it
+  // works by filling the pool. It already runs alone, in its own `--port-pool 3`
+  // invocation, so this does not endanger it.
   fullyParallel: false,
-  workers: 1,
+  workers: Number(process.env.STACK_E2E_WORKERS) || 3,
   retries: 0,
   reporter: [['list'], ['html', { outputFolder: 'playwright-report-stack', open: 'never' }]],
   use: {

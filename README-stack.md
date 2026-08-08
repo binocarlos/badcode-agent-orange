@@ -2,6 +2,24 @@
 
 One command brings up the whole thing — API, a chat UI, and the container runtime.
 
+## For day-to-day development: `./stack`
+
+If you have a **real** `.env` (this project's actual GCP + Anthropic settings), the
+three commands below do not work — see "two traps" further down. `./stack` exists
+so you do not have to remember the workaround:
+
+    ./stack build          # build the images
+    ./stack start          # up + tmux log panes, REAL model (billable)
+    ./stack start mock     # same, deterministic offline mock model (free)
+    ./stack status         # which model, which services, how many session ports
+    ./stack psql           # a psql shell
+    ./stack testdb up      # throwaway Postgres for the live-PG Go suite
+    ./stack test-go        # go test with that database wired up correctly
+
+It bypasses `docker-compose.override.yml` and forces the local `fs`/`blobarchive`
+backends, which is exactly what the manual invocation below does by hand.
+`./stack help` lists everything.
+
 ## 3 commands
 
     cp .env.example .env
@@ -106,8 +124,9 @@ namespacing) and the product layer — session MCP config, workers and settings,
 images and skills, image curation, the schedule and port-pool failure paths, and
 `acceptance-loop.spec.ts`, in which one worker rewrites another worker's system
 prompt with no human and no deploy, offline (the spec's definition of done —
-§8.7). Specs live in `e2e/features/` and run via `playwright.stack.config.ts`;
-`e2e/tests/` is the older Vite + mock-server rig. The fast loop is:
+§8.7). Specs live in `e2e/features/` and run via `playwright.stack.config.ts`. (The
+older Vite + `mock-server` rig under `e2e/tests/` was deleted on 2026-08-08 —
+see `e2e/README.md`.) The fast loop is:
 
     ./e2e/run-stack-e2e.sh up            # build + start (mock mode), ~minutes once
     ./e2e/run-stack-e2e.sh test          # seconds per iteration — repeat at will

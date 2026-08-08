@@ -224,7 +224,14 @@ describe('the schematic', () => {
     // One riding label per wire. (W5 puts its `↳ ×n` traffic counts in this
     // same layer, for the same reason the labels are here — so the pin is on
     // the labels themselves rather than on every text node in the group.)
-    expect(labels.querySelectorAll('[data-testid^="label-"]')).toHaveLength(2)
+    //
+    // waitFor, not a bare assertion: the LAYER mounts before its labels do, so
+    // awaiting `org-chart-labels` above proves only that the group exists. A
+    // synchronous count here reads 0 on a slow runner — which is exactly how
+    // this passed on every laptop and failed in CI.
+    await waitFor(() =>
+      expect(labels.querySelectorAll('[data-testid^="label-"]')).toHaveLength(2),
+    )
     // The label layer is not a second wire — the wire count is unchanged.
     expect(document.querySelectorAll('[data-testid^="wire-"]')).toHaveLength(2)
   })
@@ -715,15 +722,15 @@ describe('M0 — the still-screenshot floor (chevrons and counts)', () => {
   it('draws the chevrons under reduced motion too — direction is not motion', async () => {
     setReducedMotion(true)
     renderChart()
-    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
-    expect(testIds('chevron-')).toHaveLength(2)
+    // The canvas mounts before what it contains, so the count — not the canvas
+    // — is what has to be waited for. See the X2 label test above.
+    await waitFor(() => expect(testIds('chevron-')).toHaveLength(2))
   })
 
   it('never rotates a chevron off a right angle', async () => {
     renderChart()
-    await waitFor(() => expect(screen.getByTestId('org-chart-canvas')).toBeTruthy())
+    await waitFor(() => expect(testIds('chevron-').length).toBeGreaterThan(0))
     const chevrons = document.querySelectorAll('[data-testid^="chevron-"]')
-    expect(chevrons.length).toBeGreaterThan(0)
     for (const chevron of Array.from(chevrons)) {
       const transform = chevron.getAttribute('transform') ?? ''
       const angle = Number(/rotate\((-?\d+(?:\.\d+)?)\)/.exec(transform)?.[1] ?? 'NaN')

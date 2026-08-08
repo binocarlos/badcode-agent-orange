@@ -128,6 +128,12 @@ reload_agentd() {
 # reason instead of the one under test.
 PORT_POOL_BASE=40000
 
+# The §8.6 retirement streak this stack runs with. Set in
+# docker-compose.stack-e2e.yml; mirrored here ONLY to tell the spec what to
+# expect, so the two cannot drift silently into a test that waits for a fifth
+# firing that will never come. Keep the two in step.
+SCHEDULE_MAX_PROVISION_FAILURES=2
+
 # reload_agentd_with_pool SIZE — boot agentd with a pool of exactly SIZE ports,
 # or restore the default when SIZE is empty.
 #
@@ -252,6 +258,7 @@ cmd_test() {
     STACK_MOCK_SCRIPT="${script_json:+1}" \
     STACK_PORT_POOL="$pool" STACK_PORT_RANGE="$pool_range" \
     E2E_PORT_POOL_SIZE="$pool" \
+    STACK_SCHEDULE_MAX_PROVISION_FAILURES="$SCHEDULE_MAX_PROVISION_FAILURES" \
     npx playwright test --config playwright.stack.config.ts "${args[@]}") || status=$?
   return "$status"
 }

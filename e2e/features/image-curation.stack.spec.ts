@@ -337,6 +337,17 @@ test.describe('I4 §13 — a worker launches from the image it was pointed at', 
     await client.putSettings({ base_image: 'definitely-not-an-image:v9' })
 
     const id = await client.createSession({ job: 'plain' })
+    // Let the background create FINISH before asking what happened. createSession
+    // returns once the row exists; provisioning — and therefore the diagnostic
+    // this test is about — happens after. Message it inside that window and the
+    // stream answers with the generic "has no running instance and no snapshot",
+    // which is true but says nothing about base_image.
+    //
+    // The window was always there; it only became reachable when the suite went
+    // parallel, and it opened first on CI (4 cores) rather than locally (32).
+    // The subject here is that the error NAMES the setting, not how quickly it
+    // becomes available — so waiting is the honest fix, not a weaker assertion.
+    await client.waitForCreatesToSettle()
     const outcome = await client
       .sendMessage(id, 'hello')
       .then((body) => String(body))

@@ -7,16 +7,23 @@ the whole spec is measured against: the §8.7 self-improvement loop closing offl
 This file is the map. **Before writing a new e2e, look here** — extend the spec that owns the
 feature rather than starting a parallel one, and move a row out of the queue when you cover it.
 
-## The two harnesses
+## The harness
 
-| Harness | Config | Runs against | Status |
-| --- | --- | --- | --- |
-| **Stack e2e** (use this) | `playwright.stack.config.ts` | the real docker-compose stack on `:8080` | current |
-| Legacy harness | `playwright.config.ts` (`tests/`, `global-setup.ts`) | Vite dev server + `mock-server/` + a `go run ./cmd/agentd` | pre-product-layer; not exercised by this work |
+| Harness | Config | Runs against |
+| --- | --- | --- |
+| **Stack e2e** | `playwright.stack.config.ts` | the real docker-compose stack on `:8080` |
 
-Everything new goes in the stack harness. It runs the same binaries, database and container runtime
-a user gets from `docker compose up`, which is the only configuration where a claim like "the config
-log recorded that" means anything.
+There used to be two. The legacy harness — `playwright.config.ts` driving `tests/` against a Vite
+dev server, `mock-server/` and a `go run ./cmd/agentd` — was **deleted on 2026-08-08**, along with
+its four remaining specs, its `global-setup.ts` and its `global-teardown.ts`. It predated the
+product layer, nothing had run it in months, and it was never wired into CI.
+
+That deletion left `mock-server/` with no caller: the stack's mock mode is `go/mockmodel` +
+`go/modelproxy`, not that package. If you are looking for the mock model, look in Go.
+
+The stack harness runs the same binaries, database and container runtime a user gets from
+`docker compose up`, which is the only configuration where a claim like "the config log recorded
+that" means anything.
 
 ### Running it
 
