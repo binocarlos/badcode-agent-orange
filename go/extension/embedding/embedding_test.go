@@ -190,7 +190,13 @@ func TestEmbeddingNewFromEnv(t *testing.T) {
 		{"mock", "mock", true, ""},
 		{"whitespace tolerated", "  mock  ", true, ""},
 		{"typo is loud", "moc", false, "unknown AGENTKIT_EMBEDDING_BACKEND"},
-		{"real backend names are not silently accepted", "openai", false, "want none|mock"},
+		// "openai" used to belong on this list. It is now a real backend
+		// (openai.go), covered by TestNewFromEnvOpenAI — which also pins the
+		// rule this row was protecting: a named-but-unbuildable backend is a
+		// BOOT error, never a silent fall back to keyword-only. A provider we
+		// have not implemented still is: the point is that unrecognised names
+		// never degrade quietly.
+		{"unimplemented backend names are not silently accepted", "voyage", false, "want none|mock|openai"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

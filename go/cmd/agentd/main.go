@@ -85,16 +85,24 @@ func main() {
 	must(err)
 
 	// ── Embedding provider (memory semantic leg, §7.5) ───────────────────────────
-	// AGENTKIT_EMBEDDING_BACKEND: none (default) | mock. A nil provider is a
-	// supported deployment, not a failure — memories store a NULL embedding and
-	// search degrades to keyword+recency with the same result shape (§7.6.5). A
-	// typo in the variable IS a failure, so it is a boot error rather than a
-	// silent fall back to "none".
+	// AGENTKIT_EMBEDDING_BACKEND: none (default) | mock | openai. A nil provider
+	// is a supported deployment, not a failure — memories store a NULL embedding
+	// and search degrades to keyword+recency with the same result shape
+	// (§7.6.5). A typo in the variable IS a failure, so it is a boot error
+	// rather than a silent fall back to "none".
 	embedder, err := embedding.NewFromEnv(os.Getenv)
 	must(err)
-	if embedder == nil {
+	switch e := embedder.(type) {
+	case nil:
 		log.Printf("[agentd] embeddings=none — memory search is keyword+recency")
-	} else {
+	case *embedding.OpenAI:
+		// Name the MODEL, not just the backend. Vectors from two models are not
+		// comparable and memories are embedded once, at create — so the model a
+		// deployment ran with is a fact about its stored rows, and the boot log
+		// is where someone will look for it later.
+		log.Printf("[agentd] embeddings=openai model=%s dim=%d — memory search is hybrid (keyword + semantic)",
+			e.Model(), embedding.Dim)
+	default:
 		log.Printf("[agentd] embeddings=%s", envOr("AGENTKIT_EMBEDDING_BACKEND", "none"))
 	}
 	// …and whether the database can actually hold a vector. Loud here, at boot,

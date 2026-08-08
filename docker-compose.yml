@@ -8,6 +8,18 @@ services:
     command: ["dockerd", "--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock", "--tls=false"]
     environment:
       DOCKER_TLS_CERTDIR: ""
+    volumes:
+      # NAMED, and load-bearing for boot time. The dind image declares
+      # `VOLUME /var/lib/docker`, so without this line every container gets a
+      # fresh ANONYMOUS volume: `docker compose down` orphans the old one and
+      # the next `up` starts with an empty image store. init-sandbox then
+      # rebuilds the sandbox image from scratch every single time — ~96s of
+      # `yarn install` before the stack is usable — and the orphaned volumes
+      # accumulate on disk unnoticed (they are invisible to `docker volume
+      # prune` expectations because nobody thinks to look).
+      # Naming it makes the image store survive a restart: the second boot
+      # reuses the built image and takes seconds.
+      - dind-data:/var/lib/docker
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 5s
@@ -78,6 +90,12 @@ services:
       # variable never reached agentd, so setting it in .env silently did nothing
       # and memory search stayed keyword+recency whatever the docs said.
       AGENTKIT_EMBEDDING_BACKEND: ${AGENTKIT_EMBEDDING_BACKEND:-}
+      # The `openai` backend needs a key; the model and base URL are optional
+      # (text-embedding-3-small / api.openai.com). Same lesson as above: these
+      # must be forwarded explicitly or setting them in .env does nothing.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AGENTKIT_EMBEDDING_MODEL: ${AGENTKIT_EMBEDDING_MODEL:-}
+      AGENTKIT_EMBEDDING_BASE_URL: ${AGENTKIT_EMBEDDING_BASE_URL:-}
       # Host port pool for session containers. Unset → 30001-30100, i.e. 100
       # concurrent sessions on this host — one live session leases one port and
       # holds it until the session is DELETED. Set both or neither; nonsense is
@@ -168,3 +186,6 @@ services:
 volumes:
   agentd-data:
   pg-data:
+  # DinD's image store. See the comment on the dind service: named so the built
+  # sandbox image survives `down`/`up` instead of being rebuilt every boot.
+  dind-data:
