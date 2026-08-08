@@ -102,34 +102,59 @@ type mcpCaller struct {
 	Project   string
 	SessionID string
 	Worker    string
+	// Identified records that the session ROW was read successfully, so Worker
+	// is authoritative rather than merely unset. An empty Worker with
+	// Identified=true is a real human chat session; an empty Worker with
+	// Identified=false is an unknown, and the two must not be confused — see
+	// configWrite.
+	Identified bool
 }
 
 // configWrite builds the actor half of a config-log write for an MCP caller, or
 // refuses.
 //
-// THE INVARIANT (RD4): an empty ConfigEvent.ActorWorker means a human, and
-// nothing else may produce one. §15.2 chose that emptiness as the record of a
-// human/UI/API edit (httpapi.humanEdit), and web/src/configLog.ts renders it as
-// one. So a mutation arriving through the workers' path — this MCP server —
-// must carry a worker name or not happen at all. Guessing costs more than
-// failing: attribution is what §8.7's acceptance loop reads to tell whether a
-// worker improved another, and what doctrine OM-10 requires signals be bucketed
-// by.
+// THE INVARIANT (RD4): attribution is never GUESSED. An empty
+// ConfigEvent.ActorWorker means a human (§15.2, httpapi.humanEdit, rendered as
+// one by web/src/configLog.ts), so nothing may produce an empty actor unless it
+// actually knows the caller is a human. That is what §8.7's acceptance loop
+// reads to tell whether a worker improved another, and what doctrine OM-10
+// requires signals be bucketed by.
 //
-// This is the second of two guards. The first is the auth seam, which refuses a
-// caller whose session row cannot be read (see authenticate). This one is
-// structural: it holds even where no session store is wired at all, and it is
-// the reason every mutating tool takes a ConfigWrite it cannot construct
-// without an identity.
+// What that invariant does NOT require is that only workers may mutate. It
+// originally refused every empty Worker, which also locked out the human chat
+// session — and made "talk to Orange to set up your first worker" impossible,
+// since a project with no workers cannot produce a worker-attributed call. That
+// is the §8.8 bootstrap, so the restriction had the effect of forbidding the
+// first thing a new project needs to do.
+//
+// The distinction the original guard was missing is Identified. By the time
+// this runs, authenticate has ALREADY refused any caller whose session row
+// could not be read — so an empty Worker on an identified session is not a
+// database blip that might be hiding a worker (RD4's actual fear); it is the
+// authoritative fact that this session has no worker, i.e. a human is driving
+// it. That is recorded as what it is: a human edit, and — better than the
+// console's, which has no session at all — one carrying its session for
+// provenance.
+//
+// An empty Worker on an UNidentified caller is still refused. That is the case
+// where the identity is genuinely unknown, and guessing it would be the
+// misfiling RD4 exists to prevent.
+//
+// A per-project capability layer (which humans may do what) is a later, larger
+// question; it is deliberately not smuggled in here as an accident of
+// attribution.
 func (c mcpCaller) configWrite(rationale string) (agentdb.ConfigWrite, error) {
-	if strings.TrimSpace(c.Worker) == "" {
+	worker := strings.TrimSpace(c.Worker)
+	if worker == "" && !c.Identified {
 		return agentdb.ConfigWrite{}, fmt.Errorf(
-			"this change cannot be recorded: the calling worker could not be identified from the session token"+
-				" (session %q), and the config log reserves an empty actor for human edits."+
-				" Nothing was changed", c.SessionID)
+			"this change cannot be recorded: the calling session %q could not be identified,"+
+				" so the actor is unknown, and the config log reserves an empty actor for human"+
+				" edits. Nothing was changed", c.SessionID)
 	}
 	return agentdb.ConfigWrite{
-		Worker:    c.Worker,
+		// Empty when a human drives the session. Session is set either way, so
+		// a human edit made through chat is still traceable to its conversation.
+		Worker:    worker,
 		Session:   c.SessionID,
 		Rationale: strings.TrimSpace(rationale),
 	}, nil
@@ -507,6 +532,10 @@ func (a *sessionTokenAuth) authenticate(r *http.Request) (mcpCaller, error) {
 		default:
 			sessionKnown = true
 			caller.Worker = sess.Worker
+			// The row was read, so Worker is now authoritative — including when
+			// it is empty, which means a human chat session rather than an
+			// unknown one. configWrite depends on that distinction.
+			caller.Identified = true
 		}
 	}
 

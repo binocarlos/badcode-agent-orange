@@ -480,6 +480,38 @@ lets `hypothesis-a` call `memory_current` when a scheduled message tells it to.
 empty MCP set — the config is fixed when the container is provisioned and re-supplied from the
 persisted row on restore. **A long-lived session that needs core tools must be created fresh.**
 
+### What a chat session may do with the core tools
+
+**Everything a worker may do.** A session created over HTTP has no `worker` — that column is
+written only for dispatched jobs — but it is not thereby a second-class caller. Both kinds reach
+the same core MCP server, authenticated the same way, with the same tools.
+
+The only difference is **how the change is attributed**, and it is a record, not a restriction:
+
+| Caller | `config_events.actor_worker` | Rendered in the changelog as |
+| --- | --- | --- |
+| a dispatched job | the worker's name | that worker's decision |
+| a chat session (a human driving it) | *empty*, plus the session id | a human edit — §15.2's meaning of an empty actor |
+| a session whose row cannot be read | — | **refused**; the actor would be a guess |
+
+That last row is the invariant (RD4, `go/cmd/agentd/mcpserver.go`): attribution is never guessed.
+An empty actor from an *identified* session is a fact — this session has no worker — and is written
+as the human edit it is. An empty actor from a session nobody could read might be concealing a
+worker, so nothing is written at all.
+
+Two consequences worth knowing:
+
+- **You can bootstrap a project by talking to it.** `worker_create`, `schedule_create`,
+  `subscription_create`, `project_prompt_write`, `image_create` and `skill_create` all work from a
+  chat session, so a project with no workers can gain its first one conversationally rather than
+  only through the console.
+- **A chat session's config edits are more traceable than the console's**, not less: the console's
+  human edit records no session, while this one records the conversation that produced it.
+
+There is deliberately **no per-project capability layer** yet — no way to say "humans in this
+project may not delete schedules". That is a real feature and a separate one; it is not implied by
+attribution, and it was not smuggled in as a side effect of it.
+
 ### `session_list`: provenance for agents
 
 The new core MCP tool `session_list(worker?, limit?)` lets an agent enumerate a worker's recent

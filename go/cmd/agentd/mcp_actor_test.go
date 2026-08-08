@@ -89,15 +89,41 @@ func TestMCPAuthCarriesTheWorkerWhenTheSessionReads(t *testing.T) {
 
 // TestConfigWriteRefusesAnUnidentifiedCaller pins the choke point itself.
 func TestConfigWriteRefusesAnUnidentifiedCaller(t *testing.T) {
+	// UNidentified: the session row was never read, so an empty Worker might be
+	// hiding a real one. Refuse — this is the misfiling RD4 exists to prevent.
 	if _, err := (mcpCaller{Project: "acme", SessionID: "sess-1"}).configWrite("why"); err == nil {
-		t.Fatalf("a caller with no worker must not be able to build a config-log actor")
+		t.Fatalf("a caller whose session was never read must not be able to build a config-log actor")
 	}
-	cw, err := (mcpCaller{Project: "acme", SessionID: "sess-1", Worker: "w"}).configWrite("  why  ")
+	cw, err := (mcpCaller{Project: "acme", SessionID: "sess-1", Worker: "w", Identified: true}).configWrite("  why  ")
 	if err != nil {
-		t.Fatalf("an identified caller must still write: %v", err)
+		t.Fatalf("a worker must still write: %v", err)
 	}
 	if cw.Worker != "w" || cw.Session != "sess-1" || cw.Rationale != "why" {
 		t.Fatalf("ConfigWrite = %+v", cw)
+	}
+}
+
+// A human chat session is a first-class caller. Without this, a project with no
+// workers can never gain one by talking to Orange — the §8.8 bootstrap — because
+// there is no worker to attribute the first worker_create to.
+//
+// The record it writes is a HUMAN edit (empty actor, §15.2) and not a guess:
+// authenticate read the row and found no worker, which is a fact rather than an
+// absence of information. It keeps the session, so unlike a console edit this
+// human edit can be traced back to the conversation that made it.
+func TestConfigWriteTreatsAnIdentifiedHumanSessionAsAHumanEdit(t *testing.T) {
+	cw, err := (mcpCaller{Project: "acme", SessionID: "sess-1", Identified: true}).configWrite("because I said so")
+	if err != nil {
+		t.Fatalf("an identified human session must be able to mutate: %v", err)
+	}
+	if cw.Worker != "" {
+		t.Errorf("a human edit must carry an EMPTY actor (§15.2), got %q", cw.Worker)
+	}
+	if cw.Session != "sess-1" {
+		t.Errorf("a human edit made through chat must keep its session for provenance, got %q", cw.Session)
+	}
+	if cw.Rationale != "because I said so" {
+		t.Errorf("rationale = %q", cw.Rationale)
 	}
 }
 
@@ -160,8 +186,13 @@ func seedForMutations(t *testing.T) (*fakeManagementStore, []*mcpTool) {
 // the refusal below is not just an argument-validation error wearing a
 // disguise), and once with a caller whose worker could not be established, which
 // must refuse and write nothing at all.
-func TestNoMCPConfigEventCanCarryAnEmptyActor(t *testing.T) {
-	unidentified := mcpCaller{Project: "acme", SessionID: "sess-1"} // no Worker
+// Renamed from TestNoMCPConfigEventCanCarryAnEmptyActor: an empty actor is no
+// longer forbidden outright — an identified human session writes one, and means
+// it (see TestConfigWriteTreatsAnIdentifiedHumanSessionAsAHumanEdit). What no
+// tool may do is write an actor it had to GUESS, which is this caller: a session
+// that was never read, whose empty Worker could be concealing a real one.
+func TestNoMCPConfigEventCanCarryAGuessedActor(t *testing.T) {
+	unidentified := mcpCaller{Project: "acme", SessionID: "sess-1"} // never read
 
 	for _, tc := range managementMutations() {
 		t.Run(tc.tool, func(t *testing.T) {

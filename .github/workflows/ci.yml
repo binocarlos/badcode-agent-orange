@@ -35,6 +35,21 @@ jobs:
     defaults:
       run:
         working-directory: go
+    # pgvector, not plain postgres: migration 022 needs CREATE EXTENSION vector,
+    # and on an image without it the memory column is silently skipped — which is
+    # the exact "degrades to keyword-only without telling you" state the suite
+    # exists to catch.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -46,7 +61,38 @@ jobs:
             echo "::error::agentkit Go module must not import from Platinum"; exit 1
           fi
       - run: go build ./...
-      - run: go test ./... -count=1
+
+      # THE LIVE-POSTGRES RUN. Until 2026-08-08 this step had no database, so
+      # every one of the ~500 live-PG cases SKIPPED and CI had never once
+      # executed them — while the product layer is Postgres-only, so its entire
+      # storage layer (jsonb label selectors, the tsvector/pgvector hybrid
+      # search, all 42 migrations) was invisible here. Locally it is worth ~10
+      # points of agentdb coverage: 75.7% without, 85.4% with.
+      #
+      # -p 1 is REQUIRED, not tidiness: packages running in parallel against one
+      # database produce false failures and leak a connection pool per test.
+      #
+      # The guard below matters as much as the run. These cases skip when the
+      # variable is unset, so a typo in the service config would restore the old
+      # silence and leave CI green — the failure mode this step was added to end.
+      - name: Live-Postgres cases actually ran (not skipped)
+        env:
+          AGENTKIT_TEST_POSTGRES_URL: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+        run: |
+          go test ./agentdb/ -run TestLivePG -count=1 -v > /tmp/livepg.txt 2>&1 || { cat /tmp/livepg.txt; exit 1; }
+          ran=$(grep -c -- '--- PASS' /tmp/livepg.txt || true)
+          skipped=$(grep -c -- '--- SKIP' /tmp/livepg.txt || true)
+          echo "live-PG: $ran passed, $skipped skipped"
+          if [ "$ran" -eq 0 ] || [ "$skipped" -gt 0 ]; then
+            echo "::error::live-Postgres cases did not run ($ran passed, $skipped skipped) — the database is not reachable"
+            cat /tmp/livepg.txt; exit 1
+          fi
+
+      - name: go test (with live Postgres)
+        env:
+          AGENTKIT_TEST_POSTGRES_URL: postgres://postgres:test@localhost:5432/postgres?sslmode=disable
+        run: go test ./... -count=1 -p 1
+
       - run: go vet ./...
 
       # Build-tagged packages are invisible to every step above: `go test ./...`
@@ -96,3 +142,74 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  # The stack end-to-end suite: the real docker-compose stack — same binaries,
+  # same Postgres, same container runtime a user gets — driven through a browser.
+  # Until 2026-08-08 no CI job ran ANY of it, so ~90 browser tests covering the
+  # console, topologies, embedding and the §8.7 acceptance loop only ever ran
+  # when somebody remembered to run them locally.
+  #
+  # It is slow (image builds + real session containers), hence its own job so it
+  # cannot delay the fast gates above.
+  e2e:
+    name: Stack e2e (mock model)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npx playwright install --with-deps chromium
+
+      - name: Bring up the stack (mock model — no credentials, no spend)
+        run: ./e2e/run-stack-e2e.sh up mock
+
+      # Six runs, not one. `--mock-script` and `--port-pool` are agentd-wide and
+      # read ONCE at boot, so each variant restarts agentd; a spec needing one
+      # skips itself without it. Running only the baseline would look green while
+      # silently skipping the acceptance loop — the bar the whole spec is
+      # measured against (docs/product/06-work-plan.md, Track G).
+      - name: Baseline specs
+        run: ./e2e/run-stack-e2e.sh test mock
+
+      # Scoped to its own spec, like every other scripted step. A script is
+      # agentd-wide, so an unscoped run applies THIS script to specs that need a
+      # different one and fails them for no reason — which is exactly what an
+      # unscoped version of this step did when it was first written.
+      - name: The §8.7 acceptance loop (a worker rewrites another's prompt)
+        run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/g1-acceptance.json -- e2e/features/acceptance-loop.spec.ts
+
+      - name: Topologies
+        run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/topologies.json -- e2e/features/topologies.stack.spec.ts
+
+      - name: Embedding / named sessions / session schedules
+        run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/embedding.json -- e2e/features/embedding.stack.spec.ts
+
+      - name: Learning stories
+        run: ./e2e/run-stack-e2e.sh test mock --mock-script e2e/mock-scripts/learning-stories.json -- e2e/features/learning-stories.stack.spec.ts
+
+      # A three-port pool instead of a hundred: the exhaustion path is
+      # unreachable at the default size.
+      - name: Port-pool exhaustion
+        run: ./e2e/run-stack-e2e.sh test mock --port-pool 3 -- e2e/features/port-pool.stack.spec.ts
+
+      - name: Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-stack
+          path: e2e/playwright-report-stack/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # Diagnosing a red e2e run from a log tail is guesswork; agentd's log says
+      # which model it chose, which subscriptions matched and why a job did not
+      # run. Cheap to keep, and only read when something is already wrong.
+      - name: agentd log
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.stack-e2e.yml -p agent-orange-stack-e2e logs agentd --tail=300
+
+      - name: Tear down
+        if: always()
+        run: ./e2e/run-stack-e2e.sh down --purge || true

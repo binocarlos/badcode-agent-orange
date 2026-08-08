@@ -151,7 +151,10 @@ func callTool(t *testing.T, tools *memoryTools, name string, caller mcpCaller, a
 }
 
 func testCaller() mcpCaller {
-	return mcpCaller{Project: "acme", SessionID: "sess-1", Worker: "email-answerer"}
+	// Identified: authenticate sets it whenever the session row reads, which is
+	// every real caller. Leaving it false here would make every mutating tool
+	// refuse for the wrong reason.
+	return mcpCaller{Project: "acme", SessionID: "sess-1", Worker: "email-answerer", Identified: true}
 }
 
 // TestMemoryToolsSurface pins the whole surface: create / search / get /
@@ -684,7 +687,9 @@ func TestMemoryToolsAuth(t *testing.T) {
 		if err != nil {
 			t.Fatalf("authenticate: %v", err)
 		}
-		want := mcpCaller{Project: "acme", SessionID: "sess-1", Worker: "email-answerer"}
+		// Identified: the session row was read. It is what separates "this
+		// session has no worker" (a human) from "we never found out" (refused).
+		want := mcpCaller{Project: "acme", SessionID: "sess-1", Worker: "email-answerer", Identified: true}
 		if got != want {
 			t.Fatalf("caller = %#v, want %#v", got, want)
 		}
