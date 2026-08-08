@@ -105,8 +105,13 @@ jobs:
       # and starts real containers, so a green CI does NOT mean the integration
       # tests passed — only that they still type-check. Run them by hand:
       #   cd go && go test -tags integration ./systemtest/ -v -timeout 900s
-      - name: Integration-tagged packages still compile
-        run: go vet -tags integration ./...
+      #
+      # All THREE tags, not just `integration`. `docker` (execenv, blobarchive,
+      # ociregistry) and `gcs` (gcsblob) were invisible to every step in this
+      # job — not run, and not even compiled — which is the exact state
+      # systemtest/ was in while it rotted.
+      - name: Build-tagged packages still compile
+        run: go vet -tags "integration docker gcs" ./...
 
   sandbox:
     name: Sandbox (typecheck · test)
@@ -142,6 +147,28 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  # examples/web is the app shell the stack actually SERVES — web/ is a
+  # component library with no router — and until now nothing in CI built it.
+  # A break here is invisible to the web job above and shows up as a blank page
+  # in the browser, or as an e2e failure 35 minutes downstream.
+  #
+  # yarn, not npm: examples/web tracks only yarn.lock, and it is what
+  # deploy/web.Dockerfile installs with.
+  examples-web:
+    name: Examples web (typecheck · build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: yarn install --frozen-lockfile
+      - run: yarn typecheck
+      - run: yarn build
 
   # The stack end-to-end suite: the real docker-compose stack — same binaries,
   # same Postgres, same container runtime a user gets — driven through a browser.

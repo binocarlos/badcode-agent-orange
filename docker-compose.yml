@@ -103,6 +103,11 @@ services:
       # reach the pool-exhausted error deliberately instead of with 100 sessions.
       AGENTKIT_PORT_RANGE_START: ${AGENTKIT_PORT_RANGE_START:-}
       AGENTKIT_PORT_RANGE_END: ${AGENTKIT_PORT_RANGE_END:-}
+      # TEST RIGS ONLY — how many consecutive failed firings retire a schedule
+      # (§8.6). Unset → the product default of 5. The e2e overlay lowers it
+      # because the streak is counted in cron MINUTES, so the default costs five
+      # minutes of wall clock in a single test.
+      AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES: ${AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES:-}
       # Session garbage collection (gc.go). Unset → a session idle for 30m has
       # its container snapshotted and released — the session ROW survives and
       # the next message restores it, so this frees a container and its host

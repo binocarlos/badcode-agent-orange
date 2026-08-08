@@ -41,6 +41,15 @@ services:
       AGENTKIT_REGISTRY_BACKEND: ""
       AGENTKIT_REGISTRY_AUTH: ""
       GOOGLE_APPLICATION_CREDENTIALS: ""
+      # The §8.6 retirement streak, lowered from the product default of 5.
+      # It is counted in FIRINGS and the finest cron granularity is one minute,
+      # so 5 costs five minutes of wall clock in one test — it was the single
+      # slowest thing in the suite by a wide margin. The behaviour proved is
+      # identical at 2; only the waiting differs. schedule-resilience reads the
+      # value from STACK_SCHEDULE_MAX_PROVISION_FAILURES (exported by
+      # run-stack-e2e.sh) rather than hardcoding it, so the spec still passes
+      # against a stack running the default.
+      AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES: "2"
 
 volumes:
   stack-e2e-dind:

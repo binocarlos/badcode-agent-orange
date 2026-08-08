@@ -198,6 +198,19 @@ type scheduler struct {
 	// tick idempotent in-process; the firing table makes it idempotent across
 	// processes.
 	lastMinute string
+
+	// maxProvisionFailures is the streak at which a schedule retires itself.
+	// Defaults to agentdb.ScheduleMaxProvisionFailures — the product value, and
+	// the only one any deployment should use.
+	//
+	// It is settable ONLY so the e2e rig can prove the behaviour in reasonable
+	// time. The streak is counted in FIRINGS, and the finest cron granularity is
+	// one minute, so proving the default of five costs five minutes of wall
+	// clock in a single test — over a fifth of the whole stack suite. Lowering it
+	// to two makes the same assertion in two minutes. Same rationale, and same
+	// per-run shape, as `--port-pool`: the exhaustion path is unreachable at the
+	// real size, so the rig shrinks the bound rather than the assertion.
+	maxProvisionFailures int
 }
 
 type schedulerConfig struct {
@@ -212,6 +225,9 @@ type schedulerConfig struct {
 	Now      func() time.Time
 	Spawn    func(func())
 	Logf     func(format string, v ...any)
+	// MaxProvisionFailures overrides the retirement streak. 0 → the product
+	// default. Test rigs only; see the field on scheduler.
+	MaxProvisionFailures int
 }
 
 func newScheduler(cfg schedulerConfig) *scheduler {
@@ -231,14 +247,19 @@ func newScheduler(cfg schedulerConfig) *scheduler {
 	if logf == nil {
 		logf = log.Printf
 	}
+	maxFail := cfg.MaxProvisionFailures
+	if maxFail <= 0 {
+		maxFail = agentdb.ScheduleMaxProvisionFailures
+	}
 	return &scheduler{
-		store:      cfg.Store,
-		dispatcher: cfg.Dispatcher,
-		sessions:   cfg.Sessions,
-		loc:        loc,
-		now:        now,
-		spawn:      spawn,
-		logf:       logf,
+		store:                cfg.Store,
+		dispatcher:           cfg.Dispatcher,
+		sessions:             cfg.Sessions,
+		loc:                  loc,
+		now:                  now,
+		spawn:                spawn,
+		logf:                 logf,
+		maxProvisionFailures: maxFail,
 	}
 }
 
@@ -754,11 +775,11 @@ func (s *scheduler) noteProvisionFailure(ctx context.Context, sch *agentdb.Sched
 			sch.Project, sch.ID, err)
 		return
 	}
-	if n < agentdb.ScheduleMaxProvisionFailures {
+	if n < s.maxProvisionFailures {
 		// Loud on the way up, not only at the end: an operator watching the log
 		// sees the streak building and can act before anything is switched off.
 		s.logf("[scheduler] schedule %s/%s could not provision a job (%d/%d consecutive): %s",
-			sch.Project, sch.ID, n, agentdb.ScheduleMaxProvisionFailures, reason)
+			sch.Project, sch.ID, n, s.maxProvisionFailures, reason)
 		return
 	}
 	s.logf("[scheduler] schedule %s/%s failed to provision %d times running: DISABLING it so it stops "+

@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -414,7 +415,23 @@ func main() {
 		// (sessionMessenger): a session-mode schedule wakes an EXISTING named
 		// session instead of dispatching a job, and that is the whole extra
 		// capability it gets. Deliberately not the whole *Runner — see the seam.
-		sched := newScheduler(schedulerConfig{Store: agentDB, Dispatcher: gate, Sessions: runner})
+		// AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES: TEST RIGS ONLY. Proving the
+		// §8.6 retirement streak costs one cron MINUTE per firing, so the
+		// product default of five costs five minutes in a single e2e test.
+		// Unset or unparseable → the default; a deployment should never set it.
+		maxFail := 0
+		if v := strings.TrimSpace(os.Getenv("AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES")); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n <= 0 {
+				log.Fatalf("[agentd] AGENTKIT_SCHEDULE_MAX_PROVISION_FAILURES=%q is not a positive integer", v)
+			}
+			maxFail = n
+			log.Printf("[agentd] WARNING: schedule retirement streak overridden to %d (default %d) — test rigs only",
+				n, agentdb.ScheduleMaxProvisionFailures)
+		}
+		sched := newScheduler(schedulerConfig{
+			Store: agentDB, Dispatcher: gate, Sessions: runner, MaxProvisionFailures: maxFail,
+		})
 		go sched.Run(ctx)
 
 		attention = newAttentionService(agentDB, permalinks)
