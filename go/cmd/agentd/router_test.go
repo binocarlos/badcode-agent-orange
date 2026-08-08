@@ -469,9 +469,15 @@ func TestRouterSubscriptionMatching(t *testing.T) {
 			&agentdb.ProjectEvent{Type: "worker.finished", Envelope: base}, true},
 		{"a filter on an absent field never matches", "worker.finished", agentdb.JSONMap{"reason": "lost"},
 			&agentdb.ProjectEvent{Type: "worker.finished", Envelope: base}, false},
+		// The envelope worker here is deliberately NOT "w" — every subscription
+		// in this table is worker "w", and since self-delivery suppression
+		// landed an event stamped "w" would be refused before the filter is
+		// ever consulted, testing the guard instead of the `reason` field this
+		// case exists for. (It said "w" until 2026-08-08 and started failing the
+		// moment the guard arrived, which is the guard working.)
 		{"reason matches on worker.failed", "worker.failed", agentdb.JSONMap{"reason": "lost"},
 			&agentdb.ProjectEvent{Type: "worker.failed", Envelope: agentdb.EventEnvelope{
-				Source: agentdb.EventSourceWorker, Worker: "w", SessionID: "s", Reason: agentdb.FailureReasonLost,
+				Source: agentdb.EventSourceWorker, Worker: "lost-worker", SessionID: "s", Reason: agentdb.FailureReasonLost,
 			}}, true},
 		{"every filter key must match", "worker.finished",
 			agentdb.JSONMap{"worker": "email-answerer", "interactive": true},
@@ -482,6 +488,83 @@ func TestRouterSubscriptionMatching(t *testing.T) {
 			sub := &agentdb.Subscription{EventType: tc.eventType, Filter: tc.filter, Worker: "w", Enabled: true}
 			if got := subscriptionMatches(sub, tc.event); got != tc.want {
 				t.Fatalf("match: want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestSubscriptionMatchesSuppressesSelfDelivery pins the rule that a worker is
+// never woken by its own completion.
+//
+// It lives here rather than in any one topology because that is the point of the
+// change: `topology/supervisor.go` hand-rolled a validator refusing `worker.*`
+// event types for exactly this reason, and `architect-archivist` carried a
+// `filter interactive=true` for exactly this reason — two workarounds for a rule
+// that belongs to the spine. Subscription filters are equality-only, so "every
+// worker.finished EXCEPT my own" cannot be expressed as a filter by anyone.
+//
+// The external case is the one that would hurt if this were written carelessly.
+// External events carry no worker and a subscription's worker is never empty, so
+// a guard without the emptiness check would compare "" against every subscriber,
+// match nothing, and silently kill the spine's main path.
+func TestSubscriptionMatchesSuppressesSelfDelivery(t *testing.T) {
+	finishedBy := func(worker string) *agentdb.ProjectEvent {
+		return &agentdb.ProjectEvent{Type: "worker.finished", Envelope: agentdb.EventEnvelope{
+			Depth: 1, Source: agentdb.EventSourceWorker, Worker: worker, SessionID: "s1",
+		}}
+	}
+	external := &agentdb.ProjectEvent{Type: "email.received", Envelope: agentdb.EventEnvelope{
+		Depth: 0, Source: agentdb.EventSourceExternal,
+	}}
+
+	cases := []struct {
+		name      string
+		subWorker string
+		eventType string
+		event     *agentdb.ProjectEvent
+		want      bool
+		why       string
+	}{
+		{
+			name: "a worker is not woken by its own completion", subWorker: "archivist",
+			eventType: "worker.finished", event: finishedBy("archivist"), want: false,
+			why: "the archivist would archive its own archiving until the depth floor cut it off",
+		},
+		{
+			name: "another worker's completion still wakes it", subWorker: "archivist",
+			eventType: "worker.finished", event: finishedBy("email-answerer"), want: true,
+			why: "suppressing self-delivery must not suppress the subscription's whole purpose",
+		},
+		{
+			name: "an external event still wakes every subscriber", subWorker: "triage",
+			eventType: "email.received", event: external, want: true,
+			why: "external events carry no worker; comparing \"\" to the subscriber must not match",
+		},
+		{
+			name: "the wildcard path is guarded too", subWorker: "archivist",
+			eventType: "worker.*", event: finishedBy("archivist"), want: false,
+			why: "a `worker.*` subscription is the easiest way to write the self-loop by accident",
+		},
+		{
+			// The guard is on the ENVELOPE's worker, not on the event type, so it
+			// covers worker.failed as well as worker.finished. That is wanted: a
+			// worker woken by its own failure is a retry spin, and the retry it
+			// implements would be the one nobody designed.
+			name: "a worker is not woken by its own failure either", subWorker: "flaky",
+			eventType: "worker.failed", event: &agentdb.ProjectEvent{
+				Type: "worker.failed", Envelope: agentdb.EventEnvelope{
+					Source: agentdb.EventSourceWorker, Worker: "flaky", SessionID: "s1",
+					Reason: agentdb.FailureReasonLost,
+				},
+			}, want: false,
+			why: "self-delivery of a failure is a retry loop nobody asked for",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := &agentdb.Subscription{EventType: tc.eventType, Worker: tc.subWorker, Enabled: true}
+			if got := subscriptionMatches(sub, tc.event); got != tc.want {
+				t.Fatalf("match = %v, want %v — %s", got, tc.want, tc.why)
 			}
 		})
 	}
@@ -649,11 +732,16 @@ func TestRouterRefusesEventsPastTheDepthFloor(t *testing.T) {
 	store.addSubscription(&agentdb.Subscription{
 		Project: "acme", EventType: "loop.tick", Worker: "answerer", Enabled: true,
 	})
+	// Emitted by "upstream", not by "answerer". Both events said "answerer" until
+	// 2026-08-08 — the same name as the subscriber — so once the router began
+	// suppressing self-delivery this test measured that guard instead of the
+	// depth floor and reported zero jobs. The depth floor and the self-delivery
+	// guard are independent rules and each needs a fixture that isolates it.
 	atFloor := postEvent(t, store, "acme", "loop.tick", "still fine", agentdb.EventEnvelope{
-		Depth: maxEventDepth, Source: agentdb.EventSourceWorker, Worker: "answerer", SessionID: "s",
+		Depth: maxEventDepth, Source: agentdb.EventSourceWorker, Worker: "upstream", SessionID: "s",
 	})
 	pastFloor := postEvent(t, store, "acme", "loop.tick", "runaway", agentdb.EventEnvelope{
-		Depth: maxEventDepth + 1, Source: agentdb.EventSourceWorker, Worker: "answerer", SessionID: "s",
+		Depth: maxEventDepth + 1, Source: agentdb.EventSourceWorker, Worker: "upstream", SessionID: "s",
 	})
 
 	starter := &fakeJobStarter{store: store}

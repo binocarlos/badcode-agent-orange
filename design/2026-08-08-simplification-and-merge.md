@@ -72,6 +72,26 @@ transcript byte-for-byte, or asserting a token count, may move. Nothing in the G
 
 ## 3. Item 1 — Suppress self-delivery in the router *(the one that changes the product)*
 
+> **DONE 2026-08-08.** Built as specified, plus three things this section did not anticipate:
+>
+> - **`web/src/events.ts` needed the same rule.** `matchSubscriptions` is a second implementation of
+>   the router's matcher — the F1 note in `router.go` warns about exactly this — and without the
+>   guard the console's dry run would have told an operator "this matches" where the router refuses,
+>   sending them to debug a subscription behaving correctly. Mirrored, with three tests.
+> - **Two existing Go tests collided**, both because a fixture reused one worker name for emitter and
+>   subscriber: `TestRouterSubscriptionMatching/reason_matches_on_worker.failed` and
+>   `TestRouterRefusesEventsPastTheDepthFloor`. Neither was testing self-delivery; both now use
+>   distinct names so each isolates the rule it is about. No seed relied on self-delivery — every
+>   other topology filters to another worker (audited).
+> - **The claim that this generalises `supervisor.go`'s guard is not quite right.** That validator
+>   refuses a seed *inbound* type in the `worker.*` namespace, which prevents a dispatcher being woken
+>   by its SPECIALISTS — other workers. Self-delivery suppression does not cover it. Both are needed;
+>   the comment in `router.go` says so.
+>
+> Also note the guard is on the envelope's worker, not the event type, so it covers `worker.failed`
+> as well as `worker.finished`. That is wanted — self-delivery of a failure is a retry spin — and is
+> pinned by test.
+
 **Why.** A subscription filter is equality-only, so "every `worker.finished` **except** my own"
 cannot be written. The archivist therefore ships with `filter: {"interactive": "true"}` — which
 dodges the self-loop as a side effect, at the cost of never archiving dispatched job completions.
@@ -125,6 +145,11 @@ the filter as the reason the archivist looked like a special case.
 ---
 
 ## 4. Item 2 — Correct the memory-schema framing *(three legs, not one)*
+
+> **DONE 2026-08-08.** `README.md` (the archivist paragraph, the ASCII caption, the "Shared state"
+> row, and the diagram's "writes what each conversation was worth" → "each finished piece of work"),
+> `go/topology/architectarchivist.go` (header comment), `docs/product/27-simplification-inventory.md`
+> §3a. No code or test changes, as predicted.
 
 **Why.** The README and the seed say "the archivist's prompt **is** the memory schema". That is too
 narrow, and the correction is Kai's: the architect also decides, for every worker it creates, which

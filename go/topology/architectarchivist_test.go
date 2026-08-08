@@ -79,14 +79,21 @@ func TestArchitectArchivistRenderDefaults(t *testing.T) {
 	}
 }
 
-// TestArchivistSubscriptionCannotWakeItself is the load-bearing assertion in the
-// whole seed. Subscription filters are equality-only, so "every worker.finished
-// EXCEPT my own" is not expressible; an unfiltered archivist would therefore
-// subscribe to its own output and re-wake itself until the depth floor cut it
-// off, archiving its own archiving. Filtering to interactive=true breaks the
-// loop by construction — the archivist's own jobs are dispatched, so they are
-// not interactive.
-func TestArchivistSubscriptionCannotWakeItself(t *testing.T) {
+// TestArchivistSubscriptionIsUnfiltered pins the shape of the one standing edge.
+//
+// It used to assert the opposite — that the subscription carried
+// `interactive=true` — because filters are equality-only, "every worker.finished
+// EXCEPT my own" was not expressible, and an unfiltered archivist would have
+// woken itself until the depth floor cut it off. That filter bought loop-safety
+// at the price of never archiving a dispatched job.
+//
+// The loop is now prevented by the router, for every subscription rather than
+// this one seed, and the assertion that it is prevented lives beside that rule
+// in cmd/agentd/router_test.go (TestSubscriptionMatchesSuppressesSelfDelivery).
+// What is pinned HERE is that the seed stopped paying the price: an unfiltered
+// subscription, so the archivist archives conversations and job completions
+// alike. Re-adding a filter here would silently halve the project's history.
+func TestArchivistSubscriptionIsUnfiltered(t *testing.T) {
 	b, err := architectArchivistV1(t).Instantiate(Answers{
 		ArchitectQuestionGoal: "run marketing for an art collective",
 	})
@@ -101,13 +108,9 @@ func TestArchivistSubscriptionCannotWakeItself(t *testing.T) {
 	if sub.Worker != "archivist" {
 		t.Errorf("subscriber = %q, want archivist", sub.Worker)
 	}
-	if got := sub.Filter["interactive"]; got != "true" {
-		t.Fatalf("filter[interactive] = %v, want \"true\" — without it the archivist wakes on its own completion", got)
-	}
-	// The filter is compared as text by the router, so a bool here would never
-	// match and the archivist would silently never fire.
-	if _, ok := sub.Filter["interactive"].(string); !ok {
-		t.Errorf("filter[interactive] must be the STRING \"true\": the router compares envelope fields as text, so a bool would match nothing")
+	if len(sub.Filter) != 0 {
+		t.Errorf("filter = %v, want none: the router suppresses self-delivery now, so filtering here"+
+			" only loses the dispatched-job completions the archivist is supposed to record", sub.Filter)
 	}
 	if sub.MaxFiringsPerHour != 0 {
 		t.Errorf("max_firings_per_hour = %d, want 0: throttling DROPS deliveries, and a dropped delivery here is a hole in the project's history", sub.MaxFiringsPerHour)

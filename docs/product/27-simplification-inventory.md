@@ -14,9 +14,18 @@ The honest answer has three parts, and only one of them is a deletion.
 ## 1. The correction: there is no "dynamic event system" to delete
 
 The event spine is what makes "this agent has just finished its job" reach the archivist. Router,
-subscriptions, filters and the depth floor are not the elaborate part — they *are* the mechanism the
+subscriptions and the depth floor are not the elaborate part — they *are* the mechanism the
 KISS design runs on. It is 3,523 lines of engine plus 2,310 lines of test, and the archivist needs
-essentially all of it: an event, a filter, a delivery, a dispatch gate.
+essentially all of it: an event, a delivery, a dispatch gate.
+
+*Amended 2026-08-08:* this originally listed **a filter** among the parts the archivist needs, and
+cited the archivist's `interactive=true` filter as evidence. That filter is gone. It existed only to
+stop the archivist waking on its own completion — subscription filters being equality-only, "every
+`worker.finished` except my own" could not be written as one — and it cost every dispatched job's
+completion as a side effect. The router now suppresses self-delivery for every subscription
+(`subscriptionMatches`), so the archivist's subscription is **unfiltered** and it archives
+conversations and job completions alike. The spine's requirement shrank by one part; filters remain
+in the engine for subscriptions that genuinely want them.
 
 What was elaborate was never built. The ambition — `event_emit`, `event_list`, `delivery_list`, a
 worker able to name arbitrary signals and poll its own spine — was **recommended in
@@ -60,6 +69,23 @@ They are not all the same kind of thing, and the KISS decision does not touch th
 | `solo` | 300 | The control that answers "did any of this beat one good agent?" — the single most important comparison in the repo, and the one the research says usually wins. |
 | `solo-memory` | 375 | Separates "the second agent helped" from "persistence helped". Under a memory-centric design this is now the *primary* baseline, not a footnote. |
 | `escalation` | 246 | `request_human_attention` + `awaiting_human`. The practical shape for real work, and §8.8's marketing manager. |
+
+**The memory schema is three legs, not one prompt.** This document and the README both said "the
+archivist's prompt **is** the memory schema". That is too narrow, and the narrow version hides the
+leg that does most of the work. The three:
+
+1. **the label registry** — a seeded memory, `name=label-registry`, briefed to both workers: the
+   shared vocabulary;
+2. **the architect's prompt** — which labels each role it creates reads, and which it writes. *"You
+   are a news journalist; before you do anything, read from this memory and write to that one"* is an
+   **architect** instruction issued when a role is designed, not an archivist one;
+3. **the archivist's prompt** — what a finished piece of work becomes.
+
+`architect-archivist@v1` already implements all three (both workers are briefed on
+`name=label-registry`, and the architect prompt says to design the labels a role reads and writes).
+Only the description was wrong — but that sentence is how a reader forms their model of the system,
+so it is worth correcting. Leg 2 is the one that is easy to miss, because it lives inside the roles
+the architect writes rather than in any single editable field.
 
 ### 3b. Keep — the measurement apparatus
 

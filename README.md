@@ -31,7 +31,7 @@ So the design is deliberately, aggressively small:
 |---|---|
 | **Nodes** | workers — a prompt, an image, some tools |
 | **Clock** | schedules — cron, the normal way a worker wakes |
-| **Shared state** | labelled append-only memory, with hybrid keyword + vector search |
+| **Shared state** | labelled append-only memory, with hybrid keyword + vector search. Its schema is three things: a seeded label registry, the architect's instructions to each role about what it reads and writes, and the archivist's prompt |
 | **Wiring** | event subscriptions — used sparingly, often exactly once |
 | **Change** | workers create and rewrite workers; every mutation is logged with a rationale |
 
@@ -65,12 +65,13 @@ project gets built by the first role, after it has talked to you.
             ║  kind=fact  name=…  ║  searchable, retractable
             ╚═════════════════════╝                        │
                        ▲                                   │
-                       │ writes what each conversation was worth
+                       │ writes what each finished piece of work was worth
               ┌────────────────┐                           │
               │   archivist    │ ◀─────────────────────────┘
               └────────────────┘   the ONE subscription:
-               frozen — its prompt   worker.finished, when a
-               IS the memory schema  conversation goes quiet
+               frozen — it decides   worker.finished — a chat
+               what finished work    that went quiet, or a
+               BECOMES               job that completed
 ```
 
 **The architect** is a worker you chat with. You give it a goal; it proposes which roles should
@@ -79,15 +80,29 @@ agree, it writes that configuration using the same tools a human would. It build
 those tools already exist — so its entire contribution is a prompt that makes it *propose before it
 acts*.
 
-**The archivist** is woken every time a conversation in the project goes quiet, and turns it into
-memories. **Its prompt is your memory schema.** If you decide every conversation should yield an
-extract of emotional temperature under `kind=emotion`, you write that sentence into the archivist
-and the whole project starts recording emotion. It is frozen, so no other worker can quietly change
-what the project is allowed to remember.
+**The archivist** is woken every time work in the project finishes — a conversation that goes quiet
+or a dispatched job that completes — and turns it into memories. **Its prompt decides what finished
+work becomes.** If you decide every conversation should yield an extract of emotional temperature
+under `kind=emotion`, you write that sentence into the archivist and the whole project starts
+recording emotion. It is frozen, so no other worker can quietly change what the project is allowed
+to remember.
 
 That is why there is only one subscription. Without an archivist you would have to tell *every*
 worker to manage memory. With one, memory accumulates as a side effect of working — and you own the
 policy in a single editable place.
+
+**The memory schema is not one prompt but three legs**, and it is worth knowing which is which
+before you go looking for a place to define it:
+
+1. **the label registry** — a seeded memory (`name=label-registry`) briefed to both workers: the
+   shared vocabulary everything else refers to;
+2. **the architect's prompt** — which labels each role it creates *reads*, and which it *writes*.
+   "You are a news journalist; before you do anything, read from this memory and write to that one"
+   is an instruction the architect gives when it designs a role;
+3. **the archivist's prompt** — what a finished piece of work becomes.
+
+Leg 2 is the one that is easy to miss, because nothing names it: it lives inside the roles the
+architect writes, not in any single editable field.
 
 ```sh
 # it ships as a seed, so this shape is one command

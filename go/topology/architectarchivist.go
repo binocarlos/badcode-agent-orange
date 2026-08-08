@@ -20,13 +20,26 @@ package topology
 //	            builds nothing new — those tools already exist — so its whole
 //	            contribution is a prompt that makes it propose before it acts.
 //
-//	ARCHIVIST   frozen, woken by every CONVERSATION that goes quiet, holding the
-//	            project's memory policy. It is the only standing subscription,
-//	            and it is what makes memory accumulate WITHOUT every other worker
-//	            having to be told to manage memory. Its prompt is the schema: if
-//	            you decide every conversation should yield an extract of emotion
-//	            under kind=emotion, that sentence goes in its prompt and the
-//	            whole project starts recording emotion.
+//	ARCHIVIST   frozen, woken by every piece of finished work — a conversation
+//	            that goes quiet or a dispatched job — holding what a finished
+//	            piece of work BECOMES. It is the only standing subscription, and
+//	            it is what makes memory accumulate WITHOUT every other worker
+//	            having to be told to manage memory. If you decide every
+//	            conversation should yield an extract of emotion under
+//	            kind=emotion, that sentence goes in its prompt and the whole
+//	            project starts recording emotion.
+//
+// The archivist's prompt is ONE of three legs of the memory system, and calling
+// it "the schema" (as this comment and the README both used to) is too narrow:
+//
+//  1. the LABEL REGISTRY — a seeded memory, `name=label-registry`, briefed to
+//     both workers: the shared vocabulary;
+//  2. the ARCHITECT prompt — which labels each role it creates reads, and which
+//     it writes ("you are a news journalist; read from this, write to that").
+//     That is an architect instruction, not an archivist one;
+//  3. the ARCHIVIST prompt — what a finished piece of work becomes.
+//
+// The seed already implements all three. Only the description was wrong.
 //
 // The archivist is OPTIONAL. Without one you get no archival — workers can still
 // write their own memories live — and that is a legitimate configuration, not a
@@ -34,18 +47,20 @@ package topology
 // that could rewrite the archivist could rewrite what the project is allowed to
 // remember, which is the one rewrite nobody should be able to make quietly.
 //
-// TWO HONEST LIMITS, both structural rather than oversights:
+// ONE HONEST LIMIT, structural rather than an oversight: "only the architect may
+// create workers" is a statement in a prompt, not a permission. Every worker
+// holds every core tool (product spec §10 non-goal (vi) — no per-worker tool
+// filtering), so the archivist COULD create a worker. The seed does not pretend
+// otherwise.
 //
-//  1. The archivist wakes on CONVERSATIONS (filter interactive=true), not on
-//     dispatched jobs. Subscription filters are equality-only, so there is no way
-//     to say "every worker.finished EXCEPT the archivist's own" — and an
-//     unfiltered archivist would subscribe to its own output and wake itself
-//     until the depth floor cut it off. Filtering to conversations breaks the
-//     loop by construction and is the shape actually wanted.
-//  2. "Only the architect may create workers" is a statement in a prompt, not a
-//     permission. Every worker holds every core tool (product spec §10 non-goal
-//     (vi) — no per-worker tool filtering), so the archivist COULD create a
-//     worker. The seed does not pretend otherwise.
+// There were two. The other was that the archivist woke on CONVERSATIONS only,
+// via `filter interactive=true` — because filters are equality-only, "every
+// worker.finished EXCEPT my own" was not expressible, and an unfiltered
+// archivist would have woken itself until the depth floor cut it off. That
+// filter bought loop-safety at the price of never archiving a dispatched job.
+// The router now suppresses self-delivery for every subscription
+// (`subscriptionMatches`), so the subscription here is unfiltered and the
+// archivist archives conversations and job completions alike.
 
 import (
 	"strings"
@@ -242,12 +257,13 @@ func renderArchitectArchivist(a Answers) (*Bundle, error) {
 		})
 		subs = append(subs, agentdb.Subscription{
 			EventType: agentdb.EventTypeWorkerFinished,
-			// interactive=true is CONVERSATIONS only. It is also what stops the
-			// archivist waking itself: its own jobs are dispatched, so they are
-			// not interactive, so they do not match. Filters are equality-only —
-			// "every worker.finished except my own" is not expressible — so this
-			// is load-bearing, not decorative.
-			Filter:  agentdb.JSONMap{"interactive": "true"},
+			// UNFILTERED, deliberately: the archivist archives conversations and
+			// dispatched job completions alike. This carried
+			// `interactive=true` until the router learned to suppress
+			// self-delivery — that filter existed to stop the archivist waking
+			// itself, and cost every job completion as a side effect. The loop
+			// is now prevented in `subscriptionMatches`, where it applies to
+			// every subscription anyone writes rather than to this one seed.
 			Worker:  archivist,
 			Enabled: true,
 			// Deliberately unthrottled: a dropped delivery here is a hole in the
