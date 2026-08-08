@@ -18,8 +18,10 @@ dev server, `mock-server/` and a `go run ./cmd/agentd` — was **deleted on 2026
 its four remaining specs, its `global-setup.ts` and its `global-teardown.ts`. It predated the
 product layer, nothing had run it in months, and it was never wired into CI.
 
-That deletion left `mock-server/` with no caller: the stack's mock mode is `go/mockmodel` +
-`go/modelproxy`, not that package. If you are looking for the mock model, look in Go.
+That deletion left `mock-server/` with no caller, so **it was deleted too, later the same day**,
+along with its service block in `docker-compose.test.yml` (that file stays — `go/systemtest/` needs
+its `dind` and `registry` services). The stack's mock mode is `go/mockmodel` + `go/modelproxy`. If
+you are looking for the mock model, look in Go.
 
 The stack harness runs the same binaries, database and container runtime a user gets from
 `docker compose up`, which is the only configuration where a claim like "the config log recorded
