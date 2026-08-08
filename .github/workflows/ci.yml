@@ -166,6 +166,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # web/'s dependencies, installed before examples/web's own. Not
+      # belt-and-braces: examples/web's tsconfig maps `@agentkit/chat-ui` to
+      # `../../web/src/index.ts`, so typechecking this package compiles web's
+      # SOURCE — and that needs react and its types on disk under web/.
+      # Without this the job fails with "Cannot find module 'react'" pointing at
+      # ../../web/src/watermark.ts, which reads like an examples/web bug and is
+      # not one. (This dependency is undeclared and bites a fresh clone too; it
+      # went unnoticed because anyone building examples/web locally had already
+      # installed web/.)
+      #
+      # npm, not yarn: web/ tracks package-lock.json only.
+      - name: Install web/ dependencies
+        run: npm ci
+        working-directory: web
       - run: yarn install --frozen-lockfile
       - run: yarn typecheck
       - run: yarn build
