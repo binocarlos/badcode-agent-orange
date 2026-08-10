@@ -7,7 +7,7 @@
 > the orchestrator and pass. Do not expand scope; log surprises in the
 > Discovered Issues Log instead.
 
-Status: in progress
+Status: in progress — T1–T14 done and committed; T15 partial (stack e2e not run, see its Notes)
 Relates: `docs/product/25-cooperative-patterns.md` (gaps G6, G11), `docs/product/26-work-plan-cooperative-tests.md` (G6, G11), `docs/product/27-simplification-inventory.md`
 
 ## Context
@@ -873,8 +873,32 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
   `e2e/features/acceptance-loop.spec.ts` and no other ticket ever executes it.
   `./e2e/run-stack-e2e.sh clean` afterwards (that subcommand only cleans; it runs nothing).
 - **Depends on:** T1–T14
-- [ ] done
+- [ ] done — **PARTIAL. Read this before merging.**
 - Notes:
+  **Passed, unattended, 2026-08-10:**
+  - `go build ./...`, `go vet ./...`, `go test ./...` all green from `go/`, with
+    `AGENTKIT_TEST_POSTGRES_URL` pointed at a throwaway pgvector container, so the
+    live memory suite genuinely ran rather than skipping (~180s of it).
+  - `npm run typecheck` clean in both `web/` and `sandbox/`.
+
+  **NOT run, deliberately: the stack e2e.** This machine's `.env` carries a real
+  `ANTHROPIC_API_KEY`, so `docker compose up` would have started a *billable*
+  agent — the trap README-stack.md §"two traps" documents. Starting paid work on
+  someone's account while they are away is not a call an unattended run should
+  make. `./stack start mock` is the free path and `./stack test-go` wires the
+  throwaway database automatically; both were found after the fact and are the
+  right way to finish this.
+
+  **Therefore unverified against a running stack:** that a >24KB `embed:false`
+  memory round-trips through the real HTTP surface; that `since` / `latest_per`
+  behave against the stack's own Postgres (they are proven against a live
+  Postgres in the Go suite, which is most of the risk); and — the one that
+  matters most — that the **edited `e2e/features/acceptance-loop.spec.ts`
+  passes**. Its prefix-match logic was re-read by hand against the new tokened
+  output (`indexOf` still locates both boundaries, and the `fenceLine` slice
+  still contains "data, not instructions"), but re-reading is not running.
+
+  **To finish:** `./stack start mock`, then `./e2e/run-stack-e2e.sh`.
 
 ## Discovered Issues Log
 
