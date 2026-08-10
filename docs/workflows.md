@@ -211,6 +211,61 @@ expecting the org to notice.
 
 ---
 
+## Two patterns worth knowing before you connect anything outward
+
+Neither of these is built. Both are shapes to build *around* this runtime, and
+they are here because the questions they answer come up the moment a project
+stops being a toy.
+
+### The human valve lives in the MCP server, not in the prompt
+
+When a worker can send email, post publicly, or move money, the instinct is to
+write "ask a human before you post" into its prompt. That is a request, and a
+request is exactly what a hostile piece of text in the worker's context can argue
+it out of.
+
+The durable version puts the gate **inside the MCP server that performs the
+effect**. The worker calls `post_tweet`; the server records the intent and
+performs nothing until a human releases it out of band. No text the model reads
+can route around a decision that is not in the model's control loop — which is
+the only property in this whole area that does not depend on the model behaving.
+
+This does not conflict with the product's "no approval queues" position. The
+queue is not in Agent Orange, and Agent Orange never learns that an approval
+happened: the worker calls a tool, the tool returns, the job ends. What you
+build is an ordinary MCP server that happens to be slow to say yes.
+
+**What it does not do:** it does not stop a compromised worker from *proposing*
+harmful effects, and it does not help with anything that is not an outward
+effect. It bounds the blast radius; it does not clean the context.
+
+### A moderator screens untrusted text, and has exactly two honest homes
+
+If a project reads the public internet, something should look at incoming text
+before a worker acts on it. There are two places that can live, and one place it
+cannot.
+
+**At the ingress** — in whatever posts external events into the project. This is
+the strong option: it sits outside the project, so a worker that gets compromised
+cannot reach it or turn it off.
+
+**Inside composition**, as a check in the engine. Possible, but it is policy in
+core code, which the product's binding principles forbid — so it needs a
+deliberate amendment to those principles rather than a quiet patch. Do not treat
+it as a free option.
+
+**Not as an ordinary worker.** A worker cannot sit between an event and its
+consumer; there is no interception point. A "moderator worker" can only read
+things after they have already been delivered somewhere else.
+
+Two caveats worth stating plainly. Running a moderator on a cheaper model is not
+currently expressible — per-worker model choice is an explicit non-goal, so that
+too would need an amendment. And a moderator is defence in depth, never a
+boundary: it is itself a model reading hostile text, and it can be talked around
+like any other. It lowers the volume. The valve is what actually stops things.
+
+---
+
 ## Where to go next
 
 - [`18-workers-memory-events.md`](18-workers-memory-events.md) — operating the

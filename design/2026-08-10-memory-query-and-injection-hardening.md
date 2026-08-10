@@ -792,8 +792,12 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** no (docs)
 - **Validation:** `grep -q 'valve' docs/workflows.md && grep -q 'workflows.md' docs/19-embedding.md`
 - **Depends on:** T11
-- [ ] done
-- Notes:
+- [x] done
+- Notes: Both write-ups state plainly that they are not built, and both say what
+  they do NOT protect against — the valve bounds blast radius without cleaning
+  context, the moderator is defence in depth and can be talked around like any
+  other model. The in-composition placement carries the P1 caveat the review
+  asked for, so it does not read as a free option.
 
 ### T13: README corrections   [Status: pending | Model: sonnet]
 - **Scope:** Add `docs/workflows.md` to the documentation table and to the
