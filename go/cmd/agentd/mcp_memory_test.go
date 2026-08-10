@@ -933,3 +933,74 @@ func TestMemoryToolsSearchSchemaAdmitsNarrowingArgs(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The embed flag and the size ceiling (design plan T7).
+// ---------------------------------------------------------------------------
+
+// failIfCalledEmbedder fails the test if the provider is reached at all — the
+// point of embed:false and of the size check is that nothing is sent.
+type failIfCalledEmbedder struct{ t *testing.T }
+
+func (f failIfCalledEmbedder) Embed(context.Context, string) ([]float32, error) {
+	f.t.Fatal("the embedding provider must not be called")
+	return nil, nil
+}
+
+func TestMemoryToolsCreateEmbedFlag(t *testing.T) {
+	big := strings.Repeat("a", agentdb.MaxEmbeddedMemoryBytes+1)
+
+	t.Run("embed:false stores a large document and never calls the provider", func(t *testing.T) {
+		store := newFakeMemoryStore()
+		tools := testMemoryTools(store, failIfCalledEmbedder{t})
+		res, err := callTool(t, tools, "memory_create", testCaller(), map[string]any{
+			"content": big, "embed": false,
+		})
+		if err != nil {
+			t.Fatalf("memory_create: %v", err)
+		}
+		if len(store.created) != 1 {
+			t.Fatalf("want the row stored, got %d", len(store.created))
+		}
+		if store.created[0].Content != big {
+			t.Error("the document must store whole, not truncated")
+		}
+		if got := res["embedded"]; got != false {
+			t.Errorf("embedded = %v, want false", got)
+		}
+	})
+
+	t.Run("oversized with embedding requested is refused before the provider", func(t *testing.T) {
+		store := newFakeMemoryStore()
+		tools := testMemoryTools(store, failIfCalledEmbedder{t})
+		_, err := callTool(t, tools, "memory_create", testCaller(), map[string]any{
+			"content": big,
+		})
+		if err == nil {
+			t.Fatal("want a refusal")
+		}
+		// The refusal has to carry the fix, or the model has no way forward.
+		for _, want := range []string{"embed:false", fmt.Sprint(agentdb.MaxEmbeddedMemoryBytes)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("refusal does not mention %q: %v", want, err)
+			}
+		}
+		if len(store.created) != 0 {
+			t.Error("nothing may be stored when the size check refuses")
+		}
+	})
+
+	t.Run("small content is unchanged and still embeds", func(t *testing.T) {
+		store := newFakeMemoryStore()
+		tools := testMemoryTools(store, embedding.NewMock())
+		res, err := callTool(t, tools, "memory_create", testCaller(), map[string]any{
+			"content": "a short lesson",
+		})
+		if err != nil {
+			t.Fatalf("memory_create: %v", err)
+		}
+		if got := res["embedded"]; got != true {
+			t.Errorf("embedded = %v, want true — the default must not change", got)
+		}
+	})
+}

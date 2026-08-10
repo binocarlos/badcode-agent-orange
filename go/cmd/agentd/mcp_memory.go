@@ -217,6 +217,10 @@ func (m *memoryTools) tools() []*mcpTool {
 					"description":          "Flat string→string labels. Identifiers only: [A-Za-z0-9] with '-', '_', '.', ≤63 chars, ≤32 labels.",
 					"additionalProperties": map[string]any{"type": "string"},
 				},
+				"embed": map[string]any{
+					"type":        "boolean",
+					"description": "Index this memory for meaning-based search (default true). Pass false for a document over 24KB: it stores whole and stays findable by label and by keyword, but not by meaning.",
+				},
 			}, []string{"content"}),
 			Handler: m.create,
 		},
@@ -271,6 +275,10 @@ func (m *memoryTools) tools() []*mcpTool {
 type memoryCreateArgs struct {
 	Content string            `json:"content"`
 	Labels  map[string]string `json:"labels"`
+	// Embed is a POINTER so "absent" and "false" are distinguishable: the
+	// default is true, and a caller that says nothing must keep today's
+	// behaviour exactly.
+	Embed *bool `json:"embed"`
 }
 
 func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.RawMessage) (any, error) {
@@ -290,9 +298,25 @@ func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.Raw
 	}
 
 	// WRITE path: strict. A configured provider that fails fails the create.
-	vec, err := embedding.Embed(ctx, m.embedder, args.Content)
-	if err != nil {
-		return nil, fmt.Errorf("could not embed this memory, so it was NOT stored (retry rather than continue): %w", err)
+	// The size check runs BEFORE the provider is called: an oversized document
+	// must cost nothing and must come back with the instruction that fixes it.
+	wantEmbed := args.Embed == nil || *args.Embed
+	if wantEmbed && len(args.Content) > agentdb.MaxEmbeddedMemoryBytes {
+		return nil, fmt.Errorf(
+			"this memory is %d bytes, over the %d-byte limit for meaning-based indexing — pass embed:false to store it whole (it stays searchable by label and by keyword), or split it",
+			len(args.Content), agentdb.MaxEmbeddedMemoryBytes)
+	}
+
+	var vec []float32
+	var err error
+	if wantEmbed {
+		vec, err = embedding.Embed(ctx, m.embedder, args.Content)
+		if err != nil {
+			// Bytes are not tokens: dense content under the byte ceiling can
+			// still exceed the provider's token limit, and its raw error never
+			// mentions the argument that fixes this.
+			return nil, fmt.Errorf("could not embed this memory, so it was NOT stored (retry rather than continue): %w — if this is a large or dense document, pass embed:false to store it whole without meaning-based indexing", err)
+		}
 	}
 
 	stored, embedded, err := m.store.CreateMemory(ctx, &agentdb.Memory{

@@ -593,8 +593,15 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/... -run TestMemoryToolsCreate -count=1`
 - **Depends on:** T6
-- [ ] done
-- Notes:
+- [x] done
+- Notes: `TestMemoryToolsCreateEmbedFailureIsFatal` earned its keep — a first
+  pass at the provider-error rewording dropped the "it was NOT stored" clause
+  and the test caught it. The final message carries both that guarantee and the
+  embed:false hint. `embed` is a *pointer* so absent and false are
+  distinguishable and the default is genuinely unchanged. The prompt-revision
+  path now stores without a vector above the ceiling rather than failing:
+  revisions are found by labels, never by meaning, so the semantic leg was
+  never what made them retrievable.
 
 ### T8: Token-aware fence rendering   [Status: pending | Model: opus]
 - **Scope:** Add `Nonce string` to `ComposeJobInput` and render both markers with

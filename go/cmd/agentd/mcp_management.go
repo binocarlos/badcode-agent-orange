@@ -1324,10 +1324,20 @@ func (m *managementTools) storePromptRevision(ctx context.Context, caller mcpCal
 	// embedding is permanently invisible to semantic search, and this one is
 	// meant to be found years later. A provider failure therefore costs the
 	// memory — reported, never silent — rather than storing an unfindable row.
-	vec, err := embedding.Embed(ctx, m.embedder, content)
-	if err != nil {
-		out.Error = "could not embed the revision memory: " + err.Error()
-		return out
+	// A prompt revision embeds a whole previous system prompt, and P4 explicitly
+	// trusts models to make those large — so this is the one write path that
+	// meets the provider's limit in normal use rather than under abuse. Storing
+	// it WITHOUT a vector beats losing it: revisions are found by their labels
+	// (entity, kind=prompt-revision), never by meaning, so the semantic leg was
+	// never what made them retrievable.
+	var vec []float32
+	if len(content) <= agentdb.MaxEmbeddedMemoryBytes {
+		var err error
+		vec, err = embedding.Embed(ctx, m.embedder, content)
+		if err != nil {
+			out.Error = "could not embed the revision memory: " + err.Error()
+			return out
+		}
 	}
 
 	// The `embedded` return is discarded here only because CreateMemory now
