@@ -398,8 +398,15 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
   `cd go && AGENTKIT_TEST_POSTGRES_URL=<throwaway db> go test ./agentdb/... -run TestMemorySearchTimeBounds -count=1`;
   also `go test ./agentdb/... -count=1` (the live cases skip without the URL).
 - **Depends on:** —
-- [ ] done
-- Notes:
+- [x] done
+- Notes: Verified against a throwaway pgvector container (NOT the shared
+  `platinum-development-postgres` on this host — CLAUDE.md warns against it).
+  Tests assert both the recency path and the hybrid path for every case, because
+  the design claim is that one `where` string governs all three legs; a
+  recency-only test would not notice the CTE losing the bound. Inclusivity is
+  pinned explicitly (an instant window matches the row stamped at that instant),
+  since an off-by-one would silently drop exactly the boundary row a
+  "since my last pass" query cares about. All 12 subtests pass.
 
 ### T3: `LatestPer` on the store query   [Status: pending | Model: opus]
 - **Scope:** Add `LatestPer string` to `MemorySearchQuery`. When set, reduce the

@@ -91,6 +91,20 @@ type MemorySearchQuery struct {
 	QueryEmbedding []float32
 	// Limit defaults to 20, capped at 100.
 	Limit int
+	// Since is an inclusive lower bound on created_at, in unix MILLISECONDS
+	// (the unit this table is stamped in — the event spine uses seconds).
+	// Zero means unbounded.
+	Since int64
+	// Until is an inclusive upper bound on created_at, unix MILLISECONDS.
+	// Zero means unbounded.
+	Until int64
+	// LatestPer is a label KEY. When set, the candidate set is reduced to the
+	// newest memory per distinct value of that label BEFORE ranking, and rows
+	// that do not carry the key are excluded. Empty means no reduction.
+	//
+	// It is the set-valued form of NewestMemory: `memory_current` answers "the
+	// current value of x" for one name, this answers it for every name at once.
+	LatestPer string
 }
 
 // MemorySearchResult is one hit. Provenance is part of the result, not an
@@ -354,6 +368,21 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 	// recency leg and to both relevance legs below — a withdrawn memory cannot
 	// come back by scoring well.
 	where += " AND " + notRetractedSQL("f")
+
+	// Time bounds join the SAME hard filter, for the same reason: the string
+	// built here is interpolated into the recency query and into the `filtered`
+	// CTE that both relevance legs read from, so one clause governs every leg.
+	if q.Since > 0 && q.Until > 0 && q.Since > q.Until {
+		return nil, fmt.Errorf("agentdb: memory search since (%d) is after until (%d) — that range matches nothing", q.Since, q.Until)
+	}
+	if q.Since > 0 {
+		where += " AND f.created_at >= ?"
+		whereArgs = append(whereArgs, q.Since)
+	}
+	if q.Until > 0 {
+		where += " AND f.created_at <= ?"
+		whereArgs = append(whereArgs, q.Until)
+	}
 
 	snippet := fmt.Sprintf(
 		"CASE WHEN length(%[1]s.content) > %[2]d THEN substring(%[1]s.content, 1, %[2]d) ELSE %[1]s.content END AS snippet",
