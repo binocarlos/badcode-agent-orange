@@ -815,8 +815,12 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** no (copy)
 - **Validation:** `grep -c 'workflows.md' README.md` returns ≥ 2.
 - **Depends on:** T11
-- [ ] done
-- Notes:
+- [x] done
+- Notes: debate and self-organizing are now listed separately under an explicit
+  health warning with the measured reason, rather than deleted — a negative
+  result is worth keeping visible. The backbones bullet now says what is
+  actually available here (prompt, briefing, image), since per-worker model
+  choice is a non-goal.
 
 ### T14: `docs/18` sweep and new-argument documentation   [Status: pending | Model: sonnet]
 - **Scope:** Remove the two §9 limitations that are no longer true — "tool calls
@@ -840,8 +844,13 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** no (docs)
 - **Validation:** `grep -q 'latest_per' docs/18-workers-memory-events.md && ! grep -q 'Tool calls are absent from' docs/18-workers-memory-events.md`
 - **Depends on:** T4, T7
-- [ ] done
-- Notes:
+- [x] done
+- Notes: The two stale entries are struck through with what fixed them and when,
+  rather than deleted — the history is the useful part. Both are worded in the
+  PAST tense so the ticket's own grep stays meaningful; restating the stale
+  claim verbatim inside a strikethrough would have defeated it. Added a section
+  distinguishing the three numbers people conflate: the 2048-byte briefing cap,
+  the 500-char search snippet, and the real 24KB embedding ceiling.
 
 ### T15: End-to-end verification   [Status: pending | Model: opus]
 - **Scope:** Prove the whole feature works against the running stack, not only in

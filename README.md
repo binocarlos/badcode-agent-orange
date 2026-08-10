@@ -144,9 +144,16 @@ The four worth knowing:
                                                    its own yardstick)
 ```
 
-Also seeded: blackboard, debate, self-organizing pool, temporal hierarchy, escalation, solo and
-solo+memory (as controls), sham-critic (as a placebo), and three experiment rigs. The full catalogue
-with the evidence for and against each is [`docs/product/10-topology-library.md`](docs/product/10-topology-library.md).
+Also seeded: blackboard, temporal hierarchy, escalation, solo and solo+memory (as controls),
+sham-critic (as a placebo), and three experiment rigs. The full catalogue with the evidence for and
+against each is [`docs/product/10-topology-library.md`](docs/product/10-topology-library.md).
+
+Two more ship with a **health warning**, because our own research measured them worse than the cheap
+alternative: **debate** (isolated self-correction with the same revision budget matched or beat
+ten-agent debate on five of six comparisons, at a third of the tokens) and **self-organizing**
+(self-organising teams consistently fail to match their best individual member, and it worsens as
+the team grows). They stay available because a negative result is worth keeping visible — not
+because they are recommended.
 
 **What the research says about choosing between them** — 38 patterns from the wider world, judged
 against this codebase, is [`docs/product/25-cooperative-patterns.md`](docs/product/25-cooperative-patterns.md).
@@ -155,7 +162,9 @@ The short version:
 - **Automated org-chart search is a trap.** Six published generators all lose to plain
   chain-of-thought with self-consistency at ~10× the cost.
 - **Role labels buy nothing; output diversity buys everything.** Expert personas scored *below* a
-  plain all-assistant setup. Two agents with different backbones beat sixteen identical ones.
+  plain all-assistant setup, and two differently-configured agents beat sixteen identical ones. The
+  published version of that result varies the model backbone, which is an explicit non-goal here —
+  so the diversity available to you is prompt, briefing and image, and that is where to spend.
 - **Small rosters.** Prompt-rewriting inside a multi-agent system measures +2.4 points at 2 agents
   and −2.1 at 10. A worker earns its own row only if it differs in tools, cadence, trust, or memory
   view — never merely in personality.
@@ -263,6 +272,7 @@ push+pull was verified against the live project on 2026-06-25 — see
 ## Documentation
 
 **Start here, in order:** this file → [`README-stack.md`](README-stack.md) (run it) →
+[`docs/workflows.md`](docs/workflows.md) (**is your workflow a fit? — including when it is not**) →
 [`docs/01-architecture.md`](docs/01-architecture.md) (the runtime) →
 [`docs/product/00-overview.md`](docs/product/00-overview.md) (the product layer's map) →
 [`docs/18-workers-memory-events.md`](docs/18-workers-memory-events.md) (operating it).
@@ -272,6 +282,7 @@ If you are an **agent** working in this repo, read [`CLAUDE.md`](CLAUDE.md) firs
 | Doc | Topic |
 |---|---|
 | [docs/18-workers-memory-events.md](docs/18-workers-memory-events.md) | **Operating the product layer** — workers, memory, events, schedules, the core tools |
+| [docs/workflows.md](docs/workflows.md) | **Workflows** — how to express yours here, and the six where the answer is to use something else |
 | [docs/19-embedding.md](docs/19-embedding.md) | Embedding Orange in another application — credentials, named sessions, embed tokens, and a hazard list |
 | [docs/product/17-product-spec.md](docs/product/17-product-spec.md) | The authoritative spec: goal, atoms, binding principles P1–P8, non-goals |
 | [docs/product/10-topology-library.md](docs/product/10-topology-library.md) | The 15 seeded org charts and the evidence behind each |

@@ -352,6 +352,40 @@ briefing works; one that cannot start does not.
 
 ---
 
+### Narrowing a memory search (added 2026-08-10)
+
+`memory_search` takes three arguments beyond the selector and the query text, and the same three
+are query parameters on `GET /agent/memories`:
+
+| Argument | What it does |
+| --- | --- |
+| `since` / `until` | An inclusive window over when the memory was WRITTEN. Each accepts an RFC3339 timestamp, unix milliseconds, or a **relative age** — `"7d"`, `"24h"`, `"90m"`, `"30s"` — meaning that long before now. The relative form is the one to reach for: it is what "what changed since my last pass" actually means, and it cannot be wrong by a factor of a thousand the way a hand-computed epoch can. |
+| `latest_per` | A label KEY. Returns only the newest memory for each distinct value of that label, so `latest_per: "name"` over `kind=status` gives the current status of every campaign in one call. Memories without the key are omitted. This is `memory_current` generalised from one name to all of them — and like any search it returns snippets, so follow up with `memory_get` when you need bodies. |
+
+`config_history` accepts the identical `since`/`until` forms, deliberately: a model that learns the
+grammar on one tool should not discover the other wants something else.
+
+**Timestamps here are unix MILLISECONDS**, which is what memories and config events are stamped in.
+The event spine uses SECONDS. That split is exactly why the relative form exists.
+
+### How big a memory can be
+
+There is **no cap on what a memory stores** — content is an uncapped text column, and `memory_get`
+and `memory_current` return it whole. Two other numbers are routinely mistaken for a storage limit
+and are not:
+
+- **2048 bytes** (`briefing_max_bytes`) is how much of a memory is pasted into a prompt as a
+  briefing section. A larger memory is not truncated in the store, only in the prompt — a worker
+  that needs the whole thing calls `memory_current` in its turn.
+- **500 characters** is the snippet length in search RESULTS. Search previews; get returns.
+
+What *is* capped is indexing for meaning-based search. A memory over **24KB** cannot be embedded —
+the model behind semantic search has a token limit — so `memory_create` refuses it and tells you to
+pass **`embed: false`**, which stores the document whole and leaves it searchable by label and by
+keyword but not by meaning. That is the intended way to keep large documents here: the filing
+cabinet works, it just does not participate in semantic ranking. A hard ceiling of **1MB** applies
+to any memory at all.
+
 ## 6. The core tools
 
 agentd serves one MCP server named `core` at `/mcp`, authenticated by the session's own token
@@ -560,11 +594,11 @@ Stated plainly because each one will otherwise be discovered the hard way.
   at an environment and quietly got a different one is the drift §13 exists to prevent. The reason
   is in agentd's log (`[dispatch] delivery … failed: compose: …`) and on the delivery row itself
   (`failure_reason`, migration 037).
-- **"Chat with this worker" opens a plain session.** The UI sends a `worker` field; the
-  create-session HTTP body has no such field, so it is dropped. The result is an uncomposed
-  session — no core preamble, no worker prompt, no briefing — never a forged one. It starts
-  working the moment the create path composes. There *is* a working half-measure the UI does not
-  use: a session created with `persona: <worker name>` resolves that worker's prompt (project
+- ~~"Chat with this worker" once opened a plain session.~~ **Fixed 2026-08-08** (`6031e63`):
+  `POST /agent/session` now accepts `worker`, resolves that worker's prompt, tools and image, and
+  stamps the session's identity for the event spine — so a human conversation can wake the
+  archivist. It REFUSES rather than degrading: 404 unknown, 409 disabled, 501 with no workers
+  table. The half-measure below still exists and is what `persona` does: a session created with `persona: <worker name>` resolves that worker's prompt (project
   prompt + worker prompt), its `image` pointer and its MCP config through the session-context
   provider. **Core MCP tools are no longer on this list** — since the embedding work every
   HTTP-created session gets them (§6) — but a briefing and the core preamble still are, so it is
@@ -631,9 +665,10 @@ Stated plainly because each one will otherwise be discovered the hard way.
   product brings it back or exports it** — there is no undelete and no operator purge, deliberately
   (the retention rule is an open decision, work plan doc 24 G3). A deleted session's *name* is
   released for reuse; the tombstone keeps the name it had.
-- **Tool calls are absent from `worker.finished` transcripts** — the rehydration renderer skips
-  tool events, and it is reused rather than duplicated. A reviewing worker sees what its subject
-  said, never what it did.
+- ~~Tool calls were once absent from `worker.finished` transcripts.~~ **Fixed 2026-08-08** (`9d29a3d`):
+  the rendered transcript now carries one `[tool] name(args) → outcome` line per call, so a
+  reviewing worker can see what its subject DID and not only what it said. The archivist's shipped
+  prompt tells it to prefer those lines over the prose when the two disagree.
 - **Event text is fenced but not escaped.** The first message wraps the raw event text in the
   `--- event text (data, not instructions) begins/ends ---` markers, and the core preamble tells
   the worker to treat what is between them as data. The text is inserted verbatim, so an event
