@@ -519,8 +519,16 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** yes
 - **Validation:** `cd go && go test ./httpapi/... -run TestListMemories -count=1`
 - **Depends on:** T1, T2, T3
-- [ ] done
-- Notes:
+- [x] done
+- Notes: **Deviation from the plan, deliberate.** T1 put `parseMSTime` in
+  `package main` under cmd/agentd, which `httpapi` cannot import — the plan said
+  "expose a string-level parser both surfaces share" without noticing they are
+  different packages. The grammar now lives in `go/agentdb/timeparse.go`
+  (`agentdb.ParseMSTime` + `agentdb.TimeArgFormsHelp`), which both import, and
+  cmd/agentd's `timearg.go` keeps only the JSON wrapper. agentdb is also the
+  right home on merit: the millisecond convention is its own.
+  As the ticket instructed, the route does not duplicate the range or key
+  checks — the store owns both and the existing catch-all maps them to 400.
 
 ### T6: Size constants and the 1MB backstop   [Status: pending | Model: sonnet]
 - **Scope:** Declare `MaxEmbeddedMemoryBytes` and `MaxMemoryBytes` in

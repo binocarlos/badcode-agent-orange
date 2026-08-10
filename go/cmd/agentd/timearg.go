@@ -31,10 +31,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
 
 // msTimeArg is an optional time bound in unix milliseconds. Set distinguishes
@@ -45,54 +45,13 @@ type msTimeArg struct {
 	Set bool
 }
 
-// relativeAgeRe matches the relative form: a positive count and one unit.
-// Deliberately strict — no spaces, no plural, no sign, no zero-padding beyond
-// what a number allows — because a half-understood duration is worse than a
-// refusal that names the accepted forms.
-var relativeAgeRe = regexp.MustCompile(`^([1-9][0-9]*)([smhd])$`)
+// The grammar itself lives in agentdb.ParseMSTime, because the HTTP API needs
+// the identical one and is a different package. What stays here is the JSON
+// wrapper: MCP tools receive JSON values, HTTP receives bare query strings.
 
-// timeArgFormsHelp is the one description of the accepted forms, used in error
-// messages and in every tool's schema so the two can never drift.
-const timeArgFormsHelp = `an RFC3339 timestamp ("2026-07-18T00:00:00Z"), unix milliseconds, or a relative age ("7d", "24h", "90m", "30s")`
+const timeArgFormsHelp = agentdb.TimeArgFormsHelp
 
-// parseMSTime parses the string form of a time bound. It is separate from
-// UnmarshalJSON because MCP tools receive JSON while HTTP routes receive bare
-// query-string values, and both must accept exactly the same four forms — the
-// alternative is an HTTP handler inventing a quoting hack to reuse the JSON
-// path. now is passed in rather than read, so the relative form is testable.
-func parseMSTime(s string, now time.Time) (int64, error) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return 0, fmt.Errorf("empty time bound: want %s", timeArgFormsHelp)
-	}
-	if m := relativeAgeRe.FindStringSubmatch(s); m != nil {
-		n, err := strconv.ParseInt(m[1], 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("%q is not %s", s, timeArgFormsHelp)
-		}
-		var unit time.Duration
-		switch m[2] {
-		case "s":
-			unit = time.Second
-		case "m":
-			unit = time.Minute
-		case "h":
-			unit = time.Hour
-		case "d":
-			unit = 24 * time.Hour
-		}
-		return now.Add(-time.Duration(n) * unit).UnixMilli(), nil
-	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.UnixMilli(), nil
-	}
-	// A bare number in quotes is a common model habit; accept it rather than
-	// failing a query over its punctuation.
-	if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return n, nil
-	}
-	return 0, fmt.Errorf("%q is not %s", s, timeArgFormsHelp)
-}
+func parseMSTime(s string, now time.Time) (int64, error) { return agentdb.ParseMSTime(s, now) }
 
 // UnmarshalJSON accepts a JSON string in any of the string forms, or a bare
 // JSON number as raw milliseconds. null and "" mean absent, not zero.

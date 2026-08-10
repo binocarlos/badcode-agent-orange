@@ -4,6 +4,8 @@ package httpapi
 //
 //	GET /agent/memories
 //	  query: ?selector=<k8s label selector>&query=<free text>&limit=<n>
+//	         &since=<bound>&until=<bound>&latest_per=<label key>
+//	         A bound is RFC3339, unix milliseconds, or a relative age ("7d").
 //	  auth : the ordinary session JWT; the project comes from the Customer claim,
 //	         never from the query (P5) — same posture as GET /agent/config-events.
 //	  200  : {"memories": [MemorySearchResult, …]}
@@ -51,6 +53,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
@@ -122,12 +125,38 @@ func (h *Handlers) ListMemories(w http.ResponseWriter, r *http.Request) {
 	if text != "" && h.cfg.MemoryEmbedder != nil {
 		vec = h.cfg.MemoryEmbedder(r.Context(), text)
 	}
+	// since/until accept the same forms the MCP tools accept, parsed by the same
+	// function (agentdb.ParseMSTime) so the two surfaces cannot drift. An
+	// unparseable bound is the caller's error, reported with the parser's words.
+	var since, until int64
+	for _, bound := range []struct {
+		param string
+		dst   *int64
+	}{{"since", &since}, {"until", &until}} {
+		raw := strings.TrimSpace(q.Get(bound.param))
+		if raw == "" {
+			continue
+		}
+		ms, err := agentdb.ParseMSTime(raw, time.Now())
+		if err != nil {
+			http.Error(w, bound.param+": "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		*bound.dst = ms
+	}
+
 	rows, err := h.cfg.Memories.SearchMemories(r.Context(), &agentdb.MemorySearchQuery{
 		Project:        id.Customer, // from the claim, always — never a parameter
 		LabelSelector:  q.Get("selector"),
 		Query:          text,
 		QueryEmbedding: vec,
 		Limit:          queryInt(r, "limit", 0),
+		Since:          since,
+		Until:          until,
+		// The store validates the key and refuses an inverted range; this route
+		// deliberately does not duplicate either check, because the catch-all
+		// below already reports a store error as 400 with its own message.
+		LatestPer: strings.TrimSpace(q.Get("latest_per")),
 	})
 	if err != nil {
 		if errors.Is(err, agentdb.ErrMemoryRequiresPostgres) {
