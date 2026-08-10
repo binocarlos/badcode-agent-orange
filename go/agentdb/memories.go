@@ -151,6 +151,15 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 	if strings.TrimSpace(m.Content) == "" {
 		return nil, false, fmt.Errorf("agentdb: memory content is required")
 	}
+	// Before any database round-trip, so an oversized write costs nothing and
+	// says something useful. Applies to EVERY writer — the memory tool, prompt
+	// revisions, and topology seeds — because the ceiling is the database's,
+	// not any one caller's.
+	if len(m.Content) > MaxMemoryBytes {
+		return nil, false, fmt.Errorf(
+			"agentdb: memory content is %d bytes, over the %d-byte ceiling — store the document as an artifact and keep a memory that points at it",
+			len(m.Content), MaxMemoryBytes)
+	}
 	if err := ValidateLabels(m.Labels); err != nil {
 		return nil, false, fmt.Errorf("agentdb: memory labels: %w", err)
 	}
@@ -218,6 +227,34 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 	}
 	return stored, embedded, nil
 }
+
+// Size ceilings. Neither is a storage limit in the ordinary sense — `content`
+// is an uncapped TEXT column and memory_get returns whatever was written. They
+// exist because two things downstream of the column DO have limits, and both
+// otherwise fail with somebody else's error message.
+const (
+	// MaxEmbeddedMemoryBytes is the largest content that may be sent to an
+	// embedding provider. Sized for prose at roughly 4 bytes/token against the
+	// 8191-token limit of text-embedding-3-small, with headroom — because bytes
+	// are NOT tokens: dense content (JSON, code, non-Latin scripts) can run
+	// closer to 2 bytes/token, so a caller near this ceiling with dense content
+	// can still be refused by the provider. That refusal is caught and
+	// re-worded at the tool boundary rather than guessed at here.
+	//
+	// Exceeding it is not a reason to fail a write — it is a reason to write
+	// the memory WITHOUT a vector. See the `embed` argument on memory_create.
+	MaxEmbeddedMemoryBytes = 24576
+
+	// MaxMemoryBytes is the ceiling for any memory whatsoever. It buys margin
+	// under the Postgres tsvector limit for ordinary text; it is NOT a
+	// guarantee, because that limit applies to the tsvector REPRESENTATION
+	// (lexemes plus positions) rather than to the input string, so
+	// high-entropy content — logs, hex ids, base64 — can still exceed it and
+	// fail in the generated column. What this constant guarantees is that the
+	// ordinary case fails with OUR message, naming the limit and the actual
+	// size, instead of an opaque one from the database.
+	MaxMemoryBytes = 1048576
+)
 
 // RetractionLabel is the label a memory carries to withdraw another one. Its
 // value is the retracted memory's id (§7.1).

@@ -167,3 +167,12 @@ func TestMemoriesTableName(t *testing.T) {
 		t.Fatalf("table name: %q", name)
 	}
 }
+
+// The two ceilings are different numbers for different reasons, and a future
+// edit that collapsed them would silently change what `embed:false` buys.
+func TestMemorySizeCeilingsAreDistinct(t *testing.T) {
+	if MaxEmbeddedMemoryBytes >= MaxMemoryBytes {
+		t.Fatalf("the embedding ceiling (%d) must sit below the storage ceiling (%d): the whole point of embed:false is storing what cannot be embedded",
+			MaxEmbeddedMemoryBytes, MaxMemoryBytes)
+	}
+}

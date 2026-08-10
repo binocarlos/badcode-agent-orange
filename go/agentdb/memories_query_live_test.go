@@ -240,3 +240,33 @@ func TestMemorySearchLatestPer(t *testing.T) {
 		}
 	})
 }
+
+// TestCreateMemorySizeCeiling pins the backstop added 2026-08-10 (design plan
+// T6): the ceiling that applies to EVERY writer, so an oversized row fails with
+// our message rather than an opaque one from the generated tsvector column.
+func TestCreateMemorySizeCeiling(t *testing.T) {
+	s := openLivePG(t)
+	project := newLiveProject(t, s)
+	ctx := context.Background()
+
+	_, _, err := s.CreateMemory(ctx, &Memory{
+		Project: project, Content: strings.Repeat("a", MaxMemoryBytes+1),
+	}, nil)
+	if err == nil {
+		t.Fatal("content over MaxMemoryBytes must be refused")
+	}
+	// Both numbers, so an operator can see how far over they are, and a way out.
+	for _, want := range []string{"1048577", "1048576", "artifact"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal does not mention %q: %v", want, err)
+		}
+	}
+
+	// Exactly at the limit is accepted: the ceiling is inclusive, and an
+	// off-by-one here would be invisible until someone hit it in production.
+	if _, _, err := s.CreateMemory(ctx, &Memory{
+		Project: project, Content: strings.Repeat("a", MaxMemoryBytes),
+	}, nil); err != nil {
+		t.Fatalf("content exactly at the limit must be accepted: %v", err)
+	}
+}

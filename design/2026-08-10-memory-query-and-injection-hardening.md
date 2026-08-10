@@ -548,10 +548,15 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
   - The refusal happens before any database round-trip.
   - The error names both the limit and the actual size.
 - **TDD:** yes
-- **Validation:** `cd go && go test ./agentdb/... -run TestCreateMemorySize -count=1`
+- **Validation:** `cd go && AGENTKIT_TEST_POSTGRES_URL=<throwaway db> go test ./agentdb/... -run 'TestCreateMemorySize|TestMemorySizeCeilings' -count=1`
 - **Depends on:** —
-- [ ] done
-- Notes:
+- [x] done
+- Notes: **Deviation:** the ticket said extend `memories_test.go`, but
+  `CreateMemory` calls `requirePostgres()` before any argument validation, so a
+  sqlite fixture never reaches the size check. The refusal test therefore lives
+  with the live tests; a pure test asserting the two ceilings are distinct (and
+  ordered) stays in `memories_test.go`, because collapsing them would silently
+  destroy what `embed:false` buys.
 
 ### T7: `embed` flag and the pre-embedding size check   [Status: pending | Model: sonnet]
 - **Scope:** Add `embed *bool` (default true) to `memoryCreateArgs` and the
