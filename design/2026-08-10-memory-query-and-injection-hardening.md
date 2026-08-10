@@ -456,8 +456,14 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **Validation:**
   `cd go && AGENTKIT_TEST_POSTGRES_URL=<throwaway db> go test ./agentdb/... -run TestMemorySearchLatestPer -count=1`
 - **Depends on:** T2
-- [ ] done
-- Notes:
+- [x] done
+- Notes: Both SQL shapes implemented as the ticket warned. The keyless-row trap
+  was real and the test caught it before the fix: without `jsonb_exists` the
+  recency path returned 4 rows including the row with no `name` label, because
+  DISTINCT ON grouped the NULLs. The label key is interpolated rather than
+  bound, because Postgres will not accept a placeholder in DISTINCT ON or
+  ORDER BY position — hence `ValidateLabelKey` before it reaches the string.
+  Full agentdb suite green against live Postgres (102s).
 
 ### T4: Expose the three arguments on `memory_search`   [Status: pending | Model: sonnet]
 - **Scope:** Add `since`, `until` (both `msTimeArg`) and `latest_per` to

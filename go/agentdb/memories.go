@@ -384,17 +384,53 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 		whereArgs = append(whereArgs, q.Until)
 	}
 
+	// LatestPer reduces the candidate set to the newest row per distinct value
+	// of one label key, BEFORE ranking. Two clauses are needed, and the second
+	// is easy to forget: labels->>'k' is NULL for a row without the key, and
+	// DISTINCT ON groups NULLs together, so without an explicit existence test
+	// exactly one arbitrary keyless row would survive the reduction.
+	//
+	// jsonb_exists(...) rather than `labels ? 'k'` because the jsonb `?`
+	// operator collides with the SQL placeholder (see labels.go).
+	latestPer := strings.TrimSpace(q.LatestPer)
+	if latestPer != "" {
+		if err := ValidateLabelKey(latestPer); err != nil {
+			return nil, fmt.Errorf("agentdb: memory search latest_per: %w", err)
+		}
+		where += " AND jsonb_exists(f.labels, ?)"
+		whereArgs = append(whereArgs, latestPer)
+	}
+
+	// distinctOn is the reduction clause itself, empty when unused. The key is
+	// validated above, so it is safe to interpolate; it cannot be a placeholder
+	// because Postgres will not take one in DISTINCT ON / ORDER BY position.
+	distinctOn := ""
+	latestOrder := ""
+	if latestPer != "" {
+		distinctOn = fmt.Sprintf("DISTINCT ON (f.labels->>'%s') ", latestPer)
+		latestOrder = fmt.Sprintf("ORDER BY f.labels->>'%s', f.created_at DESC, f.id DESC", latestPer)
+	}
+
 	snippet := fmt.Sprintf(
 		"CASE WHEN length(%[1]s.content) > %[2]d THEN substring(%[1]s.content, 1, %[2]d) ELSE %[1]s.content END AS snippet",
 		"f", memorySnippetLen)
 
 	// 2. No query text ⇒ a recency question, not a relevance one.
 	if strings.TrimSpace(q.Query) == "" {
-		sql := `SELECT f.id, f.labels, ` + snippet + `,
+		inner := `SELECT ` + distinctOn + `f.id, f.labels, ` + snippet + `,
 				0::float8 AS score, f.created_by_worker, f.created_by_session, f.created_at
 			FROM memories f
-			WHERE ` + where + `
-			ORDER BY f.created_at DESC, f.id DESC
+			WHERE ` + where
+		if latestPer == "" {
+			return s.scanMemoryResults(ctx,
+				inner+"\n\t\t\tORDER BY f.created_at DESC, f.id DESC\n\t\t\tLIMIT ?",
+				append(append([]any{}, whereArgs...), limit))
+		}
+		// DISTINCT ON requires ORDER BY to lead with its own expression, which
+		// is not the order the caller wants back — so reduce inside, then
+		// re-order newest-first outside.
+		sql := `SELECT * FROM (` + inner + "\n\t\t\t" + latestOrder + `) d
+			ORDER BY d.created_at DESC, d.id DESC
 			LIMIT ?`
 		return s.scanMemoryResults(ctx, sql, append(append([]any{}, whereArgs...), limit))
 	}
@@ -419,12 +455,16 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 	args := []any{}
 
 	b.WriteString(`WITH filtered AS (
-			SELECT id, labels, content, content_tsv, created_by_worker, created_by_session, created_at`)
+			SELECT ` + distinctOn + `f.id, f.labels, f.content, f.content_tsv, f.created_by_worker, f.created_by_session, f.created_at`)
 	if semantic {
-		b.WriteString(`, content_embedding`)
+		b.WriteString(`, f.content_embedding`)
 	}
+	// The reduction lands INSIDE the CTE, so kw, sem and the final join all read
+	// the same reduced set. The CTE has no ORDER BY of its own otherwise, and
+	// adding one here does not affect how the legs rank: each re-sorts.
 	b.WriteString(`
 			FROM memories f WHERE ` + where + `
+			` + latestOrder + `
 		), kw AS (
 			SELECT id, ROW_NUMBER() OVER (ORDER BY kscore DESC, created_at DESC, id DESC) AS rnk
 			FROM (
