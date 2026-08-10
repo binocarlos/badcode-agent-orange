@@ -729,8 +729,12 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** yes
 - **Validation:** `cd go && go test . -run TestComposeJobCorePreambleContract -count=1`
 - **Depends on:** —
-- [ ] done
-- Notes:
+- [x] done
+- Notes: 218 + 26 = **244 words** against the 250 budget, as predicted. The
+  byte-exact `wantPreamble` fixture (`compose_test.go:87`) needed updating too —
+  the review caught that; the contract test alone would not have failed. The
+  markers sentence was left untouched, since
+  `TestComposeJobFirstMessageMarkersAreNormative` requires it verbatim.
 
 ### T11: `docs/workflows.md` — the recommendations catalogue   [Status: pending | Model: opus]
 - **Scope:** Write the user-facing catalogue. For each workflow family in
