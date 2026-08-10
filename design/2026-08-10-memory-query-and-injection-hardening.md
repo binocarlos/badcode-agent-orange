@@ -369,8 +369,13 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **Validation:** `cd go && go test ./cmd/agentd/... -run TestMsTimeArg -count=1`
   and `go build ./... && go vet ./...`
 - **Depends on:** —
-- [ ] done
-- Notes:
+- [x] done
+- Notes: Moved to `go/cmd/agentd/timearg.go`. Beyond the ticket: factored the
+  range check into `checkTimeRange` and the schema entry into `timeArgSchema`,
+  both now used by `config_history` too, so the two tools cannot drift in their
+  accepted forms or their refusal wording. `config_history`'s description and
+  schema updated for the relative form, as the ticket required. Its own tests
+  still pass unchanged.
 
 ### T2: `Since`/`Until` on the store query   [Status: pending | Model: sonnet]
 - **Scope:** Add `Since`/`Until int64` to `MemorySearchQuery` and append
