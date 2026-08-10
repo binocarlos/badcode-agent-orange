@@ -835,3 +835,101 @@ func TestMemoryToolsCoreMCPConfig(t *testing.T) {
 		t.Fatalf("the core server is http, not stdio: %#v", cfg)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// The three narrowing arguments added 2026-08-10 (design plan T4).
+// ---------------------------------------------------------------------------
+
+// TestMemoryToolsSearchNarrowingArgs pins that since/until/latest_per reach the
+// store, that a relative age is resolved to a real instant, and — the case that
+// matters most — that omitting them leaves the query exactly as it was.
+func TestMemoryToolsSearchNarrowingArgs(t *testing.T) {
+	newTools := func() (*memoryTools, *fakeMemoryStore) {
+		store := newFakeMemoryStore()
+		return testMemoryTools(store, embedding.NewMock()), store
+	}
+
+	t.Run("relative age resolves to an instant", func(t *testing.T) {
+		tools, store := newTools()
+		before := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+		if _, err := tools.search(context.Background(), testCaller(),
+			json.RawMessage(`{"since":"7d"}`)); err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		after := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+		if len(store.searches) != 1 {
+			t.Fatalf("want one search, got %d", len(store.searches))
+		}
+		got := store.searches[0].Since
+		if got < before || got > after {
+			t.Fatalf("since = %d, want within [%d, %d]", got, before, after)
+		}
+	})
+
+	t.Run("latest_per reaches the store verbatim", func(t *testing.T) {
+		tools, store := newTools()
+		if _, err := tools.search(context.Background(), testCaller(),
+			json.RawMessage(`{"latest_per":"name"}`)); err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		if store.searches[0].LatestPer != "name" {
+			t.Fatalf("latest_per = %q, want %q", store.searches[0].LatestPer, "name")
+		}
+	})
+
+	t.Run("an inverted window is refused before the store", func(t *testing.T) {
+		tools, store := newTools()
+		_, err := tools.search(context.Background(), testCaller(),
+			json.RawMessage(`{"since":"2026-08-10T00:00:00Z","until":"2026-08-01T00:00:00Z"}`))
+		if err == nil {
+			t.Fatal("want a refusal for an inverted window")
+		}
+		if len(store.searches) != 0 {
+			t.Fatal("the store must not be reached when the window is invalid")
+		}
+	})
+
+	// The compatibility case: a caller that names none of the three must produce
+	// the query it produced before this change existed.
+	t.Run("omitting all three leaves the query unchanged", func(t *testing.T) {
+		tools, store := newTools()
+		if _, err := tools.search(context.Background(), testCaller(),
+			json.RawMessage(`{"label_selector":"kind=fact","query":"refunds"}`)); err != nil {
+			t.Fatalf("search: %v", err)
+		}
+		q := store.searches[0]
+		if q.Since != 0 || q.Until != 0 || q.LatestPer != "" {
+			t.Fatalf("unset narrowing args must stay zero, got since=%d until=%d latest_per=%q",
+				q.Since, q.Until, q.LatestPer)
+		}
+		if q.LabelSelector != "kind=fact" || q.Query != "refunds" {
+			t.Fatalf("the existing fields changed: %+v", q)
+		}
+	})
+}
+
+// The schema has to admit the three arguments, and decodeArgs rejects unknown
+// fields — so a missing schema entry and a missing struct field fail
+// differently, and both matter.
+func TestMemoryToolsSearchSchemaAdmitsNarrowingArgs(t *testing.T) {
+	tools := testMemoryTools(newFakeMemoryStore(), embedding.NewMock())
+	var schema map[string]any
+	for _, tool := range tools.tools() {
+		if tool.Name == "memory_search" {
+			schema = tool.InputSchema
+		}
+	}
+	props, _ := schema["properties"].(map[string]any)
+	for _, want := range []string{"since", "until", "latest_per"} {
+		if _, ok := props[want]; !ok {
+			t.Fatalf("memory_search schema is missing %q", want)
+		}
+	}
+	// since/until must not declare a type: string and number are both legal.
+	for _, k := range []string{"since", "until"} {
+		entry, _ := props[k].(map[string]any)
+		if _, ok := entry["type"]; ok {
+			t.Fatalf("%q must not declare a type", k)
+		}
+	}
+}

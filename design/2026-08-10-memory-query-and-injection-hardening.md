@@ -496,8 +496,12 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/... -run 'TestMemoryTools(Search|Surface)' -count=1`
 - **Depends on:** T1, T2, T3
-- [ ] done
-- Notes:
+- [x] done
+- Notes: Description was APPENDED to rather than rewritten, so the three phrases
+  `TestMemoryToolsSurface` pins ("low score", "nothing good", "threshold") were
+  never at risk. The compatibility case is the one worth having: a call naming
+  none of the three must produce the query it produced before this existed, and
+  it is asserted field-by-field.
 
 ### T5: Mirror the three arguments onto the HTTP route   [Status: pending | Model: sonnet]
 - **Scope:** Add `?since=`, `?until=`, `?latest_per=` to `GET /agent/memories`,

@@ -169,9 +169,21 @@ IMPORTANT — read the scores. The ranking has no relevance threshold: it always
 	`best hit does not visibly answer your question, treat the store as empty on ` +
 	`that subject and say so, rather than building on a poor match.
 
-Results are snippets. Use memory_get to read one in full. Every hit carries who ` +
-	`wrote it, in which session, and a session_url link to that conversation — quote ` +
-	`the link when telling a human "we already worked this out".`
+Narrowing, all optional and all ANDed with the filters above:
+  since / until  — a window over when the memory was written: an RFC3339 ` +
+	`timestamp, unix milliseconds, or a relative age such as "7d" or "24h". Use it ` +
+	`for "what changed since my last pass" rather than hoping every writer stamped ` +
+	`a date label.
+  latest_per     — a label KEY. Returns only the NEWEST memory for each distinct ` +
+	`value of that label, so latest_per "name" over kind=status gives you the ` +
+	`current status of every campaign in one call. Memories without that key are ` +
+	`omitted. This is memory_current generalised from one name to all of them.
+
+Results are snippets. Use memory_get to read one in full — including after ` +
+	`latest_per, which answers WHICH memories are current but still returns them ` +
+	`abbreviated. Every hit carries who wrote it, in which session, and a ` +
+	`session_url link to that conversation — quote the link when telling a human ` +
+	`"we already worked this out".`
 
 const memoryGetDescription = `Read one memory in full by id, with its labels and ` +
 	`provenance. memory_search returns truncated snippets; this returns the entire ` +
@@ -223,6 +235,12 @@ func (m *memoryTools) tools() []*mcpTool {
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": "Maximum hits (default 20, maximum 100).",
+				},
+				"since": timeArgSchema("lower"),
+				"until": timeArgSchema("upper"),
+				"latest_per": map[string]any{
+					"type":        "string",
+					"description": "A label key. Returns only the newest memory for each distinct value of that label; memories without the key are omitted.",
 				},
 			}, nil),
 			Handler: m.search,
@@ -300,9 +318,12 @@ func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.Raw
 }
 
 type memorySearchArgs struct {
-	LabelSelector string `json:"label_selector"`
-	Query         string `json:"query"`
-	Limit         int    `json:"limit"`
+	LabelSelector string    `json:"label_selector"`
+	Query         string    `json:"query"`
+	Limit         int       `json:"limit"`
+	Since         msTimeArg `json:"since"`
+	Until         msTimeArg `json:"until"`
+	LatestPer     string    `json:"latest_per"`
 }
 
 func (m *memoryTools) search(ctx context.Context, caller mcpCaller, raw json.RawMessage) (any, error) {
@@ -321,12 +342,19 @@ func (m *memoryTools) search(ctx context.Context, caller mcpCaller, raw json.Raw
 		queryVec = embedding.EmbedOrDegrade(ctx, m.embedder, args.Query)
 	}
 
+	if err := checkTimeRange(args.Since, args.Until); err != nil {
+		return nil, err
+	}
+
 	hits, err := m.store.SearchMemories(ctx, &agentdb.MemorySearchQuery{
 		Project:        caller.Project, // in code, always — never an argument
 		LabelSelector:  args.LabelSelector,
 		Query:          args.Query,
 		QueryEmbedding: queryVec,
 		Limit:          args.Limit,
+		Since:          args.Since.MS,
+		Until:          args.Until.MS,
+		LatestPer:      strings.TrimSpace(args.LatestPer),
 	})
 	if err != nil {
 		return nil, err
