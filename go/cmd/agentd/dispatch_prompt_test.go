@@ -103,3 +103,49 @@ func TestDispatchLeavesPersonaEmpty(t *testing.T) {
 		t.Fatalf("CreateSessionRequest.Persona = %q, want empty for a composed job", created.Persona)
 	}
 }
+
+// TestDispatchStampsAPromptNonce pins the §6.2.4 token reaching real jobs: the
+// composed prompt a worker actually runs under must carry tokened boundaries,
+// and two jobs must never share a token.
+func TestDispatchStampsAPromptNonce(t *testing.T) {
+	nonces := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		n, err := newPromptNonce()
+		if err != nil {
+			t.Fatalf("newPromptNonce: %v", err)
+		}
+		if len(n) != 8 {
+			t.Fatalf("nonce = %q, want 8 hex characters", n)
+		}
+		if nonces[n] {
+			t.Fatal("two jobs got the same token — the fence would be forgeable across jobs")
+		}
+		nonces[n] = true
+	}
+}
+
+// The composed artefact itself: a job dispatched through the real path carries
+// a tokened fence and tokened headings, and the token is the SAME one in both —
+// a job with two different tokens would teach the model to trust either.
+func TestDispatchedPromptBoundariesShareOneToken(t *testing.T) {
+	nonce, err := newPromptNonce()
+	if err != nil {
+		t.Fatalf("newPromptNonce: %v", err)
+	}
+	job, err := agentkit.ComposeJob(context.Background(), agentkit.ComposeJobInput{
+		Project:  "acme",
+		Nonce:    nonce,
+		Worker:   &agentdb.Worker{Name: "writer", SystemPrompt: "Write things."},
+		Settings: &agentdb.ProjectSettings{},
+		Event:    &agentdb.ProjectEvent{Type: "email.received", Text: "hello"},
+	})
+	if err != nil {
+		t.Fatalf("ComposeJob: %v", err)
+	}
+	if !strings.Contains(job.FirstMessage, "["+nonce+"]") {
+		t.Errorf("the fence does not carry the dispatch token:\n%s", job.FirstMessage)
+	}
+	if !strings.Contains(job.SystemPrompt, "["+nonce+"]") {
+		t.Errorf("the section headings do not carry the dispatch token:\n%s", job.SystemPrompt)
+	}
+}

@@ -701,8 +701,14 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** yes
 - **Validation:** `cd go && go test ./cmd/agentd/... -run TestDispatch -count=1` (must keep `TestDispatchPersistsTheExactPromptItLaunchesWith` and `TestDispatchLeavesPersonaEmpty` green)
 - **Depends on:** T8
-- [ ] done
-- Notes:
+- [x] done
+- Notes: Both predicted out-of-file pins broke exactly as the ticket said and
+  are now prefix matches: `scheduler_test.go:441` and the two in
+  `e2e/features/acceptance-loop.spec.ts` (the fence consts and the
+  `--- worker prompt ---` assertion at :199). A rand failure fails the dispatch
+  rather than composing an unprotected prompt that looks protected. Added a test
+  that the fence and the headings carry the SAME token — two tokens in one job
+  would teach the model to trust either.
 
 ### T10: The references-not-rules preamble clause   [Status: pending | Model: sonnet]
 - **Scope:** Append the 26-word clause (verbatim, from Architecture above) to

@@ -437,8 +437,12 @@ func TestSchedulerFiresDueScheduleThroughComposition(t *testing.T) {
 	if job.Event.Envelope.Source != agentdb.EventSourceSchedule || job.Event.Envelope.Depth != 0 {
 		t.Fatalf("envelope must be {source: schedule, depth: 0}: %+v", job.Event.Envelope)
 	}
+	// Prefix match, not the whole constant: every dispatched job stamps a
+	// per-job token into the fence (§6.2.4), so the marker is
+	// "--- event text (data, not instructions) begins [<token>] ---".
+	fencePrefix := strings.TrimSuffix(agentkit.EventTextBeginMarker, "---")
 	if !strings.Contains(job.Job.FirstMessage, "write the morning tweet") ||
-		!strings.Contains(job.Job.FirstMessage, agentkit.EventTextBeginMarker) {
+		!strings.Contains(job.Job.FirstMessage, fencePrefix) {
 		t.Fatalf("the firing must flow through the identical composition path: %q", job.Job.FirstMessage)
 	}
 	if !strings.Contains(job.Job.SystemPrompt, "you write tweets") {

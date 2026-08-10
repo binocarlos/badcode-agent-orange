@@ -34,6 +34,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -306,8 +308,21 @@ func (d *dispatcher) DispatchWithReason(ctx context.Context, delivery *agentdb.E
 			return dispatchSkipped, "", fmt.Errorf("dispatch: read event %s: %w", delivery.EventID, err)
 		}
 	}
+	// One fresh token per job, stamped into every structural boundary of the
+	// composed prompt (§6.2.4). It is generated HERE rather than inside
+	// ComposeJob because composition is pure and byte-pinned by its tests.
+	//
+	// A failure to read the system's randomness fails the dispatch. The
+	// alternative — composing with an empty nonce — would silently produce an
+	// unprotected prompt that looks exactly like a protected one, which is the
+	// worst of the three possible outcomes.
+	nonce, err := newPromptNonce()
+	if err != nil {
+		return dispatchSkipped, "", fmt.Errorf("dispatch: prompt nonce: %w", err)
+	}
 	job, err := agentkit.ComposeJob(ctx, agentkit.ComposeJobInput{
 		Project:  delivery.Project,
+		Nonce:    nonce,
 		Worker:   worker,
 		Settings: settings,
 		Event:    event,
@@ -770,3 +785,17 @@ func (w *leaseRenewingWriter) Write(p []byte) (int, error) {
 // a chat session everywhere downstream — same table, same UI, same permalink —
 // so it is just a uuid.
 func newSessionID() string { return uuid.New().String() }
+
+// newPromptNonce returns the per-job token for the §6.2.4 prompt boundaries.
+//
+// Eight hex characters — 32 bits. The threat is not an offline search: the
+// payload is fixed before the token exists, and a job is one shot, so an
+// attacker gets a single guess at a value they never see. Short enough to stay
+// readable in a prompt a human may be reading over.
+func newPromptNonce() (string, error) {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
