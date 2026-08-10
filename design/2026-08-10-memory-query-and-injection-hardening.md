@@ -667,8 +667,15 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
 - **TDD:** yes
 - **Validation:** `cd go && go test . -run TestComposeJob -count=1`
 - **Depends on:** —
-- [ ] done
-- Notes:
+- [x] done
+- Notes: The six byte-exact prompt fixtures and `compose_briefing_test.go:92`
+  needed **no changes at all** — the empty-nonce path renders the legacy form
+  byte-for-byte, which is exactly what that compatibility decision was for.
+  The e2e assertion is handled in T9, where dispatch starts supplying a nonce.
+  `tokened()` inserts the token before the trailing `---` so a tokened boundary
+  still reads as its untokened self to a human. Both explainer lines (fence and
+  headings) are outside `corePreambleTemplate`, so the 250-word budget is
+  untouched and they can name the actual token.
 
 ### T9: Generate the nonce at dispatch   [Status: pending | Model: sonnet]
 - **Scope:** At the `ComposeJob` call site (`go/cmd/agentd/dispatch.go:309`),
