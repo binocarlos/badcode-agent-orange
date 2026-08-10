@@ -757,6 +757,7 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
     document was superseded by `27-simplification-inventory.md` §1, the newer
     position is the one stated.
 - **TDD:** no (docs)
+- [x] done — 10 sections, all six families, six "use something else" entries, links resolve.
 - **Validation:** `grep -c '^## ' docs/workflows.md` returns ≥ 8; every relative
   link resolves (run from `docs/` so relative links resolve correctly:
   `cd docs && for f in $(grep -o '](\.\./[^)]*\|](\./[^)]*\|](\([a-z0-9-]*\.md\)' workflows.md | sed 's/](//'); do test -e "$f" || echo "MISSING $f"; done` prints nothing).
