@@ -45,6 +45,27 @@ type ImageRegistry interface {
 	Capabilities() Capabilities
 }
 
+// ImageDigester is an OPTIONAL ImageRegistry capability: reporting the content
+// digest a launch reference resolves to, once the image is present.
+//
+// It is optional rather than part of ImageRegistry because ImageRegistry is
+// host-implemented, and adding a method to it would break every existing
+// adapter for something no launch depends on. The Runner type-asserts, and a
+// registry that does not implement this simply records no digest.
+//
+// The contract is narrow on purpose: Digest answers for an image that is
+// ALREADY present (the Runner calls it straight after EnsurePresent), so an
+// implementation never pulls, and "not present" is an ordinary error rather
+// than something to fix by fetching.
+type ImageDigester interface {
+	// Digest returns the content address of ref — normally the repo digest
+	// ("sha256:…") the tag resolved to at pull time. An implementation that can
+	// only see a local image ID may return that instead: the value is a
+	// provenance record, and a stable identifier for the exact bytes is what it
+	// is for.
+	Digest(ctx context.Context, ref execenv.ImageRef) (string, error)
+}
+
 // Handle is an opaque, durable, JSON-serialisable pointer to a persisted image.
 // Its concrete meaning is adapter-specific (file path, blob path + metadata,
 // registry reference). The orchestration core stores it on the session row and

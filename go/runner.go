@@ -432,6 +432,9 @@ func (r *runnerImpl) CreateSession(ctx context.Context, req CreateSessionRequest
 		// failure, and "no running instance" is what the operator is left with.
 		return nil, fmt.Errorf("ensure image present: %w", imgFrom.annotate(img, err))
 	}
+	// The image is present, so this is the one moment its content address can be
+	// read without a second pull. Best-effort: see recordLaunchImage.
+	r.recordLaunchImage(ctx, req.SessionID, img)
 	// The pull is the long pole — minutes, on a cold host — and so it is the
 	// window a delete is most likely to land in. Check before provisioning:
 	// the cheapest orphan is the container that was never created.
@@ -590,6 +593,55 @@ func (r *runnerImpl) persistComposition(ctx context.Context, req CreateSessionRe
 		return fmt.Errorf("persist composition: %w", err)
 	}
 	return nil
+}
+
+// recordLaunchImage stamps the session row with the reference this session was
+// launched from and, when the registry can say, the content digest that
+// reference resolved to.
+//
+// # Why this exists
+//
+// A configured image is a plain string, and `…/agent-wolf:latest` is a moving
+// target: two sessions a week apart can run different bytes under one name. The
+// string says what was ASKED FOR; only the digest says what RAN.
+//
+// # Why every failure here is swallowed
+//
+// This is telemetry about a launch, and the launch has already succeeded by the
+// time it runs — the image is pulled and about to be provisioned. Failing the
+// session because its provenance could not be written would trade a working
+// container for a bookkeeping entry, which is the wrong way round. The same
+// posture as MarkCustomImageResumed's `last_resumed_at` stamp, for the same
+// reason. An empty column therefore means "not captured", never "no image", and
+// each failure gets one log line so it is not silent as well as harmless.
+//
+// A registry that does not implement ImageDigester (the seam is optional, since
+// ImageRegistry is host-implemented) still gets the ref recorded — knowing what
+// was launched is most of the value, and it costs no round trip.
+func (r *runnerImpl) recordLaunchImage(ctx context.Context, sessionID string, img execenv.ImageRef) {
+	ref := strings.TrimSpace(string(img))
+	if ref == "" {
+		return
+	}
+	var digest string
+	if d, ok := r.deps.Registry.(imageregistry.ImageDigester); ok {
+		got, err := d.Digest(ctx, img)
+		if err != nil {
+			log.Printf("agentkit: session %s: could not read the digest of %s: %v", sessionID, ref, err)
+		} else {
+			digest = strings.TrimSpace(got)
+		}
+	}
+	sess, err := r.deps.Store.GetSession(ctx, sessionID)
+	if err != nil {
+		log.Printf("agentkit: session %s: could not record launch image %s: %v", sessionID, ref, err)
+		return
+	}
+	sess.LaunchImage = ref
+	sess.LaunchImageDigest = digest
+	if _, err := r.deps.Store.UpdateSession(ctx, sess); err != nil {
+		log.Printf("agentkit: session %s: could not record launch image %s: %v", sessionID, ref, err)
+	}
 }
 
 // provisionOnWorker provisions a new instance on the given worker, branching on
