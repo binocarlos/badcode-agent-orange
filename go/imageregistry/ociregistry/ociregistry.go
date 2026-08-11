@@ -135,6 +135,59 @@ func (r *Registry) EnsurePresent(ctx context.Context, ref execenv.ImageRef) erro
 	// drains + closes rc, and surfaces a mid-stream registry error.
 	return r.reportProgress(ctx, rc)
 }
+
+var _ imageregistry.ImageDigester = (*Registry)(nil)
+
+// Digest implements imageregistry.ImageDigester: the content address the
+// already-present ref resolves to.
+//
+// Preference order, and the reason for it:
+//
+//  1. the RepoDigest whose repository matches ref — the registry's own content
+//     address, and the one you can `docker pull` on another host to get exactly
+//     these bytes;
+//  2. any RepoDigest, when the ref was tagged locally under a different name
+//     than it was pulled under;
+//  3. the image ID, which is the digest of the image CONFIG rather than of the
+//     manifest. It identifies the same bytes but is not pullable, and it is all
+//     there is for an image that was built locally and never pushed — which is
+//     exactly the standalone stack's `agentkit-sandbox:dev`. Recording it is
+//     honest and useful; pretending it is a repo digest would not be.
+func (r *Registry) Digest(ctx context.Context, ref execenv.ImageRef) (string, error) {
+	info, _, err := r.docker.ImageInspectWithRaw(ctx, string(ref))
+	if err != nil {
+		return "", fmt.Errorf("ociregistry: inspect image %s: %w", ref, err)
+	}
+	repo := repositoryOf(string(ref))
+	for _, rd := range info.RepoDigests {
+		if repo != "" && repositoryOf(rd) == repo {
+			return rd, nil
+		}
+	}
+	if len(info.RepoDigests) > 0 {
+		return info.RepoDigests[0], nil
+	}
+	if strings.TrimSpace(info.ID) != "" {
+		return info.ID, nil
+	}
+	return "", fmt.Errorf("ociregistry: image %s carries no digest", ref)
+}
+
+// repositoryOf strips the tag or digest from an image reference, leaving the
+// repository. Splitting on the LAST colon would cut a registry port
+// ("host:5000/img"), so the tag separator is only recognised after the final
+// slash — the same rule Docker itself uses.
+func repositoryOf(ref string) string {
+	if repo, _, ok := strings.Cut(ref, "@"); ok {
+		return repo
+	}
+	slash := strings.LastIndex(ref, "/")
+	if colon := strings.LastIndex(ref, ":"); colon > slash {
+		return ref[:colon]
+	}
+	return ref
+}
+
 func (r *Registry) Build(ctx context.Context, spec imageregistry.BuildSpec) (execenv.ImageRef, error) {
 	return "", fmt.Errorf("ociregistry: Build not supported — use a pre-built image pushed to the registry")
 }

@@ -138,7 +138,15 @@ Labels are how memories are found again. They are identifiers, not prose: keys `
 
 Conventions worth knowing: kind=<something> says what sort of memory this is, ` +
 	`worker=<name> says who it is about, and name=<x> means "this is the current ` +
-	`value of x" (write a new one to change it, read it back with memory_current).`
+	`value of x" (write a new one to change it, read it back with memory_current).
+
+To WITHDRAW something the project got wrong, write a memory labelled ` +
+	`retracts=<memory-id> whose content says why. The retracted memory stops ` +
+	`reaching briefings and searches from that moment on, and whatever it was ` +
+	`covering up becomes current again — but nothing is deleted: both it and your ` +
+	`retraction stay readable by id, so the correction is part of the record ` +
+	`rather than a gap in it. Use this for a fact that turned out to be false, ` +
+	`not for one that has merely changed (for that, write the new value).`
 
 const memorySearchDescription = `Search this project's memory store. Search before ` +
 	`making decisions that earlier work might inform — that is what it is for.
@@ -161,9 +169,21 @@ IMPORTANT — read the scores. The ranking has no relevance threshold: it always
 	`best hit does not visibly answer your question, treat the store as empty on ` +
 	`that subject and say so, rather than building on a poor match.
 
-Results are snippets. Use memory_get to read one in full. Every hit carries who ` +
-	`wrote it, in which session, and a session_url link to that conversation — quote ` +
-	`the link when telling a human "we already worked this out".`
+Narrowing, all optional and all ANDed with the filters above:
+  since / until  — a window over when the memory was written: an RFC3339 ` +
+	`timestamp, unix milliseconds, or a relative age such as "7d" or "24h". Use it ` +
+	`for "what changed since my last pass" rather than hoping every writer stamped ` +
+	`a date label.
+  latest_per     — a label KEY. Returns only the NEWEST memory for each distinct ` +
+	`value of that label, so latest_per "name" over kind=status gives you the ` +
+	`current status of every campaign in one call. Memories without that key are ` +
+	`omitted. This is memory_current generalised from one name to all of them.
+
+Results are snippets. Use memory_get to read one in full — including after ` +
+	`latest_per, which answers WHICH memories are current but still returns them ` +
+	`abbreviated. Every hit carries who wrote it, in which session, and a ` +
+	`session_url link to that conversation — quote the link when telling a human ` +
+	`"we already worked this out".`
 
 const memoryGetDescription = `Read one memory in full by id, with its labels and ` +
 	`provenance. memory_search returns truncated snippets; this returns the entire ` +
@@ -197,6 +217,10 @@ func (m *memoryTools) tools() []*mcpTool {
 					"description":          "Flat string→string labels. Identifiers only: [A-Za-z0-9] with '-', '_', '.', ≤63 chars, ≤32 labels.",
 					"additionalProperties": map[string]any{"type": "string"},
 				},
+				"embed": map[string]any{
+					"type":        "boolean",
+					"description": "Index this memory for meaning-based search (default true). Pass false for a document over 24KB: it stores whole and stays findable by label and by keyword, but not by meaning.",
+				},
 			}, []string{"content"}),
 			Handler: m.create,
 		},
@@ -215,6 +239,12 @@ func (m *memoryTools) tools() []*mcpTool {
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": "Maximum hits (default 20, maximum 100).",
+				},
+				"since": timeArgSchema("lower"),
+				"until": timeArgSchema("upper"),
+				"latest_per": map[string]any{
+					"type":        "string",
+					"description": "A label key. Returns only the newest memory for each distinct value of that label; memories without the key are omitted.",
 				},
 			}, nil),
 			Handler: m.search,
@@ -245,6 +275,10 @@ func (m *memoryTools) tools() []*mcpTool {
 type memoryCreateArgs struct {
 	Content string            `json:"content"`
 	Labels  map[string]string `json:"labels"`
+	// Embed is a POINTER so "absent" and "false" are distinguishable: the
+	// default is true, and a caller that says nothing must keep today's
+	// behaviour exactly.
+	Embed *bool `json:"embed"`
 }
 
 func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.RawMessage) (any, error) {
@@ -264,9 +298,25 @@ func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.Raw
 	}
 
 	// WRITE path: strict. A configured provider that fails fails the create.
-	vec, err := embedding.Embed(ctx, m.embedder, args.Content)
-	if err != nil {
-		return nil, fmt.Errorf("could not embed this memory, so it was NOT stored (retry rather than continue): %w", err)
+	// The size check runs BEFORE the provider is called: an oversized document
+	// must cost nothing and must come back with the instruction that fixes it.
+	wantEmbed := args.Embed == nil || *args.Embed
+	if wantEmbed && len(args.Content) > agentdb.MaxEmbeddedMemoryBytes {
+		return nil, fmt.Errorf(
+			"this memory is %d bytes, over the %d-byte limit for meaning-based indexing — pass embed:false to store it whole (it stays searchable by label and by keyword), or split it",
+			len(args.Content), agentdb.MaxEmbeddedMemoryBytes)
+	}
+
+	var vec []float32
+	var err error
+	if wantEmbed {
+		vec, err = embedding.Embed(ctx, m.embedder, args.Content)
+		if err != nil {
+			// Bytes are not tokens: dense content under the byte ceiling can
+			// still exceed the provider's token limit, and its raw error never
+			// mentions the argument that fixes this.
+			return nil, fmt.Errorf("could not embed this memory, so it was NOT stored (retry rather than continue): %w — if this is a large or dense document, pass embed:false to store it whole without meaning-based indexing", err)
+		}
 	}
 
 	stored, embedded, err := m.store.CreateMemory(ctx, &agentdb.Memory{
@@ -292,9 +342,12 @@ func (m *memoryTools) create(ctx context.Context, caller mcpCaller, raw json.Raw
 }
 
 type memorySearchArgs struct {
-	LabelSelector string `json:"label_selector"`
-	Query         string `json:"query"`
-	Limit         int    `json:"limit"`
+	LabelSelector string    `json:"label_selector"`
+	Query         string    `json:"query"`
+	Limit         int       `json:"limit"`
+	Since         msTimeArg `json:"since"`
+	Until         msTimeArg `json:"until"`
+	LatestPer     string    `json:"latest_per"`
 }
 
 func (m *memoryTools) search(ctx context.Context, caller mcpCaller, raw json.RawMessage) (any, error) {
@@ -313,12 +366,19 @@ func (m *memoryTools) search(ctx context.Context, caller mcpCaller, raw json.Raw
 		queryVec = embedding.EmbedOrDegrade(ctx, m.embedder, args.Query)
 	}
 
+	if err := checkTimeRange(args.Since, args.Until); err != nil {
+		return nil, err
+	}
+
 	hits, err := m.store.SearchMemories(ctx, &agentdb.MemorySearchQuery{
 		Project:        caller.Project, // in code, always — never an argument
 		LabelSelector:  args.LabelSelector,
 		Query:          args.Query,
 		QueryEmbedding: queryVec,
 		Limit:          args.Limit,
+		Since:          args.Since.MS,
+		Until:          args.Until.MS,
+		LatestPer:      strings.TrimSpace(args.LatestPer),
 	})
 	if err != nil {
 		return nil, err

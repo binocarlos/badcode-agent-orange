@@ -101,6 +101,18 @@ type Session struct {
 	WorkerID          string  `json:"worker_id,omitempty" gorm:"type:varchar(100);default:''"`
 	Installation      string  `json:"installation,omitempty" gorm:"type:text;default:''"`
 	CustomImageID     string  `json:"custom_image_id,omitempty" gorm:"type:text;default:''"`
+	// LaunchImage is the reference this session was actually launched from,
+	// after the configured string was resolved (catalogue lookup, or used
+	// verbatim when it named no catalogue image). LaunchImageDigest is the
+	// sha256 that reference pointed at when it was pulled.
+	//
+	// The pair is the answer to "which bytes did this session run", which a
+	// configured string alone cannot give: `…/agent-wolf:latest` is a moving
+	// target. Both are best-effort — empty means "not captured", never "no
+	// image" — because provenance must not be able to fail a launch (migration
+	// 044).
+	LaunchImage       string `json:"launch_image,omitempty" gorm:"type:text;default:''"`
+	LaunchImageDigest string `json:"launch_image_digest,omitempty" gorm:"type:text;default:''"`
 	// MCPServers is the session's MCP server config (§4.5). Safe to persist and
 	// display whole: values are ${VAR} references, never secrets (§4.4).
 	MCPServers MCPServers `json:"mcp_servers,omitempty" gorm:"type:jsonb;default:'{}'"`

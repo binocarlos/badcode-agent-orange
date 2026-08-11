@@ -25,9 +25,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
@@ -130,8 +128,8 @@ Filters, all optional and all ANDed:
  - action: exactly one verb ("worker_prompt_write") or a trailing-* prefix ` +
 	`("worker_*", "schedule_*").
  - actor_worker: only changes made by that worker.
- - since / until: an RFC3339 timestamp ("2026-07-18T00:00:00Z") or unix ` +
-	`milliseconds, inclusive.
+ - since / until: an RFC3339 timestamp ("2026-07-18T00:00:00Z"), unix ` +
+	`milliseconds, or a relative age such as "7d" or "24h", inclusive.
  - limit: how many records (default 25, maximum 200).
 
 Timestamps in and out are unix MILLISECONDS, which is not what the event log ` +
@@ -160,12 +158,8 @@ func (c *configLogTools) tools() []*mcpTool {
 					"type":        "string",
 					"description": "Only changes made by this worker. Human/API edits have no actor, so this excludes them.",
 				},
-				"since": map[string]any{
-					"description": "Inclusive lower bound: RFC3339 timestamp or unix milliseconds.",
-				},
-				"until": map[string]any{
-					"description": "Inclusive upper bound: RFC3339 timestamp or unix milliseconds.",
-				},
+				"since": timeArgSchema("lower"),
+				"until": timeArgSchema("upper"),
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": "How many records to return. Default 25, maximum 200.",
@@ -189,48 +183,9 @@ type configHistoryArgs struct {
 	Limit       int       `json:"limit"`
 }
 
-// msTimeArg accepts either an RFC3339 string or a raw unix-millisecond number,
-// because a model reasoning about "last Tuesday" writes a timestamp and a model
-// paginating off a previous result writes the number it was given. Refusing
-// either would be a papercut with no upside.
-type msTimeArg struct {
-	MS  int64
-	Set bool
-}
-
-func (m *msTimeArg) UnmarshalJSON(b []byte) error {
-	s := strings.TrimSpace(string(b))
-	if s == "" || s == "null" {
-		return nil
-	}
-	if s[0] == '"' {
-		var str string
-		if err := json.Unmarshal(b, &str); err != nil {
-			return err
-		}
-		str = strings.TrimSpace(str)
-		if str == "" {
-			return nil
-		}
-		if t, err := time.Parse(time.RFC3339, str); err == nil {
-			m.MS, m.Set = t.UnixMilli(), true
-			return nil
-		}
-		// A bare number in quotes is a common model habit; accept it rather than
-		// failing a query over its punctuation.
-		if n, err := strconv.ParseInt(str, 10, 64); err == nil {
-			m.MS, m.Set = n, true
-			return nil
-		}
-		return fmt.Errorf("%q is neither an RFC3339 timestamp (\"2026-07-18T00:00:00Z\") nor unix milliseconds", str)
-	}
-	var n float64
-	if err := json.Unmarshal(b, &n); err != nil {
-		return fmt.Errorf("expected an RFC3339 timestamp or unix milliseconds, got %s", s)
-	}
-	m.MS, m.Set = int64(n), true
-	return nil
-}
+// msTimeArg and its parser live in timearg.go — shared with memory_search,
+// which grew the same since/until pair. Both tools therefore accept the
+// identical four forms, including a relative age such as "7d".
 
 func (c *configLogTools) history(ctx context.Context, caller mcpCaller, raw json.RawMessage) (any, error) {
 	var args configHistoryArgs
@@ -260,8 +215,8 @@ func (c *configLogTools) history(ctx context.Context, caller mcpCaller, raw json
 			return nil, err
 		}
 	}
-	if args.Since.Set && args.Until.Set && args.Since.MS > args.Until.MS {
-		return nil, fmt.Errorf("since (%d) is after until (%d) — that range matches nothing", args.Since.MS, args.Until.MS)
+	if err := checkTimeRange(args.Since, args.Until); err != nil {
+		return nil, err
 	}
 
 	// Ask for one more than the limit so "there is more" is a fact rather than a

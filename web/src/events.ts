@@ -474,6 +474,22 @@ export function matchSubscriptions(
         reason: `Type "${event.type}" does not match "${subscription.event_type}".`,
       }
     }
+    // A worker is never woken by its own completion. This mirrors the router's
+    // `subscriptionMatches` (go/cmd/agentd/router.go) and must keep mirroring
+    // it: this function's whole job is answering "will anything happen?", and a
+    // dry run that says yes where the router says no is worse than no dry run —
+    // it sends someone debugging a subscription that is behaving correctly.
+    //
+    // Order matters. The router applies this BEFORE the filter, so an event
+    // suppressed here would otherwise be explained by a filter mismatch that is
+    // not the real reason.
+    if (event.envelope.worker && event.envelope.worker === subscription.worker) {
+      return {
+        subscription,
+        matched: false,
+        reason: `${subscription.worker} emitted this event, and a worker is never woken by its own completion.`,
+      }
+    }
     const filter = subscription.filter ?? {}
     const entries = Object.entries(filter)
     if (entries.length > 0 && !envelopeFilterMatches(filter, event.envelope)) {

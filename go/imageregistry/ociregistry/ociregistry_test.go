@@ -30,6 +30,10 @@ type fakeDockerAPI struct {
 	tagErr     error
 	inspectErr error
 
+	// What ImageInspectWithRaw reports back — the Digest path's whole input.
+	inspectID   string
+	repoDigests []string
+
 	// Fields for asserting Persist's new contract (tag+push, no re-commit).
 	commitCalls   int
 	lastTagSource string
@@ -91,7 +95,13 @@ func (f *fakeDockerAPI) ImageInspectWithRaw(ctx context.Context, imageID string)
 	if f.inspectErr != nil {
 		return dockertypes.ImageInspect{}, nil, f.inspectErr
 	}
-	return dockertypes.ImageInspect{ID: "sha256:abc"}, nil, nil
+	// inspectID defaults to the historical "sha256:abc" so every test written
+	// before Digest existed keeps its old answer; the digest tests set both.
+	id := f.inspectID
+	if id == "" {
+		id = "sha256:abc"
+	}
+	return dockertypes.ImageInspect{ID: id, RepoDigests: f.repoDigests}, nil, nil
 }
 
 func (f *fakeDockerAPI) called(method string) bool {

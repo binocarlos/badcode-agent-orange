@@ -93,20 +93,6 @@ cmd_up() {
   echo "$mode" > "$MODE_FILE"
 }
 
-# reload_agentd_with_script SCRIPT_JSON — recreates agentd carrying (or no
-# longer carrying) a mock model script, then waits for the stack to answer.
-#
-# The script is stack configuration read ONCE at boot (mock mode only), so
-# handing the model a tool call means restarting agentd. Passing "" restores the
-# ordinary canned model.
-#
-# Returns non-zero if agentd does not come back. A malformed script is a
-# deliberate boot failure, and without this check the stack would simply be left
-# dead with a timeout as the only clue.
-reload_agentd_with_script() {
-  AGENTKIT_MOCK_MODEL_SCRIPT="$1" reload_agentd
-}
-
 # reload_agentd — recreate agentd carrying whatever AGENTKIT_* overrides the
 # caller has in its environment, then wait for the stack to answer. Every
 # per-run reconfiguration goes through here so there is one place that knows how
@@ -134,20 +120,32 @@ PORT_POOL_BASE=40000
 # firing that will never come. Keep the two in step.
 SCHEDULE_MAX_PROVISION_FAILURES=2
 
-# reload_agentd_with_pool SIZE — boot agentd with a pool of exactly SIZE ports,
-# or restore the default when SIZE is empty.
+# reload_agentd_with SCRIPT POOL_SIZE IDLE — ONE reload carrying every override
+# at once.
 #
-# Restoring passes both variables as EMPTY rather than unsetting them: agentd
-# treats empty as unset (compose's `${VAR:-}` cannot distinguish the two), and
-# leaving a stale value exported would silently narrow the pool for every later
-# run on this stack — the kind of leak this suite exists to refuse.
-reload_agentd_with_pool() {
-  if [ -z "${1:-}" ]; then
-    AGENTKIT_PORT_RANGE_START="" AGENTKIT_PORT_RANGE_END="" reload_agentd
-    return
+# An empty argument means "the stack's default for this knob", and it is passed
+# as an EMPTY STRING rather than unset: agentd treats empty as unset (compose's
+# `${VAR:-}` cannot distinguish the two), and leaving a stale value exported
+# would silently reconfigure every later run on this stack — the kind of leak
+# this suite exists to refuse.
+#
+# This replaced a pair of per-knob helpers that could not be combined, and the
+# refusal to combine them was hiding a bug rather than expressing a limit: each
+# installed its own `trap … RETURN`, and a second RETURN trap REPLACES the first
+# rather than adding to it, so two overrides would have restored only the last.
+# The architect-archivist spec needs a mock script AND a short idle timeout
+# together, so both had to go. One reload, one trap, all the knobs.
+reload_agentd_with() {
+  local script="${1:-}" pool="${2:-}" idle="${3:-}"
+  local start="" end=""
+  if [ -n "$pool" ]; then
+    start="$PORT_POOL_BASE"
+    end="$(( PORT_POOL_BASE + pool - 1 ))"
   fi
-  AGENTKIT_PORT_RANGE_START="$PORT_POOL_BASE" \
-    AGENTKIT_PORT_RANGE_END="$(( PORT_POOL_BASE + $1 - 1 ))" \
+  AGENTKIT_MOCK_MODEL_SCRIPT="$script" \
+    AGENTKIT_PORT_RANGE_START="$start" \
+    AGENTKIT_PORT_RANGE_END="$end" \
+    AGENTKIT_SESSION_IDLE_TIMEOUT="$idle" \
     reload_agentd
 }
 
@@ -166,13 +164,24 @@ reload_agentd_with_pool() {
 #                       exhaustion path reachable: filling a pool of three takes
 #                       seconds, filling a hundred takes a hundred containers.
 #                       Specs that need it gate on STACK_PORT_POOL.
+#   --idle-timeout D    boot agentd with AGENTKIT_SESSION_IDLE_TIMEOUT=D instead
+#                       of the default 30m. This is what makes "a conversation
+#                       goes quiet" reachable: an interactive session emits its
+#                       `worker.finished` from the archive sweep when it has been
+#                       idle this long, and nothing downstream — the archivist
+#                       above all — wakes until it does. agentd REFUSES anything
+#                       under 1m (gc.go: the sweep only runs once a minute), and
+#                       the Runner's tick scales to the timeout, so 1m is the
+#                       floor and each quiescence costs up to ~2 minutes of wall
+#                       clock. Specs that need it gate on STACK_IDLE_TIMEOUT.
 cmd_test() {
-  local recorded="" mode="" script="" pool="" args=()
+  local recorded="" mode="" script="" pool="" idle="" args=()
   [ -f "$MODE_FILE" ] && recorded="$(cat "$MODE_FILE")"
   while [ $# -gt 0 ]; do
     case "$1" in
       --mock-script) script="${2:-}"; shift 2 ;;
       --port-pool) pool="${2:-}"; shift 2 ;;
+      --idle-timeout) idle="${2:-}"; shift 2 ;;
       --) shift; args+=("$@"); break ;;
       *) [ -z "$mode" ] && mode="$1" || args+=("$1"); shift ;;
     esac
@@ -184,6 +193,15 @@ cmd_test() {
       ''|*[!0-9]*) echo "--port-pool wants a number of ports, got: $pool" >&2; return 1 ;;
     esac
     [ "$pool" -ge 1 ] || { echo "--port-pool must be at least 1" >&2; return 1; }
+  fi
+  if [ -n "$idle" ]; then
+    # Shape only. agentd owns the real validation (and its refusal message
+    # explains the one-minute floor better than a duplicate here could), but
+    # catching an obvious typo before a container restart saves a minute.
+    case "$idle" in
+      *[0-9]s|*[0-9]m|*[0-9]h|off|0) ;;
+      *) echo "--idle-timeout wants a duration like 1m, or \"off\", got: $idle" >&2; return 1 ;;
+    esac
   fi
 
   if [ -n "$recorded" ] && [ "$mode" != "$recorded" ]; then
@@ -200,25 +218,10 @@ cmd_test() {
       { echo "--mock-script only applies in mock mode (stack is '$mode')" >&2; return 1; }
     [ -f "$script" ] || { echo "no such mock script: $script" >&2; return 1; }
     script_json="$(cat "$script")"
-    echo "── stack e2e: loading mock model script $script into agentd ──"
-    if ! reload_agentd_with_script "$script_json"; then
-      # agentd refuses to boot on a malformed script, by design. Say why, and
-      # put the stack back — a bad script must cost you a run, not the stack.
-      echo "agentd did not come back with that script. Its own words:" >&2
-      "${COMPOSE[@]}" logs --tail 5 agentd 2>&1 | sed 's/^/    /' >&2
-      echo "── stack e2e: restoring the plain mock model ──" >&2
-      reload_agentd_with_script "" ||
-        echo "agentd is still down; try: $0 up mock" >&2
-      return 1
-    fi
-    # Restore the plain model however the run ends.
-    trap 'echo "── stack e2e: unloading mock model script ──"; reload_agentd_with_script "" || true' RETURN
   fi
 
   local pool_range=""
   if [ -n "$pool" ]; then
-    [ -z "$script" ] ||
-      { echo "--port-pool and --mock-script cannot be combined (each reload carries only its own override)" >&2; return 1; }
     # Any session still running holds a port in the OLD range. Narrowing the
     # pool under them would leave agentd's accounting and the host disagreeing,
     # so refuse rather than produce an exhaustion that is nobody's fault.
@@ -230,18 +233,33 @@ cmd_test() {
       return 1
     fi
     pool_range="$PORT_POOL_BASE-$(( PORT_POOL_BASE + pool - 1 ))"
-    echo "── stack e2e: narrowing agentd's session port pool to $pool ($pool_range) ──"
-    if ! reload_agentd_with_pool "$pool"; then
-      echo "agentd did not come back with that pool. Its own words:" >&2
+  fi
+
+  # ONE reload carrying every override, and ONE restore trap. Two traps do not
+  # compose: a second `trap … RETURN` replaces the first, so the older per-knob
+  # version could only ever have restored the last override installed — which is
+  # why it refused to combine them at all rather than fix the trap.
+  if [ -n "$script_json" ] || [ -n "$pool" ] || [ -n "$idle" ]; then
+    local what=""
+    [ -n "$script_json" ] && what="$what mock-script=$script"
+    [ -n "$pool" ] && what="$what port-pool=$pool ($pool_range)"
+    [ -n "$idle" ] && what="$what idle-timeout=$idle"
+    echo "── stack e2e: reloading agentd with$what ──"
+    if ! reload_agentd_with "$script_json" "$pool" "$idle"; then
+      # agentd refuses to boot on a malformed script or an out-of-range
+      # duration, by design. Say why, and put the stack back — a bad override
+      # must cost you a run, not the stack.
+      echo "agentd did not come back with that configuration. Its own words:" >&2
       "${COMPOSE[@]}" logs --tail 5 agentd 2>&1 | sed 's/^/    /' >&2
-      echo "── stack e2e: restoring the default port pool ──" >&2
-      reload_agentd_with_pool "" || echo "agentd is still down; try: $0 up mock" >&2
+      echo "── stack e2e: restoring the ordinary stack ──" >&2
+      reload_agentd_with "" "" "" || echo "agentd is still down; try: $0 up mock" >&2
       return 1
     fi
-    # Restore the default pool however the run ends. A stack left on a pool of
-    # three would fail the fourth session of every later run, which is exactly
-    # the misdiagnosis this whole area keeps producing.
-    trap 'echo "── stack e2e: restoring the default port pool ──"; reload_agentd_with_pool "" || true' RETURN
+    # Restore however the run ends. A stack left on a three-port pool fails the
+    # fourth session of every later run; one left on a scripted model changes
+    # what the model says for whoever runs next; one left on a one-minute idle
+    # timeout archives their containers out from under them.
+    trap 'echo "── stack e2e: restoring the ordinary stack ──"; reload_agentd_with "" "" "" || true' RETURN
   fi
 
   echo "── stack e2e [$mode]: running playwright against $WEB_URL ──"
@@ -258,6 +276,7 @@ cmd_test() {
     STACK_MOCK_SCRIPT="${script_json:+1}" \
     STACK_PORT_POOL="$pool" STACK_PORT_RANGE="$pool_range" \
     E2E_PORT_POOL_SIZE="$pool" \
+    STACK_IDLE_TIMEOUT="$idle" \
     STACK_SCHEDULE_MAX_PROVISION_FAILURES="$SCHEDULE_MAX_PROVISION_FAILURES" \
     npx playwright test --config playwright.stack.config.ts "${args[@]}") || status=$?
   return "$status"

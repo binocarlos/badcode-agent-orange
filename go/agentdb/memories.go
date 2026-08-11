@@ -91,6 +91,20 @@ type MemorySearchQuery struct {
 	QueryEmbedding []float32
 	// Limit defaults to 20, capped at 100.
 	Limit int
+	// Since is an inclusive lower bound on created_at, in unix MILLISECONDS
+	// (the unit this table is stamped in — the event spine uses seconds).
+	// Zero means unbounded.
+	Since int64
+	// Until is an inclusive upper bound on created_at, unix MILLISECONDS.
+	// Zero means unbounded.
+	Until int64
+	// LatestPer is a label KEY. When set, the candidate set is reduced to the
+	// newest memory per distinct value of that label BEFORE ranking, and rows
+	// that do not carry the key are excluded. Empty means no reduction.
+	//
+	// It is the set-valued form of NewestMemory: `memory_current` answers "the
+	// current value of x" for one name, this answers it for every name at once.
+	LatestPer string
 }
 
 // MemorySearchResult is one hit. Provenance is part of the result, not an
@@ -136,6 +150,15 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 	}
 	if strings.TrimSpace(m.Content) == "" {
 		return nil, false, fmt.Errorf("agentdb: memory content is required")
+	}
+	// Before any database round-trip, so an oversized write costs nothing and
+	// says something useful. Applies to EVERY writer — the memory tool, prompt
+	// revisions, and topology seeds — because the ceiling is the database's,
+	// not any one caller's.
+	if len(m.Content) > MaxMemoryBytes {
+		return nil, false, fmt.Errorf(
+			"agentdb: memory content is %d bytes, over the %d-byte ceiling — store the document as an artifact and keep a memory that points at it",
+			len(m.Content), MaxMemoryBytes)
 	}
 	if err := ValidateLabels(m.Labels); err != nil {
 		return nil, false, fmt.Errorf("agentdb: memory labels: %w", err)
@@ -205,8 +228,69 @@ func (s *Store) CreateMemory(ctx context.Context, m *Memory, embedding []float32
 	return stored, embedded, nil
 }
 
+// Size ceilings. Neither is a storage limit in the ordinary sense — `content`
+// is an uncapped TEXT column and memory_get returns whatever was written. They
+// exist because two things downstream of the column DO have limits, and both
+// otherwise fail with somebody else's error message.
+const (
+	// MaxEmbeddedMemoryBytes is the largest content that may be sent to an
+	// embedding provider. Sized for prose at roughly 4 bytes/token against the
+	// 8191-token limit of text-embedding-3-small, with headroom — because bytes
+	// are NOT tokens: dense content (JSON, code, non-Latin scripts) can run
+	// closer to 2 bytes/token, so a caller near this ceiling with dense content
+	// can still be refused by the provider. That refusal is caught and
+	// re-worded at the tool boundary rather than guessed at here.
+	//
+	// Exceeding it is not a reason to fail a write — it is a reason to write
+	// the memory WITHOUT a vector. See the `embed` argument on memory_create.
+	MaxEmbeddedMemoryBytes = 24576
+
+	// MaxMemoryBytes is the ceiling for any memory whatsoever. It buys margin
+	// under the Postgres tsvector limit for ordinary text; it is NOT a
+	// guarantee, because that limit applies to the tsvector REPRESENTATION
+	// (lexemes plus positions) rather than to the input string, so
+	// high-entropy content — logs, hex ids, base64 — can still exceed it and
+	// fail in the generated column. What this constant guarantees is that the
+	// ordinary case fails with OUR message, naming the limit and the actual
+	// size, instead of an opaque one from the database.
+	MaxMemoryBytes = 1048576
+)
+
+// RetractionLabel is the label a memory carries to withdraw another one. Its
+// value is the retracted memory's id (§7.1).
+//
+// Retraction is how an append-only store takes something back. The wrong fact's
+// row is never touched — it stays attributed, timestamped and auditable — but it
+// stops being SELECTED: it can no longer reach a briefing or a search result,
+// and so can no longer influence a job. The withdrawal is itself an ordinary
+// memory, which means it has an author, a time and a body explaining why, and it
+// appears in the config-log-like history of the project's knowledge.
+//
+// Without this, a project had no way to correct itself. A memory written from a
+// bad source, a hallucinated fact, or text injected through an event stayed
+// selectable for ever, and the only remedies were to write a louder contradiction
+// beside it or to abandon the label.
+const RetractionLabel = "retracts"
+
+// notRetractedSQL is the clause that hides retracted memories, for a query whose
+// `memories` table is called alias. It is a correlated NOT EXISTS rather than a
+// join so it cannot duplicate rows or disturb ordering, and it binds no extra
+// arguments — the project is taken from the row being tested, which keeps
+// retraction strictly project-local (P5) without the caller having to remember.
+//
+// Deliberately NOT applied to GetMemory: fetching a specific id is an explicit
+// request for that row, and being able to read what was withdrawn — and the
+// retraction that withdrew it — is the point of not deleting anything.
+func notRetractedSQL(alias string) string {
+	return fmt.Sprintf(
+		"NOT EXISTS (SELECT 1 FROM memories r WHERE r.project = %[1]s.project AND r.labels->>'%[2]s' = %[1]s.id)",
+		alias, RetractionLabel)
+}
+
 // GetMemory returns one memory in full. The project is a parameter, not a
 // filter the caller may forget: a memory from another project is not found.
+//
+// A retracted memory IS returned here — see notRetractedSQL.
 func (s *Store) GetMemory(ctx context.Context, project, id string) (*Memory, error) {
 	if err := s.requirePostgres(); err != nil {
 		return nil, err
@@ -264,6 +348,9 @@ func (s *Store) NewestMemory(ctx context.Context, project, selector string) (*Me
 		where += " AND " + labelSQL
 		args = append(args, labelArgs...)
 	}
+	// A retracted memory is not the current value of anything — which matters
+	// most precisely here, because this is the query that fills briefings.
+	where += " AND " + notRetractedSQL("memories")
 
 	var mem Memory
 	err = s.gdb.WithContext(ctx).Model(&Memory{}).
@@ -314,6 +401,52 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 		where += " AND " + labelSQL
 		whereArgs = append(whereArgs, labelArgs...)
 	}
+	// Retraction is part of the hard filter, so it applies identically to the
+	// recency leg and to both relevance legs below — a withdrawn memory cannot
+	// come back by scoring well.
+	where += " AND " + notRetractedSQL("f")
+
+	// Time bounds join the SAME hard filter, for the same reason: the string
+	// built here is interpolated into the recency query and into the `filtered`
+	// CTE that both relevance legs read from, so one clause governs every leg.
+	if q.Since > 0 && q.Until > 0 && q.Since > q.Until {
+		return nil, fmt.Errorf("agentdb: memory search since (%d) is after until (%d) — that range matches nothing", q.Since, q.Until)
+	}
+	if q.Since > 0 {
+		where += " AND f.created_at >= ?"
+		whereArgs = append(whereArgs, q.Since)
+	}
+	if q.Until > 0 {
+		where += " AND f.created_at <= ?"
+		whereArgs = append(whereArgs, q.Until)
+	}
+
+	// LatestPer reduces the candidate set to the newest row per distinct value
+	// of one label key, BEFORE ranking. Two clauses are needed, and the second
+	// is easy to forget: labels->>'k' is NULL for a row without the key, and
+	// DISTINCT ON groups NULLs together, so without an explicit existence test
+	// exactly one arbitrary keyless row would survive the reduction.
+	//
+	// jsonb_exists(...) rather than `labels ? 'k'` because the jsonb `?`
+	// operator collides with the SQL placeholder (see labels.go).
+	latestPer := strings.TrimSpace(q.LatestPer)
+	if latestPer != "" {
+		if err := ValidateLabelKey(latestPer); err != nil {
+			return nil, fmt.Errorf("agentdb: memory search latest_per: %w", err)
+		}
+		where += " AND jsonb_exists(f.labels, ?)"
+		whereArgs = append(whereArgs, latestPer)
+	}
+
+	// distinctOn is the reduction clause itself, empty when unused. The key is
+	// validated above, so it is safe to interpolate; it cannot be a placeholder
+	// because Postgres will not take one in DISTINCT ON / ORDER BY position.
+	distinctOn := ""
+	latestOrder := ""
+	if latestPer != "" {
+		distinctOn = fmt.Sprintf("DISTINCT ON (f.labels->>'%s') ", latestPer)
+		latestOrder = fmt.Sprintf("ORDER BY f.labels->>'%s', f.created_at DESC, f.id DESC", latestPer)
+	}
 
 	snippet := fmt.Sprintf(
 		"CASE WHEN length(%[1]s.content) > %[2]d THEN substring(%[1]s.content, 1, %[2]d) ELSE %[1]s.content END AS snippet",
@@ -321,11 +454,20 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 
 	// 2. No query text ⇒ a recency question, not a relevance one.
 	if strings.TrimSpace(q.Query) == "" {
-		sql := `SELECT f.id, f.labels, ` + snippet + `,
+		inner := `SELECT ` + distinctOn + `f.id, f.labels, ` + snippet + `,
 				0::float8 AS score, f.created_by_worker, f.created_by_session, f.created_at
 			FROM memories f
-			WHERE ` + where + `
-			ORDER BY f.created_at DESC, f.id DESC
+			WHERE ` + where
+		if latestPer == "" {
+			return s.scanMemoryResults(ctx,
+				inner+"\n\t\t\tORDER BY f.created_at DESC, f.id DESC\n\t\t\tLIMIT ?",
+				append(append([]any{}, whereArgs...), limit))
+		}
+		// DISTINCT ON requires ORDER BY to lead with its own expression, which
+		// is not the order the caller wants back — so reduce inside, then
+		// re-order newest-first outside.
+		sql := `SELECT * FROM (` + inner + "\n\t\t\t" + latestOrder + `) d
+			ORDER BY d.created_at DESC, d.id DESC
 			LIMIT ?`
 		return s.scanMemoryResults(ctx, sql, append(append([]any{}, whereArgs...), limit))
 	}
@@ -350,12 +492,16 @@ func (s *Store) SearchMemories(ctx context.Context, q *MemorySearchQuery) ([]*Me
 	args := []any{}
 
 	b.WriteString(`WITH filtered AS (
-			SELECT id, labels, content, content_tsv, created_by_worker, created_by_session, created_at`)
+			SELECT ` + distinctOn + `f.id, f.labels, f.content, f.content_tsv, f.created_by_worker, f.created_by_session, f.created_at`)
 	if semantic {
-		b.WriteString(`, content_embedding`)
+		b.WriteString(`, f.content_embedding`)
 	}
+	// The reduction lands INSIDE the CTE, so kw, sem and the final join all read
+	// the same reduced set. The CTE has no ORDER BY of its own otherwise, and
+	// adding one here does not affect how the legs rank: each re-sorts.
 	b.WriteString(`
-			FROM memories WHERE ` + where + `
+			FROM memories f WHERE ` + where + `
+			` + latestOrder + `
 		), kw AS (
 			SELECT id, ROW_NUMBER() OVER (ORDER BY kscore DESC, created_at DESC, id DESC) AS rnk
 			FROM (

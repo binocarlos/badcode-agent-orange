@@ -1,12 +1,20 @@
 package agentkit
 
 // runner_attention_test.go — the §8.2 `attention_requested` half of
-// `worker.finished`, and the "that turn" clearing semantics.
+// `worker.finished`, and the clearing semantics.
+//
+// The stamp's lifetime matches the EMISSION UNIT, and there are two of them:
+//   - a dispatched job is one turn, so the stamp is per turn (these tests, each
+//     of which seeds a triggering event to sit on that path);
+//   - an interactive chat is a conversation, so the stamp rides until the chat
+//     goes quiet and the archive sweep emits its finish
+//     (TestChatAttentionSurvivesUntilTheConversationEnds, below).
 
 import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
@@ -24,6 +32,10 @@ func TestWorkerFinishedCarriesAttentionRequested(t *testing.T) {
 		ID: "s1", Customer: "acme", Worker: "tweet-author", AttentionRequested: true,
 	})
 
+	worker.triggers["s1"] = &agentdb.ProjectEvent{
+		ID: "e1", Project: "acme", Type: "tweet.due",
+		Envelope: agentdb.EventEnvelope{Source: agentdb.EventSourceSchedule},
+	}
 	if _, err := r.CreateSession(ctx, CreateSessionRequest{
 		SessionID: "s1", Customer: "acme", Worker: "tweet-author",
 	}); err != nil {
@@ -58,6 +70,10 @@ func TestAttentionRequestedIsClearedOnceCopied(t *testing.T) {
 	store.Seed(&agentdb.Session{
 		ID: "s1", Customer: "acme", Worker: "tweet-author", AttentionRequested: true,
 	})
+	worker.triggers["s1"] = &agentdb.ProjectEvent{
+		ID: "e1", Project: "acme", Type: "tweet.due",
+		Envelope: agentdb.EventEnvelope{Source: agentdb.EventSourceSchedule},
+	}
 	if _, err := r.CreateSession(ctx, CreateSessionRequest{
 		SessionID: "s1", Customer: "acme", Worker: "tweet-author",
 	}); err != nil {
@@ -110,6 +126,10 @@ func TestAttentionStampIsClearedByAFailedTurnToo(t *testing.T) {
 	store.Seed(&agentdb.Session{
 		ID: "s1", Customer: "acme", Worker: "tweet-author", AttentionRequested: true,
 	})
+	worker.triggers["s1"] = &agentdb.ProjectEvent{
+		ID: "e1", Project: "acme", Type: "tweet.due",
+		Envelope: agentdb.EventEnvelope{Source: agentdb.EventSourceSchedule},
+	}
 	if _, err := r.CreateSession(ctx, CreateSessionRequest{
 		SessionID: "s1", Customer: "acme", Worker: "tweet-author",
 	}); err != nil {
@@ -128,5 +148,64 @@ func TestAttentionStampIsClearedByAFailedTurnToo(t *testing.T) {
 	}
 	if sess.AttentionRequested {
 		t.Fatalf("the stamp must not outlive its turn, even when the turn errored")
+	}
+}
+
+// TestChatAttentionSurvivesUntilTheConversationEnds is the interactive half, and
+// the bug it guards is one the idle-emission change created.
+//
+// A chat no longer emits worker.finished per turn, so consuming the stamp at the
+// end of a turn — as a dispatched job does — would throw it away before anything
+// had reported it: a worker that called request_human_attention mid-conversation
+// would leave no trace on the event spine at all, and any subscription watching
+// for it would never fire. The stamp therefore rides until the conversation's
+// own finish event, and is consumed there.
+func TestChatAttentionSurvivesUntilTheConversationEnds(t *testing.T) {
+	ctx := context.Background()
+	r, store, worker := newWorkerEventRunner(t, "s1", completeTurn)
+	// No trigger event: this is a human chat, not a dispatched job.
+	store.Seed(&agentdb.Session{
+		ID: "s1", Customer: "acme", Worker: "marketing-manager", AttentionRequested: true,
+	})
+	if _, err := r.CreateSession(ctx, CreateSessionRequest{
+		SessionID: "s1", Customer: "acme", Worker: "marketing-manager",
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// The turn in which the worker asked, and a later turn that asked nothing.
+	for _, msg := range []string{"draft a tweet", "thanks"} {
+		var buf bytes.Buffer
+		if err := r.SendMessage(ctx, SessionRef{SessionID: "s1"}, SendMessageRequest{Content: msg}, &buf); err != nil {
+			t.Fatalf("SendMessage(%q): %v", msg, err)
+		}
+	}
+	sess, err := store.GetSession(ctx, "s1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if !sess.AttentionRequested {
+		t.Fatal("a chat's attention stamp must survive the turn — the conversation has not finished yet, so nothing has reported it")
+	}
+
+	r.deps.Policy.ArchiveTimeout = time.Millisecond
+	r.setIdle("s1", time.Hour)
+	r.archiveIdleOnce(ctx)
+
+	got := worker.events()
+	if len(got) != 1 {
+		t.Fatalf("appended %d events, want 1: %#v", len(got), got)
+	}
+	if !got[0].Envelope.AttentionRequested {
+		t.Error("the conversation asked for a human and its finish event must say so")
+	}
+
+	// Consumed, exactly as a job consumes it: a chat picked back up starts clean.
+	sess, err = store.GetSession(ctx, "s1")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.AttentionRequested {
+		t.Error("the stamp must be consumed once the conversation's finish has carried it")
 	}
 }

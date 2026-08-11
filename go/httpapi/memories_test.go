@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/binocarlos/badcode-agent-orange/agentdb"
 )
@@ -696,4 +697,53 @@ func TestMemoryReadRoutes_LivePG(t *testing.T) {
 	if rec := do(h(mine), http.MethodGet, "/agent/memories/current?name=never-written", ""); rec.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 	}
+}
+
+// TestListMemories_NarrowingParams pins the three query parameters added
+// 2026-08-10 (design plan T5): they reach the store, they accept the same forms
+// the MCP tools accept, and a malformed bound is the caller's error.
+func TestListMemories_NarrowingParams(t *testing.T) {
+	t.Run("all three reach the store", func(t *testing.T) {
+		store := &fakeMemories{}
+		h := newMemoryHandlers(t, store, identityFor("acme"))
+		before := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+		rr := do(h, http.MethodGet, "/agent/memories?since=7d&until=2026-08-10T00:00:00Z&latest_per=name", "")
+		after := time.Now().Add(-7 * 24 * time.Hour).UnixMilli()
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
+		}
+		if store.got.Since < before || store.got.Since > after {
+			t.Errorf("since = %d, want within [%d, %d]", store.got.Since, before, after)
+		}
+		if want := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC).UnixMilli(); store.got.Until != want {
+			t.Errorf("until = %d, want %d", store.got.Until, want)
+		}
+		if store.got.LatestPer != "name" {
+			t.Errorf("latest_per = %q, want %q", store.got.LatestPer, "name")
+		}
+	})
+
+	t.Run("a malformed bound is 400 with the parser's message", func(t *testing.T) {
+		store := &fakeMemories{}
+		h := newMemoryHandlers(t, store, identityFor("acme"))
+		rr := do(h, http.MethodGet, "/agent/memories?since=last%20Tuesday", "")
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), "relative age") {
+			t.Errorf("body does not carry the parser's wording: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("absent params behave exactly as before", func(t *testing.T) {
+		store := &fakeMemories{}
+		h := newMemoryHandlers(t, store, identityFor("acme"))
+		rr := do(h, http.MethodGet, "/agent/memories?selector=kind%3Dfact", "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+		if store.got.Since != 0 || store.got.Until != 0 || store.got.LatestPer != "" {
+			t.Fatalf("unset params must stay zero: %+v", store.got)
+		}
+	})
 }

@@ -1,0 +1,154 @@
+{
+  "rules": [
+    {
+      "match": "You are aa-scribe,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Reading the label registry first, then writing what this thread decided."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_search",
+              "input": {
+                "label_selector": "kind=summary",
+                "query": "bakery org"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Nothing under that selector yet, so this thread is new. Writing one summary."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__memory_create",
+              "input": {
+                "content": "[AA-ARCHIVED] The bakery project agreed a two-role roster: a baker woken by the clock, and a counter worker woken by orders. Labels: kind=order for inbound, kind=decision for roster changes.",
+                "labels": { "kind": "summary", "name": "bakery-org-thread" }
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Archived one summary for this thread."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[AA-BUILT]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "You asked me to sharpen the archivist. Trying its prompt."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_prompt_write",
+              "input": {
+                "name": "aa-scribe",
+                "system_prompt": "You are aa-scribe. Write down absolutely everything.",
+                "rationale": "the architect thinks more memory is better"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "[AA-FROZEN-REFUSAL] The archivist is frozen and refused me. That is the point of it — the humans own the memory schema, so this is a change for a person to make."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "[AA-PROPOSED]",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Agreed — building it now."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__worker_create",
+              "input": {
+                "name": "aa-baker",
+                "description": "bakes to the morning schedule",
+                "system_prompt": "You are aa-baker. Each morning you decide what to bake. Read kind=order; write kind=decision.",
+                "rationale": "the roster the human approved"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "Worker created. Giving it the clock."
+            },
+            {
+              "type": "tool_use",
+              "name": "mcp__core__schedule_create",
+              "input": {
+                "cron": "0 6 * * *",
+                "worker": "aa-baker",
+                "input": "Decide today's bake from yesterday's orders.",
+                "rationale": "the baker is woken by the clock, not by another worker"
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "[AA-BUILT] Done: aa-baker exists and wakes at 06:00. I wrote no subscription — a clock is easier to reason about than a chain."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are aa-designer,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "[AA-PROPOSED] Here is what I think should exist, before I build anything.\n\nONE new worker: aa-baker, woken by the clock each morning, reading kind=order and writing kind=decision.\n\nI am NOT proposing a second worker for the counter: it would differ only in tone, not in tools, cadence, trust or memory view, and small rosters coordinate where large ones interfere.\n\nSay go ahead and I will write it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "match": "You are aa-runner,",
+      "turns": [
+        {
+          "blocks": [
+            {
+              "type": "text",
+              "text": "[AA-RAN] Counted the morning trays: 40 sourdough, 12 rye."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

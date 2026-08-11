@@ -311,6 +311,38 @@ describe('matchSubscriptions — the dry run', () => {
     expect(m!.reason).toContain('archivist')
   })
 
+  // The mirror of the router's self-delivery guard. This file exists because
+  // web/src/events.ts is a SECOND implementation of the router's matcher, and a
+  // dry run that disagrees with the router is worse than none: it sends someone
+  // debugging a subscription that is behaving exactly as designed.
+  it('suppresses self-delivery, and says whose completion it was', () => {
+    const e = event({
+      type: 'worker.finished',
+      envelope: { ...blankEnvelope(), source: 'worker', worker: 'archivist' },
+    })
+    const [m] = matchSubscriptions(e, [sub({ event_type: 'worker.finished', worker: 'archivist' })])
+    expect(m!.matched).toBe(false)
+    expect(m!.reason).toContain('archivist')
+    expect(m!.reason).toMatch(/its own completion/)
+  })
+
+  it('another worker\'s completion still matches', () => {
+    const e = event({
+      type: 'worker.finished',
+      envelope: { ...blankEnvelope(), source: 'worker', worker: 'poster' },
+    })
+    const [m] = matchSubscriptions(e, [sub({ event_type: 'worker.finished', worker: 'archivist' })])
+    expect(m!.matched).toBe(true)
+  })
+
+  // External events carry no worker. A guard without the emptiness check would
+  // compare '' against every subscriber and match nothing — the spine's main
+  // path, silently dead in the dry run.
+  it('an external event with no worker still matches every subscriber', () => {
+    const [m] = matchSubscriptions(event(), [sub()])
+    expect(m!.matched).toBe(true)
+  })
+
   it('never matches a disabled subscription, however well it fits', () => {
     const [m] = matchSubscriptions(event(), [sub({ enabled: false })])
     expect(m!.matched).toBe(false)

@@ -597,6 +597,10 @@ picture of the surface.
 
 ## Known hazards
 
+> **Before you connect an outward-facing tool**, read the human-valve pattern in
+> [`workflows.md`](workflows.md): an approval gate that lives inside your MCP server is the
+> only control in this area that does not depend on the model choosing to obey a prompt.
+
 Each one is real, each one is named with `path:line`, and each was a deliberate decision to ship
 documented rather than to fix in this plan. Read all of them.
 

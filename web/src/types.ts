@@ -199,8 +199,19 @@ export interface CreateAgentSessionRequest {
    * the server composes the system prompt from the core preamble + project
    * prompt + worker prompt and stamps `worker` on the session row. The UI never
    * composes the prompt itself — that would let a browser decide what a worker
-   * believes. Servers that predate job composition ignore the field, which is
-   * exactly the graceful degradation we want: an ordinary session, not a wrong one.
+   * believes.
+   *
+   * This comment used to end "servers that predate job composition ignore the
+   * field, which is exactly the graceful degradation we want: an ordinary
+   * session, not a wrong one." That was wrong twice over, and it is worth
+   * keeping the correction visible. Until 2026-08-08 THIS server ignored it —
+   * `createSessionBody` had no such field and Go's decoder is not strict — so
+   * "Chat with <worker>" quietly produced a session with none of the worker's
+   * prompt, tools or briefing, and nothing anywhere failed. And the degradation
+   * was never graceful: an unstamped session also emits no `worker.finished`
+   * when it goes idle, so nothing downstream could be woken by a conversation.
+   * The server now honours the field and REFUSES an unknown or disabled worker
+   * (404 / 409) rather than degrading at all.
    */
   worker?: string
 }

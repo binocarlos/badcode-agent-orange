@@ -144,6 +144,16 @@ func (h *Handlers) GetSession(w http.ResponseWriter, r *http.Request) {
 			// job reached the next job's prompt (§7.4), which is what G1 asserts.
 			"worker":          session.Worker,
 			"composed_prompt": session.ComposedPrompt,
+			// Environment provenance, the other half of the same question.
+			// `composed_prompt` proves what the session was TOLD; these prove
+			// what it RAN IN. The configured setting is a plain string and
+			// usually a mutable one — `…/agent-wolf:latest` names different
+			// bytes on different days — so `launch_image` is the ref that was
+			// actually resolved and pulled, and `launch_image_digest` is the
+			// content address it pointed at. Both are best-effort: empty means
+			// "not captured", never "no image" (migration 044).
+			"launch_image":        session.LaunchImage,
+			"launch_image_digest": session.LaunchImageDigest,
 		})
 		return
 	}

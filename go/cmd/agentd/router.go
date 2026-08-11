@@ -417,6 +417,28 @@ func subscriptionMatches(sub *agentdb.Subscription, ev *agentdb.ProjectEvent) bo
 	if !eventTypeMatches(sub.EventType, ev.Type) {
 		return false
 	}
+	// A worker is never woken by its own completion. Filters are equality-only,
+	// so "every worker.finished EXCEPT my own" cannot be written as one — it is
+	// a property of the spine instead, applied once here rather than worked
+	// around in every seed that subscribes to `worker.*`.
+	//
+	// Being woken by your own completion is a spin with no use case: "keep
+	// going" is what schedules are for, and the only thing that stopped it
+	// before this was the depth-8 floor.
+	//
+	// It does NOT subsume `topology/supervisor.go`'s `checkSeedEventType`, which
+	// refuses a seed inbound type in the `worker.*` namespace. That guards a
+	// different loop — a dispatcher woken by its SPECIALISTS, who are other
+	// workers — and this rule, being about self-delivery only, leaves it
+	// standing. Both are needed; neither replaces the other.
+	//
+	// The empty check is load-bearing. External events carry no worker, and a
+	// subscription's worker is never empty, so without it every external event
+	// would stop matching every subscription — the spine's main path, silently
+	// dead.
+	if ev.Envelope.Worker != "" && ev.Envelope.Worker == sub.Worker {
+		return false
+	}
 	return envelopeFilterMatches(sub.Filter, ev.Envelope)
 }
 
