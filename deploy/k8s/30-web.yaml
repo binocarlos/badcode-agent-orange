@@ -1,0 +1,47 @@
+# The web UI: nginx serving a BUILT bundle of examples/web, proxying the API.
+#
+# Its nginx config (deploy/web.nginx.conf) proxies to `http://dind:8099`,
+# hardcoded into the image — which is exactly why the agentd Service in
+# 20-agent-orange.yaml is named `dind`. The image then runs here unmodified.
+#
+# A UI change is invisible until deploy/publish-images.sh runs again: this is a
+# built bundle, not a dev server.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: agent-orange
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: agent-orange
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: web
+          image: IMAGE_WEB   # replaced by apply.sh
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          readinessProbe:
+            httpGet: {path: /, port: 8080}
+            initialDelaySeconds: 5
+            periodSeconds: 10

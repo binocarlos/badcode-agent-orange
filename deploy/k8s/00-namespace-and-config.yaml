@@ -1,0 +1,48 @@
+# The namespace, and the non-secret configuration.
+#
+# Its own namespace rather than an existing one, for a reason worth stating:
+# the agentd pod runs a PRIVILEGED Docker daemon executing model-authored
+# commands. Keeping it in its own namespace means a NetworkPolicy can later be
+# put around it without touching anything else you run.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agent-orange
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-orange-config
+  namespace: agent-orange
+data:
+  # ── EDIT THESE ──────────────────────────────────────────────────────────
+
+  # Where a human clicking a session permalink lands. Must match the Ingress
+  # host in 40-ingress.yaml, including the scheme.
+  public-base-url: "https://orange.example.com"
+
+  # The session base image published by deploy/publish-base.sh. Prefer the
+  # specific tag over :latest — Agent Orange records the digest each session
+  # actually launched from, and a moving tag makes that record the only way to
+  # tell two different environments apart.
+  base-image: "europe-west1-docker.pkg.dev/webkit-servers/agent-orange/session-core:latest"
+
+  gcp-project: "webkit-servers"
+  gcp-region: "europe-west1"
+  gcp-ar-repo: "agent-orange"
+  gcs-bucket: "webkit-servers-agent-orange"
+
+  # ── OPTIONAL ────────────────────────────────────────────────────────────
+
+  # Memory's semantic leg: unset = keyword + recency only (still works);
+  # "openai" = hybrid search, and needs openai-api-key in the Secret.
+  embedding-backend: ""
+
+  # Google sign-in. Empty means fall back to test-login (see the Secret), which
+  # is fine for a prototype behind a URL nobody knows and NOT fine otherwise.
+  google-client-id: ""
+
+  # Projects, as the object form documented in docs/19-embedding.md. A project
+  # named here can carry an API key resolved from the named env var at boot.
+  # Leave empty until another application needs to embed this one.
+  project-map: ""

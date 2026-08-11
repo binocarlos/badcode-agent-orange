@@ -1,0 +1,195 @@
+# agentd + its Docker daemon, in ONE pod.
+#
+# # Why one pod and not two
+#
+# docker-compose.yml runs agentd with `network_mode: "service:dind"` — agentd
+# SHARES the daemon's network namespace. That is not tidiness, three things
+# depend on it:
+#
+#   * agentd reaches the daemon at localhost:2375;
+#   * session containers reach agentd back at the DinD bridge gateway
+#     (172.17.0.1), which is AGENTKIT_SELF_URL below;
+#   * agentd leases a host port per session out of a 100-port pool and then
+#     talks to the session on that port. Splitting the two across pods would
+#     mean a Service enumerating 100 ports, and pod IPs that move.
+#
+# Containers in one Kubernetes pod share a network namespace by definition, so
+# one pod reproduces the compose arrangement exactly, with nothing to configure.
+#
+# # Why the Service is called "dind"
+#
+# deploy/web.nginx.conf proxies to `http://dind:8099`, baked into the web image.
+# Naming the Service `dind` means that image runs here unmodified.
+#
+# # Replicas: exactly 1
+#
+# The port pool, the archive sweep and the scheduler all assume one agentd per
+# daemon. Agent Orange is a singleton service by design (design/2026-08-06);
+# scaling is a bigger node, not more replicas.
+apiVersion: v1
+kind: Service
+metadata:
+  name: dind
+  namespace: agent-orange
+spec:
+  selector:
+    app: agent-orange
+  ports:
+    - name: agentd
+      port: 8099
+      targetPort: 8099
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dind-data
+  namespace: agent-orange
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      # The daemon's image store. Sized for the session base plus a handful of
+      # project images and snapshots. Costs money as a real PD — raise it when
+      # you see pulls failing on space, not before.
+      storage: 30Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agentd-data
+  namespace: agent-orange
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-orange
+  namespace: agent-orange
+spec:
+  replicas: 1
+  strategy:
+    # Never two agentds against one image store: the second would fight the
+    # first for host ports and container ownership.
+    type: Recreate
+  selector:
+    matchLabels:
+      app: agent-orange
+  template:
+    metadata:
+      labels:
+        app: agent-orange
+    spec:
+      containers:
+        # ── The Docker daemon that runs session containers ──────────────────
+        - name: dind
+          image: docker:27-dind
+          args:
+            - dockerd
+            - --host=tcp://0.0.0.0:2375
+            - --host=unix:///var/run/docker.sock
+            - --tls=false
+          securityContext:
+            # Unavoidable. A Docker daemon needs to manage cgroups, mounts and
+            # network namespaces. This is the single line that decides whether
+            # Agent Orange can run on a given cluster at all — GKE Autopilot
+            # refuses it, GKE Standard (this cluster) allows it.
+            privileged: true
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          volumeMounts:
+            - name: dind-data
+              mountPath: /var/lib/docker
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            # No CPU limit on purpose: image pulls are bursty, and a limit here
+            # makes the first session of the day look like a hang.
+            limits: {memory: 4Gi}
+          readinessProbe:
+            exec:
+              command: [docker, info]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+
+        # ── Agent Orange itself ─────────────────────────────────────────────
+        - name: agentd
+          image: IMAGE_AGENTD   # replaced by apply.sh
+          env:
+            - name: ADDR
+              value: ":8099"
+            - name: DOCKER_HOST
+              value: tcp://localhost:2375        # the shared netns, see header
+            - name: AGENTKIT_SELF_URL
+              value: http://172.17.0.1:8099      # DinD bridge gateway
+            - name: AGENTKIT_DATA
+              value: /data
+            - name: DATABASE_URL
+              valueFrom: {secretKeyRef: {name: agent-orange, key: database-url}}
+            # The session base image, published by deploy/publish-base.sh. This
+            # is what replaces compose's `init-sandbox` service: nothing builds
+            # anything here, the daemon simply pulls.
+            - name: AGENTKIT_IMAGE
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: base-image}}
+            - name: AGENTKIT_PUBLIC_BASE_URL
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: public-base-url}}
+            - name: AGENTKIT_JWT_SECRET
+              valueFrom: {secretKeyRef: {name: agent-orange, key: jwt-secret}}
+            - name: ANTHROPIC_API_KEY
+              valueFrom: {secretKeyRef: {name: agent-orange, key: anthropic-api-key}}
+            # Login. Leave GOOGLE_CLIENT_ID empty and AGENTKIT_TEST_LOGIN set for
+            # a prototype; swap once you want real accounts. Neither set = the
+            # legacy dev-open demo, which has NO auth — do not expose that.
+            - name: GOOGLE_CLIENT_ID
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: google-client-id, optional: true}}
+            - name: AGENTKIT_TEST_LOGIN
+              valueFrom: {secretKeyRef: {name: agent-orange, key: test-login, optional: true}}
+            - name: AGENTKIT_PROJECT_MAP
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: project-map, optional: true}}
+            # Storage backends. GCS for blobs, Artifact Registry for images —
+            # the same two the local stack can use, and the reason the pod needs
+            # Google credentials at all.
+            - name: AGENTKIT_BLOB_BACKEND
+              value: gcs
+            - name: AGENTKIT_REGISTRY_BACKEND
+              value: ociregistry
+            - name: AGENTKIT_REGISTRY_AUTH
+              value: gcp
+            - name: GCS_BUCKET
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: gcs-bucket}}
+            - name: GCP_REGION
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: gcp-region}}
+            - name: GCP_PROJECT
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: gcp-project}}
+            - name: GCP_AR_REPO
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: gcp-ar-repo}}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /gcp/key.json
+            # Memory's semantic leg. Without an embedding backend, memory search
+            # is keyword + recency only — it still works, it just cannot match
+            # on meaning.
+            - name: AGENTKIT_EMBEDDING_BACKEND
+              valueFrom: {configMapKeyRef: {name: agent-orange-config, key: embedding-backend, optional: true}}
+            - name: OPENAI_API_KEY
+              valueFrom: {secretKeyRef: {name: agent-orange, key: openai-api-key, optional: true}}
+          volumeMounts:
+            - name: agentd-data
+              mountPath: /data
+            - name: gcp-key
+              mountPath: /gcp
+              readOnly: true
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {memory: 1Gi}
+      volumes:
+        - name: dind-data
+          persistentVolumeClaim: {claimName: dind-data}
+        - name: agentd-data
+          persistentVolumeClaim: {claimName: agentd-data}
+        - name: gcp-key
+          secret:
+            secretName: agent-orange-gcp
+            items: [{key: key.json, path: key.json}]

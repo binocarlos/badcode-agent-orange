@@ -1,0 +1,42 @@
+# Public entry point, via the ingress-nginx and cert-manager already on this
+# cluster.
+#
+# EDIT THE HOST before applying, in both places. It must also match
+# `public-base-url` in the ConfigMap: that value is what a session permalink
+# points a human at, and a wrong one produces links that 404 rather than an
+# error anyone notices.
+#
+# SSE matters here. The chat streams events, and nginx's default proxy
+# buffering holds a stream until the buffer fills — the symptom is a session
+# that appears to hang and then delivers every message at once. The annotations
+# below turn buffering off and raise the read timeout past the length of a
+# model turn.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent-orange
+  namespace: agent-orange
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod   # check yours: kubectl get clusterissuers
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # A session's first turn can carry a large prompt, and artifact uploads go
+    # through here too.
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [orange.example.com]     # EDIT
+      secretName: agent-orange-tls
+  rules:
+    - host: orange.example.com        # EDIT
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 8080
