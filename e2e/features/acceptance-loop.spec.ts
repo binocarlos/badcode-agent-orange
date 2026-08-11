@@ -357,7 +357,10 @@ test.describe('G1 §8.7 — the acceptance loop', () => {
     // Scope, stated honestly: this proves the memory reached COMPOSITION. That
     // the composed prompt then reaches the model is a separate claim, and for a
     // while it was not true; the prompt-delivery test below is what pins it.
-    expect(next.composed_prompt).toContain('--- Your memory briefing: kind=rolling-summary ---')
+    // Prefix match, like the worker-prompt heading above: section headings now
+    // carry the job's nonce ('--- … [4ef2985c] ---'), which is per-job and so
+    // cannot be written down here.
+    expect(next.composed_prompt).toContain('--- Your memory briefing: kind=rolling-summary')
     expect(next.composed_prompt).toContain(summary)
   })
 

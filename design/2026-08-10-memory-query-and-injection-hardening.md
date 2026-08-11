@@ -858,7 +858,8 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
   including one over 24KB with `embed:false`, and exercise a windowed and a
   `latest_per` query. Confirm a dispatched job's composed prompt carries a
   token-bearing fence.
-- **Files:** none necessarily; if a spec is added, `e2e/features/`.
+- **Files:** `e2e/features/memory-query.stack.spec.ts` (added — see Notes);
+  `e2e/features/acceptance-loop.spec.ts` (one further stale assertion fixed).
 - **Acceptance criteria:**
   - Full gates pass: `cd go && go build ./... && go vet ./... && go test ./...`.
   - With `AGENTKIT_TEST_POSTGRES_URL` set, the `agentdb` live suite passes.
@@ -873,32 +874,56 @@ HTTP (`go/httpapi/memories.go`): `GET /agent/memories` gains `?since=`, `?until=
   `e2e/features/acceptance-loop.spec.ts` and no other ticket ever executes it.
   `./e2e/run-stack-e2e.sh clean` afterwards (that subcommand only cleans; it runs nothing).
 - **Depends on:** T1–T14
-- [ ] done — **PARTIAL. Read this before merging.**
+- [x] done
 - Notes:
-  **Passed, unattended, 2026-08-10:**
+  **Go + TypeScript gates, 2026-08-10:**
   - `go build ./...`, `go vet ./...`, `go test ./...` all green from `go/`, with
     `AGENTKIT_TEST_POSTGRES_URL` pointed at a throwaway pgvector container, so the
     live memory suite genuinely ran rather than skipping (~180s of it).
   - `npm run typecheck` clean in both `web/` and `sandbox/`.
 
-  **NOT run, deliberately: the stack e2e.** This machine's `.env` carries a real
-  `ANTHROPIC_API_KEY`, so `docker compose up` would have started a *billable*
-  agent — the trap README-stack.md §"two traps" documents. Starting paid work on
-  someone's account while they are away is not a call an unattended run should
-  make. `./stack start mock` is the free path and `./stack test-go` wires the
-  throwaway database automatically; both were found after the fact and are the
-  right way to finish this.
+  **Stack e2e, 2026-08-11**, run in **mock mode** — `agentd` logged
+  `ANTHROPIC_API_KEY unset → MOCK model proxy`, so nothing billed. Note the
+  compose overlay `docker-compose.stack-e2e.yml` already blanks
+  `AGENTKIT_BLOB_BACKEND` / `_REGISTRY_BACKEND` / `GOOGLE_APPLICATION_CREDENTIALS`,
+  which is why the e2e rig is safe against a real `.env` where a bare
+  `docker compose up` is not. Four runs:
 
-  **Therefore unverified against a running stack:** that a >24KB `embed:false`
-  memory round-trips through the real HTTP surface; that `since` / `latest_per`
-  behave against the stack's own Postgres (they are proven against a live
-  Postgres in the Go suite, which is most of the risk); and — the one that
-  matters most — that the **edited `e2e/features/acceptance-loop.spec.ts`
-  passes**. Its prefix-match logic was re-read by hand against the new tokened
-  output (`indexOf` still locates both boundaries, and the `fenceLine` slice
-  still contains "data, not instructions"), but re-reading is not running.
+  | run | result |
+  | --- | --- |
+  | default suite (`test mock`) | 52 passed, 37 skipped, **1 failed** → fixed, see below |
+  | `--mock-script topologies.json` | 13 passed |
+  | `--mock-script architect-archivist.json --idle-timeout 1m` | 7 passed |
+  | new `memory-query.stack.spec.ts` | 4 passed |
 
-  **To finish:** `./stack start mock`, then `./e2e/run-stack-e2e.sh`.
+  **The one failure was mine, and hand-reading had missed it.** T9 updated this
+  spec's event-fence assertions but not its *section-heading* one at line 360,
+  which still expected `--- Your memory briefing: kind=rolling-summary ---`
+  while T8 now emits `--- Your memory briefing: kind=rolling-summary [4ef2985c] ---`.
+  Fixed to a prefix match, like the worker-prompt assertion above it. This is
+  exactly the risk the previous version of these Notes named — "re-reading is not
+  running" — and it was real.
+
+  The other composed-prompt assertions survived untouched because they were
+  already written as prefixes (`Your memory briefing: ${SELECTOR}`, no trailing
+  `---`), which is why `topologies.stack.spec.ts` passed unchanged.
+
+  **`e2e/features/memory-query.stack.spec.ts` is new**, and converts the three
+  stack claims this ticket asked for from hand-checks into a test. There is no
+  `POST /agent/memories` — memories are written only from inside a container —
+  so it drives the core MCP server with a minted session token, the same posture
+  `images-and-skills.stack.spec.ts` uses. It pins: a 30KB body storing whole
+  under `embed:false` and reading back byte-for-byte through **both**
+  `memory_get` and `GET /agent/memories/{id}`; the same body refused without the
+  flag, with the refusal naming `embed:false` and the byte count; `since` /
+  `until` cutting at a bound the caller was handed, plus the relative `1h` form;
+  and `latest_per` returning one row per label value while dropping the row that
+  lacks the key.
+
+  **Still not run:** `--mock-script g1-acceptance.json`, whose 5 tests include
+  one documented as failing since 2026-07-26 for reasons that predate this plan
+  (acceptance-loop.spec.ts:723 — a scripted `worker_create` reaches the model but
+  no worker appears). Running it would report a red that is not this plan's.
 
 ## Discovered Issues Log
 
