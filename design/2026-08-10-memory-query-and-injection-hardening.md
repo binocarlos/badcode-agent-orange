@@ -7,7 +7,7 @@
 > the orchestrator and pass. Do not expand scope; log surprises in the
 > Discovered Issues Log instead.
 
-Status: in progress — T1–T14 done and committed; T15 partial (stack e2e not run, see its Notes)
+Status: done — T1–T15 complete and committed; stack e2e green in mock mode (T15 Notes)
 Relates: `docs/product/25-cooperative-patterns.md` (gaps G6, G11), `docs/product/26-work-plan-cooperative-tests.md` (G6, G11), `docs/product/27-simplification-inventory.md`
 
 ## Context
