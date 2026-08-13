@@ -113,6 +113,6 @@ Use it in a project's Dockerfile:
 Do NOT set CMD / ENTRYPOINT / EXPOSE / HEALTHCHECK / WORKDIR — the base owns those.
 
 To run the stack against what you just pushed (production's path, locally):
-  ./stack start mock registry
+  ./stack start        # or: ./stack start mock   (free)
 See README-stack.md → "Registry mode", and installations/README.md for layering.
 EOF

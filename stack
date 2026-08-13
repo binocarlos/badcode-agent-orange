@@ -7,11 +7,12 @@
 # `docker compose logs -f` across five services is unreadable in one pane.
 #
 #   ./stack build          build the images
-#   ./stack start          bring it up with a REAL model + tmux panes  (BILLABLE)
-#   ./stack start mock     bring it up with the deterministic mock model (free)
-#   ./stack start mock registry   sessions PULL their base image from Artifact
-#                          Registry instead of building it into DinD — the same
-#                          path production takes. Needs ./stack publish-base first.
+#   ./stack start          REAL model + tmux panes, sessions PULL their base
+#                          image from Artifact Registry  (BILLABLE; production's
+#                          path). Needs ./stack publish-base first.
+#   ./stack start mock     the same, with the deterministic mock model (free)
+#   ./stack start local    build the harness into DinD instead of pulling —
+#                          the offline escape hatch, no GCP credentials needed
 #   ./stack publish-base [tag]    build + push session-base/session-core to
 #                          Artifact Registry (default tag: dev; never moves :latest)
 #   ./stack stop           tear it down and kill the tmux session
@@ -101,7 +102,9 @@ registry_backends() {
   # it per-pull as the Docker API's X-Registry-Auth header, so DinD needs no
   # credentials of its own — that is what makes this cheap.
   if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
-    echo "No gcloud ADC found. Run:  gcloud auth application-default login" >&2
+    echo "Registry mode needs gcloud ADC. Either:" >&2
+    echo "  gcloud auth application-default login   # then retry" >&2
+    echo "  ./stack start local                     # build into DinD instead (offline)" >&2
     exit 1
   fi
   export AGENTKIT_BLOB_BACKEND=fs
@@ -133,10 +136,11 @@ publish_base() {
 MODE_FILE=".stack-image-mode"
 
 apply_saved_mode() {
-  if [[ "$(cat "$MODE_FILE" 2>/dev/null || echo local)" == "registry" ]]; then
-    registry_backends
-  else
+  # Same default as `start`: registry unless the running stack said otherwise.
+  if [[ "$(cat "$MODE_FILE" 2>/dev/null || echo registry)" == "local" ]]; then
     local_backends
+  else
+    registry_backends
   fi
 }
 
@@ -163,13 +167,17 @@ build() {
 
 start() {
   # Two independent axes: which MODEL (real|mock) and where the session base
-  # IMAGE comes from (local|registry). Order does not matter.
-  local mode="real" images="local" arg
+  # IMAGE comes from (registry|local). Order does not matter.
+  #
+  # IMAGES DEFAULTS TO REGISTRY — the path production takes. Local dev diverging
+  # from production is how registry, credential and image-reference bugs stay
+  # hidden until deploy, so parity is the default and `local` is the opt-out.
+  local mode="real" images="registry" arg
   for arg in "$@"; do
     case "$arg" in
       real|mock)     mode="$arg" ;;
       local|registry) images="$arg" ;;
-      *) echo "usage: ./stack start [real|mock] [local|registry]" >&2; exit 1 ;;
+      *) echo "usage: ./stack start [real|mock] [registry|local]" >&2; exit 1 ;;
     esac
   done
 

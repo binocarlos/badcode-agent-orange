@@ -140,14 +140,14 @@ image to the stack depends on whether it is local or published.**
 registry and let the stack pull it, exactly as production does:
 
 ```sh
-./stack publish-base dev          # session-base + session-core → Artifact Registry
-./stack start mock registry       # sessions PULL session-core:dev
+./stack publish-base dev     # session-base + session-core → Artifact Registry
+./stack start                # sessions PULL session-core:dev (registry is the default)
 ```
 
 For your own derived image, publish it under the same registry and point at it:
 
 ```sh
-AO_IMAGE_TAG=dev ./stack start mock registry   # or set BASE_IMAGE=<full registry ref>
+AO_IMAGE_TAG=dev ./stack start mock            # or set BASE_IMAGE=<full registry ref>
 ```
 
 **Local.** A locally-built image must exist inside the stack's **Docker-in-Docker**

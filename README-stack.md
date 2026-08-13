@@ -9,8 +9,10 @@ three commands below do not work — see "two traps" further down. `./stack` exi
 so you do not have to remember the workaround:
 
     ./stack build          # build the images
-    ./stack start          # up + tmux log panes, REAL model (billable)
+    ./stack start          # up + tmux log panes, REAL model (billable),
+                           #   sessions PULL their base image from the registry
     ./stack start mock     # same, deterministic offline mock model (free)
+    ./stack start local    # build the harness into DinD instead of pulling
     ./stack status         # which model, which services, how many session ports
     ./stack psql           # a psql shell
     ./stack testdb up      # throwaway Postgres for the live-PG Go suite
@@ -20,20 +22,21 @@ It bypasses `docker-compose.override.yml` and forces the local `fs`/`blobarchive
 backends, which is exactly what the manual invocation below does by hand.
 `./stack help` lists everything.
 
-## Registry mode — dev/prod parity for the session base image
+## Registry mode — dev/prod parity for the session base image (the default)
 
-By default the stack builds the harness *inside* DinD (the `init-sandbox`
-service) and sessions launch from that. **Production does something different:
-it pulls a published image from Artifact Registry.** That divergence hides
-registry, credential and image-reference bugs until deploy, and it leaves
-downstream client projects with nothing to build `FROM`. Registry mode runs the
-production path locally:
+Sessions **pull** their base image from Artifact Registry, exactly as production
+does. The alternative — building the harness *inside* DinD — hides registry,
+credential and image-reference bugs until deploy, and leaves downstream client
+projects with nothing to build `FROM`, so it is no longer the default:
 
-    ./stack publish-base dev          # build + push session-base and session-core
-    ./stack start mock registry       # sessions PULL session-core:dev
+    ./stack publish-base dev     # build + push session-base and session-core
+    ./stack start                # REAL model, sessions PULL session-core:dev
+    ./stack start mock           # the same, free
 
-`start` takes two independent axes in any order — the model (`real`|`mock`) and
-where the base image comes from (`local`|`registry`).
+`start` takes two independent axes in any order — the model (`real`|`mock`,
+default `real`) and where the base image comes from (`registry`|`local`, default
+`registry`). `./stack start local` is the offline escape hatch: it builds the
+harness into DinD and needs no GCP credentials.
 
 - **Credentials.** `agentd` authenticates with your gcloud ADC
   (`gcloud auth application-default login`), mounted into the container by
