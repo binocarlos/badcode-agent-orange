@@ -6,14 +6,23 @@
 // serving a page on the origin and reading the console is a real test of the
 // OAuth client's configuration — something gcloud cannot inspect.
 //
-// IMPORTANT — localhost is exempt. Google does not enforce the JavaScript-origin
-// allowlist for loopback origins, so http://localhost:<anyport> renders the
-// button whether or not it is listed. Verified 2026-08-13: localhost:8080,
-// :8081 and :9977 all passed against this project's client ID, while
-// http://lvh.me:8080 (a public name resolving to 127.0.0.1, and NOT listed) was
-// refused with "[GSI_LOGGER]: The given origin is not allowed for the given
-// client ID". So a green on localhost proves the client ID is real and nothing
-// more; use a non-loopback origin to actually test the allowlist.
+// READ THIS BEFORE TRUSTING A GREEN. This tool only proves the GIS button
+// RENDERS. It does not sign in, and rendering is not the point at which Google
+// enforces the JavaScript-origin allowlist — credential issuance is. A real
+// sign-in from an unlisted origin fails with a full-page
+// "Access blocked: Authorization Error … Error 400: origin_mismatch"
+// that this check cannot see.
+//
+// That difference bit us on 2026-08-13: localhost:8080, :8081 and :9977 all
+// rendered the button, which was read as "localhost is exempt from the
+// allowlist" — and then a real sign-in at http://localhost:8080 was refused
+// with origin_mismatch, because the origin simply had not been registered.
+// Loopback is NOT exempt.
+//
+// So: a RED here is trustworthy (http://lvh.me:8080, unlisted, was refused with
+// "[GSI_LOGGER]: The given origin is not allowed for the given client ID").
+// A GREEN means only "the client ID exists and GIS served a button" — it does
+// NOT mean sign-in will work. The sole reliable test is signing in for real.
 //
 // usage: node check-google-origin.mjs <clientId> <origin> [<origin>...]
 //   cd e2e && node tools/check-google-origin.mjs "$GOOGLE_CLIENT_ID" https://your.domain
@@ -89,8 +98,6 @@ for (const origin of origins) {
 
 await browser.close()
 
-const isLoopback = (o) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:|$)/i.test(o)
-
 let bad = 0
 for (const r of results) {
   const verdict = r.unknownClient
@@ -98,12 +105,13 @@ for (const r of results) {
     : r.originRejected
       ? 'ORIGIN NOT AUTHORISED'
       : r.buttonRendered
-        ? isLoopback(r.origin)
-          ? 'OK for local dev — but loopback is EXEMPT from the allowlist, so this ' +
-            'does not prove the origin is listed (see the note at the top)'
-          : 'OK — origin authorised, button rendered'
+        ? 'BUTTON RENDERS — NOT proof that sign-in works. Google enforces the ' +
+          'origin allowlist at credential issuance, not at render; only a real ' +
+          'sign-in tells you (see the note at the top)'
         : 'INCONCLUSIVE (no button, no explicit rejection)'
-  if (!/^OK/.test(verdict)) bad++
+  // Only an outright rejection is a hard failure; a rendered button is too weak
+  // a signal to call success, so it must not exit 0 as if it had passed.
+  if (!/^BUTTON RENDERS/.test(verdict)) bad++
   console.log(`\n── ${r.origin}\n   ${verdict}`)
   console.log(`   gis state: ${r.state}, button rendered: ${r.buttonRendered}`)
   const notable = r.logs.filter((l) => /gsi|origin|client|error|401|403/i.test(l))
