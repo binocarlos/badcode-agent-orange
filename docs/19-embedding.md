@@ -685,6 +685,12 @@ request — while `modelproxy.go:30`'s own doc comment says "Mount under your au
 can reach `agentd`'s port directly can spend the key. Pre-existing; more dangerous once the
 deployment is a shared singleton. **Do not expose `agentd`'s port beyond the container network.**
 
+Narrowed on 2026-08-13 by the credential-precedence inversion: `CLAUDE_CODE_OAUTH_TOKEN` now
+outranks `ANTHROPIC_API_KEY`, and in subscription mode sessions call `api.anthropic.com` directly,
+so nothing routes through the proxy. `newModelProxyHandler` therefore serves the **mock** whenever
+the OAuth token is set — a stack with both credentials no longer mounts an unauthenticated relay
+onto a real billing key that nothing uses. The hazard stands unchanged for API-key (proxy) mode.
+
 ### H7 — sessions created **before** T15 never gain core tools
 
 MCP config is fixed at provisioning (`go/runner.go:370,504-517`) and re-supplied from the persisted

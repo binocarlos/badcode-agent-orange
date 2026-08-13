@@ -27,8 +27,12 @@ func (p modelProvider) APIKey() string                       { return p.apiKey }
 func (p modelProvider) RewriteModel(name string) string      { return name }
 func (p modelProvider) TargetPath(inboundPath string) string { return inboundPath }
 
-// newModelProxyHandler chooses the model path at startup: real Anthropic when
-// ANTHROPIC_API_KEY is set in agentd's env, mock SSE otherwise.
+// newModelProxyHandler chooses the model path at startup. With
+// CLAUDE_CODE_OAUTH_TOKEN set (subscription mode — the token outranks the API
+// key), sessions bypass the proxy entirely: main points them straight at
+// api.anthropic.com, so the proxy serves the mock rather than sitting mounted
+// with a real key nothing should reach. Otherwise: real Anthropic when
+// ANTHROPIC_API_KEY is set in agentd's env, mock SSE when neither is.
 //
 // The mock is scriptable (see modelproxy/script.go): with
 // AGENTKIT_MOCK_MODEL_SCRIPT (inline JSON) or AGENTKIT_MOCK_MODEL_SCRIPT_FILE
@@ -37,6 +41,12 @@ func (p modelProvider) TargetPath(inboundPath string) string { return inboundPat
 // able to drive a worker into calling an MCP tool. Neither set → the canned
 // stream, unchanged.
 func newModelProxyHandler() http.Handler {
+	if os.Getenv("CLAUDE_CODE_OAUTH_TOKEN") != "" {
+		// Not mock mode — sessions are on the real model, direct. This only says
+		// the unused /agent-proxy/ route is inert (no billing key mounted on it).
+		log.Printf("[agentd] subscription mode → /agent-proxy/ is unused by sessions and mounts no API key")
+		return modelproxy.MockHandler()
+	}
 	key := os.Getenv("ANTHROPIC_API_KEY")
 	if key == "" {
 		table, err := loadMockModelScript()
@@ -70,19 +80,21 @@ const (
 
 // credentialMode names the model credential agentd booted with. It is the ONE
 // place that precedence is expressed for reporting, and it deliberately mirrors
-// the two places that act on it: newModelProxyHandler (key set → real proxy,
-// else mock) and main's subscriptionMode (`apiKey == "" && oauthToken != ""`).
-// Mirrored rather than shared because those two decide different things; a test
-// pins the three answers so the mirror cannot drift silently.
+// the two places that act on it: newModelProxyHandler (token set → mock proxy,
+// bypassed; else key → real proxy, else mock) and main's subscriptionMode
+// (`oauthToken != ""` — the token outranks the key, so blanking the token is
+// what flips a deployment to unattended API billing). Mirrored rather than
+// shared because those two decide different things; a test pins the three
+// answers so the mirror cannot drift silently.
 // The comparisons are raw (not trimmed) on purpose: both of those callers test
 // the raw value, and a badge that disagreed with the proxy would be worse than
 // no badge at all.
 func credentialMode(apiKey, oauthToken string) string {
 	switch {
-	case apiKey != "":
-		return credentialModeAPIKey
 	case oauthToken != "":
 		return credentialModeSubscription
+	case apiKey != "":
+		return credentialModeAPIKey
 	default:
 		return credentialModeMock
 	}

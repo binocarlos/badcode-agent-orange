@@ -9,6 +9,11 @@
 #   ./stack build          build the images
 #   ./stack start          bring it up with a REAL model + tmux panes  (BILLABLE)
 #   ./stack start mock     bring it up with the deterministic mock model (free)
+#   ./stack start mock registry   sessions PULL their base image from Artifact
+#                          Registry instead of building it into DinD — the same
+#                          path production takes. Needs ./stack publish-base first.
+#   ./stack publish-base [tag]    build + push session-base/session-core to
+#                          Artifact Registry (default tag: dev; never moves :latest)
 #   ./stack stop           tear it down and kill the tmux session
 #   ./stack restart [svc]  restart one service (or all)
 #   ./stack logs [svc...]  follow logs
@@ -29,13 +34,18 @@ TMUX_SESSION="${TMUX_SESSION:-agent-orange}"
 WEB_PORT="${WEB_PORT:-8080}"
 
 # ── The compose invocation ───────────────────────────────────────────────────
-# `-f docker-compose.yml` is LOAD-BEARING, not tidiness. Plain `docker compose`
-# also picks up docker-compose.override.yml, which is gitignored, local-only,
-# and bind-mounts ./secrets/gcp-key.json into agentd. With no such file on the
-# host Docker helpfully creates it as a DIRECTORY and agentd dies with
-# "gcsblob: new client: dialing: read /gcp/key.json: is a directory". Naming the
-# file explicitly opts out of the override, which is what local dev wants.
-compose() { docker compose -f docker-compose.yml "$@"; }
+# Naming `-f docker-compose.yml` explicitly is LOAD-BEARING, not tidiness: a
+# plain `docker compose` also picks up docker-compose.override.yml, which is
+# gitignored and local-only. The default local stack wants nothing from it.
+#
+# Registry mode is the exception — it needs the override's GCP credential mount,
+# so it opts back in via use_override. (The override now mounts your *gcloud*
+# ADC directory. It used to bind ./secrets/gcp-key.json, which never existed as
+# a file, so Docker created it as a DIRECTORY and agentd died with "gcsblob: new
+# client: dialing: read /gcp/key.json: is a directory".)
+COMPOSE_FILES=(-f docker-compose.yml)
+compose() { docker compose "${COMPOSE_FILES[@]}" "$@"; }
+use_override() { COMPOSE_FILES=(-f docker-compose.yml -f docker-compose.override.yml); }
 
 # ── Neutralising the .env traps ──────────────────────────────────────────────
 # A real .env carries this project's GCP settings, which do not work locally.
@@ -52,6 +62,82 @@ local_backends() {
 mock_model() {
   export ANTHROPIC_API_KEY=
   export CLAUDE_CODE_OAUTH_TOKEN=
+}
+
+# ── Registry mode: dev/prod parity for the session base image ────────────────
+# The default local flow builds the harness INSIDE DinD (init-sandbox) and hands
+# it to sessions. Production does something different: it PULLS a published
+# image from Artifact Registry. That divergence hides registry, credential and
+# image-reference bugs until deploy, and gives downstream client projects
+# nothing to build FROM. Registry mode runs the production path locally.
+#
+# Blobs stay on the local filesystem on purpose: snapshots are large and this is
+# the shared PROD bucket. Set AGENTKIT_BLOB_BACKEND=gcs yourself (ideally with a
+# GCS_PREFIX of your own) if you specifically want to exercise the GCS path.
+dotenv() {
+  local val="${!1:-}"
+  if [[ -z "$val" && -f .env ]]; then
+    val=$(grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  fi
+  printf '%s' "$val"
+}
+
+# The Artifact Registry base, assembled the same way agentd's resolveOCIRegistryURL
+# does it — OCI_REGISTRY wins, else GCP_REGION+GCP_PROJECT+GCP_AR_REPO.
+ar_registry() {
+  local explicit region project repo
+  explicit=$(dotenv OCI_REGISTRY)
+  if [[ -n "$explicit" ]]; then printf '%s' "$explicit"; return; fi
+  region=$(dotenv GCP_REGION); project=$(dotenv GCP_PROJECT); repo=$(dotenv GCP_AR_REPO)
+  if [[ -z "$region" || -z "$project" || -z "$repo" ]]; then
+    echo "registry mode needs OCI_REGISTRY, or all of GCP_REGION+GCP_PROJECT+GCP_AR_REPO (shell or .env)" >&2
+    exit 1
+  fi
+  printf '%s-docker.pkg.dev/%s/%s' "$region" "$project" "$repo"
+}
+
+registry_backends() {
+  # ADC is how agentd authenticates. It resolves the credential itself and passes
+  # it per-pull as the Docker API's X-Registry-Auth header, so DinD needs no
+  # credentials of its own — that is what makes this cheap.
+  if [[ ! -f "$HOME/.config/gcloud/application_default_credentials.json" ]]; then
+    echo "No gcloud ADC found. Run:  gcloud auth application-default login" >&2
+    exit 1
+  fi
+  export AGENTKIT_BLOB_BACKEND=fs
+  export AGENTKIT_REGISTRY_BACKEND=ociregistry
+  export AGENTKIT_REGISTRY_AUTH=gcp
+  # `:dev` is a stable tag with drifting contents; without this a session reuses
+  # whatever DinD cached and you test bytes you did not just publish.
+  export AGENTKIT_REGISTRY_ALWAYS_PULL=true
+  # Must be empty or the Google libraries look for a key file instead of the
+  # mounted gcloud ADC. A real .env sets it to a path that does not exist here.
+  export GOOGLE_APPLICATION_CREDENTIALS=
+  export BASE_IMAGE="$(ar_registry)/session-core:${AO_IMAGE_TAG:-dev}"
+  use_override
+  echo "── registry mode: sessions PULL $BASE_IMAGE (production's path) ──"
+}
+
+# Build + push the two base images downstream projects build FROM.
+publish_base() {
+  local tag="${1:-dev}"
+  local reg; reg="$(ar_registry)"
+  echo "── publishing session-base + session-core to $reg at :$tag ──"
+  # PUSH_LATEST=false: this is a shared registry, and moving :latest from a dev
+  # machine moves it for everyone — the thing a :dev tag exists to avoid.
+  REGISTRY="$reg" PUSH_LATEST=false ./deploy/publish-base.sh "$tag"
+}
+
+# Which image mode the running stack was started in. Persisted so restart/stop
+# reconfigure agentd the same way `start` did rather than reverting to local.
+MODE_FILE=".stack-image-mode"
+
+apply_saved_mode() {
+  if [[ "$(cat "$MODE_FILE" 2>/dev/null || echo local)" == "registry" ]]; then
+    registry_backends
+  else
+    local_backends
+  fi
 }
 
 have_key() {
@@ -76,14 +162,24 @@ build() {
 }
 
 start() {
-  local mode="${1:-real}"
+  # Two independent axes: which MODEL (real|mock) and where the session base
+  # IMAGE comes from (local|registry). Order does not matter.
+  local mode="real" images="local" arg
+  for arg in "$@"; do
+    case "$arg" in
+      real|mock)     mode="$arg" ;;
+      local|registry) images="$arg" ;;
+      *) echo "usage: ./stack start [real|mock] [local|registry]" >&2; exit 1 ;;
+    esac
+  done
 
   if tmux has-session -t "$TMUX_SESSION" 2>/dev/null; then
     echo "Session $TMUX_SESSION already exists. Attaching…"
     exec tmux -2 attach -t "$TMUX_SESSION"
   fi
 
-  local_backends
+  if [[ "$images" == "registry" ]]; then registry_backends; else local_backends; fi
+  echo "$images" > "$MODE_FILE"
 
   case "$mode" in
     mock)
@@ -96,11 +192,10 @@ start() {
         echo "Either set one, or run:  ./stack start mock" >&2
         exit 1
       fi
-      echo "── REAL MODEL — this stack will BILL. Use './stack start mock' if you"
+      echo "── REAL MODEL — this stack will BILL (the subscription token wins over"
+      echo "   the API key when both are set). Use './stack start mock' if you"
       echo "   only meant to click around. ──"
       ;;
-    *)
-      echo "usage: ./stack start [real|mock]" >&2; exit 1 ;;
   esac
 
   compose up -d
@@ -128,14 +223,18 @@ start() {
 }
 
 stop() {
+  apply_saved_mode
   compose down --remove-orphans
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  rm -f "$MODE_FILE"
   echo "Stopped."
 }
 
 restart() {
   local svc="${1:-all}"
-  local_backends
+  # Without this a restart in registry mode would silently recreate agentd with
+  # the LOCAL backends — sessions would then look for an image nothing pulled.
+  apply_saved_mode
   if [[ "$svc" == "all" ]]; then
     compose down && compose up -d
   else
@@ -165,10 +264,20 @@ status() {
   echo "── services ───────────────────────────────────────────────"
   compose ps --format 'table {{.Service}}\t{{.Status}}' 2>/dev/null || echo "(not running)"
   echo
+  echo "── session base image ─────────────────────────────────────"
+  if [[ "$(cat "$MODE_FILE" 2>/dev/null || echo local)" == "registry" ]]; then
+    echo "registry mode — pulled from Artifact Registry (production's path)"
+    compose logs agentd 2>/dev/null | grep -iE 'ociregistry|pull image' | tail -2 || true
+  else
+    echo "local mode — built into DinD by init-sandbox"
+  fi
+  compose logs init-sandbox 2>/dev/null | tail -1 || true
+  echo
   echo "── model ──────────────────────────────────────────────────"
   # agentd states its choice at boot. That log line, not the env, is the truth:
-  # it is what the process actually resolved.
-  compose logs agentd 2>/dev/null | grep -i 'model proxy' | tail -2 || echo "(agentd not up)"
+  # it is what the process actually resolved. Subscription mode logs its own
+  # line ('subscription mode …'), separate from the proxy's.
+  compose logs agentd 2>/dev/null | grep -iE 'model proxy|subscription mode' | tail -3 || echo "(agentd not up)"
   echo
   echo "── sessions / host ports ──────────────────────────────────"
   # A session holds one container and one host port until deleted or reclaimed
@@ -252,7 +361,7 @@ test_go() {
 }
 
 help() {
-  sed -n '3,21p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '3,26p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -260,6 +369,7 @@ cmd="${1:-help}"
 shift || true
 case "$cmd" in
   build|start|stop|restart|logs|psql|sql|status|sessions|clean|testdb|help) "$cmd" "$@" ;;
+  publish-base|publish_base) publish_base "$@" ;;
   test-go|test_go) test_go "$@" ;;
   db) psql "$@" ;;
   *) echo "unknown command: $cmd" >&2; help; exit 1 ;;

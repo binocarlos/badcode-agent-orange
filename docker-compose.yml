@@ -27,6 +27,12 @@ services:
       retries: 20
 
   # Builds the sandbox image and loads it into the DinD daemon, then exits.
+  #
+  # UNLESS BASE_IMAGE names a registry (anything containing a "/"), in which case
+  # the image is meant to be PULLED and building here would be actively wrong: it
+  # would tag the bare harness with your registry reference and shadow the real
+  # image, so sessions would start successfully from something that is not what
+  # you published. That silent-wrong-image is the trap this guard closes.
   init-sandbox:
     image: docker:27-cli
     depends_on:
@@ -40,8 +46,16 @@ services:
     command:
       - |
         set -e
-        docker build -t ${BASE_IMAGE:-agentkit-sandbox:dev} /sandbox
-        echo "sandbox image built + present in DinD"
+        IMG="${BASE_IMAGE:-agentkit-sandbox:dev}"
+        case "$$IMG" in
+          */*)
+            echo "init-sandbox: BASE_IMAGE=$$IMG is a registry reference — NOT building locally."
+            echo "init-sandbox: agentd pulls it (needs AGENTKIT_REGISTRY_BACKEND=ociregistry + credentials)."
+            exit 0
+            ;;
+        esac
+        docker build -t "$$IMG" /sandbox
+        echo "sandbox image built + present in DinD: $$IMG"
 
   # Session/message store. pgvector image so the future memory system can
   # CREATE EXTENSION vector without an image swap.
@@ -132,11 +146,12 @@ services:
       AGENTKIT_PROJECT_MAP: ${AGENTKIT_PROJECT_MAP:-}
       AGENTKIT_PROJECT_MAP_FILE: ${AGENTKIT_PROJECT_MAP_FILE:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Claude Code subscription token (`claude setup-token`). Only used when
-      # ANTHROPIC_API_KEY is unset → sessions bill the subscription directly.
+      # Claude Code subscription token (`claude setup-token`). Wins over
+      # ANTHROPIC_API_KEY when both are set → sessions bill the subscription
+      # directly; blank it (production/unattended) to bill the API key.
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
-      # Offline mock-model script (see .env.example). Only read when
-      # ANTHROPIC_API_KEY is unset. Unset → today's canned single-text-turn mock;
+      # Offline mock-model script (see .env.example). Only read in mock mode
+      # (neither credential set). Unset → today's canned single-text-turn mock;
       # set → the mock can emit tool_use, which is how an offline test makes a
       # worker call an MCP tool. FILE is a path INSIDE this container.
       AGENTKIT_MOCK_MODEL_SCRIPT: ${AGENTKIT_MOCK_MODEL_SCRIPT:-}
@@ -158,6 +173,12 @@ services:
       GCS_PREFIX: ${GCS_PREFIX:-}
       AGENTKIT_REGISTRY_BACKEND: ${AGENTKIT_REGISTRY_BACKEND:-}
       AGENTKIT_REGISTRY_AUTH: ${AGENTKIT_REGISTRY_AUTH:-}
+      # Force a pull on every EnsurePresent. Load-bearing for the registry dev
+      # flow: `:dev` is a stable tag whose contents drift on every republish, so
+      # without this a session reuses whatever DinD cached and you test stale
+      # bytes. Same lesson as AGENTKIT_EMBEDDING_BACKEND above — the variable
+      # must be forwarded explicitly or setting it in .env silently does nothing.
+      AGENTKIT_REGISTRY_ALWAYS_PULL: ${AGENTKIT_REGISTRY_ALWAYS_PULL:-}
       GCP_REGION: ${GCP_REGION:-}
       GCP_PROJECT: ${GCP_PROJECT:-}
       GCP_AR_REPO: ${GCP_AR_REPO:-}

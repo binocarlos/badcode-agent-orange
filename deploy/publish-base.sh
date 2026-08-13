@@ -3,8 +3,7 @@
 # publish-base.sh — build the Agent Orange session base images and push them to
 # YOUR container registry.
 #
-# Downstream projects (see examples/agent-wolf/) build their own image FROM one
-# of these. Until you have run this once, there is nothing for them to point at:
+# Downstream projects build their own image FROM one of these. Until you have run this once, there is nothing for them to point at:
 # the standalone stack only ever builds `agentkit-sandbox:dev` INSIDE its
 # Docker-in-Docker daemon, where no other project can reach it.
 #
@@ -23,6 +22,10 @@
 # Both get the tag you asked for AND `latest`. Prefer the specific tag in a
 # project's Dockerfile: `latest` is a moving target, which is the whole reason
 # Agent Orange records the digest a session actually launched from.
+#
+# PUSH_LATEST=false leaves `latest` alone. Use it for development publishes —
+# a shared registry means moving `latest` moves it for everyone, which is
+# exactly what a `:dev` tag is supposed to avoid. `./stack publish-base` sets it.
 #
 # This is deliberately a manual command, not CI. Publishing a base image is
 # infrequent, and the credential it needs is your own docker login.
@@ -80,8 +83,12 @@ docker build -f installations/core/Dockerfile \
 echo "── pushing ──"
 for repo in "$BASE_REPO" "$CORE_REPO"; do
   docker push "$repo:$TAG"
-  docker tag "$repo:$TAG" "$repo:latest"
-  docker push "$repo:latest"
+  if [ "${PUSH_LATEST:-true}" = "true" ]; then
+    docker tag "$repo:$TAG" "$repo:latest"
+    docker push "$repo:latest"
+  else
+    echo "   (PUSH_LATEST=false — :latest left pointing where it was)"
+  fi
 done
 
 # The digest is the point: it is what a project should pin when it wants "these
@@ -91,8 +98,8 @@ core_digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$CORE_REPO:$T
 cat <<EOF
 
 ── published ──────────────────────────────────────────────────────────────────
-  $BASE_REPO:$TAG   (also :latest)
-  $CORE_REPO:$TAG   (also :latest)
+  $BASE_REPO:$TAG$([ "${PUSH_LATEST:-true}" = "true" ] && echo "   (also :latest)")
+  $CORE_REPO:$TAG$([ "${PUSH_LATEST:-true}" = "true" ] && echo "   (also :latest)")
 ${core_digest:+
   session-core digest: $core_digest}
 
@@ -103,7 +110,9 @@ Use it in a project's Dockerfile:
   RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \\
       && rm -rf /var/lib/apt/lists/*
 
-Do NOT set CMD / ENTRYPOINT / EXPOSE / HEALTHCHECK — the base owns those.
-Worked example, including how to point a project at the result:
-  examples/agent-wolf/README.md
+Do NOT set CMD / ENTRYPOINT / EXPOSE / HEALTHCHECK / WORKDIR — the base owns those.
+
+To run the stack against what you just pushed (production's path, locally):
+  ./stack start mock registry
+See README-stack.md → "Registry mode", and installations/README.md for layering.
 EOF

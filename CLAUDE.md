@@ -211,8 +211,10 @@ Product layer (all Postgres-only, all in `go/agentdb/` + `go/cmd/agentd/`):
    `bayes-price/agentkit` path or any Platinum coupling.
 3. **`migration-reference/` is reference, not code.** Don't build it, import it, or wire it into the
    module. Port *from* it deliberately (see `MIGRATION.md`).
-4. **Installation Dockerfiles never set** `CMD`/`ENTRYPOINT`/`EXPOSE`/`HEALTHCHECK` — the sandbox
-   base owns those. Installations only add environment, tools, and `/workspace` content.
+4. **Installation Dockerfiles never set** `CMD`/`ENTRYPOINT`/`EXPOSE`/`HEALTHCHECK`/`WORKDIR` — the
+   sandbox base owns those. Installations only add environment, tools, and `/workspace` content.
+   (`WORKDIR` was added to that list on 2026-08-13: `core` and `example` both set it, which broke
+   the base's then-relative `CMD` and made every session from those images fail its healthcheck.)
 5. **Keep `go build ./...` green** and add tests with changes — the codebase is heavily tested
    (follow the existing table-test patterns).
 6. **Migration work is phased** (`MIGRATION.md`): standalone-ify → genericize installations →

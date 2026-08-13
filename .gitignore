@@ -9,3 +9,6 @@ docker-compose.override.yml
 oranged-data/
 e2e/stack-e2e-logs*.txt
 e2e/.stack-e2e-mode
+
+# ./stack: which image mode the running stack was started in
+.stack-image-mode

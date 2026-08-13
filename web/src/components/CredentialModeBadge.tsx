@@ -42,7 +42,9 @@ const PAINT: Record<CredentialMode, { label: string; title: string; loud: boolea
     label: 'subscription',
     title:
       'Real model, billed to the Claude Code subscription (CLAUDE_CODE_OAUTH_TOKEN); ' +
-      'sessions call api.anthropic.com directly.',
+      'sessions call api.anthropic.com directly. The token outranks ANTHROPIC_API_KEY, ' +
+      'so this wins even with a key set. Attended use — Anthropic’s terms restrict ' +
+      'subscription OAuth for headless automation; blank the token to bill the API key.',
     loud: false,
   },
 }

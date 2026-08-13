@@ -206,19 +206,22 @@ func main() {
 	// ── Session env (model-provider config the in-image agent requires) ──────────
 	// selfURL is how a session container (nested in DinD) reaches agentd. With
 	// agentd sharing DinD's network namespace, that is the bridge gateway IP.
-	// Model auth by key presence: ANTHROPIC_API_KEY → proxy path (wins when both
-	// are set); only CLAUDE_CODE_OAUTH_TOKEN → subscription mode (sessions talk
-	// to api.anthropic.com directly); neither → proxy path serving the mock.
+	// Model auth by key presence: CLAUDE_CODE_OAUTH_TOKEN → subscription mode,
+	// sessions talk to api.anthropic.com directly (the token wins when both are
+	// set, so an attended dev stack bills the subscription and production blanks
+	// the token — Anthropic's terms restrict subscription OAuth to attended use);
+	// only ANTHROPIC_API_KEY → proxy path; neither → proxy path serving the mock.
 	selfURL := envOr("AGENTKIT_SELF_URL", "http://172.17.0.1:8099")
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
-	subscriptionMode := apiKey == "" && oauthToken != ""
+	subscriptionMode := oauthToken != ""
 	sessionEnv := sandboxSessionEnv(selfURL)
 	if subscriptionMode {
 		sessionEnv = subscriptionSessionEnv(selfURL, oauthToken)
 		log.Printf("[agentd] subscription mode (CLAUDE_CODE_OAUTH_TOKEN) → sessions call api.anthropic.com directly")
-	} else if apiKey != "" && oauthToken != "" {
-		log.Printf("[agentd] both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN set — API key wins (proxy mode)")
+	}
+	if apiKey != "" && oauthToken != "" {
+		log.Printf("[agentd] both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN set — the OAuth token wins (subscription mode; blank it to bill the API key)")
 	}
 
 	// ── MCP credential env (AGENTKIT_MCP_ENV allowlist) ──────────────────────────

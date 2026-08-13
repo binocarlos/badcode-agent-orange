@@ -24,18 +24,20 @@ the gap between those two claims is where this document lives.
 
 ## 1. Model credentials and subscription OAuth
 
-Three credential modes, precedence `ANTHROPIC_API_KEY` > `CLAUDE_CODE_OAUTH_TOKEN` > mock:
+Three credential modes, precedence `CLAUDE_CODE_OAUTH_TOKEN` > `ANTHROPIC_API_KEY` > mock
+(*inverted 2026-08-13 — the API key won before; token-first means an attended dev stack bills the
+subscription by default, and production flips to unattended API billing by blanking the token*):
 
 | Mode | Set | Path to the model |
 | --- | --- | --- |
-| API-billed | `ANTHROPIC_API_KEY` | Sessions talk to agentd's model proxy, which injects a per-session JWT. |
-| Subscription | `CLAUDE_CODE_OAUTH_TOKEN` (API key blank) | Sessions call `api.anthropic.com` directly with the OAuth token. |
+| Subscription | `CLAUDE_CODE_OAUTH_TOKEN` (wins over the API key) | Sessions call `api.anthropic.com` directly with the OAuth token. |
+| API-billed | `ANTHROPIC_API_KEY` (token blank) | Sessions talk to agentd's model proxy, which injects a per-session JWT. |
 | Offline | neither | Deterministic mock model; `AGENTKIT_MOCK_MODEL_SCRIPT` for scripted turns. |
 
 Subscription mode is already wired end to end — `.env.example`, `docker-compose.yml`,
 `go/runner.go`'s credential branch, with `go/runner_test.go` pinning that the API key stays absent
 and the OAuth token is passed through. To use it: run `claude setup-token` on the host, paste the
-`sk-ant-oat01-…` value into `.env`, leave `ANTHROPIC_API_KEY` blank.
+`sk-ant-oat01-…` value into `.env`.
 
 **The caveat that matters for this research.** Anthropic's terms restrict subscription OAuth for
 headless automation. A self-improvement experiment is a long-running unattended loop — squarely the

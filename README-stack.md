@@ -20,6 +20,45 @@ It bypasses `docker-compose.override.yml` and forces the local `fs`/`blobarchive
 backends, which is exactly what the manual invocation below does by hand.
 `./stack help` lists everything.
 
+## Registry mode — dev/prod parity for the session base image
+
+By default the stack builds the harness *inside* DinD (the `init-sandbox`
+service) and sessions launch from that. **Production does something different:
+it pulls a published image from Artifact Registry.** That divergence hides
+registry, credential and image-reference bugs until deploy, and it leaves
+downstream client projects with nothing to build `FROM`. Registry mode runs the
+production path locally:
+
+    ./stack publish-base dev          # build + push session-base and session-core
+    ./stack start mock registry       # sessions PULL session-core:dev
+
+`start` takes two independent axes in any order — the model (`real`|`mock`) and
+where the base image comes from (`local`|`registry`).
+
+- **Credentials.** `agentd` authenticates with your gcloud ADC
+  (`gcloud auth application-default login`), mounted into the container by
+  `docker-compose.override.yml`. It resolves the credential itself and passes it
+  per-pull as the Docker API's `X-Registry-Auth` header, so **DinD needs no
+  credentials of its own** — that is what makes this cheap.
+- **`AGENTKIT_REGISTRY_ALWAYS_PULL=true`** is set for you, and is load-bearing:
+  `:dev` is a stable tag whose contents change on every republish, so without it
+  a session reuses whatever DinD cached and you test bytes you did not publish.
+- **`:latest` is never moved** by `./stack publish-base` — a shared registry
+  means moving it moves it for everyone, which is what a `:dev` tag exists to
+  avoid. Pass a different tag as the first argument, or set `AO_IMAGE_TAG` to
+  make `start` pull one (`AO_IMAGE_TAG=dev-kai`).
+- **Blobs stay local** (`fs`). Snapshots are large and the bucket is the shared
+  production one; set `AGENTKIT_BLOB_BACKEND=gcs` (ideally with your own
+  `GCS_PREFIX`) if you specifically want to exercise the GCS path.
+- **`init-sandbox` skips its build** whenever `BASE_IMAGE` contains a `/`, i.e.
+  names a registry. It used to build the bare harness and tag it *with your
+  registry reference*, so sessions started successfully from something that was
+  not what you published — a silent wrong-image.
+
+This is also how you develop a **client project** that layers on top: publish
+these bases, then `FROM europe-west1-docker.pkg.dev/<project>/<repo>/session-core:dev`
+in the project's own Dockerfile.
+
 ## 3 commands
 
     cp .env.example .env
@@ -32,12 +71,15 @@ For the product layer on top of that — projects, workers, memory, subscription
 schedules, images, skills, the config log — see
 `docs/18-workers-memory-events.md`.
 
-Model credentials (precedence: API key > subscription token > mock):
+Model credentials (precedence: subscription token > API key > mock):
 
-- **`ANTHROPIC_API_KEY` set** → a real agent, API-billed via agentd's model proxy.
 - **`CLAUDE_CODE_OAUTH_TOKEN` set** (from `claude setup-token`) → a real agent
   billed to your Claude Code **subscription**; sessions call api.anthropic.com
-  directly. See the caveat in `.env.example`.
+  directly. It wins when both credentials are set, so an attended dev stack
+  bills the subscription by default — **blank it for unattended/production
+  runs**, which must bill the API key. See the caveat in `.env.example`.
+- **`ANTHROPIC_API_KEY` set** (token blank) → a real agent, API-billed via
+  agentd's model proxy.
 - **Neither** → a deterministic mock model replies, so the UI still works offline.
 
 ## If you have a real `.env`: two traps that bite before you see anything
@@ -57,8 +99,9 @@ creates it as a **directory**, and agentd dies with:
     gcsblob: new client: dialing: read /gcp/key.json: is a directory
 
 **(b) A plain `docker compose up` runs a REAL, billable agent**, because `.env`
-holds a real `ANTHROPIC_API_KEY`. Mock mode needs **both** credentials blanked —
-the subscription token as well as the API key.
+holds real model credentials (the subscription token wins when both are set).
+Mock mode needs **both** credentials blanked — the subscription token as well as
+the API key.
 
 ### The known-good local/mock invocation
 

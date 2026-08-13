@@ -10,9 +10,10 @@ import (
 )
 
 // TestCredentialMode pins the three answers the browser is told, in the same
-// precedence the two acting call sites apply: an API key wins outright, an
-// OAuth token alone is subscription mode, neither is the mock. RD18: the mock
-// is the DEFAULT (both credential lines ship blank in .env.example), so a wrong
+// precedence the two acting call sites apply: an OAuth token wins outright
+// (attended subscription billing by default; production blanks the token), an
+// API key alone is proxy mode, neither is the mock. RD18: the mock is the
+// DEFAULT (both credential lines ship blank in .env.example), so a wrong
 // answer here is the difference between "the product works" and "no model was
 // ever called".
 func TestCredentialMode(t *testing.T) {
@@ -25,7 +26,7 @@ func TestCredentialMode(t *testing.T) {
 		{"neither is mock", "", "", credentialModeMock},
 		{"api key alone", "sk-ant-api03-x", "", credentialModeAPIKey},
 		{"oauth token alone", "", "sk-ant-oat01-x", credentialModeSubscription},
-		{"api key wins over oauth", "sk-ant-api03-x", "sk-ant-oat01-x", credentialModeAPIKey},
+		{"oauth token wins over api key", "sk-ant-api03-x", "sk-ant-oat01-x", credentialModeSubscription},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

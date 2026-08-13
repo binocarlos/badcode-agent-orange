@@ -5,7 +5,8 @@
 # (per-project installations live with the project, not here), set "parent" in
 # installation.json, and replace the layers below with what the project needs.
 #
-# Do NOT set CMD / ENTRYPOINT / EXPOSE / HEALTHCHECK — owned by the base image.
+# Do NOT set CMD / ENTRYPOINT / EXPOSE / HEALTHCHECK / WORKDIR — owned by the
+# base image. See installations/core/Dockerfile for why WORKDIR is on the list.
 #
 # Build (after core exists):
 #   docker build -f installations/example/Dockerfile \
@@ -23,5 +24,3 @@ FROM ${BASE_IMAGE}
 # Files under overlay/ are copied into /workspace (project memory, skills,
 # templates). Here it ships only a CLAUDE.md as an example.
 COPY overlay/ /workspace/
-
-WORKDIR /workspace

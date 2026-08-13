@@ -49,11 +49,20 @@ installations/<name>/
   overlay/            # (optional) files copied into /workspace/ — template, CLAUDE.md, skills
 ```
 
-**Do not** set `CMD` / `ENTRYPOINT` / `EXPOSE` / `HEALTHCHECK`. The sandbox base image owns
-the **runtime contract** exclusively — the control server (port 3010), the healthcheck, the
+**Do not** set `CMD` / `ENTRYPOINT` / `EXPOSE` / `HEALTHCHECK` / `WORKDIR`. The sandbox base image
+owns the **runtime contract** exclusively — the control server (port 3010), the healthcheck, the
 start-up sequence the Go Runner and `docs/07-in-image-agent.md` depend on. A derived image that
 redefined any of those would break session orchestration. Installations only *add* capabilities
 (apt/pip/npm packages, binaries) and *knowledge* (skills, `CLAUDE.md`, workspace content) on top.
+
+> **`WORKDIR` joined that list on 2026-08-13, the hard way.** Both `core` and `example` ended with
+> `WORKDIR /workspace`, and the base's `CMD` was relative (`./node_modules/.bin/tsx`), so it
+> resolved to `/workspace/node_modules/.bin/tsx`, which does not exist. Every session launched from
+> those images died with `agent at http://localhost:PORT did not become healthy` — an error that
+> names the symptom and not the cause. It went unnoticed because the standalone stack always
+> launched the bare harness, never `core`. The base's `CMD` is now absolute so a stray `WORKDIR`
+> cannot break start-up again, but do not set one: you gain nothing, since the agent's working
+> directory is `/workspace` either way (the harness sets it).
 
 ## The overlay model
 
@@ -124,12 +133,37 @@ across a deploy. The engine leans into this — a build's inputs fold into a con
 
 ## Launching a session from one
 
-The standalone stack points at a base image via `BASE_IMAGE` in `.env`:
+The standalone stack points at a base image via `BASE_IMAGE`. **How you get the
+image to the stack depends on whether it is local or published.**
+
+**Published (recommended — this is production's path).** Push the image to your
+registry and let the stack pull it, exactly as production does:
 
 ```sh
-echo "BASE_IMAGE=agent-orange-example:dev" >> .env
-docker compose up --build      # then open http://localhost:8080
+./stack publish-base dev          # session-base + session-core → Artifact Registry
+./stack start mock registry       # sessions PULL session-core:dev
 ```
+
+For your own derived image, publish it under the same registry and point at it:
+
+```sh
+AO_IMAGE_TAG=dev ./stack start mock registry   # or set BASE_IMAGE=<full registry ref>
+```
+
+**Local.** A locally-built image must exist inside the stack's **Docker-in-Docker**
+daemon, not on your host — sessions run there, and with the default
+`blobarchive` registry `EnsurePresent` is a no-op, so nothing pulls it. The
+stack only builds the *sandbox harness* into DinD (`init-sandbox`); it does not
+build `core`/`example`. So a host-built `agent-orange-example:dev` is invisible
+to sessions.
+
+> **This section used to say** `echo "BASE_IMAGE=agent-orange-example:dev" >> .env`
+> followed by `docker compose up --build`. That did not work: the host-built image
+> never reached DinD, *and* `init-sandbox` built the bare harness and tagged it
+> with your name, so sessions started successfully from an image with none of your
+> layers. `init-sandbox` now skips its build whenever `BASE_IMAGE` names a
+> registry (contains a `/`), which is why the published route above is the one to
+> use.
 
 See `../README-stack.md` and `../docs/15-standalone-stack.md` for the app-image contract and
 per-app plugins.

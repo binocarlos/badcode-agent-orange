@@ -114,4 +114,12 @@ HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=10 \
 
 # Run with tsx so the TypeScript source executes without a build step.
 # In production you can replace tsx with node + a compiled dist/ (see docs).
-CMD ["./node_modules/.bin/tsx", "src/index.ts"]
+#
+# ABSOLUTE paths on purpose. These were relative to WORKDIR (/app), which made
+# start-up silently depend on a directive derived images are not forbidden to
+# change: `installations/core` ended with `WORKDIR /workspace`, so the CMD
+# resolved to /workspace/node_modules/.bin/tsx, the control server never
+# listened on 3010, and provisioning failed with the far-away error "agent at
+# http://localhost:PORT did not become healthy". Absolute paths make a derived
+# image's WORKDIR irrelevant to whether the harness starts.
+CMD ["/app/node_modules/.bin/tsx", "/app/src/index.ts"]
